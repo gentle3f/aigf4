@@ -128,11 +128,11 @@ export async function generateVeniceText(
     topP = 0.92,
     repetitionPenalty = 1.08,
     stop = ['\nUser:', '\nAssistant:', '\n使用者:', '\n詠芯:'],
-    seed = 42,
+    seed,
     onStateChange,
   } = options;
 
-  onStateChange?.('generating', '生成中');
+  onStateChange?.('generating', '思考中');
 
   const endpoint = VENICE_API_BASE.startsWith('/')
     ? VENICE_API_BASE
@@ -235,6 +235,9 @@ export function isInvalidVeniceChatReply(text: string): boolean {
     /^#+\s/m,
     /^```/,
     /^This is a very interesting question/i,
+    /^這是什麼意思[？?！!]*$/u,
+    /^你想表達什麼[？?！!]*$/u,
+    /^請再說清楚一點[。．！!？?]*$/u,
     /^(?:question|user|問題|使用者)\s*[:：]/i,
     /^\d{20,}$/,
     /^(.)\1{20,}$/,

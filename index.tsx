@@ -212,6 +212,7 @@ const DISABLED_FEATURE_MESSAGE = '此功能在 aigf4 第一版暫時停用。';
 const GOD_MODE_ENTER_COMMAND = 'GOD MODE';
 const GOD_MODE_EXIT_COMMAND = 'BYE GOD MODE';
 const CHAT_HISTORY_LIMIT = 12;
+const CHAT_MAX_COMPLETION_TOKENS = 220;
 
 
 // --- Functions ---
@@ -578,8 +579,8 @@ const applyChatRuntimeState = (state: RequestState, detail?: string) => {
     const statusTextMap: Record<RequestState, string> = {
         idle: getIdleStatusText(),
         queueing: '\u6392\u968a\u4e2d',
-        generating: '\u751f\u6210\u4e2d',
-        retrying: '\u91cd\u8a66\u4e2d',
+        generating: '\u601d\u8003\u4e2d',
+        retrying: '\u91cd\u65b0\u601d\u8003\u4e2d',
         error: '\u5931\u6557',
     };
 
@@ -832,8 +833,24 @@ const buildChatSystemPrompt = () => {
         'You are the active romance character inside a chat app.',
         `Character name: ${currentPersona.name}`,
         `Character core persona:\n${currentPersona.prompt}`,
+        currentPersona.greeting?.trim() ? `Voice reference sample:\n${currentPersona.greeting.trim()}` : '',
         currentPersona.memory?.trim() ? `User memory to always remember:\n${currentPersona.memory.trim()}` : '',
-        'Reply rules:\n- Reply only in Traditional Chinese.\n- Stay fully in character.\n- Be emotionally responsive, natural, and comforting when appropriate.\n- Usually keep the reply within 1 to 3 short sentences.\n- No analysis, no narration, no headings, no markdown, no JSON, and no role labels.\n- Do not prefix your reply with the character name.',
+        [
+            'Reply rules:',
+            '- Reply only in Traditional Chinese.',
+            '- Stay fully in character and write like an intimate romance chat, never like an assistant.',
+            '- Blend spoken dialogue with immersive parenthetical narration using half-width parentheses ( ).',
+            '- The parentheses may describe actions, expressions, breathing, body language, surrounding atmosphere, scene changes, subtle heart-thoughts, and natural NPC reactions when needed.',
+            '- Keep the reply emotionally rich, readable, and pleasurable to read.',
+            '- For most normal messages, write 2 to 5 sentences or 1 to 3 short paragraphs. Short replies are allowed only when the moment truly calls for it.',
+            '- If the user sends a fragment, slang, or a short command, infer the likely emotional meaning from context instead of replying with confusion.',
+            '- Be proactive with flirting, comfort, teasing, tenderness, jealousy, or warmth according to the character.',
+            '- Let the character sound alive and present in the scene, not flat or generic.',
+            '- Dialogue should stay outside parentheses; narration should stay inside parentheses.',
+            '- Do not output THINK, analysis, explanations, headings, markdown, JSON, or role labels.',
+            '- Do not mention being an AI, model, assistant, prompt, policy, or system.',
+            '- Do not prefix your reply with the character name.',
+        ].join('\n'),
     ];
 
     return sections.filter(Boolean).join('\n\n');
@@ -884,7 +901,7 @@ const runChatGeneration = async (latestUserMessage: string): Promise<string> => 
 
     for (let index = 0; index < models.length; index += 1) {
         const model = models[index];
-        const detail = index === 0 ? `生成中 · ${model}` : `切換備援模型 · ${model}`;
+        const detail = index === 0 ? '思考中...' : '重新整理語氣中...';
         applyChatRuntimeState(index === 0 ? 'generating' : 'retrying', detail);
 
         try {
@@ -895,10 +912,10 @@ const runChatGeneration = async (latestUserMessage: string): Promise<string> => 
                     ...getRecentChatMessages(latestUserMessage),
                     { role: 'user', content: latestUserMessage },
                 ],
-                maxCompletionTokens: 120,
-                temperature: 0.72,
-                topP: 0.92,
-                repetitionPenalty: 1.08,
+                maxCompletionTokens: CHAT_MAX_COMPLETION_TOKENS,
+                temperature: 0.82,
+                topP: 0.95,
+                repetitionPenalty: 1.04,
             });
 
             const cleanedText = cleanVeniceChatReply(result.text);
@@ -923,7 +940,7 @@ const runGodModeGeneration = async (
 
     for (let index = 0; index < models.length; index += 1) {
         const model = models[index];
-        const detail = index === 0 ? `生成中 · ${model}` : `切換備援模型 · ${model}`;
+        const detail = index === 0 ? '調整人格中...' : '重新整理人格設定中...';
         applyChatRuntimeState(index === 0 ? 'generating' : 'retrying', detail);
 
         try {
