@@ -1,0 +1,70 @@
+@echo off
+REM ============================================================================
+REM == After School Love Club - Local Development Starter
+REM ==
+REM == This script automates the setup and launch process for the application.
+REM ==
+REM == First Run:
+REM ==   - Installs required Node.js packages (Vite, etc.).
+REM ==   - Prompts you to enter your Gemini API Key.
+REM ==   - Saves the key to a local ".env.local" file for Vite to use.
+REM ==
+REM == Subsequent Runs:
+REM ==   - Immediately starts the local development server.
+REM ==
+REM ============================================================================
+
+ECHO #########################################
+ECHO #    AFTER SCHOOL LOVE CLUB LAUNCHER    #
+ECHO #########################################
+ECHO.
+
+REM Check if dependencies have been installed by looking for the node_modules folder.
+if not exist "node_modules" (
+    ECHO Welcome! Performing first-time setup...
+    ECHO.
+    ECHO Step 1: Installing required dependencies using npm. This may take a moment...
+    call npm install
+
+    REM Check if npm install was successful.
+    if %errorlevel% neq 0 (
+        ECHO.
+        ECHO ERROR: 'npm install' failed.
+        ECHO Please ensure you have Node.js and npm installed correctly and try again.
+        ECHO You can download Node.js from https://nodejs.org/
+        ECHO.
+        pause
+        exit /b %errorlevel%
+    )
+    ECHO.
+    ECHO Dependencies installed successfully!
+)
+
+REM Check if the API key has been set by looking for the .env.local file.
+if not exist ".env.local" (
+    ECHO.
+    ECHO Step 2: Please provide your Gemini API Key.
+    ECHO This will be stored locally in a file named ".env.local".
+    ECHO You can get your key from Google AI Studio.
+    ECHO.
+    set /p API_KEY_INPUT="Enter your API Key and press [Enter]: "
+
+    ECHO.
+    ECHO Saving API Key to .env.local file...
+    
+    REM Write the key to the .env.local file. Vite will automatically pick this up.
+    echo API_KEY=%API_KEY_INPUT% > .env.local
+    
+    ECHO.
+    ECHO SUCCESS! Your API Key has been saved.
+    ECHO.
+)
+
+REM Launch the development server.
+ECHO Dependencies and API Key found. Starting the development server...
+ECHO The application will open in your browser automatically.
+ECHO.
+ECHO You can stop the server at any time by closing this window or pressing CTRL+C.
+ECHO.
+
+call npm run dev
