@@ -1,9 +1,15 @@
+import { requireAuthenticatedRequest } from './_auth.js';
+
 const VENICE_UPSTREAM = 'https://api.venice.ai/api/v1/chat/completions';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  if (!requireAuthenticatedRequest(req, res)) {
+    return;
   }
 
   const apiKey = process.env.VENICE_API_KEY;

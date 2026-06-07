@@ -4,6 +4,43 @@ body {
     background-color: #111827; /* gray-900 */
 }
 
+#auth-gate {
+    backdrop-filter: blur(18px);
+}
+
+.auth-card {
+    background-image:
+        radial-gradient(circle at top right, rgba(251, 191, 36, 0.18), transparent 40%),
+        radial-gradient(circle at bottom left, rgba(192, 38, 211, 0.12), transparent 42%);
+}
+
+.auth-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 9999px;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.75rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: #fcd34d;
+    background: rgba(15, 23, 42, 0.72);
+}
+
+.auth-input:focus {
+    border-color: rgba(251, 191, 36, 0.75);
+    box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.16);
+}
+
+#app-shell.app-shell-locked {
+    filter: blur(12px);
+    transform: scale(0.985);
+    pointer-events: none;
+    user-select: none;
+    transition: filter 0.25s ease, transform 0.25s ease, opacity 0.25s ease;
+}
+
 .main-title {
     font-size: 2.5rem; /* 40px */
     font-weight: 800;

@@ -44,6 +44,8 @@ interface VeniceChatResponse {
   error?: string;
 }
 
+export const VENICE_AUTH_REQUIRED_ERROR = 'VENICE_AUTH_REQUIRED';
+
 export const VENICE_API_BASE =
   import.meta.env.VITE_VENICE_API_BASE || '/api/venice-chat';
 export const VENICE_API_KEY = import.meta.env.VITE_VENICE_API_KEY || '';
@@ -79,7 +81,10 @@ function ensureApiKey() {
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  const response = await fetch(url, {
+    credentials: 'same-origin',
+    ...init,
+  });
   const text = await response.text();
 
   let parsed: unknown = null;
@@ -92,6 +97,10 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error(VENICE_AUTH_REQUIRED_ERROR);
+    }
+
     if (typeof parsed === 'object' && parsed && 'error' in parsed) {
       throw new Error(String((parsed as { error?: unknown }).error || response.statusText));
     }

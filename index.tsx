@@ -8,6 +8,8 @@ import {
     generateVeniceText,
     isInvalidVeniceChatReply,
     RequestState,
+    VENICE_API_BASE,
+    VENICE_AUTH_REQUIRED_ERROR,
     VENICE_CHAT_FALLBACK_MODEL,
     VENICE_CHAT_MODEL,
     VENICE_GOD_FALLBACK_MODEL,
@@ -60,6 +62,14 @@ const suggestionButton = document.getElementById('suggestion-button') as HTMLBut
 const suggestionContainer = document.getElementById('suggestion-container')!;
 const newSceneBtn = document.getElementById('new-scene-btn') as HTMLButtonElement;
 const takePhotoBtn = document.getElementById('take-photo-btn') as HTMLButtonElement;
+const appShell = document.getElementById('app-shell')!;
+const authGate = document.getElementById('auth-gate')!;
+const authForm = document.getElementById('auth-form') as HTMLFormElement;
+const authPasswordInput = document.getElementById('auth-password-input') as HTMLInputElement;
+const authError = document.getElementById('auth-error')!;
+const authSubmitButton = document.getElementById('auth-submit-button') as HTMLButtonElement;
+const authSubmitLabel = document.getElementById('auth-submit-label')!;
+const authSubmitLoading = document.getElementById('auth-submit-loading')!;
 
 // More Options Menu
 const moreOptionsBtn = document.getElementById('more-options-btn')!;
@@ -194,6 +204,9 @@ let isGodModeActive = false;
 let godModeHistory: ChatMessage[] = [];
 let nextResponseInstruction: string | null = null;
 let chatRuntimeState: RequestState = 'idle';
+let isUnlocked = !VENICE_API_BASE.startsWith('/');
+
+const USES_VENICE_PROXY_AUTH = VENICE_API_BASE.startsWith('/');
 
 const DISABLED_FEATURE_MESSAGE = '此功能在 aigf4 第一版暫時停用。';
 const GOD_MODE_ENTER_COMMAND = 'GOD MODE';
@@ -606,8 +619,130 @@ const hideError = () => {
     errorMessage.classList.add('hidden');
 };
 
+const showAuthError = (message: string) => {
+    authError.textContent = message;
+    authError.classList.remove('hidden');
+};
+
+const hideAuthError = () => {
+    authError.classList.add('hidden');
+};
+
+const setAuthSubmitting = (isSubmitting: boolean) => {
+    authSubmitButton.disabled = isSubmitting;
+    authPasswordInput.disabled = isSubmitting;
+    authSubmitLoading.classList.toggle('hidden', !isSubmitting);
+    authSubmitLabel.textContent = isSubmitting ? '\u9a57\u8b49\u4e2d...' : '\u9032\u5165 aigf4';
+};
+
+const setUnlockedState = (unlocked: boolean) => {
+    isUnlocked = unlocked;
+
+    if (!USES_VENICE_PROXY_AUTH) {
+        authGate.classList.add('hidden');
+        appShell.classList.remove('app-shell-locked');
+        updateSendButtonState();
+        return;
+    }
+
+    authGate.classList.toggle('hidden', unlocked);
+    appShell.classList.toggle('app-shell-locked', !unlocked);
+
+    if (unlocked) {
+        authPasswordInput.value = '';
+        hideAuthError();
+    } else {
+        window.setTimeout(() => authPasswordInput.focus(), 40);
+    }
+
+    updateSendButtonState();
+};
+
+const handleAuthRequired = (message: string = '\u767b\u5165\u5df2\u5931\u6548\uff0c\u8acb\u518d\u8f38\u5165\u5bc6\u78bc\u3002') => {
+    setUnlockedState(false);
+    showAuthError(message);
+    hideError();
+};
+
+const refreshAuthSession = async (): Promise<boolean> => {
+    if (!USES_VENICE_PROXY_AUTH) {
+        setUnlockedState(true);
+        return true;
+    }
+
+    try {
+        const response = await fetch('/api/session', {
+            cache: 'no-store',
+            credentials: 'same-origin',
+        });
+
+        if (!response.ok) {
+            throw new Error('session-check-failed');
+        }
+
+        const data = await response.json() as { authenticated?: boolean };
+        const authenticated = Boolean(data.authenticated);
+        setUnlockedState(authenticated);
+
+        if (!authenticated) {
+            showAuthError('\u9019\u500b\u7248\u672c\u76ee\u524d\u662f\u79c1\u4eba\u6e2c\u8a66\uff0c\u8acb\u5148\u8f38\u5165\u5bc6\u78bc\u3002');
+        }
+
+        return authenticated;
+    } catch {
+        setUnlockedState(false);
+        showAuthError('\u7121\u6cd5\u78ba\u8a8d\u767b\u5165\u72c0\u614b\uff0c\u8acb\u91cd\u8a66\u3002');
+        return false;
+    }
+};
+
+const submitUnlock = async () => {
+    if (!USES_VENICE_PROXY_AUTH) {
+        setUnlockedState(true);
+        return;
+    }
+
+    const password = authPasswordInput.value.trim();
+    if (!password) {
+        showAuthError('\u8acb\u5148\u8f38\u5165\u5bc6\u78bc\u3002');
+        authPasswordInput.focus();
+        return;
+    }
+
+    hideAuthError();
+    setAuthSubmitting(true);
+
+    try {
+        const response = await fetch('/api/unlock', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ password }),
+        });
+
+        const data = await response.json().catch(() => null) as { error?: string } | null;
+        if (!response.ok) {
+            throw new Error(data?.error || '\u5bc6\u78bc\u932f\u8aa4\uff0c\u8acb\u518d\u8a66\u4e00\u6b21\u3002');
+        }
+
+        setUnlockedState(true);
+    } catch (error) {
+        setUnlockedState(false);
+        showAuthError(
+            error instanceof Error && error.message
+                ? error.message
+                : '\u5bc6\u78bc\u9a57\u8b49\u5931\u6557\uff0c\u8acb\u518d\u8a66\u4e00\u6b21\u3002',
+        );
+        authPasswordInput.select();
+    } finally {
+        setAuthSubmitting(false);
+    }
+};
+
 const updateSendButtonState = () => {
-    sendButton.disabled = messageInput.value.trim() === '';
+    sendButton.disabled = !isUnlocked || messageInput.value.trim() === '';
 };
 
 const removeGift = () => {
@@ -844,6 +979,10 @@ const getGodModeResponse = async () => {
         applyChatRuntimeState('idle');
     } catch (error) {
         console.error('God Mode response error:', error);
+        if (error instanceof Error && error.message === VENICE_AUTH_REQUIRED_ERROR) {
+            handleAuthRequired();
+            return;
+        }
         const message = 'God Mode 這次沒有順利套用人格補充，請再試一次。';
 
         applyChatRuntimeState('error');
@@ -865,6 +1004,10 @@ const getResponse = async (_parts: any[], triggeringMessage: string) => {
         applyChatRuntimeState('idle');
     } catch (error) {
         console.error('Venice response error:', error);
+        if (error instanceof Error && error.message === VENICE_AUTH_REQUIRED_ERROR) {
+            handleAuthRequired();
+            return;
+        }
         const message = '這次沒有順利生成回覆，請再試一次。';
 
         applyChatRuntimeState('error');
@@ -874,6 +1017,11 @@ const getResponse = async (_parts: any[], triggeringMessage: string) => {
 };
 
 const sendMessage = async () => {
+    if (USES_VENICE_PROXY_AUTH && !isUnlocked) {
+        handleAuthRequired('\u8acb\u5148\u8f38\u5165\u5bc6\u78bc\u5f8c\u518d\u4f7f\u7528\u804a\u5929\u3002');
+        return;
+    }
+
     const userMessage = messageInput.value.trim();
     if (!userMessage) return;
 
@@ -1226,6 +1374,14 @@ const generatePhotoFromPrompt = async () => {
 
 // --- Event Listeners ---
 const setupEventListeners = () => {
+    authForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        await submitUnlock();
+    });
+    authPasswordInput.addEventListener('input', () => {
+        hideAuthError();
+    });
+
     backButton.addEventListener('click', () => {
         saveExitModal.classList.remove('hidden');
     });
@@ -1386,12 +1542,14 @@ const setupEventListeners = () => {
 };
 
 // --- Initialization ---
-const init = () => {
+const init = async () => {
     renderPersonaList();
     setupEventListeners();
+    setAuthSubmitting(false);
     applyChatRuntimeState('idle');
+    await refreshAuthSession();
 };
 
-init();
+void init();
 
 
