@@ -4,6 +4,7 @@ import { personas as initialPersonas } from "./personas.tsx";
 // --- Constants ---
 export const DIARY_CHECKPOINT = '[DIARY_CHECKPOINT]';
 export const POLICY_VIOLATION = '[POLICY_VIOLATION]';
+const CHAT_HISTORY_STORAGE_KEY = 'chatHistories';
 
 // --- Type Definitions ---
 export interface Interest {
@@ -154,6 +155,7 @@ export class MemoryManager {
     constructor() {
         this.personas = { ...initialPersonas };
         this.loadModifiedPersonas();
+        this.loadChatHistories();
     }
     
     getModifiedAndCustomPersonas(): { [key: string]: Persona } {
@@ -213,6 +215,28 @@ export class MemoryManager {
             console.error('Failed to save custom personas:', error);
         }
     }
+
+    private loadChatHistories() {
+        try {
+            const saved = localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
+            if (!saved) return;
+
+            const parsed = JSON.parse(saved);
+            if (parsed && typeof parsed === 'object') {
+                this.chatHistories = parsed;
+            }
+        } catch (error) {
+            console.error('Failed to load chat histories:', error);
+        }
+    }
+
+    private persistChatHistories() {
+        try {
+            localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(this.chatHistories));
+        } catch (error) {
+            console.error('Failed to save chat histories:', error);
+        }
+    }
     
     loadAllData(data: AllData) {
         if (data.customPersonas) {
@@ -221,6 +245,7 @@ export class MemoryManager {
         }
         if (data.chatHistories) {
             Object.assign(this.chatHistories, data.chatHistories);
+            this.persistChatHistories();
         }
         if (data.diaries) {
             this.diaries = data.diaries;
@@ -290,6 +315,7 @@ export class MemoryManager {
             delete this.diaries[key];
             delete this.interests[key];
             this.persistModifiedPersonas();
+            this.persistChatHistories();
             return true;
         }
         return false;
@@ -303,12 +329,14 @@ export class MemoryManager {
             this.chatHistories[key] = persona
                 ? [{ role: 'model', content: { text: persona.greeting } }]
                 : [];
+            this.persistChatHistories();
         }
         return this.chatHistories[key];
     }
     
     setChatHistory(key: string, history: ChatMessage[]) {
         this.chatHistories[key] = history;
+        this.persistChatHistories();
     }
 
     getAllChatHistories(): { [key: string]: ChatMessage[] } {
@@ -320,6 +348,7 @@ export class MemoryManager {
             this.getChatHistory(key); // Initialize if it doesn't exist
         }
         this.chatHistories[key].push({ role, content });
+        this.persistChatHistories();
     }
 
     pruneLastUserMessage(key: string) {
@@ -336,6 +365,7 @@ export class MemoryManager {
 
         if (lastUserIndex !== -1) {
             this.chatHistories[key].splice(lastUserIndex, 1);
+            this.persistChatHistories();
         }
     }
 
@@ -345,6 +375,7 @@ export class MemoryManager {
             this.chatHistories[key] = [{ role: 'model', content: { text: persona.greeting } }];
             delete this.diaries[key];
             delete this.interests[key];
+            this.persistChatHistories();
         }
     }
     

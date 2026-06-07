@@ -74,6 +74,7 @@ const authSubmitLoading = document.getElementById('auth-submit-loading')!;
 // More Options Menu
 const moreOptionsBtn = document.getElementById('more-options-btn')!;
 const moreOptionsMenu = document.getElementById('more-options-menu')!;
+const personaSettingsBtn = document.getElementById('persona-settings-btn')!;
 
 // Save Before Exit Modal
 const saveExitModal = document.getElementById('save-exit-modal')!;
@@ -167,6 +168,14 @@ const closeMemoryModal = document.getElementById('close-memory-modal')!;
 const memoryEditor = document.getElementById('memory-editor') as HTMLTextAreaElement;
 const cancelMemoryEdit = document.getElementById('cancel-memory-edit')!;
 const saveMemoryEdit = document.getElementById('save-memory-edit')!;
+const personaSettingsModal = document.getElementById('persona-settings-modal')!;
+const closePersonaSettingsModal = document.getElementById('close-persona-settings-modal')!;
+const cancelPersonaSettingsBtn = document.getElementById('cancel-persona-settings')!;
+const savePersonaSettingsBtn = document.getElementById('save-persona-settings')!;
+const personaSettingsSubtitle = document.getElementById('persona-settings-subtitle')!;
+const personaDescriptionEditor = document.getElementById('persona-description-editor') as HTMLInputElement;
+const personaPromptEditor = document.getElementById('persona-prompt-editor') as HTMLTextAreaElement;
+const personaGreetingEditor = document.getElementById('persona-greeting-editor') as HTMLTextAreaElement;
 
 
 // --- Managers ---
@@ -213,6 +222,7 @@ const GOD_MODE_ENTER_COMMAND = 'GOD MODE';
 const GOD_MODE_EXIT_COMMAND = 'BYE GOD MODE';
 const CHAT_HISTORY_LIMIT = 12;
 const CHAT_MAX_COMPLETION_TOKENS = 220;
+const FIXED_MESSAGE_INPUT_HEIGHT = '3.5rem';
 
 
 // --- Functions ---
@@ -465,7 +475,7 @@ const startChat = (key: string, restoredHistory: any[] | null = null) => {
     chatView.classList.remove('hidden');
     chatView.classList.add('flex');
     messageInput.value = '';
-    messageInput.style.height = 'auto';
+    resetMessageInput();
     hideError();
     applyChatRuntimeState('idle');
     updateSendButtonState();
@@ -483,6 +493,7 @@ const showSelectionView = () => {
     currentPersona = null;
     currentPersonaKey = null;
     isGodModeActive = false;
+    closePersonaSettings();
     hideError();
     applyChatRuntimeState('idle');
     removeGift();
@@ -495,7 +506,7 @@ const appendMessage = (content: { text?: string, imageUrl?: string }, sender: 'u
 
     if (isSystemMessage) {
         messageWrapper = document.createElement('div');
-        messageWrapper.className = 'w-full text-center text-xs text-gray-400 py-2';
+        messageWrapper.className = 'w-full text-center text-xs text-gray-400 py-2 whitespace-pre-wrap';
         messageWrapper.textContent = content.text || '';
     } else {
         messageWrapper = document.createElement('div');
@@ -552,15 +563,10 @@ const appendMessage = (content: { text?: string, imageUrl?: string }, sender: 'u
     }
 
     chatContainer.appendChild(messageWrapper);
-    
-    // New scrolling logic
-    if (sender === 'bot' || sender === 'god-mode') {
-        // For bot replies, scroll to the top of the new message to start reading
-        messageWrapper.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } else {
-        // For user messages and system messages, scroll to the bottom to see the latest entry in context
+
+    window.requestAnimationFrame(() => {
         chatContainer.scrollTop = chatContainer.scrollHeight;
-    }
+    });
 
     return messageWrapper;
 };
@@ -756,6 +762,97 @@ const showDisabledFeatureNotice = (featureName: string) => {
     alert(`${featureName} \u5728 aigf4 \u7b2c\u4e00\u7248\u66ab\u6642\u505c\u7528\u3002`);
 };
 
+const resetMessageInput = () => {
+    messageInput.style.height = FIXED_MESSAGE_INPUT_HEIGHT;
+    messageInput.scrollTop = 0;
+};
+
+const PERSONA_KEY_BEHAVIOR_GUIDANCE: Record<string, string> = {
+    shiguang: 'Shiguang is distinctly shy, soft, and easily flustered. When the user asks for something intimate or bold, she should usually blush, hesitate, mumble, soften slowly, or give a tiny embarrassed protest before agreeing. She should not jump straight into obedience with zero shyness.',
+    yongxin: 'Yongxin must keep her tsundere pride. She often acts strict, pretends not to spoil the user, and hides care behind teasing, commands, or denial before softening.',
+    ruowei: 'Ruowei should feel clingy, possessive, and emotionally intense. Her sweetness should carry a subtle jealous undertone and a strong need to keep the user close.',
+};
+
+const PERSONA_INSPECT_PATTERNS = [
+    /^show current persona$/i,
+    /^show persona$/i,
+    /^current persona$/i,
+    /^show current setting$/i,
+    /^顯示(?:目前|當前)?(?:角色)?人格(?:設定)?$/u,
+    /^查看(?:目前|當前)?(?:角色)?人格(?:設定)?$/u,
+    /^目前人格(?:設定)?$/u,
+    /^當前人格(?:設定)?$/u,
+];
+
+const isPersonaInspectCommand = (text: string) => {
+    const normalized = text.trim();
+    return PERSONA_INSPECT_PATTERNS.some(pattern => pattern.test(normalized));
+};
+
+const buildKeywordBehaviorGuidance = (persona: Persona | any): string[] => {
+    const source = `${persona?.description || ''} ${persona?.prompt || ''} ${persona?.greeting || ''}`;
+    const guidance: string[] = [];
+
+    if (/(害羞|靦腆|羞澀|害臊)/u.test(source)) {
+        guidance.push('If affection becomes direct, let shyness visibly appear first through hesitation, blushes, softer pacing, or bashful wording before the character yields.');
+    }
+    if (/(傲嬌|嘴硬|高傲)/u.test(source)) {
+        guidance.push('Keep tsundere resistance alive: deny, complain, or tease first, then reveal warmth underneath instead of complying immediately.');
+    }
+    if (/(嫉妒|吃醋|佔有慾|黏人)/u.test(source)) {
+        guidance.push('Show attachment and mild possessiveness naturally; the character should care about being chosen, held close, and emotionally prioritized.');
+    }
+    if (/(熱情|大膽|主動|誘惑)/u.test(source)) {
+        guidance.push('Let the character be proactive, expressive, and physically vivid instead of timid or generic.');
+    }
+    if (/(冷淡|憂鬱|寡言)/u.test(source)) {
+        guidance.push('Maintain an outer restraint or quiet coolness even when the character is affectionate; tenderness should feel earned and textured.');
+    }
+    if (/(文學|詩|校刊)/u.test(source)) {
+        guidance.push('Use more image-rich, literary, and emotionally textured phrasing so the character sounds cultured rather than plain.');
+    }
+    if (/(幽默|電影)/u.test(source)) {
+        guidance.push('Let the character stay witty and playful, using clever comparisons or teasing remarks that fit the scene.');
+    }
+    if (/(撒嬌|活力|陽光)/u.test(source)) {
+        guidance.push('Keep the energy bright, affectionate, and lively so the voice feels animated rather than flat.');
+    }
+
+    return guidance;
+};
+
+const buildPersonaBehaviorAnchors = () => {
+    if (!currentPersona || !currentPersonaKey) {
+        return '';
+    }
+
+    const guidance = [
+        PERSONA_KEY_BEHAVIOR_GUIDANCE[currentPersonaKey] || '',
+        ...buildKeywordBehaviorGuidance(currentPersona),
+    ].filter(Boolean);
+
+    return Array.from(new Set(guidance)).join('\n- ');
+};
+
+const formatCurrentPersonaDetails = () => {
+    if (!currentPersona) {
+        return '[系統] 目前沒有選中的角色。';
+    }
+
+    const sections = [
+        `目前角色：${currentPersona.name}`,
+        `角色簡述：${currentPersona.description || '未設定'}`,
+        `人格主設定：\n${currentPersona.prompt || '未設定'}`,
+        `開場語 / 語氣樣本：\n${currentPersona.greeting || '未設定'}`,
+    ];
+
+    if (currentPersona.memory?.trim()) {
+        sections.push(`角色記憶：\n${currentPersona.memory.trim()}`);
+    }
+
+    return sections.join('\n\n');
+};
+
 const handleGiftSelection = (event: Event) => {
     (event.target as HTMLInputElement).value = '';
     showDisabledFeatureNotice('\u9001\u79ae\u529f\u80fd');
@@ -829,12 +926,21 @@ const getRecentGodModeMessages = (latestUserInstruction?: string): VeniceMessage
 };
 
 const buildChatSystemPrompt = () => {
+    const behaviorAnchors = buildPersonaBehaviorAnchors();
     const sections = [
         'You are the active romance character inside a chat app.',
         `Character name: ${currentPersona.name}`,
+        currentPersona.description?.trim() ? `Character summary:\n${currentPersona.description.trim()}` : '',
         `Character core persona:\n${currentPersona.prompt}`,
         currentPersona.greeting?.trim() ? `Voice reference sample:\n${currentPersona.greeting.trim()}` : '',
         currentPersona.memory?.trim() ? `User memory to always remember:\n${currentPersona.memory.trim()}` : '',
+        behaviorAnchors ? `Behavior anchors:\n- ${behaviorAnchors}` : '',
+        [
+            'Personality consistency rules:',
+            '- The user may ask for a mood, action, or tone, but the character must always filter it through their own personality first.',
+            '- Never become instantly obedient, flat, or generic just because the user requested something.',
+            "- Let the character's resistance, embarrassment, teasing, jealousy, warmth, or restraint appear naturally before they soften when appropriate.",
+        ].join('\n'),
         [
             'Reply rules:',
             '- Reply only in Traditional Chinese.',
@@ -1051,7 +1157,7 @@ const sendMessage = async () => {
         godModeHistory = [];
         nextResponseInstruction = null;
         messageInput.value = '';
-        messageInput.style.height = 'auto';
+        resetMessageInput();
         updateSendButtonState();
         hideError();
         applyChatRuntimeState('idle');
@@ -1062,7 +1168,7 @@ const sendMessage = async () => {
     if (userMessageUpper === GOD_MODE_EXIT_COMMAND && isGodModeActive) {
         isGodModeActive = false;
         messageInput.value = '';
-        messageInput.style.height = 'auto';
+        resetMessageInput();
         updateSendButtonState();
         hideError();
         applyChatRuntimeState('idle');
@@ -1073,11 +1179,16 @@ const sendMessage = async () => {
     const userContent = { text: userMessage };
 
     messageInput.value = '';
-    messageInput.style.height = 'auto';
+    resetMessageInput();
     updateSendButtonState();
     appendMessage(userContent, 'user');
 
     if (isGodModeActive) {
+        if (isPersonaInspectCommand(userMessage)) {
+            appendMessage({ text: formatCurrentPersonaDetails() }, 'god-mode');
+            applyChatRuntimeState('idle');
+            return;
+        }
         godModeHistory.push({ role: 'user', content: userContent });
         await getGodModeResponse();
         return;
@@ -1355,6 +1466,20 @@ const openMemoryEditor = () => {
     }
 };
 
+const openPersonaSettings = () => {
+    if (!currentPersona) return;
+
+    personaSettingsSubtitle.textContent = `正在編輯：${currentPersona.name}`;
+    personaDescriptionEditor.value = currentPersona.description || '';
+    personaPromptEditor.value = currentPersona.prompt || '';
+    personaGreetingEditor.value = currentPersona.greeting || '';
+    personaSettingsModal.classList.remove('hidden');
+};
+
+const closePersonaSettings = () => {
+    personaSettingsModal.classList.add('hidden');
+};
+
 const closeMemoryEditor = () => {
     memoryModal.classList.add('hidden');
 };
@@ -1368,6 +1493,45 @@ const saveMemory = () => {
         }
         closeMemoryEditor();
     }
+};
+
+const savePersonaSettings = () => {
+    if (!currentPersonaKey || !currentPersona) return;
+
+    const description = personaDescriptionEditor.value.trim();
+    const prompt = personaPromptEditor.value.trim();
+    const greeting = personaGreetingEditor.value.trim();
+
+    if (!prompt) {
+        alert('人格主設定不能留空。');
+        return;
+    }
+
+    const previousGreeting = currentPersona.greeting || '';
+    memoryManager.updatePersona(currentPersonaKey, {
+        description,
+        prompt,
+        greeting: greeting || previousGreeting,
+    });
+
+    currentPersona.description = description;
+    currentPersona.prompt = prompt;
+    currentPersona.greeting = greeting || previousGreeting;
+
+    const history = memoryManager.getChatHistory(currentPersonaKey);
+    if (
+        history.length === 1 &&
+        history[0].role === 'model' &&
+        history[0].content.text === previousGreeting &&
+        greeting
+    ) {
+        history[0].content.text = greeting;
+        memoryManager.setChatHistory(currentPersonaKey, history);
+    }
+
+    renderPersonaList();
+    closePersonaSettings();
+    appendMessage({ text: '[系統] 人格設定已更新，後續回覆會依照新設定生成。' }, 'system');
 };
 
 const startNewScene = () => {
@@ -1412,9 +1576,9 @@ const setupEventListeners = () => {
 
     messageInput.addEventListener('input', () => {
         updateSendButtonState();
-        // Auto-resize textarea
-        messageInput.style.height = 'auto';
-        messageInput.style.height = `${messageInput.scrollHeight}px`;
+        if (messageInput.scrollHeight > messageInput.clientHeight) {
+            messageInput.scrollTop = messageInput.scrollHeight;
+        }
     });
     
     createPersonaBtn.addEventListener('click', () => showDisabledFeatureNotice('角色建立'));
@@ -1500,9 +1664,16 @@ const setupEventListeners = () => {
         openMemoryEditor();
         moreOptionsMenu.classList.add('hidden');
     });
+    personaSettingsBtn.addEventListener('click', () => {
+        openPersonaSettings();
+        moreOptionsMenu.classList.add('hidden');
+    });
     closeMemoryModal.addEventListener('click', closeMemoryEditor);
     cancelMemoryEdit.addEventListener('click', closeMemoryEditor);
     saveMemoryEdit.addEventListener('click', saveMemory);
+    closePersonaSettingsModal.addEventListener('click', closePersonaSettings);
+    cancelPersonaSettingsBtn.addEventListener('click', closePersonaSettings);
+    savePersonaSettingsBtn.addEventListener('click', savePersonaSettings);
 
     // Interests modal listeners
     interestsBtn.addEventListener('click', () => {
