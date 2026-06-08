@@ -225,6 +225,10 @@ const CHAT_MAX_AUTO_CONTINUES = 2;
 const CHAT_ATTEMPTS_PER_MODEL = 2;
 const FIXED_MESSAGE_INPUT_HEIGHT = '3.5rem';
 
+type AppHistoryState = { view: 'home' } | { view: 'chat'; personaKey: string };
+
+const HOME_HISTORY_STATE: AppHistoryState = { view: 'home' };
+
 
 // --- Functions ---
 
@@ -429,7 +433,32 @@ const generateAndSetAvatar = async (key: string) => {
     }
 };
 
-const startChat = (key: string, restoredHistory: any[] | null = null) => {
+const syncBrowserViewState = (state: AppHistoryState, mode: 'push' | 'replace' | 'skip' = 'replace') => {
+    if (mode === 'skip') {
+        return;
+    }
+
+    const currentState = window.history.state as AppHistoryState | null;
+    const isSameState =
+        currentState?.view === state.view &&
+        (state.view === 'home' || currentState?.personaKey === state.personaKey);
+
+    if (isSameState) {
+        if (mode === 'replace') {
+            window.history.replaceState(state, document.title);
+        }
+        return;
+    }
+
+    if (mode === 'push') {
+        window.history.pushState(state, document.title);
+        return;
+    }
+
+    window.history.replaceState(state, document.title);
+};
+
+const startChat = (key: string, restoredHistory: any[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
     currentPersonaKey = key;
     currentPersona = memoryManager.getPersona(key);
     if (!currentPersona) return;
@@ -475,6 +504,7 @@ const startChat = (key: string, restoredHistory: any[] | null = null) => {
     personaSelectionView.classList.add('hidden');
     chatView.classList.remove('hidden');
     chatView.classList.add('flex');
+    saveExitModal.classList.add('hidden');
     messageInput.value = '';
     resetMessageInput();
     hideError();
@@ -485,12 +515,14 @@ const startChat = (key: string, restoredHistory: any[] | null = null) => {
     
     // Scroll to the bottom after rendering history
     chatContainer.scrollTop = chatContainer.scrollHeight;
+    syncBrowserViewState({ view: 'chat', personaKey: key }, historyMode);
 };
 
-const showSelectionView = () => {
+const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
     personaSelectionView.classList.remove('hidden');
     chatView.classList.add('hidden');
     chatView.classList.remove('flex');
+    saveExitModal.classList.add('hidden');
     currentPersona = null;
     currentPersonaKey = null;
     isGodModeActive = false;
@@ -498,6 +530,36 @@ const showSelectionView = () => {
     hideError();
     applyChatRuntimeState('idle');
     removeGift();
+    syncBrowserViewState(HOME_HISTORY_STATE, historyMode);
+};
+
+const navigateBackToSelectionView = () => {
+    if (chatView.classList.contains('hidden')) {
+        return;
+    }
+
+    const currentState = window.history.state as AppHistoryState | null;
+    if (currentState?.view === 'chat') {
+        window.history.back();
+        return;
+    }
+
+    showSelectionView('replace');
+};
+
+const handleBrowserPopState = (event: PopStateEvent) => {
+    const state = event.state as AppHistoryState | null;
+
+    if (state?.view === 'chat' && state.personaKey) {
+        if (currentPersonaKey !== state.personaKey || chatView.classList.contains('hidden')) {
+            startChat(state.personaKey, null, 'skip');
+        }
+        return;
+    }
+
+    if (!chatView.classList.contains('hidden')) {
+        showSelectionView('skip');
+    }
 };
 
 const appendMessage = (content: { text?: string, imageUrl?: string }, sender: 'user' | 'bot' | 'system' | 'god-mode'): HTMLElement => {
@@ -1004,12 +1066,109 @@ const normalizeHistoryText = (text: string): string => {
     return text.replace(/\r/g, ' ').replace(/\s+/g, ' ').trim();
 };
 
+const normalizeReplyForComparison = (text: string) => {
+    return text
+        .toLowerCase()
+        .replace(/\([^)]*\)/g, ' ')
+        .replace(/[\p{P}\p{S}\s]+/gu, '')
+        .trim();
+};
+
+const commonPrefixLength = (left: string, right: string) => {
+    const maxLength = Math.min(left.length, right.length);
+    let index = 0;
+
+    while (index < maxLength && left[index] === right[index]) {
+        index += 1;
+    }
+
+    return index;
+};
+
+const repliesAreTooSimilar = (left: string, right: string) => {
+    const normalizedLeft = normalizeReplyForComparison(left);
+    const normalizedRight = normalizeReplyForComparison(right);
+    if (!normalizedLeft || !normalizedRight) {
+        return false;
+    }
+
+    if (normalizedLeft === normalizedRight) {
+        return true;
+    }
+
+    const shorter = normalizedLeft.length <= normalizedRight.length ? normalizedLeft : normalizedRight;
+    const longer = shorter === normalizedLeft ? normalizedRight : normalizedLeft;
+
+    if (shorter.length >= 24 && longer.includes(shorter) && shorter.length / longer.length >= 0.72) {
+        return true;
+    }
+
+    return shorter.length >= 24 && commonPrefixLength(normalizedLeft, normalizedRight) / shorter.length >= 0.78;
+};
+
+const userExplicitlyRequestsContinuation = (text: string) => {
+    return /繼續|接著|再說一次|重複|repeat|continue|same again|接下去|剛剛那段/u.test(text);
+};
+
+const collapseRedundantAssistantMessages = (messages: VeniceMessage[]) => {
+    const recentAssistantReplies: string[] = [];
+
+    return messages.filter(message => {
+        if (message.role !== 'assistant') {
+            return true;
+        }
+
+        const isRedundant = recentAssistantReplies.some(previousReply => repliesAreTooSimilar(previousReply, message.content));
+        if (isRedundant) {
+            return false;
+        }
+
+        recentAssistantReplies.push(message.content);
+        if (recentAssistantReplies.length > 3) {
+            recentAssistantReplies.shift();
+        }
+
+        return true;
+    });
+};
+
+const getLatestTurnPriorityInstruction = () => {
+    return [
+        'Priority rules for this turn:',
+        '- Answer the newest user message directly now.',
+        '- Do not repeat, paraphrase, or continue your previous assistant reply unless the newest user message explicitly asks you to.',
+        '- Treat earlier chat as background context only. The newest user message has priority over older momentum.',
+    ].join('\n');
+};
+
+const getLastAssistantReplyForCurrentChat = () => {
+    if (!currentPersonaKey) {
+        return '';
+    }
+
+    const history = memoryManager.getChatHistory(currentPersonaKey);
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+        const message = history[index];
+        if (message.role !== 'model') {
+            continue;
+        }
+
+        const text = cleanVeniceChatReply(message.content.text || '');
+        if (text && !isInvalidVeniceChatReply(text)) {
+            return text;
+        }
+    }
+
+    return '';
+};
+
 const getRecentChatMessages = (latestUserMessage?: string): VeniceMessage[] => {
     if (!currentPersonaKey || !currentPersona) {
         return [];
     }
 
-    const messages = memoryManager
+    const messages = collapseRedundantAssistantMessages(
+        memoryManager
         .getChatHistory(currentPersonaKey)
         .filter(message => message.role === 'user' || message.role === 'model')
         .map(message => {
@@ -1026,7 +1185,8 @@ const getRecentChatMessages = (latestUserMessage?: string): VeniceMessage[] => {
             } satisfies VeniceMessage;
         })
         .filter((message): message is VeniceMessage => Boolean(message))
-        .slice(-CHAT_HISTORY_LIMIT);
+        .slice(-CHAT_HISTORY_LIMIT)
+    );
 
     if (!latestUserMessage || messages.length === 0) {
         return messages;
@@ -1086,6 +1246,7 @@ const buildChatSystemPrompt = () => {
             "- Let the character's resistance, embarrassment, teasing, jealousy, warmth, or restraint appear naturally before they soften when appropriate.",
             '- The opening beat should already reveal the character’s instinctive reflex, not skip straight to a generic answer.',
             '- Do not let different characters collapse into the same romantic voice.',
+            '- Always answer the newest user message in this turn. Never drift into repeating your previous reply unless the user explicitly asks for that.',
         ].join('\n'),
         [
             'Reply rules:',
@@ -1094,7 +1255,9 @@ const buildChatSystemPrompt = () => {
             '- Blend spoken dialogue with immersive parenthetical narration using half-width parentheses ( ).',
             '- The parentheses may describe actions, expressions, breathing, body language, surrounding atmosphere, scene changes, subtle heart-thoughts, and natural NPC reactions when needed.',
             '- Do not make the reply only direct speech. Besides what the character says, also add scene texture, ambient detail, and bodily reaction when fitting.',
+            '- In almost every normal reply, include at least one parenthetical narration beat with visible action, physical reaction, or atmosphere unless the user clearly wants a tiny answer.',
             '- If the moment includes a room, street, cafe, classroom, pet, staff member, friend, roommate, passerby, or any third person, naturally weave in their visible reaction, brief dialogue, or effect on the scene inside parentheses when relevant.',
+            '- Even in short exchanges, add at least one concrete external cue such as sound, temperature, distance, touch, movement, lighting, or another person? reaction when it fits.',
             '- Keep the reply emotionally rich, readable, and pleasurable to read.',
             '- Let the scene breathe for a moment. Do not rush from request to compliance without any buildup if the character would realistically hesitate, tease, resist, or savor the moment first.',
             '- For most normal messages, write at least 2 sentences. Richer multi-paragraph replies are welcome when the moment is emotionally charged or intimate.',
@@ -1166,7 +1329,7 @@ const replyFeelsTooGeneric = (text: string) => {
         .map(segment => segment.trim())
         .filter(Boolean).length;
 
-    if (!hasNarration && sentenceCount <= 1 && normalized.length < 18) {
+    if (!hasNarration && sentenceCount <= 2 && normalized.length < 56) {
         return true;
     }
 
@@ -1225,6 +1388,7 @@ const continueTruncatedChatReply = async (
         messages: [
             { role: 'system', content: buildChatSystemPrompt() },
             ...getRecentChatMessages(latestUserMessage),
+            { role: 'system', content: getLatestTurnPriorityInstruction() },
             { role: 'user', content: latestUserMessage },
             { role: 'assistant', content: partialReply },
             {
@@ -1325,7 +1489,11 @@ const runCharacterRichChatGeneration = async (latestUserMessage: string): Promis
                     messages.push({ role: 'system', content: buildChatRepairInstruction() });
                 }
 
-                messages.push(...getRecentChatMessages(latestUserMessage), { role: 'user', content: latestUserMessage });
+                messages.push(
+                    ...getRecentChatMessages(latestUserMessage),
+                    { role: 'system', content: getLatestTurnPriorityInstruction() },
+                    { role: 'user', content: latestUserMessage },
+                );
 
                 const result = await generateVeniceText({
                     model,
@@ -1360,6 +1528,15 @@ const runCharacterRichChatGeneration = async (latestUserMessage: string): Promis
 
                 if (replyFeelsTooGeneric(cleanedText)) {
                     throw new Error(`Generic reply from ${model}.`);
+                }
+
+                const lastAssistantReply = getLastAssistantReplyForCurrentChat();
+                if (
+                    lastAssistantReply &&
+                    !userExplicitlyRequestsContinuation(latestUserMessage) &&
+                    repliesAreTooSimilar(cleanedText, lastAssistantReply)
+                ) {
+                    throw new Error(`Repeated reply from ${model}.`);
                 }
 
                 return cleanedText;
@@ -1897,9 +2074,8 @@ const setupEventListeners = () => {
         hideAuthError();
     });
 
-    backButton.addEventListener('click', () => {
-        saveExitModal.classList.remove('hidden');
-    });
+    backButton.addEventListener('click', navigateBackToSelectionView);
+    window.addEventListener('popstate', handleBrowserPopState);
     sendButton.addEventListener('click', sendMessage);
     messageInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -2052,11 +2228,11 @@ const setupEventListeners = () => {
             fileManager.saveCurrentChat(currentPersonaKey, currentPersona.name);
         }
         saveExitModal.classList.add('hidden');
-        showSelectionView();
+        showSelectionView('replace');
     });
     exitWithoutSavingBtn.addEventListener('click', () => {
         saveExitModal.classList.add('hidden');
-        showSelectionView();
+        showSelectionView('replace');
     });
     cancelExitBtn.addEventListener('click', () => {
         saveExitModal.classList.add('hidden');
@@ -2065,6 +2241,7 @@ const setupEventListeners = () => {
 
 // --- Initialization ---
 const init = async () => {
+    syncBrowserViewState(HOME_HISTORY_STATE, 'replace');
     renderPersonaList();
     setupEventListeners();
     setAuthSubmitting(false);
