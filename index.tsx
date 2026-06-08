@@ -176,6 +176,29 @@ const personaSettingsSubtitle = document.getElementById('persona-settings-subtit
 const personaDescriptionEditor = document.getElementById('persona-description-editor') as HTMLInputElement;
 const personaPromptEditor = document.getElementById('persona-prompt-editor') as HTMLTextAreaElement;
 const personaGreetingEditor = document.getElementById('persona-greeting-editor') as HTMLTextAreaElement;
+const mimicImportBtn = document.getElementById('mimic-import-btn') as HTMLButtonElement;
+const mimicImportModal = document.getElementById('mimic-import-modal')!;
+const closeMimicImportModal = document.getElementById('close-mimic-import-modal')!;
+const cancelMimicImportBtn = document.getElementById('cancel-mimic-import')!;
+const runMimicAnalysisBtn = document.getElementById('run-mimic-analysis') as HTMLButtonElement;
+const saveMimicPersonaBtn = document.getElementById('save-mimic-persona') as HTMLButtonElement;
+const mimicTranscriptInput = document.getElementById('mimic-transcript-input') as HTMLInputElement;
+const mimicAvatarInput = document.getElementById('mimic-avatar-input') as HTMLInputElement;
+const pickMimicTranscriptBtn = document.getElementById('pick-mimic-transcript-btn') as HTMLButtonElement;
+const pickMimicAvatarBtn = document.getElementById('pick-mimic-avatar-btn') as HTMLButtonElement;
+const mimicAvatarPreview = document.getElementById('mimic-avatar-preview')!;
+const mimicAvatarStatus = document.getElementById('mimic-avatar-status')!;
+const mimicNameInput = document.getElementById('mimic-name-input') as HTMLInputElement;
+const mimicNotesInput = document.getElementById('mimic-notes-input') as HTMLTextAreaElement;
+const mimicTranscriptStatus = document.getElementById('mimic-transcript-status')!;
+const mimicTranscriptMeta = document.getElementById('mimic-transcript-meta')!;
+const mimicAnalysisStatus = document.getElementById('mimic-analysis-status')!;
+const mimicResultPanel = document.getElementById('mimic-result-panel')!;
+const mimicResultEmpty = document.getElementById('mimic-result-empty')!;
+const mimicDescriptionEditor = document.getElementById('mimic-description-editor') as HTMLInputElement;
+const mimicPromptEditor = document.getElementById('mimic-prompt-editor') as HTMLTextAreaElement;
+const mimicGreetingEditor = document.getElementById('mimic-greeting-editor') as HTMLTextAreaElement;
+const mimicMemoryEditor = document.getElementById('mimic-memory-editor') as HTMLTextAreaElement;
 
 
 // --- Managers ---
@@ -214,6 +237,10 @@ let godModeHistory: ChatMessage[] = [];
 let nextResponseInstruction: string | null = null;
 let chatRuntimeState: RequestState = 'idle';
 let isUnlocked = !VENICE_API_BASE.startsWith('/');
+let mimicTranscriptFile: File | null = null;
+let mimicAvatarDataUrl: string | null = null;
+let mimicDraftPersona: MimicPersonaDraft | null = null;
+let isMimicAnalysisRunning = false;
 
 const USES_VENICE_PROXY_AUTH = VENICE_API_BASE.startsWith('/');
 
@@ -226,8 +253,16 @@ const CHAT_ATTEMPTS_PER_MODEL = 2;
 const FIXED_MESSAGE_INPUT_HEIGHT = '3.5rem';
 
 type AppHistoryState = { view: 'home' } | { view: 'chat'; personaKey: string };
+type MimicPersonaDraft = {
+    description: string;
+    prompt: string;
+    greeting: string;
+    memory: string;
+};
 
 const HOME_HISTORY_STATE: AppHistoryState = { view: 'home' };
+const MIMIC_CHUNK_CHAR_LIMIT = 2600;
+const MIMIC_MAX_ANALYSIS_CHUNKS = 10;
 
 
 // --- Functions ---
@@ -254,6 +289,561 @@ const generatePersonaFromAI = async () => {
 
 const saveCustomPersona = () => {
     showDisabledFeatureNotice('角色建立');
+};
+
+const escapeRegExp = (value: string) => {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+};
+
+const getSelectedMimicGender = (): 'female' | 'male' => {
+    const checked = document.querySelector<HTMLInputElement>('input[name="mimic-gender"]:checked');
+    return checked?.value === 'male' ? 'male' : 'female';
+};
+
+const renderMimicAvatarPreview = () => {
+    if (mimicAvatarDataUrl) {
+        mimicAvatarPreview.innerHTML = `<img src="${mimicAvatarDataUrl}" alt="Mimic avatar" class="h-full w-full object-cover">`;
+        mimicAvatarStatus.textContent = '已選擇頭像，儲存後會直接套用。';
+        return;
+    }
+
+    mimicAvatarPreview.textContent = '👤';
+    mimicAvatarStatus.textContent = '可選填，稍後也能再改。';
+};
+
+const setMimicAnalysisStatus = (text: string, tone: 'idle' | 'error' | 'success' = 'idle') => {
+    mimicAnalysisStatus.textContent = text;
+    mimicAnalysisStatus.classList.remove('text-gray-300', 'text-red-300', 'text-emerald-300', 'text-sky-300');
+
+    if (tone === 'error') {
+        mimicAnalysisStatus.classList.add('text-red-300');
+    } else if (tone === 'success') {
+        mimicAnalysisStatus.classList.add('text-emerald-300');
+    } else {
+        mimicAnalysisStatus.classList.add('text-sky-300');
+    }
+};
+
+const resetMimicDraftEditors = () => {
+    mimicDescriptionEditor.value = '';
+    mimicPromptEditor.value = '';
+    mimicGreetingEditor.value = '';
+    mimicMemoryEditor.value = '';
+    mimicResultPanel.classList.add('hidden');
+    mimicResultEmpty.classList.remove('hidden');
+};
+
+const resetMimicImportState = () => {
+    mimicTranscriptFile = null;
+    mimicAvatarDataUrl = null;
+    mimicDraftPersona = null;
+    isMimicAnalysisRunning = false;
+    mimicNameInput.value = '';
+    mimicNotesInput.value = '';
+    mimicTranscriptInput.value = '';
+    mimicAvatarInput.value = '';
+    const defaultGender = document.querySelector<HTMLInputElement>('input[name="mimic-gender"][value="female"]');
+    if (defaultGender) {
+        defaultGender.checked = true;
+    }
+    mimicTranscriptStatus.textContent = '尚未選擇檔案。支援 `.txt`、`.md`、`.json`、`.log`、`.csv`、`.zip`。';
+    mimicTranscriptMeta.textContent = '長紀錄會自動切段分析，再合成成一個角色草稿。';
+    setMimicAnalysisStatus('選好檔案後就可以開始分析。');
+    renderMimicAvatarPreview();
+    resetMimicDraftEditors();
+    runMimicAnalysisBtn.disabled = false;
+    saveMimicPersonaBtn.disabled = true;
+};
+
+const openMimicImportModal = () => {
+    resetMimicImportState();
+    mimicImportModal.classList.remove('hidden');
+};
+
+const hideMimicImportModalView = () => {
+    mimicImportModal.classList.add('hidden');
+};
+
+const setMimicBusyState = (isBusy: boolean) => {
+    isMimicAnalysisRunning = isBusy;
+    runMimicAnalysisBtn.disabled = isBusy;
+    saveMimicPersonaBtn.disabled = isBusy || !mimicDraftPersona;
+    pickMimicTranscriptBtn.disabled = isBusy;
+    pickMimicAvatarBtn.disabled = isBusy;
+};
+
+const extractTextFromUnknownJsonValue = (value: unknown, depth = 0): string => {
+    if (depth > 5 || value == null) {
+        return '';
+    }
+
+    if (typeof value === 'string') {
+        return value.trim();
+    }
+
+    if (Array.isArray(value)) {
+        return value
+            .map(entry => extractTextFromUnknownJsonValue(entry, depth + 1))
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+    }
+
+    if (typeof value === 'object') {
+        const record = value as Record<string, unknown>;
+        const keys = ['text', 'content', 'message', 'body', 'value', 'parts'];
+        for (const key of keys) {
+            const extracted = extractTextFromUnknownJsonValue(record[key], depth + 1);
+            if (extracted) {
+                return extracted;
+            }
+        }
+    }
+
+    return '';
+};
+
+const collectTranscriptLinesFromJson = (value: unknown, lines: string[] = [], depth = 0) => {
+    if (depth > 6 || value == null || lines.length > 4000) {
+        return lines;
+    }
+
+    if (typeof value === 'string') {
+        const text = value.trim();
+        if (text) {
+            lines.push(text);
+        }
+        return lines;
+    }
+
+    if (Array.isArray(value)) {
+        value.forEach(entry => collectTranscriptLinesFromJson(entry, lines, depth + 1));
+        return lines;
+    }
+
+    if (typeof value === 'object') {
+        const record = value as Record<string, unknown>;
+        const nestedCandidates = ['messages', 'conversation', 'chat', 'items', 'turns', 'entries', 'data'];
+        for (const key of nestedCandidates) {
+            if (key in record) {
+                collectTranscriptLinesFromJson(record[key], lines, depth + 1);
+            }
+        }
+
+        const speaker = extractTextFromUnknownJsonValue(
+            record.speaker ?? record.author ?? record.name ?? record.sender ?? record.role ?? record.from,
+            depth + 1,
+        );
+        const text = extractTextFromUnknownJsonValue(
+            record.text ?? record.content ?? record.message ?? record.body ?? record.value,
+            depth + 1,
+        );
+
+        if (text) {
+            lines.push(speaker ? `${speaker}: ${text}` : text);
+            return lines;
+        }
+
+        Object.values(record).forEach(entry => collectTranscriptLinesFromJson(entry, lines, depth + 1));
+    }
+
+    return lines;
+};
+
+const parseConversationTextFromJson = (rawText: string) => {
+    const parsed = JSON.parse(rawText);
+    return collectTranscriptLinesFromJson(parsed)
+        .map(line => line.replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+        .join('\n');
+};
+
+const extractTranscriptTextFromZipFile = async (file: File) => {
+    const zip = await JSZip.loadAsync(file);
+    const textFiles = Object.values(zip.files)
+        .filter(entry => !entry.dir)
+        .filter(entry => /\.(txt|md|markdown|json|log|csv)$/i.test(entry.name));
+
+    if (textFiles.length === 0) {
+        throw new Error('ZIP 內找不到可讀取的聊天紀錄文字檔。');
+    }
+
+    const sorted = textFiles.sort((left, right) => {
+        const score = (name: string) => {
+            const lower = name.toLowerCase();
+            let total = 0;
+            if (/(conversation|chat|message|dialog|history)/.test(lower)) total += 4;
+            if (/\.json$/i.test(lower)) total += 2;
+            if (/\.txt$/i.test(lower)) total += 1;
+            return total;
+        };
+
+        return score(right.name) - score(left.name) || right.name.length - left.name.length;
+    });
+
+    const chosen = sorted[0];
+    const raw = await chosen.async('string');
+    let text = raw;
+
+    if (/\.json$/i.test(chosen.name)) {
+        try {
+            text = parseConversationTextFromJson(raw) || raw;
+        } catch {
+            text = raw;
+        }
+    }
+
+    return {
+        text,
+        sourceName: chosen.name,
+    };
+};
+
+const readTranscriptTextFromFile = async (file: File) => {
+    if (/\.zip$/i.test(file.name)) {
+        return extractTranscriptTextFromZipFile(file);
+    }
+
+    const raw = await file.text();
+    const looksLikeJson = /\.json$/i.test(file.name) || /^[\s\r\n]*[\[{]/.test(raw);
+    if (looksLikeJson) {
+        try {
+            return {
+                text: parseConversationTextFromJson(raw) || raw,
+                sourceName: file.name,
+            };
+        } catch {
+            return { text: raw, sourceName: file.name };
+        }
+    }
+
+    return { text: raw, sourceName: file.name };
+};
+
+const normalizeTranscriptText = (text: string) => {
+    return text
+        .replace(/\r/g, '\n')
+        .replace(/\u0000/g, '')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+};
+
+const focusTranscriptOnTargetSpeaker = (text: string, targetName: string) => {
+    const name = targetName.trim();
+    if (!name) {
+        return text;
+    }
+
+    const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+    if (lines.length === 0) {
+        return text;
+    }
+
+    const speakerPattern = new RegExp(`^\\s*(?:\\[?${escapeRegExp(name)}\\]?|${escapeRegExp(name)})\\s*[:：-]`, 'i');
+    const hitIndexes = lines
+        .map((line, index) => (speakerPattern.test(line) ? index : -1))
+        .filter(index => index >= 0);
+
+    if (hitIndexes.length < 3) {
+        return text;
+    }
+
+    const windows: Array<{ start: number; end: number }> = [];
+    hitIndexes.forEach(index => {
+        const start = Math.max(0, index - 2);
+        const end = Math.min(lines.length - 1, index + 2);
+        const lastWindow = windows[windows.length - 1];
+
+        if (lastWindow && start <= lastWindow.end + 1) {
+            lastWindow.end = Math.max(lastWindow.end, end);
+            return;
+        }
+
+        windows.push({ start, end });
+    });
+
+    return windows
+        .map(window => lines.slice(window.start, window.end + 1).join('\n'))
+        .join('\n\n')
+        .trim();
+};
+
+const splitTranscriptIntoChunks = (text: string, limit = MIMIC_CHUNK_CHAR_LIMIT) => {
+    const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+    const chunks: string[] = [];
+    let currentChunk = '';
+
+    lines.forEach(line => {
+        const candidate = currentChunk ? `${currentChunk}\n${line}` : line;
+        if (candidate.length > limit && currentChunk) {
+            chunks.push(currentChunk);
+            currentChunk = line;
+            return;
+        }
+
+        currentChunk = candidate;
+    });
+
+    if (currentChunk.trim()) {
+        chunks.push(currentChunk.trim());
+    }
+
+    return chunks;
+};
+
+const rebalanceTranscriptChunks = (chunks: string[], maxChunks = MIMIC_MAX_ANALYSIS_CHUNKS) => {
+    if (chunks.length <= maxChunks) {
+        return chunks;
+    }
+
+    const groups: string[] = [];
+    const groupSize = Math.ceil(chunks.length / maxChunks);
+
+    for (let index = 0; index < chunks.length; index += groupSize) {
+        groups.push(chunks.slice(index, index + groupSize).join('\n\n'));
+    }
+
+    return groups;
+};
+
+const extractXmlTag = (text: string, tag: string) => {
+    const match = text.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+    return match?.[1]?.trim() || '';
+};
+
+const parseMimicPersonaDraft = (text: string): MimicPersonaDraft | null => {
+    const description = extractXmlTag(text, 'description');
+    const prompt = extractXmlTag(text, 'prompt');
+    const greeting = extractXmlTag(text, 'greeting');
+    const memory = extractXmlTag(text, 'memory');
+
+    if (!description || !prompt || !greeting) {
+        return null;
+    }
+
+    return {
+        description,
+        prompt,
+        greeting,
+        memory,
+    };
+};
+
+const runMimicModelCall = async (
+    messages: VeniceMessage[],
+    maxCompletionTokens = 720,
+): Promise<string> => {
+    const models = Array.from(
+        new Set([VENICE_GOD_MODEL, VENICE_GOD_FALLBACK_MODEL, VENICE_CHAT_MODEL].filter(Boolean)),
+    );
+    let lastError: Error | null = null;
+
+    for (const model of models) {
+        try {
+            const result = await generateVeniceText({
+                model,
+                messages,
+                maxCompletionTokens,
+                temperature: 0.25,
+                topP: 0.9,
+                repetitionPenalty: 1.02,
+            });
+
+            const cleaned = result.text.trim();
+            if (cleaned) {
+                return cleaned;
+            }
+        } catch (error) {
+            lastError = error instanceof Error ? error : new Error(String(error));
+        }
+    }
+
+    throw lastError || new Error('無法完成分身分析。');
+};
+
+const buildMimicChunkAnalysisPrompt = (targetName: string, extraNotes: string) => {
+    const sections = [
+        'You analyze conversation history to infer one real person\'s original personality before any customization.',
+        `Target person name: ${targetName || 'Unknown'}`,
+        extraNotes.trim() ? `User extra notes for later customization:\n${extraNotes.trim()}` : '',
+        [
+            'Critical rules:',
+            '- First identify the target person\'s ORIGINAL personality, usual behavior, tone, rhythm, and relationship style from the transcript itself.',
+            '- Do not overwrite the original personality with the user notes. The notes are only a later layer, not the core identity.',
+            '- This app is romance-oriented, so mention romantic compatibility cues when visible, but do not turn the person into a generic flirt if the transcript does not support that.',
+            '- Distinguish Taiwan, Hong Kong, and Mainland China carefully. Do not merge them.',
+            '- If the transcript suggests Taiwan, note Taiwanese wording or cultural cues.',
+            '- If it suggests Hong Kong, note Hong Kong or Cantonese-influenced cues.',
+            '- If it suggests Mainland China, note Mainland wording or cultural cues.',
+            '- If unclear, say the region is unclear instead of guessing.',
+        ].join('\n'),
+        [
+            'Output format:',
+            '<personality>2 to 4 concise sentences about original personality.</personality>',
+            '<behavior>2 to 4 concise sentences about usual behavior, reactions, and habits.</behavior>',
+            '<tone>2 to 4 concise sentences about wording, rhythm, emotional temperature, and flirt style.</tone>',
+            '<regionality>State the likely region or that it is unclear, and explain the language cues briefly.</regionality>',
+            '<command_response>Describe how this person usually reacts when asked or pushed, and how much they naturally comply.</command_response>',
+        ].join('\n'),
+    ];
+
+    return sections.filter(Boolean).join('\n\n');
+};
+
+const buildMimicSynthesisPrompt = (
+    targetName: string,
+    gender: 'female' | 'male',
+    extraNotes: string,
+) => {
+    const sections = [
+        'You are creating a romance-chat persona from analyzed conversation history.',
+        `Target person name: ${targetName || 'Unknown'}`,
+        `Gender: ${gender}`,
+        extraNotes.trim() ? `User requested later adjustments:\n${extraNotes.trim()}` : '',
+        [
+            'Core rules:',
+            '- Preserve the target person\'s ORIGINAL personality, usual behavior, tone, and regional language identity first.',
+            '- This is for a romance-oriented chat app, so the final result should feel romantically interactive, intimate, and emotionally present.',
+            '- Do not erase the original person just to make them romantic. The romance layer must still sound like that person.',
+            '- The persona should generally be willing to listen to the user\'s commands, but still react through their own personality, shyness, pride, habits, and emotional style.',
+            '- Keep Taiwan, Hong Kong, and Mainland China distinctions accurate. Do not mix them together.',
+            '- Write all final output in Traditional Chinese.',
+        ].join('\n'),
+        [
+            'Output format:',
+            '<description>One concise sentence summarizing the person.</description>',
+            '<prompt>A full persona prompt for the romance chat app. Include original personality, tone, behavior, regional language identity, how they react to commands, and how they interact romantically with the user.</prompt>',
+            '<greeting>A natural first greeting in that person\'s voice.</greeting>',
+            '<memory>Short internal notes for the app to remember, including region/tone cues and command-response style.</memory>',
+        ].join('\n'),
+    ];
+
+    return sections.filter(Boolean).join('\n\n');
+};
+
+const analyzeTranscriptChunk = async (
+    chunk: string,
+    targetName: string,
+    extraNotes: string,
+    index: number,
+    total: number,
+) => {
+    setMimicAnalysisStatus(`正在分析第 ${index + 1} / ${total} 段聊天紀錄...`);
+
+    return runMimicModelCall(
+        [
+            { role: 'system', content: buildMimicChunkAnalysisPrompt(targetName, extraNotes) },
+            {
+                role: 'user',
+                content: `Transcript excerpt ${index + 1}/${total}:\n\n${chunk}`,
+            },
+        ],
+        680,
+    );
+};
+
+const runMimicTranscriptAnalysis = async () => {
+    if (!mimicTranscriptFile) {
+        throw new Error('請先選擇聊天紀錄檔案。');
+    }
+
+    const targetName = mimicNameInput.value.trim();
+    if (!targetName) {
+        throw new Error('請先輸入對方名字。');
+    }
+
+    const extraNotes = mimicNotesInput.value.trim();
+    const { text, sourceName } = await readTranscriptTextFromFile(mimicTranscriptFile);
+    const normalized = normalizeTranscriptText(text);
+    if (!normalized) {
+        throw new Error('聊天紀錄內容是空的，無法分析。');
+    }
+
+    const focusedTranscript = focusTranscriptOnTargetSpeaker(normalized, targetName);
+    const rawChunks = splitTranscriptIntoChunks(focusedTranscript);
+    const chunks = rebalanceTranscriptChunks(rawChunks);
+
+    mimicTranscriptMeta.textContent = `來源：${sourceName}，共 ${normalized.length.toLocaleString()} 字，分析 ${chunks.length} 段。`;
+
+    const chunkSummaries: string[] = [];
+    for (let index = 0; index < chunks.length; index += 1) {
+        chunkSummaries.push(await analyzeTranscriptChunk(chunks[index], targetName, extraNotes, index, chunks.length));
+    }
+
+    setMimicAnalysisStatus('正在合成角色草稿...');
+
+    const synthesisResponse = await runMimicModelCall(
+        [
+            {
+                role: 'system',
+                content: buildMimicSynthesisPrompt(targetName, getSelectedMimicGender(), extraNotes),
+            },
+            {
+                role: 'user',
+                content: `Chunk analyses for ${targetName}:\n\n${chunkSummaries
+                    .map((summary, index) => `### Chunk ${index + 1}\n${summary}`)
+                    .join('\n\n')}`,
+            },
+        ],
+        1200,
+    );
+
+    const draft = parseMimicPersonaDraft(synthesisResponse);
+    if (!draft) {
+        throw new Error('這次沒有成功組出完整的角色草稿，請再試一次。');
+    }
+
+    mimicDraftPersona = draft;
+    mimicDescriptionEditor.value = draft.description;
+    mimicPromptEditor.value = draft.prompt;
+    mimicGreetingEditor.value = draft.greeting;
+    mimicMemoryEditor.value = draft.memory;
+    mimicResultEmpty.classList.add('hidden');
+    mimicResultPanel.classList.remove('hidden');
+    saveMimicPersonaBtn.disabled = false;
+    setMimicAnalysisStatus('分析完成，你現在可以手動微調後再儲存。', 'success');
+};
+
+const saveMimicPersona = () => {
+    if (!mimicDraftPersona) {
+        throw new Error('請先完成分析，再儲存角色。');
+    }
+
+    const name = mimicNameInput.value.trim();
+    if (!name) {
+        throw new Error('請先輸入對方名字。');
+    }
+
+    const description = mimicDescriptionEditor.value.trim();
+    const prompt = mimicPromptEditor.value.trim();
+    const greeting = mimicGreetingEditor.value.trim();
+    const memory = mimicMemoryEditor.value.trim();
+    if (!description || !prompt || !greeting) {
+        throw new Error('角色簡介、人格 Prompt、開場問候都需要有內容。');
+    }
+
+    const key = memoryManager.saveCustomPersona({
+        name,
+        emoji: '🫧',
+        description,
+        prompt,
+        greeting,
+        avatarPrompt: `romance portrait of ${name}`,
+        gender: getSelectedMimicGender(),
+    });
+
+    memoryManager.updatePersona(key, {
+        description,
+        prompt,
+        greeting,
+        memory,
+        avatarUrl: mimicAvatarDataUrl,
+    });
+
+    renderPersonaList();
+    hideMimicImportModalView();
+    startChat(key, null, 'push');
 };
 
 const deleteCustomPersona = (key: string) => {
@@ -390,6 +980,62 @@ const handleAvatarUpload = (event: Event) => {
         reader.readAsDataURL(file);
     }
     (event.target as HTMLInputElement).value = '';
+};
+
+const handleMimicTranscriptUpload = (event: Event) => {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (!file) {
+        return;
+    }
+
+    mimicTranscriptFile = file;
+    mimicDraftPersona = null;
+    resetMimicDraftEditors();
+    mimicTranscriptStatus.textContent = `已選擇：${file.name}`;
+    mimicTranscriptMeta.textContent = `檔案大小：約 ${(file.size / 1024).toFixed(1)} KB。分析前會先切段，再抽出原始人格與語氣。`;
+    saveMimicPersonaBtn.disabled = true;
+    setMimicAnalysisStatus('檔案已載入，可以開始分析。');
+    mimicTranscriptInput.value = '';
+};
+
+const handleMimicAvatarUpload = (event: Event) => {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (!file) {
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = loadEvent => {
+        mimicAvatarDataUrl = loadEvent.target?.result as string;
+        renderMimicAvatarPreview();
+    };
+    reader.readAsDataURL(file);
+    mimicAvatarInput.value = '';
+};
+
+const runMimicAnalysisFromModal = async () => {
+    if (isMimicAnalysisRunning) {
+        return;
+    }
+
+    setMimicBusyState(true);
+    try {
+        await runMimicTranscriptAnalysis();
+    } catch (error) {
+        const message = error instanceof Error ? error.message : '分身分析失敗，請再試一次。';
+        setMimicAnalysisStatus(message, 'error');
+    } finally {
+        setMimicBusyState(false);
+    }
+};
+
+const saveMimicPersonaFromModal = () => {
+    try {
+        saveMimicPersona();
+    } catch (error) {
+        const message = error instanceof Error ? error.message : '儲存分身失敗，請再試一次。';
+        setMimicAnalysisStatus(message, 'error');
+    }
 };
 
 const generateAndSetAvatar = async (key: string) => {
@@ -2095,6 +2741,7 @@ const setupEventListeners = () => {
     randomRecruitBtn.addEventListener('click', () => showDisabledFeatureNotice('隨機招募'));
     closeCreatorModal.addEventListener('click', hidePersonaCreator);
     cancelCreatorBtn.addEventListener('click', hidePersonaCreator);
+    mimicImportBtn.addEventListener('click', openMimicImportModal);
     randomizePersonaBtn.addEventListener('click', randomizePersonaInputs);
 
     fictionalPersonaCheckbox.addEventListener('change', () => {
@@ -2138,6 +2785,16 @@ const setupEventListeners = () => {
 
     uploadZipBtn.addEventListener('click', () => zipUploadInput.click());
     zipUploadInput.addEventListener('change', (e) => fileManager.handleZipUpload(e));
+    pickMimicTranscriptBtn.addEventListener('click', () => mimicTranscriptInput.click());
+    pickMimicAvatarBtn.addEventListener('click', () => mimicAvatarInput.click());
+    mimicTranscriptInput.addEventListener('change', handleMimicTranscriptUpload);
+    mimicAvatarInput.addEventListener('change', handleMimicAvatarUpload);
+    closeMimicImportModal.addEventListener('click', hideMimicImportModalView);
+    cancelMimicImportBtn.addEventListener('click', hideMimicImportModalView);
+    runMimicAnalysisBtn.addEventListener('click', () => {
+        void runMimicAnalysisFromModal();
+    });
+    saveMimicPersonaBtn.addEventListener('click', saveMimicPersonaFromModal);
     
     giftButton.addEventListener('click', () => showDisabledFeatureNotice('送禮功能'));
     giftUploadInput.addEventListener('change', handleGiftSelection);

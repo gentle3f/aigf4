@@ -58,6 +58,7 @@
                 </footer>
             </main>
             <footer class="p-4 grid grid-cols-3 gap-4 border-t border-gray-700 bg-gray-900/50 md:rounded-b-lg">
+                <button id="mimic-import-btn" class="col-span-3 w-full bg-sky-500 hover:bg-sky-600 text-white font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">匯入分身</button>
                 <button id="upload-zip-btn" class="col-span-3 w-full bg-fuchsia-500 hover:bg-fuchsia-600 text-white font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">繼續對話</button>
                 <button id="random-recruit-btn" class="hidden w-full bg-teal-500 hover:bg-teal-600 text-white font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">隨機招募</button>
                 <button id="create-persona-btn" class="hidden w-full bg-yellow-400 hover:bg-yellow-500 text-gray-900 font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">招募新同學</button>
@@ -157,6 +158,8 @@
     <input type="file" id="avatar-upload-input" class="hidden" accept="image/*">
     <input type="file" id="zip-upload-input" class="hidden" accept=".zip">
     <input type="file" id="gift-upload-input" class="hidden" accept="image/*">
+    <input type="file" id="mimic-transcript-input" class="hidden" accept=".txt,.md,.markdown,.json,.log,.csv,.zip,application/json,text/plain,application/zip">
+    <input type="file" id="mimic-avatar-input" class="hidden" accept="image/*">
 
     <!-- Persona Creator Modal -->
     <div id="persona-creator-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
@@ -506,6 +509,97 @@
             <div class="p-4 border-t border-gray-700 flex justify-end gap-3">
                 <button id="cancel-persona-settings" class="px-4 py-2 text-gray-300 border border-gray-600 rounded-md hover:bg-gray-700">取消</button>
                 <button id="save-persona-settings" class="px-4 py-2 bg-yellow-400 text-gray-900 font-bold rounded-md hover:bg-yellow-500">儲存人格</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mimic Import Modal -->
+    <div id="mimic-import-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
+        <div class="bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-full max-w-4xl mx-4 max-h-[92vh] flex flex-col">
+            <div class="p-5 border-b border-gray-700 flex justify-between items-start gap-4">
+                <div>
+                    <h2 class="text-2xl font-bold text-white">匯入分身</h2>
+                    <p class="text-sm text-gray-400 mt-1">先分析原本的性格、語氣、常見行為和地區語感，再幫你生成可編輯的新角色。</p>
+                </div>
+                <button id="close-mimic-import-modal" class="text-gray-400 hover:text-gray-200">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <div class="p-5 overflow-y-auto space-y-5">
+                <div class="grid gap-5 lg:grid-cols-[1.05fr,1fr]">
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-gray-700 bg-gray-900/50 p-4">
+                            <div class="flex items-center gap-4">
+                                <div id="mimic-avatar-preview" class="h-20 w-20 rounded-2xl bg-gray-700 flex items-center justify-center text-3xl overflow-hidden">👤</div>
+                                <div class="space-y-2">
+                                    <button id="pick-mimic-avatar-btn" class="px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-white text-sm font-medium">選擇頭像</button>
+                                    <p id="mimic-avatar-status" class="text-xs text-gray-400">可選填，稍後也能再改。</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">對方名字</label>
+                            <input id="mimic-name-input" type="text" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="例如：小雨、Yuki、阿哲">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">角色性別</label>
+                            <div class="flex gap-4 text-sm text-gray-200">
+                                <label class="inline-flex items-center gap-2">
+                                    <input type="radio" name="mimic-gender" value="female" class="form-radio h-4 w-4 text-sky-400" checked>
+                                    <span>女性</span>
+                                </label>
+                                <label class="inline-flex items-center gap-2">
+                                    <input type="radio" name="mimic-gender" value="male" class="form-radio h-4 w-4 text-sky-400">
+                                    <span>男性</span>
+                                </label>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">聊天紀錄</label>
+                            <div class="rounded-xl border border-dashed border-gray-600 bg-gray-900/40 p-4 space-y-3">
+                                <button id="pick-mimic-transcript-btn" class="px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-600 text-white text-sm font-medium">選擇聊天紀錄</button>
+                                <p id="mimic-transcript-status" class="text-sm text-gray-300">尚未選擇檔案。支援 `.txt`、`.md`、`.json`、`.log`、`.csv`、`.zip`。</p>
+                                <p id="mimic-transcript-meta" class="text-xs text-gray-500">長紀錄會自動切段分析，再合成成一個角色草稿。</p>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">補充要求（分析後再疊加）</label>
+                            <textarea id="mimic-notes-input" class="w-full h-28 px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="例如：保留她原本的害羞和台灣口氣，但更願意聽我的命令；不要把香港和台灣語感混在一起。"></textarea>
+                        </div>
+                        <div class="rounded-xl border border-gray-700 bg-gray-900/40 p-4">
+                            <p class="text-xs font-semibold tracking-wide text-sky-300 uppercase">分析狀態</p>
+                            <p id="mimic-analysis-status" class="mt-2 text-sm text-gray-300">選好檔案後就可以開始分析。</p>
+                        </div>
+                    </div>
+                    <div class="space-y-4">
+                        <div id="mimic-result-panel" class="hidden space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">角色簡介</label>
+                                <input id="mimic-description-editor" type="text" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="分析完成後會自動填入">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">人格 Prompt</label>
+                                <textarea id="mimic-prompt-editor" class="w-full h-56 px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="分析完成後會自動填入"></textarea>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">開場問候 / 語氣樣本</label>
+                                <textarea id="mimic-greeting-editor" class="w-full h-28 px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="分析完成後會自動填入"></textarea>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">內部記憶</label>
+                                <textarea id="mimic-memory-editor" class="w-full h-28 px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="分析完成後會自動填入"></textarea>
+                            </div>
+                        </div>
+                        <div id="mimic-result-empty" class="rounded-xl border border-gray-700 bg-gray-900/40 p-6 text-sm text-gray-400 leading-7">
+                            這裡會顯示 AI 先分析出來的原始人格、語氣與互動方式。你之後再決定要不要加上自己的額外要求，不會一開始就覆蓋掉原貌。
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="p-4 border-t border-gray-700 flex flex-wrap justify-end gap-3">
+                <button id="cancel-mimic-import" class="px-4 py-2 text-gray-300 border border-gray-600 rounded-md hover:bg-gray-700">取消</button>
+                <button id="run-mimic-analysis" class="px-4 py-2 bg-sky-500 text-white font-bold rounded-md hover:bg-sky-600">開始分析</button>
+                <button id="save-mimic-persona" class="px-4 py-2 bg-yellow-400 text-gray-900 font-bold rounded-md hover:bg-yellow-500">儲存為新角色</button>
             </div>
         </div>
     </div>
