@@ -1026,14 +1026,77 @@ const extractTargetSpeakerUtterances = (text: string, targetName: string) => {
 };
 
 const buildTranscriptVoiceReferenceSamples = (text: string, targetName: string, maxSamples = 8) => {
-    const utterances = Array.from(new Set(extractTargetSpeakerUtterances(text, targetName)));
-    const ranked = utterances.filter(line => line.length >= 2 && line.length <= 120);
+    const utterances = extractTargetSpeakerUtterances(text, targetName);
+    const seen = new Set<string>();
+    const deduped = utterances.filter(line => {
+        const key = line
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .replace(/[「」『』"'`]/g, '')
+            .replace(/[😂🤣🥹🥺🙄🫣☺️✨🔥❤❤️💀]+/gu, '')
+            .trim();
 
-    if (ranked.length <= maxSamples) {
-        return ranked;
-    }
+        if (!key || seen.has(key)) {
+            return false;
+        }
 
-    return selectEvenlySpacedItems(ranked, maxSamples);
+        seen.add(key);
+        return true;
+    });
+
+    const scoreVoiceSample = (line: string) => {
+        const length = line.length;
+        let score = 0;
+
+        if (length >= 3 && length <= 36) {
+            score += 6;
+        } else if (length <= 60) {
+            score += 3;
+        } else if (length <= 90) {
+            score += 1;
+        } else {
+            score -= 4;
+        }
+
+        if (/[A-Za-z]/.test(line)) {
+            score += 2;
+        }
+
+        if (/[😂🤣🥹🥺🙄🫣☺️✨🔥❤❤️]/u.test(line)) {
+            score += 2;
+        }
+
+        if (/[?？!！]$/.test(line)) {
+            score += 1;
+        }
+
+        if (/^(?:ok|yes|no|haha|lol)$/i.test(line)) {
+            score -= 2;
+        }
+
+        if (/^[😂🤣]+$/u.test(line)) {
+            score -= 4;
+        }
+
+        if (/(buddy|facebook|group|what she said|bni|tryhard)/i.test(line)) {
+            score += 2;
+        }
+
+        return score;
+    };
+
+    const ranked = deduped
+        .filter(line => line.length >= 2 && line.length <= 120)
+        .map((line, index) => ({ line, index, score: scoreVoiceSample(line) }))
+        .sort((left, right) => right.score - left.score || left.index - right.index)
+        .slice(0, Math.max(maxSamples * 2, maxSamples));
+
+    const selected = ranked
+        .slice(0, maxSamples)
+        .sort((left, right) => left.index - right.index)
+        .map(item => item.line);
+
+    return selected.length > 0 ? selected : selectEvenlySpacedItems(deduped, maxSamples);
 };
 
 const buildVoiceReferencePromptBlock = (voiceSamples: string[]) => {
@@ -2566,6 +2629,37 @@ const replyNeedsMoreConversation = (latestUserMessage: string, text: string) => 
     return commandLike && !replyHasDirectSpeech(text);
 };
 
+const latestTurnNeedsFlowPush = (latestUserMessage: string) => {
+    if (!personaNeedsFlowRepair()) {
+        return false;
+    }
+
+    const normalizedUserMessage = latestUserMessage.replace(/\s+/g, '').trim();
+    if (!normalizedUserMessage) {
+        return false;
+    }
+
+    return (
+        normalizedUserMessage.length <= 12
+        || /[?？]$/.test(latestUserMessage.trim())
+        || /^(繼續|再|講|答|點|咩|下面|除|快啲|快点|答我|講嘢|說話|继续|继续啊|回答我|然后呢|然後呢|whatnow|nowwhat)/iu.test(normalizedUserMessage)
+    );
+};
+
+const buildLatestTurnFlowInstruction = (latestUserMessage: string) => {
+    if (!latestTurnNeedsFlowPush(latestUserMessage)) {
+        return '';
+    }
+
+    return [
+        'Extra rule for this turn:',
+        '- The user is giving a short follow-up or pushing the scene forward.',
+        '- You must answer them directly with at least one spoken line outside parentheses.',
+        '- Move the scene forward by one concrete new beat. Do not freeze in the same pose or repeat the same emotional image.',
+        '- If the user says answer me, speak, continue, then what, or similar, respond to that demand explicitly instead of only narrating body language.',
+    ].join('\n');
+};
+
 const getRecentChatMessages = (latestUserMessage?: string): VeniceMessage[] => {
     if (!currentPersonaKey || !currentPersona) {
         return [];
@@ -2899,8 +2993,12 @@ const runCharacterRichChatGeneration = async (latestUserMessage: string): Promis
 
             try {
                 const messages: VeniceMessage[] = [{ role: 'system', content: buildChatSystemPrompt() }];
+                const latestTurnFlowInstruction = buildLatestTurnFlowInstruction(latestUserMessage);
                 if (isRepairAttempt) {
                     messages.push({ role: 'system', content: buildChatRepairInstruction() });
+                }
+                if (latestTurnFlowInstruction) {
+                    messages.push({ role: 'system', content: latestTurnFlowInstruction });
                 }
 
                 messages.push(
