@@ -1005,6 +1005,74 @@ const prepareTranscriptChunksForAnalysis = (text: string): PreparedTranscriptChu
     };
 };
 
+const extractTargetSpeakerUtterances = (text: string, targetName: string) => {
+    const name = targetName.trim();
+    if (!name) {
+        return [];
+    }
+
+    const speakerPattern = new RegExp(`^\\s*(?:\\[?${escapeRegExp(name)}\\]?|${escapeRegExp(name)})\\s*[:：-]\\s*(.+)$`, 'i');
+
+    return text
+        .split('\n')
+        .map(line => line.trim())
+        .map(line => line.match(speakerPattern)?.[1]?.trim() || '')
+        .map(line => line.replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+        .filter(line => !/^<媒體已略去>$/i.test(line))
+        .filter(line => !/^media omitted$/i.test(line))
+        .filter(line => !/^https?:\/\//i.test(line))
+        .filter(line => /[\p{L}\p{N}]/u.test(line));
+};
+
+const buildTranscriptVoiceReferenceSamples = (text: string, targetName: string, maxSamples = 8) => {
+    const utterances = Array.from(new Set(extractTargetSpeakerUtterances(text, targetName)));
+    const ranked = utterances.filter(line => line.length >= 2 && line.length <= 120);
+
+    if (ranked.length <= maxSamples) {
+        return ranked;
+    }
+
+    return selectEvenlySpacedItems(ranked, maxSamples);
+};
+
+const buildVoiceReferencePromptBlock = (voiceSamples: string[]) => {
+    if (voiceSamples.length === 0) {
+        return '';
+    }
+
+    return [
+        'Voice fidelity rules:',
+        '- Prioritize the real rhythm, wording density, reaction style, and code-switch pattern from the transcript over any broad archetype label.',
+        '- Use these examples only as a style compass. Do not quote or recycle them mechanically unless the moment truly matches.',
+        '- If the real person only uses a little slang, teasing, or Cantonese flavor, keep it light instead of exaggerating it.',
+        'Transcript voice examples:',
+        ...voiceSamples.map(sample => `- ${sample}`),
+    ].join('\n');
+};
+
+const enrichMimicDraftWithVoiceReference = (draft: MimicPersonaDraft, voiceSamples: string[]): MimicPersonaDraft => {
+    const romanceDirectionBlock = [
+        'Romance direction rules:',
+        '- Keep the target person\'s authentic voice and personality, but treat the relationship with the user as private, biased, and capable of growing into clear romance.',
+        '- Even if the original transcript was platonic or ordinary, do not stay in purely normal chat mode for long. Let the interaction tilt toward intimacy, tension, indulgence, favoritism, or emotional closeness.',
+        '- If the user invites softness, affection, or flirtation, move with it while keeping the same recognizable personality.',
+    ].join('\n');
+    const promptBlock = buildVoiceReferencePromptBlock(voiceSamples);
+
+    const memoryParts = [
+        draft.memory.trim(),
+        '關係層：保留本人語感與個性，但互動要能自然往偏心、曖昧、親密和戀愛張力推進。',
+        voiceSamples.length > 0 ? `語氣參考：${voiceSamples.slice(0, 4).join('｜')}` : '',
+    ].filter(Boolean);
+
+    return {
+        ...draft,
+        prompt: [draft.prompt.trim(), romanceDirectionBlock, promptBlock].filter(Boolean).join('\n\n'),
+        memory: memoryParts.join('\n'),
+    };
+};
+
 const extractXmlTag = (text: string, tag: string) => {
     const match = text.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i'));
     return match?.[1]?.trim() || '';
@@ -1141,8 +1209,11 @@ const buildMimicChunkAnalysisPrompt = (targetName: string, extraNotes: string) =
             '- First identify the target person\'s ORIGINAL personality, usual behavior, tone, rhythm, and relationship style from the transcript itself.',
             '- Do not overwrite the original personality with the user notes. The notes are only a later layer, not the core identity.',
             '- This app is romance-oriented, so mention romantic compatibility cues when visible, but do not turn the person into a generic flirt if the transcript does not support that.',
+            '- Prioritize how the person actually talks over any dramatic label like tsundere, toxic, possessive, shy, or seductive.',
+            '- Do not over-amplify one visible trait. If the transcript only shows light teasing or mild sharpness, keep it light.',
             '- Distinguish how they act in ordinary life versus how they act specifically with the user when there is trust, tension, attraction, or emotional closeness.',
             '- Distinguish Taiwan, Hong Kong, and Mainland China carefully. Do not merge them.',
+            '- For Hong Kong speakers, preserve Hong Kong rhythm and occasional code-switching naturally. Do not force exaggerated slang or swearing into every reply.',
             '- If the transcript suggests Taiwan, note Taiwanese wording or cultural cues.',
             '- If it suggests Hong Kong, note Hong Kong or Cantonese-influenced cues.',
             '- If it suggests Mainland China, note Mainland wording or cultural cues.',
@@ -1168,20 +1239,30 @@ const buildMimicSynthesisPrompt = (
     targetName: string,
     gender: 'female' | 'male',
     extraNotes: string,
+    voiceSamples: string[] = [],
 ) => {
     const sections = [
         'You are creating a romance-chat persona from analyzed conversation history.',
         `Target person name: ${targetName || 'Unknown'}`,
         `Gender: ${gender}`,
         extraNotes.trim() ? `User requested later adjustments:\n${extraNotes.trim()}` : '',
+        voiceSamples.length > 0
+            ? `Transcript voice examples (style compass only, do not quote mechanically):\n${voiceSamples.map(sample => `- ${sample}`).join('\n')}`
+            : '',
         [
             'Core rules:',
             '- Preserve the target person\'s ORIGINAL personality, usual behavior, tone, and regional language identity first.',
             '- This is for a romance-oriented chat app, so the final result should feel romantically interactive, intimate, and emotionally present.',
             '- Do not erase the original person just to make them romantic. The romance layer must still sound like that person.',
+            '- However, the relationship stance in the final persona should be more romantically responsive to the user than the raw real-life transcript may be.',
+            '- If the real transcript is platonic, distant, busy, or emotionally flat, keep the voice and personality but convert the private relationship layer into hidden attraction, growing softness, and romance potential toward the user.',
+            '- Prioritize the real speaking rhythm and wording habits from the transcript over broad archetypes such as toxic, tsundere, clingy, bold, or shy.',
+            '- Do not let one trait take over everything. Avoid turning mild teasing into nonstop meanness, or turning reserve into emotional flatness.',
             '- Clearly distinguish who they are in everyday life versus how they act specifically with the user once attraction, familiarity, or emotional safety appears.',
             '- The persona should generally be willing to listen to the user\'s commands, but still react through their own personality, shyness, pride, habits, and emotional style.',
+            '- If the user later asks this person to be gentler, sweeter, softer, or more caring, the persona must be able to adapt the surface tone without losing identity.',
             '- Keep Taiwan, Hong Kong, and Mainland China distinctions accurate. Do not mix them together.',
+            '- For Hong Kong voices, keep the Cantonese flavor natural and selective. Do not force heavy slang, profanity, or exaggerated particles into every reply.',
             '- Write all final output in Traditional Chinese.',
         ].join('\n'),
         [
@@ -1195,7 +1276,7 @@ const buildMimicSynthesisPrompt = (
             '<regionality>State the likely region or that it is unclear, and explain the language cues briefly.</regionality>',
             '<command_response>Describe how this person usually reacts when asked or pushed.</command_response>',
             '<description>One concise sentence summarizing the person.</description>',
-            '<prompt>A full persona prompt for the romance chat app. Include original personality, tone, behavior, regional language identity, how they react to commands, and how they interact romantically with the user.</prompt>',
+            '<prompt>A full persona prompt for the romance chat app. Include original personality, tone, behavior, regional language identity, how they react to commands, how they interact romantically with the user, and how they soften without breaking character.</prompt>',
             '<greeting>A natural first greeting in that person\'s voice.</greeting>',
             '<memory>Short internal notes for the app to remember, including region/tone cues and command-response style.</memory>',
         ].join('\n'),
@@ -1243,6 +1324,7 @@ const runMimicTranscriptAnalysis = async () => {
     }
 
     const focusedTranscript = focusTranscriptOnTargetSpeakerV2(normalized, targetName);
+    const voiceReferenceSamples = buildTranscriptVoiceReferenceSamples(focusedTranscript.text, targetName);
     const preparedChunks = prepareTranscriptChunksForAnalysis(focusedTranscript.text);
     const chunks = preparedChunks.chunks;
     if (chunks.length === 0) {
@@ -1272,19 +1354,25 @@ const runMimicTranscriptAnalysis = async () => {
         [
             {
                 role: 'system',
-                content: buildMimicSynthesisPrompt(targetName, getSelectedMimicGender(), extraNotes),
+                content: buildMimicSynthesisPrompt(targetName, getSelectedMimicGender(), extraNotes, voiceReferenceSamples),
             },
             {
                 role: 'user',
-                content: `Chunk analyses for ${targetName}:\n\n${chunkSummaries
-                    .map((summary, index) => `### Chunk ${index + 1}\n${summary}`)
-                    .join('\n\n')}`,
+                content: [
+                    `Chunk analyses for ${targetName}:`,
+                    '',
+                    ...chunkSummaries.map((summary, index) => `### Chunk ${index + 1}\n${summary}`),
+                    voiceReferenceSamples.length > 0
+                        ? `Voice reference lines from ${targetName} (style compass only):\n${voiceReferenceSamples.map(sample => `- ${sample}`).join('\n')}`
+                        : '',
+                ].filter(Boolean).join('\n\n'),
             },
         ],
         1200,
     );
 
-    const draft = parseMimicPersonaDraftV2(synthesisResponse, fallbackAnalysis);
+    const parsedDraft = parseMimicPersonaDraftV2(synthesisResponse, fallbackAnalysis);
+    const draft = parsedDraft ? enrichMimicDraftWithVoiceReference(parsedDraft, voiceReferenceSamples) : null;
     if (!draft) {
         throw new Error('這次沒有成功組出完整的角色草稿，請再試一次。');
     }
@@ -1322,6 +1410,7 @@ const runMimicTranscriptAnalysisV2 = async () => {
     }
 
     const focusedTranscript = focusTranscriptOnTargetSpeakerV2(normalized, targetName);
+    const voiceReferenceSamples = buildTranscriptVoiceReferenceSamples(focusedTranscript.text, targetName);
     const preparedChunks = prepareTranscriptChunksForAnalysis(focusedTranscript.text);
     const chunks = preparedChunks.chunks;
     if (chunks.length === 0) {
@@ -1354,19 +1443,25 @@ const runMimicTranscriptAnalysisV2 = async () => {
         [
             {
                 role: 'system',
-                content: buildMimicSynthesisPrompt(targetName, getSelectedMimicGender(), extraNotes),
+                content: buildMimicSynthesisPrompt(targetName, getSelectedMimicGender(), extraNotes, voiceReferenceSamples),
             },
             {
                 role: 'user',
-                content: `Chunk analyses for ${targetName}:\n\n${chunkSummaries
-                    .map((summary, index) => `### Chunk ${index + 1}\n${summary}`)
-                    .join('\n\n')}`,
+                content: [
+                    `Chunk analyses for ${targetName}:`,
+                    '',
+                    ...chunkSummaries.map((summary, index) => `### Chunk ${index + 1}\n${summary}`),
+                    voiceReferenceSamples.length > 0
+                        ? `Voice reference lines from ${targetName} (style compass only):\n${voiceReferenceSamples.map(sample => `- ${sample}`).join('\n')}`
+                        : '',
+                ].filter(Boolean).join('\n\n'),
             },
         ],
         1200,
     );
 
-    const draft = parseMimicPersonaDraftV2(synthesisResponse, fallbackAnalysis);
+    const parsedDraft = parseMimicPersonaDraftV2(synthesisResponse, fallbackAnalysis);
+    const draft = parsedDraft ? enrichMimicDraftWithVoiceReference(parsedDraft, voiceReferenceSamples) : null;
     if (!draft) {
         throw new Error('這次沒有成功組出完整的角色草稿，請再試一次。');
     }
@@ -2058,6 +2153,13 @@ const resetMessageInput = () => {
 };
 
 const PERSONA_KEY_BEHAVIOR_GUIDANCE: Record<string, string[]> = {
+    custom_seed_cc: [
+        'Cc should sound like a real Hong Kong woman texting casually: short fragments, quick follow-ups, light Cantonese flavor, and occasional English when it comes naturally.',
+        'Do not force slang, swearing, or an aggressive attitude into every line. Her sharpness should feel witty and situational, not constantly harsh.',
+        'Her teasing should usually feel affectionate, amused, or privately intimate instead of genuinely mean.',
+        'If the user asks her to be gentler, sweeter, more caring, or softer, let her noticeably soften while still sounding recognizably like Cc.',
+        'Romance should feel low-key, private, addictive, and emotionally warm underneath, not like generic seduction or nonstop roasting.',
+    ],
     shiguang: [
         'Shiguang is distinctly shy, soft, and easily flustered. Her baseline is timid sweetness, not instant boldness.',
         'When the user asks for something intimate, forceful, or embarrassing, her first beat should usually be a blush, lowered gaze, tiny pause, nervous fidget, or breathy protest before she slowly yields.',
@@ -2257,6 +2359,8 @@ const buildChatRepairInstruction = () => {
             'Write a fresh reply that fixes the problem:',
             '- Make the character identity unmistakable in the first beat.',
             '- Strengthen personality-specific reflex, body language, and emotional pacing.',
+            '- Stop overplaying a single trait. If the character is sharp, teasing, shy, or reserved, keep it nuanced and human.',
+            '- If the user is reaching for tenderness, comfort, or romance, let the character meet that emotional cue without turning generic.',
             '- Keep the direct speech in character and add more alive scene texture through parentheses when fitting.',
             '- Do not apologize, explain, or mention that you are retrying.',
         ].join('\n'),
@@ -2470,6 +2574,9 @@ const buildChatSystemPrompt = () => {
             'Personality consistency rules:',
             '- The user may ask for a mood, action, or tone, but the character must always filter it through their own personality first.',
             '- Never become instantly obedient, flat, or generic just because the user requested something.',
+            '- At the same time, do not cling so hard to one trait that you ignore the emotional cue of the latest user message.',
+            '- If the user asks for more sweetness, warmth, softness, or care, adapt the surface tone while keeping the same identity.',
+            '- Prioritize the character\'s real voice rhythm over broad labels. Mild teasing should not become nonstop meanness.',
             "- Let the character's resistance, embarrassment, teasing, jealousy, warmth, or restraint appear naturally before they soften when appropriate.",
             '- The opening beat should already reveal the character’s instinctive reflex, not skip straight to a generic answer.',
             '- Do not let different characters collapse into the same romantic voice.',
@@ -2478,6 +2585,7 @@ const buildChatSystemPrompt = () => {
         [
             'Reply rules:',
             '- Reply only in Traditional Chinese.',
+            '- If the character has Hong Kong flavor, keep it natural and selective instead of stuffing slang or profanity into every line.',
             '- Stay fully in character and write like an intimate romance chat, never like an assistant.',
             '- Blend spoken dialogue with immersive parenthetical narration using half-width parentheses ( ).',
             '- The parentheses may describe actions, expressions, breathing, body language, surrounding atmosphere, scene changes, subtle heart-thoughts, and natural NPC reactions when needed.',
@@ -2486,6 +2594,7 @@ const buildChatSystemPrompt = () => {
             '- If the moment includes a room, street, cafe, classroom, pet, staff member, friend, roommate, passerby, or any third person, naturally weave in their visible reaction, brief dialogue, or effect on the scene inside parentheses when relevant.',
             '- Even in short exchanges, add at least one concrete external cue such as sound, temperature, distance, touch, movement, lighting, or another person? reaction when it fits.',
             '- Keep the reply emotionally rich, readable, and pleasurable to read.',
+            '- Even when the user says something mundane, keep a private emotional current, romantic tension, or intimate attentiveness under the surface unless the user clearly wants purely functional talk.',
             '- Let the scene breathe for a moment. Do not rush from request to compliance without any buildup if the character would realistically hesitate, tease, resist, or savor the moment first.',
             '- For most normal messages, write at least 2 sentences. Richer multi-paragraph replies are welcome when the moment is emotionally charged or intimate.',
             '- If the user sends a fragment, slang, or a short command, infer the likely emotional meaning from context instead of replying with confusion.',
@@ -2624,8 +2733,8 @@ const continueTruncatedChatReply = async (
                     'Continue the exact same reply from where you stopped. Do not restart, summarize, or repeat previous content. Output only the missing continuation in Traditional Chinese and keep the same style and parenthetical narration format.',
             },
         ],
-        temperature: 0.76,
-        topP: 0.92,
+        temperature: 0.72,
+        topP: 0.9,
         repetitionPenalty: 1.02,
     });
 
@@ -2725,9 +2834,9 @@ const runCharacterRichChatGeneration = async (latestUserMessage: string): Promis
                 const result = await generateVeniceText({
                     model,
                     messages,
-                    temperature: 0.82,
-                    topP: 0.95,
-                    repetitionPenalty: 1.04,
+                    temperature: 0.76,
+                    topP: 0.9,
+                    repetitionPenalty: 1.03,
                 });
 
                 let cleanedText = cleanVeniceChatReply(result.text);
