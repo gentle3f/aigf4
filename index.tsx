@@ -2493,6 +2493,79 @@ const getLastAssistantReplyForCurrentChat = () => {
     return '';
 };
 
+const getRecentAssistantRepliesForCurrentChat = (limit = 3) => {
+    if (!currentPersonaKey) {
+        return [] as string[];
+    }
+
+    return memoryManager
+        .getChatHistory(currentPersonaKey)
+        .filter(message => message.role === 'model')
+        .map(message => cleanVeniceChatReply(message.content.text || ''))
+        .filter(text => text && !isInvalidVeniceChatReply(text))
+        .slice(-limit);
+};
+
+const personaNeedsFlowRepair = () => {
+    if (!currentPersonaKey || !currentPersona) {
+        return false;
+    }
+
+    return currentPersonaKey.startsWith('custom_')
+        || currentPersona.prompt?.includes('Voice fidelity rules:')
+        || currentPersona.memory?.includes('語氣參考');
+};
+
+const stripParentheticalNarration = (text: string) => {
+    return text.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+};
+
+const replyHasDirectSpeech = (text: string) => {
+    const outsideNarration = stripParentheticalNarration(text)
+        .replace(/[「」『』"'，。、！？!?…：:；;\-\s]/g, '')
+        .trim();
+
+    return /[\p{L}\p{N}]/u.test(outsideNarration);
+};
+
+const getMeaningfulReplyLines = (text: string) => {
+    return text
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length >= 14);
+};
+
+const replyReusesStaleBeat = (text: string, recentReplies: string[]) => {
+    if (recentReplies.length < 2) {
+        return false;
+    }
+
+    const currentLines = getMeaningfulReplyLines(text);
+    if (currentLines.length === 0) {
+        return false;
+    }
+
+    return currentLines.some(line => recentReplies.filter(reply => reply.includes(line)).length >= 2);
+};
+
+const replyNeedsMoreConversation = (latestUserMessage: string, text: string) => {
+    if (!personaNeedsFlowRepair()) {
+        return false;
+    }
+
+    const normalizedUserMessage = latestUserMessage.replace(/\s+/g, '').trim();
+    if (!normalizedUserMessage) {
+        return false;
+    }
+
+    const commandLike =
+        normalizedUserMessage.length <= 10
+        || /[?？]$/.test(latestUserMessage.trim())
+        || /^(繼續|再|快|講|答|點|咩|下面|除|過來|抱|親|做|話我知)/u.test(normalizedUserMessage);
+
+    return commandLike && !replyHasDirectSpeech(text);
+};
+
 const getRecentChatMessages = (latestUserMessage?: string): VeniceMessage[] => {
     if (!currentPersonaKey || !currentPersona) {
         return [];
@@ -2580,14 +2653,18 @@ const buildChatSystemPrompt = () => {
             "- Let the character's resistance, embarrassment, teasing, jealousy, warmth, or restraint appear naturally before they soften when appropriate.",
             '- The opening beat should already reveal the character’s instinctive reflex, not skip straight to a generic answer.',
             '- Do not let different characters collapse into the same romantic voice.',
+            '- If the user says continue, then, what now, answer me, or gives another short follow-up command, move the scene forward from the current beat instead of resetting to the same pose again.',
+            '- Do not get stuck repeating the same crying, trembling, blushing, swallowing, or looking-away beat across consecutive turns.',
             '- Always answer the newest user message in this turn. Never drift into repeating your previous reply unless the user explicitly asks for that.',
         ].join('\n'),
         [
             'Reply rules:',
             '- Reply only in Traditional Chinese.',
             '- If the character has Hong Kong flavor, keep it natural and selective instead of stuffing slang or profanity into every line.',
+            '- For Hong Kong-flavored voices, prefer simple everyday chat wording over stiff, literary, or over-translated narration.',
             '- Stay fully in character and write like an intimate romance chat, never like an assistant.',
             '- Blend spoken dialogue with immersive parenthetical narration using half-width parentheses ( ).',
+            '- Unless the user explicitly wants silence, almost every reply should include at least one spoken line outside parentheses. Do not answer with body language alone.',
             '- The parentheses may describe actions, expressions, breathing, body language, surrounding atmosphere, scene changes, subtle heart-thoughts, and natural NPC reactions when needed.',
             '- Do not make the reply only direct speech. Besides what the character says, also add scene texture, ambient detail, and bodily reaction when fitting.',
             '- In almost every normal reply, include at least one parenthetical narration beat with visible action, physical reaction, or atmosphere unless the user clearly wants a tiny answer.',
@@ -2595,6 +2672,7 @@ const buildChatSystemPrompt = () => {
             '- Even in short exchanges, add at least one concrete external cue such as sound, temperature, distance, touch, movement, lighting, or another person? reaction when it fits.',
             '- Keep the reply emotionally rich, readable, and pleasurable to read.',
             '- Even when the user says something mundane, keep a private emotional current, romantic tension, or intimate attentiveness under the surface unless the user clearly wants purely functional talk.',
+            '- Vary actions and emotional beats across turns. Do not recycle the same sentence, image, or paragraph from the last few replies.',
             '- Let the scene breathe for a moment. Do not rush from request to compliance without any buildup if the character would realistically hesitate, tease, resist, or savor the moment first.',
             '- For most normal messages, write at least 2 sentences. Richer multi-paragraph replies are welcome when the moment is emotionally charged or intimate.',
             '- If the user sends a fragment, slang, or a short command, infer the likely emotional meaning from context instead of replying with confusion.',
@@ -2866,11 +2944,23 @@ const runCharacterRichChatGeneration = async (latestUserMessage: string): Promis
                     throw new Error(`Generic reply from ${model}.`);
                 }
 
+                const recentAssistantReplies = getRecentAssistantRepliesForCurrentChat(3);
+                if (replyNeedsMoreConversation(latestUserMessage, cleanedText)) {
+                    throw new Error(`Narration-only reply from ${model}.`);
+                }
+
+                if (replyReusesStaleBeat(cleanedText, recentAssistantReplies)) {
+                    throw new Error(`Repeated beat from ${model}.`);
+                }
+
                 const lastAssistantReply = getLastAssistantReplyForCurrentChat();
                 if (
                     lastAssistantReply &&
-                    !userExplicitlyRequestsContinuation(latestUserMessage) &&
-                    repliesAreTooSimilar(cleanedText, lastAssistantReply)
+                    repliesAreTooSimilar(cleanedText, lastAssistantReply) &&
+                    (
+                        !userExplicitlyRequestsContinuation(latestUserMessage)
+                        || personaNeedsFlowRepair()
+                    )
                 ) {
                     throw new Error(`Repeated reply from ${model}.`);
                 }
