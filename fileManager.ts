@@ -33,6 +33,23 @@ export class FileManager {
         };
     }
 
+    private createExportSafePersona(persona: any) {
+        if (!persona) {
+            return persona;
+        }
+
+        // Data-URL avatars are exported as binary files under /avatars,
+        // so removing the inline base64 copy keeps JSON exports much smaller.
+        if (typeof persona.avatarUrl === 'string' && persona.avatarUrl.startsWith('data:image')) {
+            return {
+                ...persona,
+                avatarUrl: null,
+            };
+        }
+
+        return { ...persona };
+    }
+
     async saveCurrentChat(personaKey: string, personaName: string) {
         const chatHistory = this.memoryManager.getChatHistory(personaKey);
         const persona = this.memoryManager.getPersona(personaKey);
@@ -49,7 +66,7 @@ export class FileManager {
             chatHistories: { [personaKey]: chatHistory },
             diaries: { [personaKey]: diaries },
             interests: { [personaKey]: interests },
-            customPersonas: { [personaKey]: persona }, // Always save the current persona state
+            customPersonas: { [personaKey]: this.createExportSafePersona(persona) }, // Always save the current persona state
         };
 
         // Using all_data.json to be consistent with the new format
@@ -63,7 +80,11 @@ export class FileManager {
             zip.folder("avatars")?.file(`${personaKey}.${extension}`, blob);
         }
 
-        zip.generateAsync({ type: "blob" }).then((content: Blob) => {
+        zip.generateAsync({
+            type: "blob",
+            compression: "DEFLATE",
+            compressionOptions: { level: 6 },
+        }).then((content: Blob) => {
             const link = document.createElement('a');
             link.href = URL.createObjectURL(content);
             const timestamp = new Date().getTime();
@@ -91,10 +112,13 @@ export class FileManager {
 
         try {
             const zip = new JSZip();
+            const exportSafePersonas = Object.fromEntries(
+                Object.entries(personasToSave).map(([key, persona]) => [key, this.createExportSafePersona(persona)]),
+            );
 
             const saveData = {
                 chatHistories: allChatHistories,
-                customPersonas: personasToSave,
+                customPersonas: exportSafePersonas,
                 diaries: allDiaries,
                 interests: allInterests,
             };
@@ -120,7 +144,11 @@ export class FileManager {
                 await Promise.all(avatarPromises);
             }
 
-            const content = await zip.generateAsync({ type: "blob" });
+            const content = await zip.generateAsync({
+                type: "blob",
+                compression: "DEFLATE",
+                compressionOptions: { level: 6 },
+            });
             const link = document.createElement('a');
             link.href = URL.createObjectURL(content);
             const timestamp = new Date().getTime();
@@ -162,7 +190,11 @@ export class FileManager {
                 zip.file(`image_${index + 1}.${extension}`, blob);
             }));
 
-            zip.generateAsync({ type: "blob" }).then((content: Blob) => {
+            zip.generateAsync({
+                type: "blob",
+                compression: "DEFLATE",
+                compressionOptions: { level: 6 },
+            }).then((content: Blob) => {
                 const link = document.createElement('a');
                 link.href = URL.createObjectURL(content);
                 const timestamp = new Date().getTime();
