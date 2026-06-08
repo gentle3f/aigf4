@@ -559,7 +559,7 @@
                             <div class="rounded-xl border border-dashed border-gray-600 bg-gray-900/40 p-4 space-y-3">
                                 <button id="pick-mimic-transcript-btn" class="px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-600 text-white text-sm font-medium">選擇聊天紀錄</button>
                                 <p id="mimic-transcript-status" class="text-sm text-gray-300">尚未選擇檔案。支援 `.txt`、`.md`、`.json`、`.log`、`.csv`、`.zip`。</p>
-                                <p id="mimic-transcript-meta" class="text-xs text-gray-500">長紀錄會自動切段分析，再合成成一個角色草稿。</p>
+                                <p id="mimic-transcript-meta" class="text-xs text-gray-500">長紀錄會先辨識聊天格式與說話者，再自動切段分析，最後合成成一個角色草稿。</p>
                             </div>
                         </div>
                         <div>
@@ -573,6 +573,34 @@
                     </div>
                     <div class="space-y-4">
                         <div id="mimic-result-panel" class="hidden space-y-4">
+                            <div class="rounded-2xl border border-sky-500/30 bg-sky-500/10 p-4 space-y-4">
+                                <div>
+                                    <p class="text-xs font-semibold tracking-[0.18em] text-sky-300 uppercase">原始人格分析</p>
+                                    <p id="mimic-analysis-meta" class="mt-2 text-xs text-sky-100/80 leading-6">分析完成後，這裡會顯示匯入格式、聚焦方式與 AI 判斷依據。</p>
+                                </div>
+                                <div class="grid gap-3 md:grid-cols-2">
+                                    <div class="rounded-xl border border-gray-700 bg-gray-900/50 p-3">
+                                        <p class="text-xs font-semibold tracking-wide text-gray-400 uppercase">原始性格</p>
+                                        <p id="mimic-analysis-personality" class="mt-2 text-sm text-gray-100 whitespace-pre-wrap leading-6">分析完成後會顯示。</p>
+                                    </div>
+                                    <div class="rounded-xl border border-gray-700 bg-gray-900/50 p-3">
+                                        <p class="text-xs font-semibold tracking-wide text-gray-400 uppercase">常見行為</p>
+                                        <p id="mimic-analysis-behavior" class="mt-2 text-sm text-gray-100 whitespace-pre-wrap leading-6">分析完成後會顯示。</p>
+                                    </div>
+                                    <div class="rounded-xl border border-gray-700 bg-gray-900/50 p-3">
+                                        <p class="text-xs font-semibold tracking-wide text-gray-400 uppercase">語氣節奏</p>
+                                        <p id="mimic-analysis-tone" class="mt-2 text-sm text-gray-100 whitespace-pre-wrap leading-6">分析完成後會顯示。</p>
+                                    </div>
+                                    <div class="rounded-xl border border-gray-700 bg-gray-900/50 p-3">
+                                        <p class="text-xs font-semibold tracking-wide text-gray-400 uppercase">地區語感</p>
+                                        <p id="mimic-analysis-regionality" class="mt-2 text-sm text-gray-100 whitespace-pre-wrap leading-6">分析完成後會顯示。</p>
+                                    </div>
+                                </div>
+                                <div class="rounded-xl border border-fuchsia-500/20 bg-fuchsia-500/10 p-3">
+                                    <p class="text-xs font-semibold tracking-wide text-fuchsia-200 uppercase">被要求時的反應</p>
+                                    <p id="mimic-analysis-command-response" class="mt-2 text-sm text-fuchsia-50 whitespace-pre-wrap leading-6">分析完成後會顯示。</p>
+                                </div>
+                            </div>
                             <div>
                                 <label class="block text-sm font-medium text-gray-300 mb-2">角色簡介</label>
                                 <input id="mimic-description-editor" type="text" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="分析完成後會自動填入">
@@ -591,7 +619,7 @@
                             </div>
                         </div>
                         <div id="mimic-result-empty" class="rounded-xl border border-gray-700 bg-gray-900/40 p-6 text-sm text-gray-400 leading-7">
-                            這裡會顯示 AI 先分析出來的原始人格、語氣與互動方式。你之後再決定要不要加上自己的額外要求，不會一開始就覆蓋掉原貌。
+                            這裡會先顯示 AI 抓到的原始人格、行為習慣、語氣節奏、地區語感和被要求時的反應，讓你先確認像不像本人，再往下微調成戀愛版角色。
                         </div>
                     </div>
                 </div>

@@ -195,6 +195,12 @@ const mimicTranscriptMeta = document.getElementById('mimic-transcript-meta')!;
 const mimicAnalysisStatus = document.getElementById('mimic-analysis-status')!;
 const mimicResultPanel = document.getElementById('mimic-result-panel')!;
 const mimicResultEmpty = document.getElementById('mimic-result-empty')!;
+const mimicAnalysisMeta = document.getElementById('mimic-analysis-meta')!;
+const mimicAnalysisPersonality = document.getElementById('mimic-analysis-personality')!;
+const mimicAnalysisBehavior = document.getElementById('mimic-analysis-behavior')!;
+const mimicAnalysisTone = document.getElementById('mimic-analysis-tone')!;
+const mimicAnalysisRegionality = document.getElementById('mimic-analysis-regionality')!;
+const mimicAnalysisCommandResponse = document.getElementById('mimic-analysis-command-response')!;
 const mimicDescriptionEditor = document.getElementById('mimic-description-editor') as HTMLInputElement;
 const mimicPromptEditor = document.getElementById('mimic-prompt-editor') as HTMLTextAreaElement;
 const mimicGreetingEditor = document.getElementById('mimic-greeting-editor') as HTMLTextAreaElement;
@@ -253,11 +259,34 @@ const CHAT_ATTEMPTS_PER_MODEL = 2;
 const FIXED_MESSAGE_INPUT_HEIGHT = '3.5rem';
 
 type AppHistoryState = { view: 'home' } | { view: 'chat'; personaKey: string };
+type MimicAnalysisSummary = {
+    personality: string;
+    behavior: string;
+    tone: string;
+    regionality: string;
+    commandResponse: string;
+};
+
 type MimicPersonaDraft = {
     description: string;
     prompt: string;
     greeting: string;
     memory: string;
+    analysis: MimicAnalysisSummary;
+};
+
+type TranscriptReadResult = {
+    text: string;
+    sourceName: string;
+    parserLabel: string;
+    speakerTurns: number;
+    mergedLines: number;
+};
+
+type TranscriptFocusResult = {
+    text: string;
+    matchedTurns: number;
+    usedFocusedWindows: boolean;
 };
 
 const HOME_HISTORY_STATE: AppHistoryState = { view: 'home' };
@@ -324,11 +353,33 @@ const setMimicAnalysisStatus = (text: string, tone: 'idle' | 'error' | 'success'
     }
 };
 
+const createEmptyMimicAnalysisSummary = (): MimicAnalysisSummary => ({
+    personality: '',
+    behavior: '',
+    tone: '',
+    regionality: '',
+    commandResponse: '',
+});
+
+const renderMimicAnalysisPreview = (
+    analysis: MimicAnalysisSummary | null,
+    metaText = '分析完成後，這裡會顯示匯入格式、聚焦方式與 AI 判斷依據。',
+) => {
+    const resolved = analysis || createEmptyMimicAnalysisSummary();
+    mimicAnalysisMeta.textContent = metaText;
+    mimicAnalysisPersonality.textContent = resolved.personality || '分析完成後會顯示。';
+    mimicAnalysisBehavior.textContent = resolved.behavior || '分析完成後會顯示。';
+    mimicAnalysisTone.textContent = resolved.tone || '分析完成後會顯示。';
+    mimicAnalysisRegionality.textContent = resolved.regionality || '分析完成後會顯示。';
+    mimicAnalysisCommandResponse.textContent = resolved.commandResponse || '分析完成後會顯示。';
+};
+
 const resetMimicDraftEditors = () => {
     mimicDescriptionEditor.value = '';
     mimicPromptEditor.value = '';
     mimicGreetingEditor.value = '';
     mimicMemoryEditor.value = '';
+    renderMimicAnalysisPreview(null);
     mimicResultPanel.classList.add('hidden');
     mimicResultEmpty.classList.remove('hidden');
 };
@@ -347,7 +398,7 @@ const resetMimicImportState = () => {
         defaultGender.checked = true;
     }
     mimicTranscriptStatus.textContent = '尚未選擇檔案。支援 `.txt`、`.md`、`.json`、`.log`、`.csv`、`.zip`。';
-    mimicTranscriptMeta.textContent = '長紀錄會自動切段分析，再合成成一個角色草稿。';
+    mimicTranscriptMeta.textContent = '長紀錄會先辨識聊天格式與說話者，再自動切段分析，最後合成成一個角色草稿。';
     setMimicAnalysisStatus('選好檔案後就可以開始分析。');
     renderMimicAvatarPreview();
     resetMimicDraftEditors();
@@ -370,6 +421,209 @@ const setMimicBusyState = (isBusy: boolean) => {
     saveMimicPersonaBtn.disabled = isBusy || !mimicDraftPersona;
     pickMimicTranscriptBtn.disabled = isBusy;
     pickMimicAvatarBtn.disabled = isBusy;
+};
+
+const normalizeTranscriptSpeaker = (speaker: string) => {
+    return speaker
+        .replace(/^\[(.+)\]$/, '$1')
+        .replace(/\s+/g, ' ')
+        .trim();
+};
+
+const normalizeTranscriptMessage = (text: string) => {
+    return text
+        .replace(/\u200e|\u200f/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+};
+
+const looksLikeDateOrTimeToken = (value: string) => {
+    const trimmed = value.trim();
+    return (
+        /^\[?\d{1,4}[\/.\-]\d{1,2}[\/.\-]\d{1,4}/.test(trimmed) ||
+        /^\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?$/.test(trimmed) ||
+        /^\d{4}年\d{1,2}月\d{1,2}日/.test(trimmed)
+    );
+};
+
+const looksLikeSpeakerLabel = (value: string) => {
+    const trimmed = normalizeTranscriptSpeaker(value);
+    if (!trimmed || trimmed.length > 40) {
+        return false;
+    }
+
+    if (looksLikeDateOrTimeToken(trimmed)) {
+        return false;
+    }
+
+    if (/^[\d\s()[\]/.\-]+$/.test(trimmed)) {
+        return false;
+    }
+
+    return /[A-Za-z\u3400-\u9fff]/.test(trimmed);
+};
+
+const buildTranscriptReadResult = (
+    turns: Array<{ speaker: string; text: string }>,
+    parserLabel: string,
+    mergedLines: number,
+): TranscriptReadResult | null => {
+    const normalizedTurns = turns
+        .map(turn => ({
+            speaker: normalizeTranscriptSpeaker(turn.speaker),
+            text: normalizeTranscriptMessage(turn.text),
+        }))
+        .filter(turn => turn.speaker && turn.text);
+
+    if (normalizedTurns.length < 3) {
+        return null;
+    }
+
+    const uniqueSpeakers = new Set(normalizedTurns.map(turn => turn.speaker));
+    if (uniqueSpeakers.size < 2) {
+        return null;
+    }
+
+    return {
+        text: normalizedTurns.map(turn => `${turn.speaker}: ${turn.text}`).join('\n'),
+        sourceName: '',
+        parserLabel,
+        speakerTurns: normalizedTurns.length,
+        mergedLines,
+    };
+};
+
+const parseWhatsappLikeTranscript = (rawText: string): TranscriptReadResult | null => {
+    const lines = rawText.replace(/\r/g, '\n').split('\n');
+    const turns: Array<{ speaker: string; text: string }> = [];
+    let mergedLines = 0;
+    const patterns = [
+        /^\[?\d{1,4}[\/.\-]\d{1,2}[\/.\-]\d{1,4}(?:,\s*|\s+)\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?\]?\s*(?:-|–|—)?\s*([^:：\n]+?)\s*[:：]\s*(.+)$/,
+        /^\[?\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}(?:,\s*|\s+)\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?\]?\s*(?:-|–|—)?\s*([^:：\n]+?)\s*[:：]\s*(.+)$/,
+        /^\d{4}[\/.\-]\d{1,2}[\/.\-]\d{1,2}(?:\([^)]*\))?\s+\d{1,2}:\d{2}\s+([^:：\n]+?)\s*[:：]\s*(.+)$/,
+    ];
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) {
+            continue;
+        }
+
+        let matched = false;
+        for (const pattern of patterns) {
+            const match = line.match(pattern);
+            if (!match) {
+                continue;
+            }
+
+            turns.push({
+                speaker: match[1],
+                text: match[2],
+            });
+            matched = true;
+            break;
+        }
+
+        if (!matched && turns.length > 0) {
+            turns[turns.length - 1].text = `${turns[turns.length - 1].text} ${line}`;
+            mergedLines += 1;
+        }
+    }
+
+    return buildTranscriptReadResult(turns, 'WhatsApp / 時間戳對話', mergedLines);
+};
+
+const parseTabbedTranscript = (rawText: string): TranscriptReadResult | null => {
+    const lines = rawText.replace(/\r/g, '\n').split('\n');
+    const turns: Array<{ speaker: string; text: string }> = [];
+    let mergedLines = 0;
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) {
+            continue;
+        }
+
+        const columns = line.split('\t').map(part => part.trim()).filter(Boolean);
+        let speaker = '';
+        let text = '';
+
+        if (columns.length >= 4 && looksLikeDateOrTimeToken(columns[0])) {
+            speaker = columns[2];
+            text = columns.slice(3).join(' ');
+        } else if (columns.length >= 3 && looksLikeDateOrTimeToken(columns[0])) {
+            speaker = columns[1];
+            text = columns.slice(2).join(' ');
+        }
+
+        if (speaker && text && looksLikeSpeakerLabel(speaker)) {
+            turns.push({ speaker, text });
+            continue;
+        }
+
+        if (turns.length > 0) {
+            turns[turns.length - 1].text = `${turns[turns.length - 1].text} ${line}`;
+            mergedLines += 1;
+        }
+    }
+
+    return buildTranscriptReadResult(turns, 'Tab 匯出聊天紀錄', mergedLines);
+};
+
+const parseSimpleSpeakerTranscript = (rawText: string): TranscriptReadResult | null => {
+    const lines = rawText.replace(/\r/g, '\n').split('\n');
+    const turns: Array<{ speaker: string; text: string }> = [];
+    let mergedLines = 0;
+    const speakerPattern = /^([^:：\n]{1,40})\s*[:：]\s*(.+)$/;
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) {
+            continue;
+        }
+
+        const match = line.match(speakerPattern);
+        if (match && looksLikeSpeakerLabel(match[1])) {
+            turns.push({
+                speaker: match[1],
+                text: match[2],
+            });
+            continue;
+        }
+
+        if (turns.length > 0) {
+            turns[turns.length - 1].text = `${turns[turns.length - 1].text} ${line}`;
+            mergedLines += 1;
+        }
+    }
+
+    return buildTranscriptReadResult(turns, '一般說話者對話', mergedLines);
+};
+
+const parseTranscriptTextWithHeuristics = (rawText: string): TranscriptReadResult => {
+    const parserCandidates = [
+        parseWhatsappLikeTranscript(rawText),
+        parseTabbedTranscript(rawText),
+        parseSimpleSpeakerTranscript(rawText),
+    ].filter((candidate): candidate is TranscriptReadResult => Boolean(candidate));
+
+    const bestCandidate = parserCandidates.sort((left, right) => {
+        const leftScore = left.speakerTurns * 3 + left.mergedLines;
+        const rightScore = right.speakerTurns * 3 + right.mergedLines;
+        return rightScore - leftScore;
+    })[0];
+
+    if (bestCandidate) {
+        return bestCandidate;
+    }
+
+    return {
+        text: rawText,
+        sourceName: '',
+        parserLabel: '原始文字',
+        speakerTurns: rawText.split('\n').map(line => line.trim()).filter(Boolean).length,
+        mergedLines: 0,
+    };
 };
 
 const extractTextFromUnknownJsonValue = (value: unknown, depth = 0): string => {
@@ -450,15 +704,22 @@ const collectTranscriptLinesFromJson = (value: unknown, lines: string[] = [], de
     return lines;
 };
 
-const parseConversationTextFromJson = (rawText: string) => {
+const parseConversationTextFromJson = (rawText: string): TranscriptReadResult => {
     const parsed = JSON.parse(rawText);
-    return collectTranscriptLinesFromJson(parsed)
+    const lines = collectTranscriptLinesFromJson(parsed)
         .map(line => line.replace(/\s+/g, ' ').trim())
-        .filter(Boolean)
-        .join('\n');
+        .filter(Boolean);
+
+    return {
+        text: lines.join('\n'),
+        sourceName: '',
+        parserLabel: 'JSON 對話匯出',
+        speakerTurns: lines.length,
+        mergedLines: 0,
+    };
 };
 
-const extractTranscriptTextFromZipFile = async (file: File) => {
+const extractTranscriptTextFromZipFile = async (file: File): Promise<TranscriptReadResult> => {
     const zip = await JSZip.loadAsync(file);
     const textFiles = Object.values(zip.files)
         .filter(entry => !entry.dir)
@@ -483,23 +744,25 @@ const extractTranscriptTextFromZipFile = async (file: File) => {
 
     const chosen = sorted[0];
     const raw = await chosen.async('string');
-    let text = raw;
+    let parsedResult: TranscriptReadResult;
 
     if (/\.json$/i.test(chosen.name)) {
         try {
-            text = parseConversationTextFromJson(raw) || raw;
+            parsedResult = parseConversationTextFromJson(raw);
         } catch {
-            text = raw;
+            parsedResult = parseTranscriptTextWithHeuristics(raw);
         }
+    } else {
+        parsedResult = parseTranscriptTextWithHeuristics(raw);
     }
 
     return {
-        text,
+        ...parsedResult,
         sourceName: chosen.name,
     };
 };
 
-const readTranscriptTextFromFile = async (file: File) => {
+const readTranscriptTextFromFile = async (file: File): Promise<TranscriptReadResult> => {
     if (/\.zip$/i.test(file.name)) {
         return extractTranscriptTextFromZipFile(file);
     }
@@ -509,15 +772,21 @@ const readTranscriptTextFromFile = async (file: File) => {
     if (looksLikeJson) {
         try {
             return {
-                text: parseConversationTextFromJson(raw) || raw,
+                ...parseConversationTextFromJson(raw),
                 sourceName: file.name,
             };
         } catch {
-            return { text: raw, sourceName: file.name };
+            return {
+                ...parseTranscriptTextWithHeuristics(raw),
+                sourceName: file.name,
+            };
         }
     }
 
-    return { text: raw, sourceName: file.name };
+    return {
+        ...parseTranscriptTextWithHeuristics(raw),
+        sourceName: file.name,
+    };
 };
 
 const normalizeTranscriptText = (text: string) => {
@@ -569,6 +838,62 @@ const focusTranscriptOnTargetSpeaker = (text: string, targetName: string) => {
         .trim();
 };
 
+const focusTranscriptOnTargetSpeakerV2 = (text: string, targetName: string): TranscriptFocusResult => {
+    const name = targetName.trim();
+    if (!name) {
+        return {
+            text,
+            matchedTurns: 0,
+            usedFocusedWindows: false,
+        };
+    }
+
+    const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+    if (lines.length === 0) {
+        return {
+            text,
+            matchedTurns: 0,
+            usedFocusedWindows: false,
+        };
+    }
+
+    const speakerPattern = new RegExp(`^\\s*(?:\\[?${escapeRegExp(name)}\\]?|${escapeRegExp(name)})\\s*[:：-]`, 'i');
+    const hitIndexes = lines
+        .map((line, index) => (speakerPattern.test(line) ? index : -1))
+        .filter(index => index >= 0);
+
+    if (hitIndexes.length < 3) {
+        return {
+            text,
+            matchedTurns: hitIndexes.length,
+            usedFocusedWindows: false,
+        };
+    }
+
+    const windows: Array<{ start: number; end: number }> = [];
+    hitIndexes.forEach(index => {
+        const start = Math.max(0, index - 2);
+        const end = Math.min(lines.length - 1, index + 2);
+        const lastWindow = windows[windows.length - 1];
+
+        if (lastWindow && start <= lastWindow.end + 1) {
+            lastWindow.end = Math.max(lastWindow.end, end);
+            return;
+        }
+
+        windows.push({ start, end });
+    });
+
+    return {
+        text: windows
+            .map(window => lines.slice(window.start, window.end + 1).join('\n'))
+            .join('\n\n')
+            .trim(),
+        matchedTurns: hitIndexes.length,
+        usedFocusedWindows: true,
+    };
+};
+
 const splitTranscriptIntoChunks = (text: string, limit = MIMIC_CHUNK_CHAR_LIMIT) => {
     const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
     const chunks: string[] = [];
@@ -612,6 +937,41 @@ const extractXmlTag = (text: string, tag: string) => {
     return match?.[1]?.trim() || '';
 };
 
+const mergeAnalysisFragments = (fragments: string[]) => {
+    const unique = Array.from(
+        new Set(
+            fragments
+                .map(fragment => fragment.trim())
+                .filter(Boolean),
+        ),
+    );
+
+    return unique.slice(0, 3).join('\n');
+};
+
+const buildAnalysisSummaryFromChunkSummaries = (chunkSummaries: string[]): MimicAnalysisSummary => {
+    return {
+        personality: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'personality'))),
+        behavior: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'behavior'))),
+        tone: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'tone'))),
+        regionality: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'regionality'))),
+        commandResponse: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'command_response'))),
+    };
+};
+
+const fillMimicAnalysisSummaryGaps = (
+    analysis: MimicAnalysisSummary,
+    fallback: MimicAnalysisSummary,
+): MimicAnalysisSummary => {
+    return {
+        personality: analysis.personality || fallback.personality,
+        behavior: analysis.behavior || fallback.behavior,
+        tone: analysis.tone || fallback.tone,
+        regionality: analysis.regionality || fallback.regionality,
+        commandResponse: analysis.commandResponse || fallback.commandResponse,
+    };
+};
+
 const parseMimicPersonaDraft = (text: string): MimicPersonaDraft | null => {
     const description = extractXmlTag(text, 'description');
     const prompt = extractXmlTag(text, 'prompt');
@@ -627,6 +987,31 @@ const parseMimicPersonaDraft = (text: string): MimicPersonaDraft | null => {
         prompt,
         greeting,
         memory,
+        analysis: createEmptyMimicAnalysisSummary(),
+    };
+};
+
+const parseMimicPersonaDraftV2 = (
+    text: string,
+    fallbackAnalysis: MimicAnalysisSummary = createEmptyMimicAnalysisSummary(),
+): MimicPersonaDraft | null => {
+    const parsed = parseMimicPersonaDraft(text);
+    if (!parsed) {
+        return null;
+    }
+
+    return {
+        ...parsed,
+        analysis: fillMimicAnalysisSummaryGaps(
+            {
+                personality: extractXmlTag(text, 'personality'),
+                behavior: extractXmlTag(text, 'behavior'),
+                tone: extractXmlTag(text, 'tone'),
+                regionality: extractXmlTag(text, 'regionality'),
+                commandResponse: extractXmlTag(text, 'command_response'),
+            },
+            fallbackAnalysis,
+        ),
     };
 };
 
@@ -712,6 +1097,11 @@ const buildMimicSynthesisPrompt = (
         ].join('\n'),
         [
             'Output format:',
+            '<personality>2 to 4 concise sentences summarizing the original personality you inferred.</personality>',
+            '<behavior>2 to 4 concise sentences summarizing usual behavior and reactions.</behavior>',
+            '<tone>2 to 4 concise sentences summarizing wording, rhythm, and emotional temperature.</tone>',
+            '<regionality>State the likely region or that it is unclear, and explain the language cues briefly.</regionality>',
+            '<command_response>Describe how this person usually reacts when asked or pushed.</command_response>',
             '<description>One concise sentence summarizing the person.</description>',
             '<prompt>A full persona prompt for the romance chat app. Include original personality, tone, behavior, regional language identity, how they react to commands, and how they interact romantically with the user.</prompt>',
             '<greeting>A natural first greeting in that person\'s voice.</greeting>',
@@ -754,17 +1144,29 @@ const runMimicTranscriptAnalysis = async () => {
     }
 
     const extraNotes = mimicNotesInput.value.trim();
-    const { text, sourceName } = await readTranscriptTextFromFile(mimicTranscriptFile);
-    const normalized = normalizeTranscriptText(text);
+    const transcriptResult = await readTranscriptTextFromFile(mimicTranscriptFile);
+    const normalized = normalizeTranscriptText(transcriptResult.text);
     if (!normalized) {
         throw new Error('聊天紀錄內容是空的，無法分析。');
     }
 
-    const focusedTranscript = focusTranscriptOnTargetSpeaker(normalized, targetName);
-    const rawChunks = splitTranscriptIntoChunks(focusedTranscript);
-    const chunks = rebalanceTranscriptChunks(rawChunks);
+    const focusedTranscript = focusTranscriptOnTargetSpeakerV2(normalized, targetName);
+    const rawChunks = splitTranscriptIntoChunks(focusedTranscript.text);
+    const chunks = rebalanceTranscriptChunks(rawChunks).filter(chunk => chunk.trim());
+    if (chunks.length === 0) {
+        throw new Error('這份聊天紀錄沒有整理出可分析的片段。');
+    }
 
-    mimicTranscriptMeta.textContent = `來源：${sourceName}，共 ${normalized.length.toLocaleString()} 字，分析 ${chunks.length} 段。`;
+    const focusSummary = focusedTranscript.usedFocusedWindows
+        ? `已聚焦到 ${targetName} 的 ${focusedTranscript.matchedTurns} 則發話附近內容`
+        : focusedTranscript.matchedTurns > 0
+            ? `只找到 ${focusedTranscript.matchedTurns} 則 ${targetName} 發話，這次改用整份紀錄分析`
+            : `找不到明確的 ${targetName} 說話標記，這次改用整份紀錄分析`;
+    const parserSummary = transcriptResult.mergedLines > 0
+        ? `${transcriptResult.parserLabel}，並合併 ${transcriptResult.mergedLines} 行續訊`
+        : transcriptResult.parserLabel;
+
+    mimicTranscriptMeta.textContent = `來源：${transcriptResult.sourceName}，格式：${parserSummary}，共 ${normalized.length.toLocaleString()} 字，分析 ${chunks.length} 段。`;
 
     const chunkSummaries: string[] = [];
     for (let index = 0; index < chunks.length; index += 1) {
@@ -772,6 +1174,7 @@ const runMimicTranscriptAnalysis = async () => {
     }
 
     setMimicAnalysisStatus('正在合成角色草稿...');
+    const fallbackAnalysis = buildAnalysisSummaryFromChunkSummaries(chunkSummaries);
 
     const synthesisResponse = await runMimicModelCall(
         [
@@ -789,12 +1192,16 @@ const runMimicTranscriptAnalysis = async () => {
         1200,
     );
 
-    const draft = parseMimicPersonaDraft(synthesisResponse);
+    const draft = parseMimicPersonaDraftV2(synthesisResponse, fallbackAnalysis);
     if (!draft) {
         throw new Error('這次沒有成功組出完整的角色草稿，請再試一次。');
     }
 
     mimicDraftPersona = draft;
+    renderMimicAnalysisPreview(
+        draft.analysis,
+        `來源：${transcriptResult.sourceName}｜解析格式：${parserSummary}｜抓到約 ${transcriptResult.speakerTurns} 則對話｜${focusSummary}`,
+    );
     mimicDescriptionEditor.value = draft.description;
     mimicPromptEditor.value = draft.prompt;
     mimicGreetingEditor.value = draft.greeting;
@@ -992,7 +1399,7 @@ const handleMimicTranscriptUpload = (event: Event) => {
     mimicDraftPersona = null;
     resetMimicDraftEditors();
     mimicTranscriptStatus.textContent = `已選擇：${file.name}`;
-    mimicTranscriptMeta.textContent = `檔案大小：約 ${(file.size / 1024).toFixed(1)} KB。分析前會先切段，再抽出原始人格與語氣。`;
+    mimicTranscriptMeta.textContent = `檔案大小：約 ${(file.size / 1024).toFixed(1)} KB。分析前會先辨識聊天格式、整理說話者，再切段抽出原始人格與語氣。`;
     saveMimicPersonaBtn.disabled = true;
     setMimicAnalysisStatus('檔案已載入，可以開始分析。');
     mimicTranscriptInput.value = '';
