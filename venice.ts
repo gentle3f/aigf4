@@ -22,6 +22,7 @@ export interface VeniceTextGenerationResult {
   text: string;
   promptTokens?: number;
   completionTokens?: number;
+  finishReason?: string | null;
 }
 
 interface VeniceChatChoice {
@@ -123,11 +124,11 @@ export async function generateVeniceText(
   const {
     model,
     messages,
-    maxCompletionTokens = 180,
+    maxCompletionTokens,
     temperature = 0.72,
     topP = 0.92,
     repetitionPenalty = 1.08,
-    stop = ['\nUser:', '\nAssistant:', '\n使用者:', '\n詠芯:'],
+    stop = ['\nUser:', '\nUSER:', '\n使用者:'],
     seed,
     onStateChange,
   } = options;
@@ -147,7 +148,9 @@ export async function generateVeniceText(
       temperature,
       top_p: topP,
       repetition_penalty: repetitionPenalty,
-      max_completion_tokens: maxCompletionTokens,
+      ...(typeof maxCompletionTokens === 'number'
+        ? { max_completion_tokens: maxCompletionTokens }
+        : {}),
       reasoning_effort: 'none',
       seed,
       stop,
@@ -174,6 +177,7 @@ export async function generateVeniceText(
     text,
     promptTokens: response.usage?.prompt_tokens,
     completionTokens: response.usage?.completion_tokens,
+    finishReason: choice?.finish_reason ?? null,
   };
 }
 

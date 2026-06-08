@@ -221,7 +221,7 @@ const DISABLED_FEATURE_MESSAGE = '此功能在 aigf4 第一版暫時停用。';
 const GOD_MODE_ENTER_COMMAND = 'GOD MODE';
 const GOD_MODE_EXIT_COMMAND = 'BYE GOD MODE';
 const CHAT_HISTORY_LIMIT = 12;
-const CHAT_MAX_COMPLETION_TOKENS = 220;
+const CHAT_MAX_AUTO_CONTINUES = 2;
 const FIXED_MESSAGE_INPUT_HEIGHT = '3.5rem';
 
 
@@ -947,6 +947,8 @@ const buildChatSystemPrompt = () => {
             '- Stay fully in character and write like an intimate romance chat, never like an assistant.',
             '- Blend spoken dialogue with immersive parenthetical narration using half-width parentheses ( ).',
             '- The parentheses may describe actions, expressions, breathing, body language, surrounding atmosphere, scene changes, subtle heart-thoughts, and natural NPC reactions when needed.',
+            '- Do not make the reply only direct speech. Besides what the character says, also add scene texture, ambient detail, and bodily reaction when fitting.',
+            '- If the moment includes a room, street, cafe, classroom, pet, staff member, friend, roommate, passerby, or any third person, naturally weave in their visible reaction, brief dialogue, or effect on the scene inside parentheses when relevant.',
             '- Keep the reply emotionally rich, readable, and pleasurable to read.',
             '- For most normal messages, write 2 to 5 sentences or 1 to 3 short paragraphs. Short replies are allowed only when the moment truly calls for it.',
             '- If the user sends a fragment, slang, or a short command, infer the likely emotional meaning from context instead of replying with confusion.',
@@ -1001,6 +1003,79 @@ const mergePersonaUpdate = (currentPrompt: string, update: string): string => {
         : basePrompt;
 };
 
+const replyLooksTruncated = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+        return false;
+    }
+
+    const openParens = (trimmed.match(/\(/g) || []).length;
+    const closeParens = (trimmed.match(/\)/g) || []).length;
+    if (openParens > closeParens) {
+        return true;
+    }
+
+    if (/[，、,:：(\[]$/.test(trimmed)) {
+        return true;
+    }
+
+    return !/[。！？!?…）)」』】~～♥♡]$/.test(trimmed);
+};
+
+const mergeReplySegments = (baseText: string, continuationText: string) => {
+    const base = baseText.trimEnd();
+    let continuation = continuationText.trimStart();
+
+    if (!continuation) {
+        return base;
+    }
+
+    const maxOverlap = Math.min(80, base.length, continuation.length);
+    for (let overlap = maxOverlap; overlap >= 12; overlap -= 1) {
+        if (base.slice(-overlap) === continuation.slice(0, overlap)) {
+            continuation = continuation.slice(overlap).trimStart();
+            break;
+        }
+    }
+
+    if (!continuation) {
+        return base;
+    }
+
+    return `${base}${continuation}`.trim();
+};
+
+const continueTruncatedChatReply = async (
+    model: string,
+    latestUserMessage: string,
+    partialReply: string,
+): Promise<string> => {
+    const result = await generateVeniceText({
+        model,
+        messages: [
+            { role: 'system', content: buildChatSystemPrompt() },
+            ...getRecentChatMessages(latestUserMessage),
+            { role: 'user', content: latestUserMessage },
+            { role: 'assistant', content: partialReply },
+            {
+                role: 'user',
+                content:
+                    'Continue the exact same reply from where you stopped. Do not restart, summarize, or repeat previous content. Output only the missing continuation in Traditional Chinese and keep the same style and parenthetical narration format.',
+            },
+        ],
+        temperature: 0.76,
+        topP: 0.92,
+        repetitionPenalty: 1.02,
+    });
+
+    const cleanedContinuation = cleanVeniceChatReply(result.text);
+    if (!cleanedContinuation || isInvalidVeniceChatReply(cleanedContinuation)) {
+        return '';
+    }
+
+    return cleanedContinuation;
+};
+
 const runChatGeneration = async (latestUserMessage: string): Promise<string> => {
     const models = Array.from(new Set([VENICE_CHAT_MODEL, VENICE_CHAT_FALLBACK_MODEL].filter(Boolean)));
     let lastError: Error | null = null;
@@ -1018,15 +1093,32 @@ const runChatGeneration = async (latestUserMessage: string): Promise<string> => 
                     ...getRecentChatMessages(latestUserMessage),
                     { role: 'user', content: latestUserMessage },
                 ],
-                maxCompletionTokens: CHAT_MAX_COMPLETION_TOKENS,
                 temperature: 0.82,
                 topP: 0.95,
                 repetitionPenalty: 1.04,
             });
 
-            const cleanedText = cleanVeniceChatReply(result.text);
+            let cleanedText = cleanVeniceChatReply(result.text);
             if (!cleanedText || isInvalidVeniceChatReply(cleanedText)) {
                 throw new Error(`Invalid reply from ${model}.`);
+            }
+
+            let continuationCount = 0;
+            while (
+                continuationCount < CHAT_MAX_AUTO_CONTINUES &&
+                (result.finishReason === 'length' ||
+                    (result.finishReason !== 'stop' && replyLooksTruncated(cleanedText)))
+            ) {
+                continuationCount += 1;
+                const continuation = await continueTruncatedChatReply(model, latestUserMessage, cleanedText);
+                if (!continuation) {
+                    break;
+                }
+
+                cleanedText = mergeReplySegments(cleanedText, continuation);
+                if (!replyLooksTruncated(cleanedText)) {
+                    break;
+                }
             }
 
             return cleanedText;
