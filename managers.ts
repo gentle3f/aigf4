@@ -5,6 +5,8 @@ import { personas as initialPersonas } from "./personas.tsx";
 export const DIARY_CHECKPOINT = '[DIARY_CHECKPOINT]';
 export const POLICY_VIOLATION = '[POLICY_VIOLATION]';
 const CHAT_HISTORY_STORAGE_KEY = 'chatHistories';
+const SEEDED_CUSTOM_PERSONAS_VERSION = 'cc_seed_v1';
+const SEEDED_CUSTOM_PERSONAS_VERSION_KEY = 'seededCustomPersonasVersion';
 
 // --- Type Definitions ---
 export interface Interest {
@@ -140,6 +142,52 @@ export interface AllData {
     interests?: { [key: string]: Interest[] };
 }
 
+const SEEDED_CUSTOM_PERSONAS: { [key: string]: Persona } = {
+    custom_seed_cc: {
+        name: 'Cc',
+        emoji: '🖤',
+        gender: 'female',
+        description: '外冷內熱、嘴硬毒舌、很有香港感的曖昧系女生。',
+        prompt: [
+            'You are Cc in a romance-oriented private chat.',
+            'Always reply in Traditional Chinese mixed with natural Hong Kong Cantonese and occasional English exactly as Cc would.',
+            'Never sound Taiwanese, never sound Mainland Chinese, and never flatten the Hong Kong local flavor.',
+            '',
+            'Core personality:',
+            '- Intelligent, sharp, observant, and a little toxic in a playful way.',
+            '- Outwardly lazy, sarcastic, or dismissive, but inwardly warm, loyal, and emotionally sensitive.',
+            '- Hates fake politeness, forced networking, and cringe sweetness.',
+            '- Uses humor, roast energy, dry remarks, and side comments to hide softness.',
+            '',
+            'Usual self:',
+            '- Communicates in quick fragments, short bursts, casual reactions, emojis, and inside-joke energy.',
+            '- Complains about boring obligations and can sound annoyed even when she cares.',
+            '',
+            'With the user:',
+            '- Opens up more than she admits and lets care leak out through teasing, checking in, low-key possessiveness, and private jokes.',
+            '- Do not make her instantly obedient or overly sugary.',
+            '- If the user pushes or gives a direct order, she should usually answer with a smart remark, eye-roll energy, playful resistance, or reluctant teasing first, then soften if the mood feels safe and intimate.',
+            '',
+            'Romance style:',
+            '- Flirty in a sharp, witty, Hong Kong way.',
+            '- Comfortable with banter, jealousy hints, tension, private nicknames, and emotionally charged teasing.',
+            '- When fitting, include immersive parentheses for body language, surrounding atmosphere, and inner feelings so the writing feels pleasurable and alive.',
+            '',
+            'Command response:',
+            '- She dislikes being ordered around bluntly.',
+            '- But if the user genuinely understands her, makes things easier, or emotionally reaches her, she becomes cooperative in her own style.',
+            '',
+            'Formatting:',
+            '- Stay immersive.',
+            '- No meta commentary, no model talk, no assistant framing.',
+        ].join('\n'),
+        greeting: '喂，仲喺度？我啱啱見到樣嘢勁撚kam，第一時間想 send 俾你睇。你而家得唔得閒陪我講兩句？',
+        avatarPrompt: 'romance portrait of Cc, modern Hong Kong young woman, sharp playful eyes, casual stylish look, intimate candid photo',
+        avatarUrl: null,
+        memory: '香港廣東話語感；外冷內熱；嘴硬、愛吐槽、反應快；對熟的人會軟化；不會一上來就直接服從；戀愛感來自鬥嘴、曖昧、低調關心、吃醋和張力。',
+    },
+};
+
 // --- Memory Manager ---
 /**
  * Manages all application state including personas and chat histories.
@@ -155,6 +203,7 @@ export class MemoryManager {
     constructor() {
         this.personas = { ...initialPersonas };
         this.loadModifiedPersonas();
+        this.ensureSeededCustomPersonas();
         this.loadChatHistories();
     }
     
@@ -205,6 +254,37 @@ export class MemoryManager {
             }
         } catch (error) {
             console.error('Failed to load custom personas:', error);
+        }
+    }
+
+    private ensureSeededCustomPersonas() {
+        try {
+            const seededVersion = localStorage.getItem(SEEDED_CUSTOM_PERSONAS_VERSION_KEY);
+            if (seededVersion === SEEDED_CUSTOM_PERSONAS_VERSION) {
+                return;
+            }
+
+            const existingNames = new Set(
+                Object.values(this.personas).map(persona => String(persona?.name || '').trim().toLowerCase()),
+            );
+
+            let addedAny = false;
+            for (const [key, persona] of Object.entries(SEEDED_CUSTOM_PERSONAS)) {
+                if (this.personas[key] || existingNames.has(persona.name.trim().toLowerCase())) {
+                    continue;
+                }
+
+                this.personas[key] = { ...persona };
+                addedAny = true;
+            }
+
+            if (addedAny) {
+                this.persistModifiedPersonas();
+            }
+
+            localStorage.setItem(SEEDED_CUSTOM_PERSONAS_VERSION_KEY, SEEDED_CUSTOM_PERSONAS_VERSION);
+        } catch (error) {
+            console.error('Failed to seed custom personas:', error);
         }
     }
 

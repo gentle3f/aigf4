@@ -197,7 +197,10 @@ const mimicResultPanel = document.getElementById('mimic-result-panel')!;
 const mimicResultEmpty = document.getElementById('mimic-result-empty')!;
 const mimicAnalysisMeta = document.getElementById('mimic-analysis-meta')!;
 const mimicAnalysisPersonality = document.getElementById('mimic-analysis-personality')!;
-const mimicAnalysisBehavior = document.getElementById('mimic-analysis-behavior')!;
+const mimicAnalysisUsualSelf = document.getElementById('mimic-analysis-usual-self')!;
+const mimicAnalysisWithUserSelf = document.getElementById('mimic-analysis-with-user-self')!;
+const mimicAnalysisRomanceStyle = document.getElementById('mimic-analysis-romance-style')!;
+const mimicAnalysisBehavior = mimicAnalysisUsualSelf;
 const mimicAnalysisTone = document.getElementById('mimic-analysis-tone')!;
 const mimicAnalysisRegionality = document.getElementById('mimic-analysis-regionality')!;
 const mimicAnalysisCommandResponse = document.getElementById('mimic-analysis-command-response')!;
@@ -262,6 +265,9 @@ type AppHistoryState = { view: 'home' } | { view: 'chat'; personaKey: string };
 type MimicAnalysisSummary = {
     personality: string;
     behavior: string;
+    usualSelf?: string;
+    withUserSelf?: string;
+    romanceStyle?: string;
     tone: string;
     regionality: string;
     commandResponse: string;
@@ -382,12 +388,38 @@ const renderMimicAnalysisPreview = (
     mimicAnalysisCommandResponse.textContent = resolved.commandResponse || '分析完成後會顯示。';
 };
 
+const createEmptyMimicAnalysisSummaryV2 = (): MimicAnalysisSummary => ({
+    personality: '',
+    behavior: '',
+    usualSelf: '',
+    withUserSelf: '',
+    romanceStyle: '',
+    tone: '',
+    regionality: '',
+    commandResponse: '',
+});
+
+const renderMimicAnalysisPreviewV2 = (
+    analysis: MimicAnalysisSummary | null,
+    metaText = '分析完成後，這裡會顯示匯入格式、聚焦方式與 AI 判斷依據。',
+) => {
+    const resolved = analysis || createEmptyMimicAnalysisSummaryV2();
+    mimicAnalysisMeta.textContent = metaText;
+    mimicAnalysisPersonality.textContent = resolved.personality || '分析完成後會顯示。';
+    mimicAnalysisUsualSelf.textContent = resolved.usualSelf || resolved.behavior || '分析完成後會顯示。';
+    mimicAnalysisWithUserSelf.textContent = resolved.withUserSelf || '分析完成後會顯示。';
+    mimicAnalysisRomanceStyle.textContent = resolved.romanceStyle || '分析完成後會顯示。';
+    mimicAnalysisTone.textContent = resolved.tone || '分析完成後會顯示。';
+    mimicAnalysisRegionality.textContent = resolved.regionality || '分析完成後會顯示。';
+    mimicAnalysisCommandResponse.textContent = resolved.commandResponse || '分析完成後會顯示。';
+};
+
 const resetMimicDraftEditors = () => {
     mimicDescriptionEditor.value = '';
     mimicPromptEditor.value = '';
     mimicGreetingEditor.value = '';
     mimicMemoryEditor.value = '';
-    renderMimicAnalysisPreview(null);
+    renderMimicAnalysisPreviewV2(null);
     mimicResultPanel.classList.add('hidden');
     mimicResultEmpty.classList.remove('hidden');
 };
@@ -994,6 +1026,11 @@ const buildAnalysisSummaryFromChunkSummaries = (chunkSummaries: string[]): Mimic
     return {
         personality: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'personality'))),
         behavior: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'behavior'))),
+        usualSelf: mergeAnalysisFragments(
+            chunkSummaries.map(summary => extractXmlTag(summary, 'usual_self') || extractXmlTag(summary, 'behavior')),
+        ),
+        withUserSelf: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'with_user_self'))),
+        romanceStyle: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'romance_style'))),
         tone: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'tone'))),
         regionality: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'regionality'))),
         commandResponse: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'command_response'))),
@@ -1007,6 +1044,9 @@ const fillMimicAnalysisSummaryGaps = (
     return {
         personality: analysis.personality || fallback.personality,
         behavior: analysis.behavior || fallback.behavior,
+        usualSelf: analysis.usualSelf || analysis.behavior || fallback.usualSelf || fallback.behavior,
+        withUserSelf: analysis.withUserSelf || fallback.withUserSelf,
+        romanceStyle: analysis.romanceStyle || fallback.romanceStyle,
         tone: analysis.tone || fallback.tone,
         regionality: analysis.regionality || fallback.regionality,
         commandResponse: analysis.commandResponse || fallback.commandResponse,
@@ -1028,13 +1068,13 @@ const parseMimicPersonaDraft = (text: string): MimicPersonaDraft | null => {
         prompt,
         greeting,
         memory,
-        analysis: createEmptyMimicAnalysisSummary(),
+        analysis: createEmptyMimicAnalysisSummaryV2(),
     };
 };
 
 const parseMimicPersonaDraftV2 = (
     text: string,
-    fallbackAnalysis: MimicAnalysisSummary = createEmptyMimicAnalysisSummary(),
+    fallbackAnalysis: MimicAnalysisSummary = createEmptyMimicAnalysisSummaryV2(),
 ): MimicPersonaDraft | null => {
     const parsed = parseMimicPersonaDraft(text);
     if (!parsed) {
@@ -1047,6 +1087,9 @@ const parseMimicPersonaDraftV2 = (
             {
                 personality: extractXmlTag(text, 'personality'),
                 behavior: extractXmlTag(text, 'behavior'),
+                usualSelf: extractXmlTag(text, 'usual_self'),
+                withUserSelf: extractXmlTag(text, 'with_user_self'),
+                romanceStyle: extractXmlTag(text, 'romance_style'),
                 tone: extractXmlTag(text, 'tone'),
                 regionality: extractXmlTag(text, 'regionality'),
                 commandResponse: extractXmlTag(text, 'command_response'),
@@ -1098,6 +1141,7 @@ const buildMimicChunkAnalysisPrompt = (targetName: string, extraNotes: string) =
             '- First identify the target person\'s ORIGINAL personality, usual behavior, tone, rhythm, and relationship style from the transcript itself.',
             '- Do not overwrite the original personality with the user notes. The notes are only a later layer, not the core identity.',
             '- This app is romance-oriented, so mention romantic compatibility cues when visible, but do not turn the person into a generic flirt if the transcript does not support that.',
+            '- Distinguish how they act in ordinary life versus how they act specifically with the user when there is trust, tension, attraction, or emotional closeness.',
             '- Distinguish Taiwan, Hong Kong, and Mainland China carefully. Do not merge them.',
             '- If the transcript suggests Taiwan, note Taiwanese wording or cultural cues.',
             '- If it suggests Hong Kong, note Hong Kong or Cantonese-influenced cues.',
@@ -1108,6 +1152,9 @@ const buildMimicChunkAnalysisPrompt = (targetName: string, extraNotes: string) =
             'Output format:',
             '<personality>2 to 4 concise sentences about original personality.</personality>',
             '<behavior>2 to 4 concise sentences about usual behavior, reactions, and habits.</behavior>',
+            '<usual_self>2 to 4 concise sentences about how this person usually feels and behaves in everyday life.</usual_self>',
+            '<with_user_self>2 to 4 concise sentences about how this person softens, changes, or reacts specifically with the user when there is closeness or tension.</with_user_self>',
+            '<romance_style>2 to 4 concise sentences about this person\'s romance style, intimacy style, jealousy level, teasing level, and emotional pacing.</romance_style>',
             '<tone>2 to 4 concise sentences about wording, rhythm, emotional temperature, and flirt style.</tone>',
             '<regionality>State the likely region or that it is unclear, and explain the language cues briefly.</regionality>',
             '<command_response>Describe how this person usually reacts when asked or pushed, and how much they naturally comply.</command_response>',
@@ -1132,6 +1179,7 @@ const buildMimicSynthesisPrompt = (
             '- Preserve the target person\'s ORIGINAL personality, usual behavior, tone, and regional language identity first.',
             '- This is for a romance-oriented chat app, so the final result should feel romantically interactive, intimate, and emotionally present.',
             '- Do not erase the original person just to make them romantic. The romance layer must still sound like that person.',
+            '- Clearly distinguish who they are in everyday life versus how they act specifically with the user once attraction, familiarity, or emotional safety appears.',
             '- The persona should generally be willing to listen to the user\'s commands, but still react through their own personality, shyness, pride, habits, and emotional style.',
             '- Keep Taiwan, Hong Kong, and Mainland China distinctions accurate. Do not mix them together.',
             '- Write all final output in Traditional Chinese.',
@@ -1140,6 +1188,9 @@ const buildMimicSynthesisPrompt = (
             'Output format:',
             '<personality>2 to 4 concise sentences summarizing the original personality you inferred.</personality>',
             '<behavior>2 to 4 concise sentences summarizing usual behavior and reactions.</behavior>',
+            '<usual_self>2 to 4 concise sentences summarizing how this person normally behaves in everyday life.</usual_self>',
+            '<with_user_self>2 to 4 concise sentences summarizing how this person changes, softens, flirts, resists, or opens up specifically with the user.</with_user_self>',
+            '<romance_style>2 to 4 concise sentences summarizing the romance dynamic, intimacy rhythm, possessiveness, jealousy, teasing, and emotional comfort style.</romance_style>',
             '<tone>2 to 4 concise sentences summarizing wording, rhythm, and emotional temperature.</tone>',
             '<regionality>State the likely region or that it is unclear, and explain the language cues briefly.</regionality>',
             '<command_response>Describe how this person usually reacts when asked or pushed.</command_response>',
@@ -1239,7 +1290,7 @@ const runMimicTranscriptAnalysis = async () => {
     }
 
     mimicDraftPersona = draft;
-    renderMimicAnalysisPreview(
+    renderMimicAnalysisPreviewV2(
         draft.analysis,
         `來源：${transcriptResult.sourceName}｜解析格式：${parserSummary}｜抓到約 ${transcriptResult.speakerTurns} 則對話｜${focusSummary}`,
     );
@@ -1321,7 +1372,7 @@ const runMimicTranscriptAnalysisV2 = async () => {
     }
 
     mimicDraftPersona = draft;
-    renderMimicAnalysisPreview(
+    renderMimicAnalysisPreviewV2(
         draft.analysis,
         `來源：${transcriptResult.sourceName}｜解析格式：${parserSummary}｜抓到約 ${transcriptResult.speakerTurns} 則對話｜${focusSummary}`,
     );
