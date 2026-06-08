@@ -289,9 +289,17 @@ type TranscriptFocusResult = {
     usedFocusedWindows: boolean;
 };
 
+type PreparedTranscriptChunks = {
+    chunks: string[];
+    sourceChunkCount: number;
+    sampled: boolean;
+    sampleChunkCount: number;
+};
+
 const HOME_HISTORY_STATE: AppHistoryState = { view: 'home' };
 const MIMIC_CHUNK_CHAR_LIMIT = 2600;
 const MIMIC_MAX_ANALYSIS_CHUNKS = 10;
+const MIMIC_SAMPLE_CHUNK_CHAR_LIMIT = 1800;
 
 
 // --- Functions ---
@@ -917,19 +925,52 @@ const splitTranscriptIntoChunks = (text: string, limit = MIMIC_CHUNK_CHAR_LIMIT)
     return chunks;
 };
 
-const rebalanceTranscriptChunks = (chunks: string[], maxChunks = MIMIC_MAX_ANALYSIS_CHUNKS) => {
-    if (chunks.length <= maxChunks) {
-        return chunks;
+function selectEvenlySpacedItems<T>(items: T[], targetCount: number): T[] {
+    if (items.length <= targetCount) {
+        return items;
     }
 
-    const groups: string[] = [];
-    const groupSize = Math.ceil(chunks.length / maxChunks);
-
-    for (let index = 0; index < chunks.length; index += groupSize) {
-        groups.push(chunks.slice(index, index + groupSize).join('\n\n'));
+    if (targetCount <= 1) {
+        return [items[0]];
     }
 
-    return groups;
+    const selected: T[] = [];
+    const seenIndexes = new Set<number>();
+
+    for (let index = 0; index < targetCount; index += 1) {
+        const ratio = index / (targetCount - 1);
+        const mappedIndex = Math.round(ratio * (items.length - 1));
+        if (seenIndexes.has(mappedIndex)) {
+            continue;
+        }
+
+        seenIndexes.add(mappedIndex);
+        selected.push(items[mappedIndex]);
+    }
+
+    return selected;
+}
+
+const prepareTranscriptChunksForAnalysis = (text: string): PreparedTranscriptChunks => {
+    const directChunks = splitTranscriptIntoChunks(text).filter(chunk => chunk.trim());
+    if (directChunks.length <= MIMIC_MAX_ANALYSIS_CHUNKS) {
+        return {
+            chunks: directChunks,
+            sourceChunkCount: directChunks.length,
+            sampled: false,
+            sampleChunkCount: directChunks.length,
+        };
+    }
+
+    const sampleChunks = splitTranscriptIntoChunks(text, MIMIC_SAMPLE_CHUNK_CHAR_LIMIT).filter(chunk => chunk.trim());
+    const selectedChunks = selectEvenlySpacedItems(sampleChunks, MIMIC_MAX_ANALYSIS_CHUNKS);
+
+    return {
+        chunks: selectedChunks,
+        sourceChunkCount: directChunks.length,
+        sampled: true,
+        sampleChunkCount: sampleChunks.length,
+    };
 };
 
 const extractXmlTag = (text: string, tag: string) => {
@@ -1151,8 +1192,8 @@ const runMimicTranscriptAnalysis = async () => {
     }
 
     const focusedTranscript = focusTranscriptOnTargetSpeakerV2(normalized, targetName);
-    const rawChunks = splitTranscriptIntoChunks(focusedTranscript.text);
-    const chunks = rebalanceTranscriptChunks(rawChunks).filter(chunk => chunk.trim());
+    const preparedChunks = prepareTranscriptChunksForAnalysis(focusedTranscript.text);
+    const chunks = preparedChunks.chunks;
     if (chunks.length === 0) {
         throw new Error('這份聊天紀錄沒有整理出可分析的片段。');
     }
@@ -1167,6 +1208,88 @@ const runMimicTranscriptAnalysis = async () => {
         : transcriptResult.parserLabel;
 
     mimicTranscriptMeta.textContent = `來源：${transcriptResult.sourceName}，格式：${parserSummary}，共 ${normalized.length.toLocaleString()} 字，分析 ${chunks.length} 段。`;
+
+    const chunkSummaries: string[] = [];
+    for (let index = 0; index < chunks.length; index += 1) {
+        chunkSummaries.push(await analyzeTranscriptChunk(chunks[index], targetName, extraNotes, index, chunks.length));
+    }
+
+    setMimicAnalysisStatus('正在合成角色草稿...');
+    const fallbackAnalysis = buildAnalysisSummaryFromChunkSummaries(chunkSummaries);
+
+    const synthesisResponse = await runMimicModelCall(
+        [
+            {
+                role: 'system',
+                content: buildMimicSynthesisPrompt(targetName, getSelectedMimicGender(), extraNotes),
+            },
+            {
+                role: 'user',
+                content: `Chunk analyses for ${targetName}:\n\n${chunkSummaries
+                    .map((summary, index) => `### Chunk ${index + 1}\n${summary}`)
+                    .join('\n\n')}`,
+            },
+        ],
+        1200,
+    );
+
+    const draft = parseMimicPersonaDraftV2(synthesisResponse, fallbackAnalysis);
+    if (!draft) {
+        throw new Error('這次沒有成功組出完整的角色草稿，請再試一次。');
+    }
+
+    mimicDraftPersona = draft;
+    renderMimicAnalysisPreview(
+        draft.analysis,
+        `來源：${transcriptResult.sourceName}｜解析格式：${parserSummary}｜抓到約 ${transcriptResult.speakerTurns} 則對話｜${focusSummary}`,
+    );
+    mimicDescriptionEditor.value = draft.description;
+    mimicPromptEditor.value = draft.prompt;
+    mimicGreetingEditor.value = draft.greeting;
+    mimicMemoryEditor.value = draft.memory;
+    mimicResultEmpty.classList.add('hidden');
+    mimicResultPanel.classList.remove('hidden');
+    saveMimicPersonaBtn.disabled = false;
+    setMimicAnalysisStatus('分析完成，你現在可以手動微調後再儲存。', 'success');
+};
+
+const runMimicTranscriptAnalysisV2 = async () => {
+    if (!mimicTranscriptFile) {
+        throw new Error('請先選擇聊天紀錄檔案。');
+    }
+
+    const targetName = mimicNameInput.value.trim();
+    if (!targetName) {
+        throw new Error('請先輸入對方名字。');
+    }
+
+    const extraNotes = mimicNotesInput.value.trim();
+    const transcriptResult = await readTranscriptTextFromFile(mimicTranscriptFile);
+    const normalized = normalizeTranscriptText(transcriptResult.text);
+    if (!normalized) {
+        throw new Error('聊天紀錄內容是空的，無法分析。');
+    }
+
+    const focusedTranscript = focusTranscriptOnTargetSpeakerV2(normalized, targetName);
+    const preparedChunks = prepareTranscriptChunksForAnalysis(focusedTranscript.text);
+    const chunks = preparedChunks.chunks;
+    if (chunks.length === 0) {
+        throw new Error('這份聊天紀錄沒有整理出可分析的片段。');
+    }
+
+    const focusSummary = focusedTranscript.usedFocusedWindows
+        ? `已聚焦到 ${targetName} 的 ${focusedTranscript.matchedTurns} 則發話附近內容`
+        : focusedTranscript.matchedTurns > 0
+            ? `只找到 ${focusedTranscript.matchedTurns} 則 ${targetName} 發話，這次改用整份紀錄分析`
+            : `找不到明確的 ${targetName} 說話標記，這次改用整份紀錄分析`;
+    const parserSummary = transcriptResult.mergedLines > 0
+        ? `${transcriptResult.parserLabel}，並合併 ${transcriptResult.mergedLines} 行續訊`
+        : transcriptResult.parserLabel;
+    const samplingSummary = preparedChunks.sampled
+        ? `從 ${preparedChunks.sourceChunkCount} 段原始片段中等距抽樣 ${chunks.length} 段`
+        : `直接分析 ${chunks.length} 段`;
+
+    mimicTranscriptMeta.textContent = `來源：${transcriptResult.sourceName}，格式：${parserSummary}，共 ${normalized.length.toLocaleString()} 字，${samplingSummary}。`;
 
     const chunkSummaries: string[] = [];
     for (let index = 0; index < chunks.length; index += 1) {
@@ -1427,7 +1550,7 @@ const runMimicAnalysisFromModal = async () => {
 
     setMimicBusyState(true);
     try {
-        await runMimicTranscriptAnalysis();
+        await runMimicTranscriptAnalysisV2();
     } catch (error) {
         const message = error instanceof Error ? error.message : '分身分析失敗，請再試一次。';
         setMimicAnalysisStatus(message, 'error');
