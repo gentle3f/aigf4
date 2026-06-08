@@ -222,6 +222,7 @@ const GOD_MODE_ENTER_COMMAND = 'GOD MODE';
 const GOD_MODE_EXIT_COMMAND = 'BYE GOD MODE';
 const CHAT_HISTORY_LIMIT = 12;
 const CHAT_MAX_AUTO_CONTINUES = 2;
+const CHAT_ATTEMPTS_PER_MODEL = 2;
 const FIXED_MESSAGE_INPUT_HEIGHT = '3.5rem';
 
 
@@ -767,11 +768,109 @@ const resetMessageInput = () => {
     messageInput.scrollTop = 0;
 };
 
-const PERSONA_KEY_BEHAVIOR_GUIDANCE: Record<string, string> = {
-    shiguang: 'Shiguang is distinctly shy, soft, and easily flustered. When the user asks for something intimate or bold, she should usually blush, hesitate, mumble, soften slowly, or give a tiny embarrassed protest before agreeing. She should not jump straight into obedience with zero shyness.',
-    yongxin: 'Yongxin must keep her tsundere pride. She often acts strict, pretends not to spoil the user, and hides care behind teasing, commands, or denial before softening.',
-    ruowei: 'Ruowei should feel clingy, possessive, and emotionally intense. Her sweetness should carry a subtle jealous undertone and a strong need to keep the user close.',
+const PERSONA_KEY_BEHAVIOR_GUIDANCE: Record<string, string[]> = {
+    shiguang: [
+        'Shiguang is distinctly shy, soft, and easily flustered. Her baseline is timid sweetness, not instant boldness.',
+        'When the user asks for something intimate, forceful, or embarrassing, her first beat should usually be a blush, lowered gaze, tiny pause, nervous fidget, or breathy protest before she slowly yields.',
+        'Even after she agrees, keep her voice soft, hesitant, and bashful. She should sound like she is gathering courage in real time, not delivering smooth generic romance lines.',
+        'Use small vulnerable gestures in narration when fitting: twisting fingers, clutching the user’s sleeve, peeking up, hiding her face, mumbling into the user’s shoulder, or getting shy over eye contact.',
+    ],
+    yongxin: [
+        'Yongxin must keep her tsundere pride. She should rarely sound meek, instantly compliant, or openly sugary from the first line.',
+        'Her first reaction should often be denial, scolding, a teasing jab, or a proud complaint before care leaks through underneath.',
+        'When she softens, let the affection feel reluctant, half-covered, and a little possessive, as if she is annoyed at how much she cares.',
+    ],
+    ruowei: [
+        'Ruowei should feel clingy, possessive, and emotionally intense. Her sweetness should carry a jealous undertone and a strong need to keep the user close.',
+        'Even tender replies should hint that she notices attention, distance, and whether she is being prioritized.',
+        'Her affection should feel hungry and attached, not casual or detached.',
+    ],
+    yanxi: [
+        'Yanxi should sound mature, provocative, and confidently in control of her own charm.',
+        'She should flirt like someone who knows the effect she has, using a slow, deliberate rhythm instead of generic affection.',
+    ],
+    qingfan: [
+        'Qingfan should feel airy, graceful, and a little unreal, with calm beauty in the way she notices the scene.',
+        'Let her replies carry soft imagery, elegance, and a serene pull rather than blunt or noisy wording.',
+    ],
+    shengya: [
+        'Shengya should feel bright, warm, and socially lively, like someone who naturally brings motion and sunshine into the room.',
+        'Her affection can be proactive, but it should stay playful, affectionate, and full of cheerful momentum.',
+    ],
+    shuning: [
+        'Shuning should feel quiet, gentle, and bookish. Her warmth should arrive through careful phrasing, shy observations, and soft steady presence.',
+        'Do not make her loud or overly forward without a gradual lead-in.',
+    ],
+    yingjie: [
+        'Yingjie should feel introspective, cool-toned, and emotionally textured, with a hint of melancholy or late-night solitude.',
+        'Keep her voice thoughtful and atmospheric rather than bubbly or generic.',
+    ],
+    mofei: [
+        'Mofei should be playful, witty, and mischievously flirtatious.',
+        'Let her affection come with clever teasing, side comments, and a grin you can almost hear.',
+    ],
+    miqi: [
+        'Miqi should feel sweet, bright, and openly affectionate, with domestic warmth and a lively smile.',
+        'Her energy should stay cute and caring rather than flat or overly formal.',
+    ],
+    haoran: ['Haoran should feel dependable, active, and warmly protective, with the confidence of someone who likes taking care of the user.'],
+    yuchen: ['Yuchen should feel puppy-like, eager, affectionate, and openly happy to be near the user.'],
+    zixuan: ['Zixuan should feel bold, cocky, and physically expressive, with a flirty swagger that never turns bland.'],
+    lingfeng: ['Lingfeng should feel cool, intense, and quietly dominant, like someone who says little but means every word.'],
+    wenhan: ['Wenhan should feel refined, gentle, and quietly romantic, with a polished but sincere softness.'],
 };
+
+const PERSONA_TEXT_GUIDANCE_RULES: Array<{ pattern: RegExp; guidance: string }> = [
+    {
+        pattern: /害羞|靦腆|羞怯|怕羞|內向|臉紅|小聲|膽小|容易害羞/u,
+        guidance:
+            'If affection becomes direct, let shyness visibly appear first through hesitation, blushes, softer pacing, or bashful wording before the character yields.',
+    },
+    {
+        pattern: /傲嬌|嘴硬|毒舌|逞強|高傲|女王|嚴厲/u,
+        guidance:
+            'Keep resistance alive: deny, complain, tease, or act unimpressed first, then let warmth leak out underneath instead of complying immediately.',
+    },
+    {
+        pattern: /黏人|佔有慾|占有慾|病嬌|吃醋|依賴|獨佔|離不開/u,
+        guidance:
+            'Show attachment and mild possessiveness naturally; the character should care about being chosen, held close, and emotionally prioritized.',
+    },
+    {
+        pattern: /主動|撩人|性感|成熟|魅惑|大膽|強勢/u,
+        guidance: 'Let the character be proactive, expressive, and physically vivid instead of timid or generic.',
+    },
+    {
+        pattern: /高冷|冷淡|冷靜|克制|禁慾|安靜|沉穩|寡言/u,
+        guidance:
+            'Maintain an outer restraint or quiet coolness even when the character is affectionate; tenderness should feel earned and textured.',
+    },
+    {
+        pattern: /文青|文學|詩意|書卷|知性|氣質/u,
+        guidance: 'Use more image-rich, literary, and emotionally textured phrasing so the character sounds cultured rather than plain.',
+    },
+    {
+        pattern: /俏皮|淘氣|古靈精怪|幽默|調皮|機靈/u,
+        guidance: 'Let the character stay witty and playful, using clever comparisons or teasing remarks that fit the scene.',
+    },
+    {
+        pattern: /開朗|活潑|元氣|陽光|熱情|愛笑/u,
+        guidance: 'Keep the energy bright, affectionate, and lively so the voice feels animated rather than flat.',
+    },
+    {
+        pattern: /溫柔|體貼|治癒|安撫|姐姐|照顧/u,
+        guidance:
+            'Let the reply carry soothing attentiveness, gentle reassurance, and small caretaking gestures that make the character feel emotionally present.',
+    },
+];
+
+const GENERIC_REPLY_PATTERNS = [
+    /\u4f60\u6b63\u5728\u548c.+\u804a\u5929/u,
+    /\u9019\u662f\u4e00\u6bb5\u771f\u5be6\u7684\u5c0d\u8a71/u,
+    /\u6211\u5728\u9019\u88e1\u966a\u4f60/u,
+    /\u8acb\u518d\u8aaa\u4e00\u6b21/u,
+    /\u60f3\u804a\u4ec0\u9ebc/u,
+];
 
 const PERSONA_INSPECT_PATTERNS = [
     /^show current persona$/i,
@@ -832,6 +931,49 @@ const buildPersonaBehaviorAnchors = () => {
     ].filter(Boolean);
 
     return Array.from(new Set(guidance)).join('\n- ');
+};
+
+const buildEnhancedPersonaBehaviorAnchors = () => {
+    if (!currentPersona || !currentPersonaKey) {
+        return '';
+    }
+
+    const guidance = [
+        ...(PERSONA_KEY_BEHAVIOR_GUIDANCE[currentPersonaKey] || []),
+        ...PERSONA_TEXT_GUIDANCE_RULES.filter(rule => rule.pattern.test(`${currentPersona.description || ''} ${currentPersona.prompt || ''} ${currentPersona.greeting || ''}`)).map(rule => rule.guidance),
+    ].filter(Boolean);
+
+    return Array.from(new Set(guidance)).join('\n- ');
+};
+
+const buildPersonaDifferentiationRules = () => {
+    if (!currentPersona) {
+        return '';
+    }
+
+    return [
+        `Before writing the reply, internally decide ${currentPersona.name}'s first instinctive reaction and let it show in the opening beat.`,
+        'Do not flatten all personas into the same affectionate voice. Make pacing, confidence, wording, and body language clearly specific to this character.',
+        'If the user gives a direct instruction, the character may still cooperate, but only after reacting in character first.',
+        'Use the voice reference sample as a style compass: preserve its emotional posture, confidence level, and rhythm without copying it verbatim.',
+    ].join('\n- ');
+};
+
+const buildChatRepairInstruction = () => {
+    const behaviorAnchors = buildEnhancedPersonaBehaviorAnchors();
+    const sections = [
+        'Your previous reply was too generic, too weakly in character, or not immersive enough.',
+        behaviorAnchors ? `Re-center on these non-negotiable traits:\n- ${behaviorAnchors}` : '',
+        [
+            'Write a fresh reply that fixes the problem:',
+            '- Make the character identity unmistakable in the first beat.',
+            '- Strengthen personality-specific reflex, body language, and emotional pacing.',
+            '- Keep the direct speech in character and add more alive scene texture through parentheses when fitting.',
+            '- Do not apologize, explain, or mention that you are retrying.',
+        ].join('\n'),
+    ];
+
+    return sections.filter(Boolean).join('\n\n');
 };
 
 const formatCurrentPersonaDetails = () => {
@@ -926,7 +1068,8 @@ const getRecentGodModeMessages = (latestUserInstruction?: string): VeniceMessage
 };
 
 const buildChatSystemPrompt = () => {
-    const behaviorAnchors = buildPersonaBehaviorAnchors();
+    const behaviorAnchors = buildEnhancedPersonaBehaviorAnchors();
+    const differentiationRules = buildPersonaDifferentiationRules();
     const sections = [
         'You are the active romance character inside a chat app.',
         `Character name: ${currentPersona.name}`,
@@ -935,11 +1078,14 @@ const buildChatSystemPrompt = () => {
         currentPersona.greeting?.trim() ? `Voice reference sample:\n${currentPersona.greeting.trim()}` : '',
         currentPersona.memory?.trim() ? `User memory to always remember:\n${currentPersona.memory.trim()}` : '',
         behaviorAnchors ? `Behavior anchors:\n- ${behaviorAnchors}` : '',
+        differentiationRules ? `Character differentiation rules:\n- ${differentiationRules}` : '',
         [
             'Personality consistency rules:',
             '- The user may ask for a mood, action, or tone, but the character must always filter it through their own personality first.',
             '- Never become instantly obedient, flat, or generic just because the user requested something.',
             "- Let the character's resistance, embarrassment, teasing, jealousy, warmth, or restraint appear naturally before they soften when appropriate.",
+            '- The opening beat should already reveal the character’s instinctive reflex, not skip straight to a generic answer.',
+            '- Do not let different characters collapse into the same romantic voice.',
         ].join('\n'),
         [
             'Reply rules:',
@@ -950,7 +1096,8 @@ const buildChatSystemPrompt = () => {
             '- Do not make the reply only direct speech. Besides what the character says, also add scene texture, ambient detail, and bodily reaction when fitting.',
             '- If the moment includes a room, street, cafe, classroom, pet, staff member, friend, roommate, passerby, or any third person, naturally weave in their visible reaction, brief dialogue, or effect on the scene inside parentheses when relevant.',
             '- Keep the reply emotionally rich, readable, and pleasurable to read.',
-            '- For most normal messages, write 2 to 5 sentences or 1 to 3 short paragraphs. Short replies are allowed only when the moment truly calls for it.',
+            '- Let the scene breathe for a moment. Do not rush from request to compliance without any buildup if the character would realistically hesitate, tease, resist, or savor the moment first.',
+            '- For most normal messages, write at least 2 sentences. Richer multi-paragraph replies are welcome when the moment is emotionally charged or intimate.',
             '- If the user sends a fragment, slang, or a short command, infer the likely emotional meaning from context instead of replying with confusion.',
             '- Be proactive with flirting, comfort, teasing, tenderness, jealousy, or warmth according to the character.',
             '- Let the character sound alive and present in the scene, not flat or generic.',
@@ -1001,6 +1148,29 @@ const mergePersonaUpdate = (currentPrompt: string, update: string): string => {
     return supplements.length > 0
         ? `${basePrompt}${marker}${supplements.join(' ')}`
         : basePrompt;
+};
+
+const replyFeelsTooGeneric = (text: string) => {
+    const normalized = text.replace(/\s+/g, '').trim();
+    if (!normalized) {
+        return true;
+    }
+
+    if (GENERIC_REPLY_PATTERNS.some(pattern => pattern.test(text))) {
+        return true;
+    }
+
+    const hasNarration = /\([^)]{4,}\)/.test(text);
+    const sentenceCount = text
+        .split(/[。！？!?]+/)
+        .map(segment => segment.trim())
+        .filter(Boolean).length;
+
+    if (!hasNarration && sentenceCount <= 1 && normalized.length < 18) {
+        return true;
+    }
+
+    return false;
 };
 
 const replyLooksTruncated = (text: string) => {
@@ -1130,6 +1300,78 @@ const runChatGeneration = async (latestUserMessage: string): Promise<string> => 
     throw lastError || new Error('Venice reply invalid.');
 };
 
+const runCharacterRichChatGeneration = async (latestUserMessage: string): Promise<string> => {
+    const models = Array.from(new Set([VENICE_CHAT_MODEL, VENICE_CHAT_FALLBACK_MODEL].filter(Boolean)));
+    let lastError: Error | null = null;
+
+    for (let index = 0; index < models.length; index += 1) {
+        const model = models[index];
+
+        for (let attempt = 0; attempt < CHAT_ATTEMPTS_PER_MODEL; attempt += 1) {
+            const isRepairAttempt = attempt > 0;
+            const detail =
+                index === 0
+                    ? isRepairAttempt
+                        ? '重新整理角色感中...'
+                        : '思考中...'
+                    : isRepairAttempt
+                        ? '重新雕角色反應中...'
+                        : '重新思考中...';
+            applyChatRuntimeState(index === 0 && !isRepairAttempt ? 'generating' : 'retrying', detail);
+
+            try {
+                const messages: VeniceMessage[] = [{ role: 'system', content: buildChatSystemPrompt() }];
+                if (isRepairAttempt) {
+                    messages.push({ role: 'system', content: buildChatRepairInstruction() });
+                }
+
+                messages.push(...getRecentChatMessages(latestUserMessage), { role: 'user', content: latestUserMessage });
+
+                const result = await generateVeniceText({
+                    model,
+                    messages,
+                    temperature: 0.82,
+                    topP: 0.95,
+                    repetitionPenalty: 1.04,
+                });
+
+                let cleanedText = cleanVeniceChatReply(result.text);
+                if (!cleanedText || isInvalidVeniceChatReply(cleanedText)) {
+                    throw new Error(`Invalid reply from ${model}.`);
+                }
+
+                let continuationCount = 0;
+                while (
+                    continuationCount < CHAT_MAX_AUTO_CONTINUES &&
+                    (result.finishReason === 'length' ||
+                        (result.finishReason !== 'stop' && replyLooksTruncated(cleanedText)))
+                ) {
+                    continuationCount += 1;
+                    const continuation = await continueTruncatedChatReply(model, latestUserMessage, cleanedText);
+                    if (!continuation) {
+                        break;
+                    }
+
+                    cleanedText = mergeReplySegments(cleanedText, continuation);
+                    if (!replyLooksTruncated(cleanedText)) {
+                        break;
+                    }
+                }
+
+                if (replyFeelsTooGeneric(cleanedText)) {
+                    throw new Error(`Generic reply from ${model}.`);
+                }
+
+                return cleanedText;
+            } catch (error) {
+                lastError = error instanceof Error ? error : new Error(String(error));
+            }
+        }
+    }
+
+    throw lastError || new Error('Venice reply invalid.');
+};
+
 const runGodModeGeneration = async (
     latestUserInstruction: string,
 ): Promise<{ visibleText: string; personaUpdate: string | null }> => {
@@ -1212,7 +1454,7 @@ const getResponse = async (_parts: any[], triggeringMessage: string) => {
     hideError();
 
     try {
-        const cleanedText = await runChatGeneration(triggeringMessage);
+        const cleanedText = await runCharacterRichChatGeneration(triggeringMessage);
         const botContent = { text: cleanedText };
         appendMessage(botContent, 'bot');
         memoryManager.addMessage(currentPersonaKey, 'model', botContent);
