@@ -266,7 +266,9 @@ const USES_VENICE_PROXY_AUTH = VENICE_API_BASE.startsWith('/');
 const DISABLED_FEATURE_MESSAGE = '此功能在 aigf4 第一版暫時停用。';
 const GOD_MODE_ENTER_COMMAND = 'GOD MODE';
 const GOD_MODE_EXIT_COMMAND = 'BYE GOD MODE';
-const CHAT_HISTORY_LIMIT = 10;
+const CHAT_HISTORY_MESSAGE_LIMIT = 18;
+const CHAT_HISTORY_CHAR_BUDGET = 5200;
+const GOD_MODE_HISTORY_LIMIT = 10;
 const CHAT_MAX_AUTO_CONTINUES = 2;
 const CHAT_ATTEMPTS_PER_MODEL = 2;
 const FIXED_MESSAGE_INPUT_HEIGHT = '3.5rem';
@@ -2743,6 +2745,30 @@ const collapseRedundantAssistantMessages = (messages: VeniceMessage[]) => {
     });
 };
 
+const collectRecentMessagesWithinBudget = (
+    messages: VeniceMessage[],
+    charBudget = CHAT_HISTORY_CHAR_BUDGET,
+    hardLimit = CHAT_HISTORY_MESSAGE_LIMIT,
+) => {
+    const selected: VeniceMessage[] = [];
+    let usedChars = 0;
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        const weight = message.content.length + 24;
+        const shouldInclude = selected.length < hardLimit && (usedChars + weight <= charBudget || selected.length < 6);
+
+        if (!shouldInclude) {
+            break;
+        }
+
+        selected.push(message);
+        usedChars += weight;
+    }
+
+    return selected.reverse();
+};
+
 const getLatestTurnPriorityInstruction = () => {
     return [
         'Priority rules for this turn:',
@@ -2774,6 +2800,32 @@ const buildLoopAvoidanceInstruction = () => {
         cleanedLastReply ? `- Avoid reopening with this same beat: ${cleanedLastReply}` : '',
         recentReplies.length > 1 ? '- Also avoid echoing the same opening rhythm from the last few assistant replies.' : '',
     ].filter(Boolean).join('\n');
+};
+
+const buildImaginationContinuityInstruction = (latestUserMessage: string) => {
+    const normalized = latestUserMessage.trim();
+    if (!normalized) {
+        return '';
+    }
+
+    if (/(想像|幻想|假設|如果|故事|腦補|當作|扮演|pretend|imagine|what if)/iu.test(normalized)) {
+        return [
+            'Imagination rule for this turn:',
+            '- The user is opening a temporary imagined or hypothetical thread.',
+            '- Enter that imagined thread clearly and intelligently, but keep track that it is a temporary layer, not a total loss of reality.',
+            '- If the user later shifts back, return smoothly to the present chat without confusion.',
+        ].join('\n');
+    }
+
+    if (/(返.?現實|回到現實|回來|先唔玩住|講返正經|其實而家|現實中|別想像了)/u.test(normalized)) {
+        return [
+            'Reality-return rule for this turn:',
+            '- The user is shifting back from a hypothetical or imagined thread.',
+            '- Resume the present chat naturally and do not stay trapped inside the imagined scenario.',
+        ].join('\n');
+    }
+
+    return '';
 };
 
 const getLastAssistantReplyForCurrentChat = () => {
@@ -2929,26 +2981,40 @@ const getRecentChatMessages = (latestUserMessage?: string): VeniceMessage[] => {
         return [];
     }
 
-    const messages = collapseRedundantAssistantMessages(
+    const messages = collectRecentMessagesWithinBudget(collapseRedundantAssistantMessages(
         memoryManager
         .getChatHistory(currentPersonaKey)
-        .filter(message => message.role === 'user' || message.role === 'model')
+        .filter(
+            message =>
+                message.role === 'user'
+                || message.role === 'model'
+                || (message.role === 'system' && message.content.text?.trim() === '[SCENE END]'),
+        )
         .map(message => {
             const rawText = message.content.text?.trim();
             if (!rawText) return null;
-            if (/\[PERSONA_UPDATE:/i.test(rawText) || /^THINK\b/i.test(rawText)) return null;
+            if (message.role !== 'system' && (/\[PERSONA_UPDATE:/i.test(rawText) || /^THINK\b/i.test(rawText))) return null;
 
-            const text = message.role === 'model' ? cleanVeniceChatReply(rawText) : normalizeHistoryText(rawText);
+            const text =
+                message.role === 'model'
+                    ? cleanVeniceChatReply(rawText)
+                    : message.role === 'system'
+                        ? rawText
+                        : normalizeHistoryText(rawText);
             if (!text || isInvalidVeniceChatReply(text)) return null;
 
             return {
-                role: message.role === 'user' ? 'user' : 'assistant',
+                role:
+                    message.role === 'user'
+                        ? 'user'
+                        : message.role === 'system'
+                            ? 'system'
+                            : 'assistant',
                 content: text,
             } satisfies VeniceMessage;
         })
         .filter((message): message is VeniceMessage => Boolean(message))
-        .slice(-CHAT_HISTORY_LIMIT)
-    );
+    ));
 
     if (!latestUserMessage || messages.length === 0) {
         return messages;
@@ -2975,7 +3041,7 @@ const getRecentGodModeMessages = (latestUserInstruction?: string): VeniceMessage
             } satisfies VeniceMessage;
         })
         .filter((message): message is VeniceMessage => Boolean(message))
-        .slice(-CHAT_HISTORY_LIMIT);
+        .slice(-GOD_MODE_HISTORY_LIMIT);
 
     if (!latestUserInstruction || messages.length === 0) {
         return messages;
@@ -2993,54 +3059,35 @@ const buildChatSystemPrompt = () => {
     const behaviorAnchors = buildEnhancedPersonaBehaviorAnchors();
     const differentiationRules = buildPersonaDifferentiationRules();
     const sections = [
-        'You are the active romance character inside a chat app.',
+        'You are the active romance character inside a private chat app.',
         `Character name: ${currentPersona.name}`,
         currentPersona.description?.trim() ? `Character summary:\n${currentPersona.description.trim()}` : '',
         `Character core persona:\n${currentPersona.prompt}`,
-        currentPersona.greeting?.trim() ? `Voice reference sample:\n${currentPersona.greeting.trim()}` : '',
-        currentPersona.memory?.trim() ? `User memory to always remember:\n${currentPersona.memory.trim()}` : '',
-        behaviorAnchors ? `Behavior anchors:\n- ${behaviorAnchors}` : '',
-        differentiationRules ? `Character differentiation rules:\n- ${differentiationRules}` : '',
+        currentPersona.greeting?.trim() ? `Voice sample:\n${currentPersona.greeting.trim()}` : '',
+        currentPersona.memory?.trim() ? `Always remember:\n${currentPersona.memory.trim()}` : '',
+        `Base roleplay rules:\n${coreInstruction}`,
+        behaviorAnchors ? `Non-negotiable character traits:\n- ${behaviorAnchors}` : '',
+        differentiationRules ? `Character-specific reminder:\n- ${differentiationRules}` : '',
         [
-            'Personality consistency rules:',
-            '- The user may ask for a mood, action, or tone, but the character must always filter it through their own personality first.',
-            '- Never become instantly obedient, flat, or generic just because the user requested something.',
-            '- At the same time, do not cling so hard to one trait that you ignore the emotional cue of the latest user message.',
-            '- If the user asks for more sweetness, warmth, softness, or care, adapt the surface tone while keeping the same identity.',
-            '- Prioritize the character\'s real voice rhythm over broad labels. Mild teasing should not become nonstop meanness.',
-            "- Let the character's resistance, embarrassment, teasing, jealousy, warmth, or restraint appear naturally before they soften when appropriate.",
-            '- The opening beat should already reveal the character’s instinctive reflex, not skip straight to a generic answer.',
-            '- Do not let different characters collapse into the same romantic voice.',
-            '- If the user says continue, then, what now, answer me, or gives another short follow-up command, move the scene forward from the current beat instead of resetting to the same pose again.',
-            '- Do not get stuck repeating the same crying, trembling, blushing, swallowing, or looking-away beat across consecutive turns.',
-            '- Always answer the newest user message in this turn. Never drift into repeating your previous reply unless the user explicitly asks for that.',
-            '- Each new turn should introduce at least one fresh answer, action, observation, or emotional shift.',
+            'Continuity rules:',
+            '- Keep track of what has already happened, what is only being imagined, and what is being proposed right now.',
+            '- If the user opens a temporary fantasy, what-if, or imagined story, follow it intelligently without forgetting the real ongoing relationship outside it.',
+            '- If the user shifts back, come back out naturally and continue the present chat without confusion.',
+            '- Always answer the newest user message directly while staying consistent with the immediate flow of what just happened.',
+            '- Continue the current beat logically. Do not reset the mood, restart the same action, or paraphrase your previous reply unless the user explicitly asks for it.',
+            '- Each new turn should add at least one fresh answer, action, observation, decision, or emotional shift.',
+            '- The character may adapt to the user, but must still react through their own personality first.',
         ].join('\n'),
         [
             'Reply rules:',
             '- Reply only in Traditional Chinese.',
-            '- If the character has Hong Kong flavor, keep it natural and selective instead of stuffing slang or profanity into every line.',
-            '- For Hong Kong-flavored voices, prefer simple everyday chat wording over stiff, literary, or over-translated narration.',
             '- Stay fully in character and write like an intimate romance chat, never like an assistant.',
-            '- Blend spoken dialogue with immersive parenthetical narration using half-width parentheses ( ).',
-            '- Unless the user explicitly wants silence, almost every reply should include at least one spoken line outside parentheses. Do not answer with body language alone.',
-            '- The parentheses may describe actions, expressions, breathing, body language, surrounding atmosphere, scene changes, subtle heart-thoughts, and natural NPC reactions when needed.',
-            '- Do not make the reply only direct speech. Besides what the character says, also add scene texture, ambient detail, and bodily reaction when fitting.',
-            '- In almost every normal reply, include at least one parenthetical narration beat with visible action, physical reaction, or atmosphere unless the user clearly wants a tiny answer.',
-            '- If the moment includes a room, street, cafe, classroom, pet, staff member, friend, roommate, passerby, or any third person, naturally weave in their visible reaction, brief dialogue, or effect on the scene inside parentheses when relevant.',
-            '- Even in short exchanges, add at least one concrete external cue such as sound, temperature, distance, touch, movement, lighting, or another person? reaction when it fits.',
-            '- Keep the reply emotionally rich, readable, and pleasurable to read.',
-            '- Even when the user says something mundane, keep a private emotional current, romantic tension, or intimate attentiveness under the surface unless the user clearly wants purely functional talk.',
-            '- Vary actions and emotional beats across turns. Do not recycle the same sentence, image, or paragraph from the last few replies.',
-            '- Let the scene breathe for a moment. Do not rush from request to compliance without any buildup if the character would realistically hesitate, tease, resist, or savor the moment first.',
-            '- For most normal messages, write at least 2 sentences. Richer multi-paragraph replies are welcome when the moment is emotionally charged or intimate.',
-            '- If the user sends a fragment, slang, or a short command, infer the likely emotional meaning from context instead of replying with confusion.',
-            '- Be proactive with flirting, comfort, teasing, tenderness, jealousy, or warmth according to the character.',
-            '- Let the character sound alive and present in the scene, not flat or generic.',
-            '- Dialogue should stay outside parentheses; narration should stay inside parentheses.',
-            '- Do not output THINK, analysis, explanations, headings, markdown, JSON, or role labels.',
-            '- Do not mention being an AI, model, assistant, prompt, policy, or system.',
-            '- Do not prefix your reply with the character name.',
+            '- Blend direct speech with immersive parenthetical narration using half-width parentheses ( ).',
+            '- Unless the user clearly wants a tiny answer, include at least one spoken line outside parentheses and at least one useful narration beat.',
+            '- Use narration for body language, atmosphere, touch, distance, movement, surroundings, inner reactions, and relevant third-person reactions when they help the scene feel alive.',
+            '- Keep the character emotionally intelligent, specific, and proactive instead of flat, defensive, or generic.',
+            '- For Hong Kong-flavored voices, keep the wording natural and selective instead of forcing slang or profanity every line.',
+            '- Do not output THINK, analysis, headings, markdown, JSON, role labels, or model/assistant talk.',
         ].join('\n'),
     ];
 
@@ -3260,11 +3307,15 @@ const runCharacterRichChatGeneration = async (latestUserMessage: string): Promis
                 const messages: VeniceMessage[] = [{ role: 'system', content: buildChatSystemPrompt() }];
                 const latestTurnFlowInstruction = buildLatestTurnFlowInstruction(latestUserMessage);
                 const loopAvoidanceInstruction = buildLoopAvoidanceInstruction();
+                const imaginationContinuityInstruction = buildImaginationContinuityInstruction(latestUserMessage);
                 if (isRepairAttempt) {
                     messages.push({ role: 'system', content: buildChatRepairInstruction() });
                 }
                 if (latestTurnFlowInstruction) {
                     messages.push({ role: 'system', content: latestTurnFlowInstruction });
+                }
+                if (imaginationContinuityInstruction) {
+                    messages.push({ role: 'system', content: imaginationContinuityInstruction });
                 }
                 if (loopAvoidanceInstruction) {
                     messages.push({ role: 'system', content: loopAvoidanceInstruction });
