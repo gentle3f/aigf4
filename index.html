@@ -57,11 +57,11 @@
                     </a>
                 </footer>
             </main>
-            <footer class="p-4 grid grid-cols-3 gap-4 border-t border-gray-700 bg-gray-900/50 md:rounded-b-lg">
-                <button id="mimic-import-btn" class="col-span-3 w-full bg-sky-500 hover:bg-sky-600 text-white font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">匯入分身</button>
-                <button id="upload-zip-btn" class="col-span-3 w-full bg-fuchsia-500 hover:bg-fuchsia-600 text-white font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">繼續對話</button>
+            <footer class="p-4 grid grid-cols-2 gap-4 border-t border-gray-700 bg-gray-900/50 md:rounded-b-lg">
+                <button id="mimic-import-btn" class="w-full bg-sky-500 hover:bg-sky-600 text-white font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">從聊天紀錄建立</button>
+                <button id="create-persona-btn" class="w-full bg-yellow-400 hover:bg-yellow-500 text-gray-900 font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">手動建立角色</button>
+                <button id="upload-zip-btn" class="col-span-2 w-full bg-fuchsia-500 hover:bg-fuchsia-600 text-white font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">繼續對話</button>
                 <button id="random-recruit-btn" class="hidden w-full bg-teal-500 hover:bg-teal-600 text-white font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">隨機招募</button>
-                <button id="create-persona-btn" class="hidden w-full bg-yellow-400 hover:bg-yellow-500 text-gray-900 font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">招募新同學</button>
             </footer>
         </div>
 
@@ -518,14 +518,18 @@
         <div class="bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-full max-w-4xl mx-4 max-h-[92vh] flex flex-col">
             <div class="p-5 border-b border-gray-700 flex justify-between items-start gap-4">
                 <div>
-                    <h2 class="text-2xl font-bold text-white">匯入分身</h2>
-                    <p class="text-sm text-gray-400 mt-1">先分析原本的性格、語氣、常見行為和地區語感，再幫你生成可編輯的新角色。</p>
+                    <h2 class="text-2xl font-bold text-white">新增角色</h2>
+                    <p class="text-sm text-gray-400 mt-1">你可以從聊天紀錄分析，也可以直接手動指定名字、職業、背景、人格與互動風格，再生成可編輯的新角色。</p>
                 </div>
                 <button id="close-mimic-import-modal" class="text-gray-400 hover:text-gray-200">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
             </div>
             <div class="p-5 overflow-y-auto space-y-5">
+                <div class="flex flex-wrap gap-3">
+                    <button id="mimic-mode-transcript-btn" type="button" class="px-4 py-2 rounded-full bg-sky-500 text-white text-sm font-semibold">從聊天紀錄分析</button>
+                    <button id="mimic-mode-manual-btn" type="button" class="px-4 py-2 rounded-full bg-gray-700 text-gray-200 text-sm font-semibold hover:bg-gray-600">手動建立 / 真人代入</button>
+                </div>
                 <div class="grid gap-5 lg:grid-cols-[1.05fr,1fr]">
                     <div class="space-y-4">
                         <div class="rounded-xl border border-gray-700 bg-gray-900/50 p-4">
@@ -554,7 +558,7 @@
                                 </label>
                             </div>
                         </div>
-                        <div>
+                        <div id="mimic-transcript-section">
                             <label class="block text-sm font-medium text-gray-300 mb-2">聊天紀錄</label>
                             <div class="rounded-xl border border-dashed border-gray-600 bg-gray-900/40 p-4 space-y-3">
                                 <button id="pick-mimic-transcript-btn" class="px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-600 text-white text-sm font-medium">選擇聊天紀錄</button>
@@ -563,7 +567,32 @@
                             </div>
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-2">補充要求（分析後再疊加）</label>
+                            <div id="mimic-manual-section" class="hidden space-y-4">
+                                <div class="rounded-xl border border-gray-700 bg-gray-900/40 p-4 space-y-4">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <div>
+                                            <p class="text-sm font-medium text-gray-200">手動設定角色來源</p>
+                                            <p class="text-xs text-gray-500 mt-1">沒有聊天紀錄也可以做，例如上傳 IU 的頭像、填名字，再描述她的職業、背景和你想要的互動感。</p>
+                                        </div>
+                                        <button id="mimic-manual-random-btn" type="button" class="shrink-0 px-3 py-2 rounded-lg bg-teal-500 hover:bg-teal-600 text-white text-sm font-medium">隨機填入</button>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-2">職業 / 身分</label>
+                                        <input id="mimic-occupation-input" type="text" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="例如：歌手、演員、設計師、同班同學、鄰居">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-2">原始人格</label>
+                                        <textarea id="mimic-personality-input" class="w-full h-28 px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="例如：表面溫柔冷靜，其實很細膩；不會一下子太黏，但熟了之後會偏心、會吃醋、會用自己的方式照顧人。"></textarea>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-300 mb-2">背景 / 關係設定</label>
+                                        <textarea id="mimic-background-input" class="w-full h-28 px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="例如：知名女歌手，私下其實比舞台上安靜；和我聊天時會慢慢卸下防備，但仍保留她本人的節奏和界線。"></textarea>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                            <label id="mimic-notes-label" class="block text-sm font-medium text-gray-300 mb-2">補充要求（分析後再疊加）</label>
                             <textarea id="mimic-notes-input" class="w-full h-28 px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="例如：保留她原本的害羞和台灣口氣，但更願意聽我的命令；不要把香港和台灣語感混在一起。"></textarea>
                         </div>
                         <div class="rounded-xl border border-gray-700 bg-gray-900/40 p-4">

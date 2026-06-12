@@ -188,7 +188,16 @@ const pickMimicTranscriptBtn = document.getElementById('pick-mimic-transcript-bt
 const pickMimicAvatarBtn = document.getElementById('pick-mimic-avatar-btn') as HTMLButtonElement;
 const mimicAvatarPreview = document.getElementById('mimic-avatar-preview')!;
 const mimicAvatarStatus = document.getElementById('mimic-avatar-status')!;
+const mimicModeTranscriptBtn = document.getElementById('mimic-mode-transcript-btn') as HTMLButtonElement;
+const mimicModeManualBtn = document.getElementById('mimic-mode-manual-btn') as HTMLButtonElement;
 const mimicNameInput = document.getElementById('mimic-name-input') as HTMLInputElement;
+const mimicTranscriptSection = document.getElementById('mimic-transcript-section')!;
+const mimicManualSection = document.getElementById('mimic-manual-section')!;
+const mimicManualRandomBtn = document.getElementById('mimic-manual-random-btn') as HTMLButtonElement;
+const mimicOccupationInput = document.getElementById('mimic-occupation-input') as HTMLInputElement;
+const mimicPersonalityInput = document.getElementById('mimic-personality-input') as HTMLTextAreaElement;
+const mimicBackgroundInput = document.getElementById('mimic-background-input') as HTMLTextAreaElement;
+const mimicNotesLabel = document.getElementById('mimic-notes-label')!;
 const mimicNotesInput = document.getElementById('mimic-notes-input') as HTMLTextAreaElement;
 const mimicTranscriptStatus = document.getElementById('mimic-transcript-status')!;
 const mimicTranscriptMeta = document.getElementById('mimic-transcript-meta')!;
@@ -250,18 +259,20 @@ let mimicTranscriptFile: File | null = null;
 let mimicAvatarDataUrl: string | null = null;
 let mimicDraftPersona: MimicPersonaDraft | null = null;
 let isMimicAnalysisRunning = false;
+let mimicBuildMode: MimicBuildMode = 'transcript';
 
 const USES_VENICE_PROXY_AUTH = VENICE_API_BASE.startsWith('/');
 
 const DISABLED_FEATURE_MESSAGE = '此功能在 aigf4 第一版暫時停用。';
 const GOD_MODE_ENTER_COMMAND = 'GOD MODE';
 const GOD_MODE_EXIT_COMMAND = 'BYE GOD MODE';
-const CHAT_HISTORY_LIMIT = 12;
+const CHAT_HISTORY_LIMIT = 10;
 const CHAT_MAX_AUTO_CONTINUES = 2;
 const CHAT_ATTEMPTS_PER_MODEL = 2;
 const FIXED_MESSAGE_INPUT_HEIGHT = '3.5rem';
 
 type AppHistoryState = { view: 'home' } | { view: 'chat'; personaKey: string };
+type MimicBuildMode = 'transcript' | 'manual';
 type MimicAnalysisSummary = {
     personality: string;
     behavior: string;
@@ -279,6 +290,15 @@ type MimicPersonaDraft = {
     greeting: string;
     memory: string;
     analysis: MimicAnalysisSummary;
+};
+
+type ManualPersonaSeed = {
+    name: string;
+    gender: 'female' | 'male';
+    occupation: string;
+    personality: string;
+    background: string;
+    notes: string;
 };
 
 type TranscriptReadResult = {
@@ -306,6 +326,23 @@ const HOME_HISTORY_STATE: AppHistoryState = { view: 'home' };
 const MIMIC_CHUNK_CHAR_LIMIT = 2600;
 const MIMIC_MAX_ANALYSIS_CHUNKS = 10;
 const MIMIC_SAMPLE_CHUNK_CHAR_LIMIT = 1800;
+const RANDOM_FEMALE_NAMES = ['IU', '小雨', 'Yuki', 'Sora', 'Ami', 'Luna', 'Mina', '允熙', '詩恩', '晴夏'];
+const RANDOM_MALE_NAMES = ['阿哲', 'Kaito', 'Jin', 'Haru', '洛川', '志宇', '承勳', 'Minho', '以安', '晨遠'];
+const RANDOM_OCCUPATIONS = ['歌手', '演員', '攝影師', '插畫師', '甜點師', '咖啡店店長', '設計師', '模特兒', '作家', '舞者'];
+const RANDOM_PERSONALITIES = [
+    '外表看起來冷靜有禮，其實很會偷偷在意人，熟了之後會偏心、會記小事。',
+    '有點嘴硬，先吐槽再關心，但真正喜歡的人一靠近就會慢慢軟下來。',
+    '平常節奏穩，不愛太吵，情緒細膩，對信任的人會越來越溫柔。',
+    '自尊心高一點，喜歡掌握自己的步調，可是私底下其實很需要被理解和安撫。',
+    '開朗會接話，懂得帶氣氛，但感情上不是亂來型，真正動心後會很偏愛對方。',
+];
+const RANDOM_BACKGROUNDS = [
+    '平常工作很忙，對外形象成熟穩定，私下反而比較真性情，只會在少數人面前露出軟的一面。',
+    '因為一直被很多人注意，所以對關係有自己的節奏，不會一下子太熱，但熟了之後會主動很多。',
+    '生活圈看起來光鮮，可是其實更喜歡安靜的陪伴，對真正重要的人會留很多例外。',
+    '身邊人都覺得她很會撐場面，可是回到私下聊天時會變得更真、更黏一點，也更容易吃醋。',
+    '對外常常很得體克制，但在親密關係裡會慢慢顯露佔有慾、撒嬌和想被偏心的那一面。',
+];
 
 
 // --- Functions ---
@@ -342,6 +379,85 @@ const getSelectedMimicGender = (): 'female' | 'male' => {
     const checked = document.querySelector<HTMLInputElement>('input[name="mimic-gender"]:checked');
     return checked?.value === 'male' ? 'male' : 'female';
 };
+
+const pickRandomItem = <T,>(items: T[]): T => {
+    return items[Math.floor(Math.random() * items.length)];
+};
+
+const getRandomNameForGender = (gender: 'female' | 'male') => {
+    return pickRandomItem(gender === 'male' ? RANDOM_MALE_NAMES : RANDOM_FEMALE_NAMES);
+};
+
+const applyMimicModeButtonState = (button: HTMLButtonElement, active: boolean) => {
+    button.classList.toggle('bg-sky-500', active);
+    button.classList.toggle('text-white', active);
+    button.classList.toggle('bg-gray-700', !active);
+    button.classList.toggle('text-gray-200', !active);
+    button.classList.toggle('hover:bg-gray-600', !active);
+};
+
+const updateMimicModeUI = () => {
+    const isTranscriptMode = mimicBuildMode === 'transcript';
+    mimicTranscriptSection.classList.toggle('hidden', !isTranscriptMode);
+    mimicManualSection.classList.toggle('hidden', isTranscriptMode);
+    applyMimicModeButtonState(mimicModeTranscriptBtn, isTranscriptMode);
+    applyMimicModeButtonState(mimicModeManualBtn, !isTranscriptMode);
+    runMimicAnalysisBtn.textContent = isTranscriptMode ? '開始分析' : '生成角色草稿';
+    mimicNotesLabel.textContent = isTranscriptMode ? '補充要求（分析後再疊加）' : '補充要求 / 想要互動';
+    mimicNotesInput.placeholder = isTranscriptMode
+        ? '例如：保留她原本的害羞和台灣口氣，但更願意聽我的命令；不要把香港和台灣語感混在一起。'
+        : '例如：請保留她原本的公眾形象，但私下對我更偏心；慢熱、會嘴硬一下，不要太快變成制式情話。';
+
+    if (!isMimicAnalysisRunning) {
+        setMimicAnalysisStatus(
+            isTranscriptMode
+                ? '選好檔案後就可以開始分析。'
+                : '填好名字後就能直接生成角色草稿；沒有靈感時可先按「隨機填入」。',
+        );
+    }
+};
+
+const setMimicBuildMode = (mode: MimicBuildMode) => {
+    mimicBuildMode = mode;
+    mimicDraftPersona = null;
+    resetMimicDraftEditors();
+    saveMimicPersonaBtn.disabled = true;
+    updateMimicModeUI();
+};
+
+const fillRandomManualFields = () => {
+    const gender = getSelectedMimicGender();
+    mimicNameInput.value = getRandomNameForGender(gender);
+    mimicOccupationInput.value = pickRandomItem(RANDOM_OCCUPATIONS);
+    mimicPersonalityInput.value = pickRandomItem(RANDOM_PERSONALITIES);
+    mimicBackgroundInput.value = pickRandomItem(RANDOM_BACKGROUNDS);
+
+    if (!mimicNotesInput.value.trim()) {
+        mimicNotesInput.value = '保留本人原本的氣質和節奏，但和我聊天時可以更有偏心感、曖昧感和戀愛推進。';
+    }
+
+    setMimicAnalysisStatus('已隨機填入設定，可以直接生成角色草稿。');
+};
+
+const buildManualFallbackAnalysis = (seed: ManualPersonaSeed): MimicAnalysisSummary => ({
+    personality: seed.personality || `${seed.name}有自己的節奏與個性，不會只是空白模板。`,
+    behavior: seed.background || `${seed.name}的日常身份是${seed.occupation || '未指定'}。`,
+    usualSelf: seed.background || seed.occupation || '未指定',
+    withUserSelf: seed.notes || '和使用者相處時要能慢慢變得更偏心、更親密。',
+    romanceStyle: '互動以戀愛導向為主，但仍要保留本人原本的人格和反應節奏。',
+    tone: seed.personality || '語氣依照手動設定生成。',
+    regionality: '若未特別指定地區語感，就保持自然的繁體中文。',
+    commandResponse: seed.notes || '會聽使用者的要求，但仍會先用自己的性格去回應。',
+});
+
+const getManualPersonaSeed = (): ManualPersonaSeed => ({
+    name: mimicNameInput.value.trim(),
+    gender: getSelectedMimicGender(),
+    occupation: mimicOccupationInput.value.trim(),
+    personality: mimicPersonalityInput.value.trim(),
+    background: mimicBackgroundInput.value.trim(),
+    notes: mimicNotesInput.value.trim(),
+});
 
 const renderMimicAvatarPreview = () => {
     if (mimicAvatarDataUrl) {
@@ -429,7 +545,11 @@ const resetMimicImportState = () => {
     mimicAvatarDataUrl = null;
     mimicDraftPersona = null;
     isMimicAnalysisRunning = false;
+    mimicBuildMode = 'transcript';
     mimicNameInput.value = '';
+    mimicOccupationInput.value = '';
+    mimicPersonalityInput.value = '';
+    mimicBackgroundInput.value = '';
     mimicNotesInput.value = '';
     mimicTranscriptInput.value = '';
     mimicAvatarInput.value = '';
@@ -439,15 +559,16 @@ const resetMimicImportState = () => {
     }
     mimicTranscriptStatus.textContent = '尚未選擇檔案。支援 `.txt`、`.md`、`.json`、`.log`、`.csv`、`.zip`。';
     mimicTranscriptMeta.textContent = '長紀錄會先辨識聊天格式與說話者，再自動切段分析，最後合成成一個角色草稿。';
-    setMimicAnalysisStatus('選好檔案後就可以開始分析。');
     renderMimicAvatarPreview();
     resetMimicDraftEditors();
+    updateMimicModeUI();
     runMimicAnalysisBtn.disabled = false;
     saveMimicPersonaBtn.disabled = true;
 };
 
-const openMimicImportModal = () => {
+const openMimicImportModal = (mode: MimicBuildMode = 'transcript') => {
     resetMimicImportState();
+    setMimicBuildMode(mode);
     mimicImportModal.classList.remove('hidden');
 };
 
@@ -461,6 +582,9 @@ const setMimicBusyState = (isBusy: boolean) => {
     saveMimicPersonaBtn.disabled = isBusy || !mimicDraftPersona;
     pickMimicTranscriptBtn.disabled = isBusy;
     pickMimicAvatarBtn.disabled = isBusy;
+    mimicModeTranscriptBtn.disabled = isBusy;
+    mimicModeManualBtn.disabled = isBusy;
+    mimicManualRandomBtn.disabled = isBusy;
 };
 
 const normalizeTranscriptSpeaker = (speaker: string) => {
@@ -1348,6 +1472,45 @@ const buildMimicSynthesisPrompt = (
     return sections.filter(Boolean).join('\n\n');
 };
 
+const buildManualPersonaSynthesisPrompt = (seed: ManualPersonaSeed) => {
+    const sections = [
+        'You are creating a romance-chat persona from direct user instructions instead of transcript analysis.',
+        `Target person name: ${seed.name}`,
+        `Gender: ${seed.gender}`,
+        seed.occupation ? `Occupation / identity: ${seed.occupation}` : '',
+        seed.personality ? `Original personality cues:\n${seed.personality}` : '',
+        seed.background ? `Background / relationship setup:\n${seed.background}` : '',
+        seed.notes ? `Extra user requests:\n${seed.notes}` : '',
+        [
+            'Core rules:',
+            '- Use the manual description as the source of truth. Do not invent a completely unrelated person.',
+            '- This app is romance-oriented, so the final persona should be emotionally present, interactive, and capable of moving toward intimacy with the user.',
+            '- Keep the original vibe first. Romance should feel like an extension of that person, not a generic flirt mask.',
+            '- If the name or setup points to a celebrity, public figure, idol, or familiar real-person archetype, keep the recognizable public aura only through the user-provided cues. Do not talk about being famous unless it naturally belongs in the background.',
+            '- The character should listen to the user more than in real life, but still react through their own pride, warmth, shyness, wit, habits, and pacing.',
+            '- If regional language is not specified, keep the wording in natural Traditional Chinese without forcing a location.',
+            '- Do not output assistant framing, JSON, markdown headings, or meta commentary.',
+        ].join('\n'),
+        [
+            'Output format:',
+            '<personality>2 to 4 concise sentences summarizing the core personality.</personality>',
+            '<behavior>2 to 4 concise sentences summarizing habits, reactions, and everyday behavior.</behavior>',
+            '<usual_self>2 to 4 concise sentences summarizing the normal public or daily self.</usual_self>',
+            '<with_user_self>2 to 4 concise sentences summarizing how this person changes specifically with the user.</with_user_self>',
+            '<romance_style>2 to 4 concise sentences summarizing romance rhythm, intimacy style, teasing, jealousy, and softness.</romance_style>',
+            '<tone>2 to 4 concise sentences summarizing wording, rhythm, and emotional temperature.</tone>',
+            '<regionality>State the language/region style if the user specified one, otherwise say it should stay natural Traditional Chinese.</regionality>',
+            '<command_response>Describe how this person reacts when the user asks, pushes, or guides them.</command_response>',
+            '<description>One concise sentence summarizing the person.</description>',
+            '<prompt>A full persona prompt for the romance chat app. Include occupation, background, original personality, tone, command response, and how they grow romantic with the user while staying in character.</prompt>',
+            '<greeting>A natural first greeting in that person\'s voice.</greeting>',
+            '<memory>Short internal notes for the app to remember, including vibe, region if known, and command-response style.</memory>',
+        ].join('\n'),
+    ];
+
+    return sections.filter(Boolean).join('\n\n');
+};
+
 const analyzeTranscriptChunk = async (
     chunk: string,
     targetName: string,
@@ -1367,6 +1530,52 @@ const analyzeTranscriptChunk = async (
         ],
         680,
     );
+};
+
+const runManualPersonaDraftGeneration = async () => {
+    const seed = getManualPersonaSeed();
+    if (!seed.name) {
+        throw new Error('請先輸入角色名字。');
+    }
+
+    setMimicAnalysisStatus('正在整理手動設定並生成角色草稿...');
+    const fallbackAnalysis = buildManualFallbackAnalysis(seed);
+    const response = await runMimicModelCall(
+        [
+            { role: 'system', content: buildManualPersonaSynthesisPrompt(seed) },
+            {
+                role: 'user',
+                content: [
+                    `名字：${seed.name}`,
+                    `性別：${seed.gender === 'male' ? '男性' : '女性'}`,
+                    `職業 / 身分：${seed.occupation || '未指定'}`,
+                    `原始人格：${seed.personality || '未指定'}`,
+                    `背景 / 關係設定：${seed.background || '未指定'}`,
+                    `補充要求：${seed.notes || '未指定'}`,
+                ].join('\n'),
+            },
+        ],
+        980,
+    );
+
+    const parsedDraft = parseMimicPersonaDraftV2(response, fallbackAnalysis);
+    if (!parsedDraft) {
+        throw new Error('這次沒有成功組出完整的角色草稿，請再試一次。');
+    }
+
+    mimicDraftPersona = parsedDraft;
+    renderMimicAnalysisPreviewV2(
+        parsedDraft.analysis,
+        `來源：手動建立｜名字：${seed.name}｜職業：${seed.occupation || '未指定'}｜模式：不需聊天紀錄`,
+    );
+    mimicDescriptionEditor.value = parsedDraft.description;
+    mimicPromptEditor.value = parsedDraft.prompt;
+    mimicGreetingEditor.value = parsedDraft.greeting;
+    mimicMemoryEditor.value = parsedDraft.memory;
+    mimicResultEmpty.classList.add('hidden');
+    mimicResultPanel.classList.remove('hidden');
+    saveMimicPersonaBtn.disabled = false;
+    setMimicAnalysisStatus('角色草稿已生成，你可以先微調再儲存。', 'success');
 };
 
 const runMimicTranscriptAnalysis = async () => {
@@ -1759,7 +1968,11 @@ const runMimicAnalysisFromModal = async () => {
 
     setMimicBusyState(true);
     try {
-        await runMimicTranscriptAnalysisV2();
+        if (mimicBuildMode === 'manual') {
+            await runManualPersonaDraftGeneration();
+        } else {
+            await runMimicTranscriptAnalysisV2();
+        }
     } catch (error) {
         const message = error instanceof Error ? error.message : '分身分析失敗，請再試一次。';
         setMimicAnalysisStatus(message, 'error');
@@ -2539,6 +2752,30 @@ const getLatestTurnPriorityInstruction = () => {
     ].join('\n');
 };
 
+const buildLoopAvoidanceInstruction = () => {
+    const lastAssistantReply = getLastAssistantReplyForCurrentChat();
+    if (!lastAssistantReply) {
+        return '';
+    }
+
+    const cleanedLastReply = stripParentheticalNarration(lastAssistantReply)
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 140);
+    const recentReplies = getRecentAssistantRepliesForCurrentChat(2)
+        .map(reply => stripParentheticalNarration(reply).replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+        .slice(-2);
+
+    return [
+        'Freshness rules for this turn:',
+        '- Your last reply already established a beat. Do not paraphrase it, restart it, or loop in the same emotional posture.',
+        '- Add at least one new answer, action, observation, or tension shift in this turn.',
+        cleanedLastReply ? `- Avoid reopening with this same beat: ${cleanedLastReply}` : '',
+        recentReplies.length > 1 ? '- Also avoid echoing the same opening rhythm from the last few assistant replies.' : '',
+    ].filter(Boolean).join('\n');
+};
+
 const getLastAssistantReplyForCurrentChat = () => {
     if (!currentPersonaKey) {
         return '';
@@ -2578,7 +2815,13 @@ const personaNeedsFlowRepair = () => {
         return false;
     }
 
-    return currentPersonaKey === 'cc'
+    const conversationTurns = memoryManager
+        .getChatHistory(currentPersonaKey)
+        .filter(message => message.role === 'user' || message.role === 'model')
+        .length;
+
+    return conversationTurns >= 8
+        || currentPersonaKey === 'cc'
         || currentPersonaKey.startsWith('custom_')
         || currentPersona.prompt?.includes('Voice fidelity rules:')
         || currentPersona.memory?.includes('語氣參考');
@@ -2614,6 +2857,22 @@ const replyReusesStaleBeat = (text: string, recentReplies: string[]) => {
     }
 
     return currentLines.some(line => recentReplies.filter(reply => reply.includes(line)).length >= 2);
+};
+
+const replyReusesRecentOpening = (text: string, recentReplies: string[]) => {
+    if (recentReplies.length === 0) {
+        return false;
+    }
+
+    const opening = getMeaningfulReplyLines(text)[0] || stripParentheticalNarration(text).slice(0, 36);
+    if (!opening || opening.length < 14) {
+        return false;
+    }
+
+    return recentReplies.some(reply => {
+        const previousOpening = getMeaningfulReplyLines(reply)[0] || stripParentheticalNarration(reply).slice(0, 36);
+        return previousOpening.length >= 14 && repliesAreTooSimilar(opening, previousOpening);
+    });
 };
 
 const replyNeedsMoreConversation = (latestUserMessage: string, text: string) => {
@@ -2755,6 +3014,7 @@ const buildChatSystemPrompt = () => {
             '- If the user says continue, then, what now, answer me, or gives another short follow-up command, move the scene forward from the current beat instead of resetting to the same pose again.',
             '- Do not get stuck repeating the same crying, trembling, blushing, swallowing, or looking-away beat across consecutive turns.',
             '- Always answer the newest user message in this turn. Never drift into repeating your previous reply unless the user explicitly asks for that.',
+            '- Each new turn should introduce at least one fresh answer, action, observation, or emotional shift.',
         ].join('\n'),
         [
             'Reply rules:',
@@ -2999,11 +3259,15 @@ const runCharacterRichChatGeneration = async (latestUserMessage: string): Promis
             try {
                 const messages: VeniceMessage[] = [{ role: 'system', content: buildChatSystemPrompt() }];
                 const latestTurnFlowInstruction = buildLatestTurnFlowInstruction(latestUserMessage);
+                const loopAvoidanceInstruction = buildLoopAvoidanceInstruction();
                 if (isRepairAttempt) {
                     messages.push({ role: 'system', content: buildChatRepairInstruction() });
                 }
                 if (latestTurnFlowInstruction) {
                     messages.push({ role: 'system', content: latestTurnFlowInstruction });
+                }
+                if (loopAvoidanceInstruction) {
+                    messages.push({ role: 'system', content: loopAvoidanceInstruction });
                 }
 
                 messages.push(
@@ -3015,9 +3279,9 @@ const runCharacterRichChatGeneration = async (latestUserMessage: string): Promis
                 const result = await generateVeniceText({
                     model,
                     messages,
-                    temperature: 0.76,
-                    topP: 0.9,
-                    repetitionPenalty: 1.03,
+                    temperature: 0.74,
+                    topP: 0.88,
+                    repetitionPenalty: 1.06,
                 });
 
                 let cleanedText = cleanVeniceChatReply(result.text);
@@ -3054,6 +3318,10 @@ const runCharacterRichChatGeneration = async (latestUserMessage: string): Promis
 
                 if (replyReusesStaleBeat(cleanedText, recentAssistantReplies)) {
                     throw new Error(`Repeated beat from ${model}.`);
+                }
+
+                if (replyReusesRecentOpening(cleanedText, recentAssistantReplies)) {
+                    throw new Error(`Repeated opening from ${model}.`);
                 }
 
                 const lastAssistantReply = getLastAssistantReplyForCurrentChat();
@@ -3620,11 +3888,14 @@ const setupEventListeners = () => {
         }
     });
     
-    createPersonaBtn.addEventListener('click', () => showDisabledFeatureNotice('角色建立'));
-    randomRecruitBtn.addEventListener('click', () => showDisabledFeatureNotice('隨機招募'));
+    createPersonaBtn.addEventListener('click', () => openMimicImportModal('manual'));
+    randomRecruitBtn.addEventListener('click', () => {
+        openMimicImportModal('manual');
+        fillRandomManualFields();
+    });
     closeCreatorModal.addEventListener('click', hidePersonaCreator);
     cancelCreatorBtn.addEventListener('click', hidePersonaCreator);
-    mimicImportBtn.addEventListener('click', openMimicImportModal);
+    mimicImportBtn.addEventListener('click', () => openMimicImportModal('transcript'));
     randomizePersonaBtn.addEventListener('click', randomizePersonaInputs);
 
     fictionalPersonaCheckbox.addEventListener('change', () => {
@@ -3668,6 +3939,9 @@ const setupEventListeners = () => {
 
     uploadZipBtn.addEventListener('click', () => zipUploadInput.click());
     zipUploadInput.addEventListener('change', (e) => fileManager.handleZipUpload(e));
+    mimicModeTranscriptBtn.addEventListener('click', () => setMimicBuildMode('transcript'));
+    mimicModeManualBtn.addEventListener('click', () => setMimicBuildMode('manual'));
+    mimicManualRandomBtn.addEventListener('click', fillRandomManualFields);
     pickMimicTranscriptBtn.addEventListener('click', () => mimicTranscriptInput.click());
     pickMimicAvatarBtn.addEventListener('click', () => mimicAvatarInput.click());
     mimicTranscriptInput.addEventListener('change', handleMimicTranscriptUpload);
