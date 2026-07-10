@@ -14,6 +14,7 @@ export interface VeniceTextGenerationOptions {
   repetitionPenalty?: number;
   stop?: string[];
   seed?: number;
+  signal?: AbortSignal;
   onStateChange?: (state: RequestState, detail?: string) => void;
 }
 
@@ -45,19 +46,63 @@ interface VeniceChatResponse {
   error?: string;
 }
 
+interface VeniceModelApiItem {
+  id?: string;
+  type?: string;
+  model_spec?: {
+    name?: string;
+    description?: string;
+    availableContextTokens?: number;
+    offline?: boolean;
+    privacy?: string;
+    traits?: string[];
+    capabilities?: {
+      supportsE2EE?: boolean;
+    };
+    pricing?: {
+      input?: { usd?: number };
+      output?: { usd?: number };
+    };
+  };
+}
+
+interface VeniceModelsResponse {
+  data?: VeniceModelApiItem[];
+  error?: string;
+}
+
+export interface VeniceModelSummary {
+  id: string;
+  name: string;
+  description: string;
+  contextTokens?: number;
+  privacy: string;
+  inputUsd?: number;
+  outputUsd?: number;
+  traits: string[];
+  uncensored: boolean;
+}
+
 export const VENICE_AUTH_REQUIRED_ERROR = 'VENICE_AUTH_REQUIRED';
 
 export const VENICE_API_BASE =
   import.meta.env.VITE_VENICE_API_BASE || '/api/venice-chat';
+export const VENICE_MODELS_API_BASE =
+  import.meta.env.VITE_VENICE_MODELS_API_BASE ||
+  (VENICE_API_BASE.startsWith('/') ? '/api/venice-models' : `${VENICE_API_BASE}/models`);
 export const VENICE_API_KEY = import.meta.env.VITE_VENICE_API_KEY || '';
 export const VENICE_CHAT_MODEL =
   import.meta.env.VITE_VENICE_CHAT_MODEL || 'olafangensan-glm-4.7-flash-heretic';
+export const VENICE_CHAT_QUALITY_FALLBACK_MODEL =
+  import.meta.env.VITE_VENICE_CHAT_QUALITY_FALLBACK_MODEL || 'gemma-4-uncensored';
 export const VENICE_CHAT_FALLBACK_MODEL =
   import.meta.env.VITE_VENICE_CHAT_FALLBACK_MODEL || 'venice-uncensored-1-2';
 export const VENICE_GOD_MODEL =
   import.meta.env.VITE_VENICE_GOD_MODEL || 'google-gemma-4-31b-it';
 export const VENICE_GOD_FALLBACK_MODEL =
   import.meta.env.VITE_VENICE_GOD_FALLBACK_MODEL || 'zai-org-glm-4.7-flash';
+export const VENICE_ASSISTANT_MODEL =
+  import.meta.env.VITE_VENICE_ASSISTANT_MODEL || 'venice-uncensored-1-2';
 
 const REQUEST_HEADERS = (): HeadersInit => {
   const headers: HeadersInit = {
@@ -130,6 +175,7 @@ export async function generateVeniceText(
     repetitionPenalty = 1.08,
     stop = ['\nUser:', '\nUSER:', '\n使用者:'],
     seed,
+    signal,
     onStateChange,
   } = options;
 
@@ -142,6 +188,7 @@ export async function generateVeniceText(
   const response = await fetchJson<VeniceChatResponse>(endpoint, {
     method: 'POST',
     headers: REQUEST_HEADERS(),
+    signal,
     body: JSON.stringify({
       model,
       messages,
@@ -181,6 +228,48 @@ export async function generateVeniceText(
   };
 }
 
+export async function listVeniceTextModels(): Promise<VeniceModelSummary[]> {
+  ensureApiKey();
+
+  const endpoint = VENICE_MODELS_API_BASE.startsWith('/')
+    ? VENICE_MODELS_API_BASE
+    : `${VENICE_MODELS_API_BASE}${VENICE_MODELS_API_BASE.includes('?') ? '&' : '?'}type=text`;
+
+  const response = await fetchJson<VeniceModelsResponse>(endpoint, {
+    method: 'GET',
+    headers: REQUEST_HEADERS(),
+  });
+
+  if (!Array.isArray(response.data)) {
+    throw new Error(response.error || 'Venice API did not return a model list.');
+  }
+
+  return response.data
+    .filter(item => {
+      return Boolean(item.id)
+        && (!item.type || item.type === 'text')
+        && item.model_spec?.offline !== true
+        && item.model_spec?.capabilities?.supportsE2EE !== true;
+    })
+    .map(item => {
+      const spec = item.model_spec || {};
+      const id = item.id!;
+      const searchable = `${id} ${spec.name || ''} ${spec.description || ''} ${(spec.traits || []).join(' ')}`;
+
+      return {
+        id,
+        name: spec.name?.trim() || id,
+        description: spec.description?.trim() || '',
+        contextTokens: spec.availableContextTokens,
+        privacy: spec.privacy?.trim() || 'unknown',
+        inputUsd: spec.pricing?.input?.usd,
+        outputUsd: spec.pricing?.output?.usd,
+        traits: Array.isArray(spec.traits) ? spec.traits : [],
+        uncensored: /uncensored|heretic|dolphin|role[ -]?play/i.test(searchable),
+      } satisfies VeniceModelSummary;
+    });
+}
+
 function stripCodeFences(text: string): string {
   return text.replace(/```(?:json|markdown|md|text)?/gi, '').replace(/```/g, '').trim();
 }
@@ -203,6 +292,7 @@ export function cleanVeniceChatReply(rawText: string): string {
     .replace(/^#+\s.*$/gm, '')
     .replace(/^\d+\.\s.*$/gm, '')
     .replace(/^\|\s.*$/gm, '')
+    .replace(/^\s*\[[A-Z][A-Z _-]{2,}\]\s*$/gm, '')
     .replace(/^(?:assistant|reply|answer|角色|回覆|回答)\s*[:：]\s*/i, '')
     .trim();
 
@@ -225,6 +315,22 @@ export function cleanVeniceChatReply(rawText: string): string {
   return trimWrappedQuotes(lines.join('\n').replace(/\n{3,}/g, '\n\n').trim());
 }
 
+export function cleanVeniceAssistantReply(rawText: string): string {
+  let text = rawText
+    .replace(/\r/g, '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/^THINK[\s\S]*?(?=\n{2,}|$)/i, '')
+    .replace(/^(?:assistant|answer|reply|回答|回覆)\s*[:：]\s*/i, '')
+    .trim();
+
+  const nextUserTurn = text.search(/\n(?:user|使用者)\s*[:：]/i);
+  if (nextUserTurn >= 0) {
+    text = text.slice(0, nextUserTurn).trim();
+  }
+
+  return text.replace(/\n{4,}/g, '\n\n\n').trim();
+}
+
 export function isInvalidVeniceChatReply(text: string): boolean {
   const normalized = text.trim();
 
@@ -245,6 +351,8 @@ export function isInvalidVeniceChatReply(text: string): boolean {
     /^(?:question|user|問題|使用者)\s*[:：]/i,
     /^\d{20,}$/,
     /^(.)\1{20,}$/,
+    /\uFFFD/,
+    /^\s*\[[A-Z][A-Z _-]{2,}\]\s*$/m,
     /^\?+$/,
     /(?:Markdown|JSON).*format/i,
     /你正在和.+聊天/u,

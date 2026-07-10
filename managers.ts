@@ -183,6 +183,8 @@ export class MemoryManager {
                 const currentPersona = this.personas[key];
                 // Check for modifications. God mode changes 'prompt'. Users can change avatarPrompt, avatarUrl, and memory.
                 if (currentPersona.prompt !== originalPersona.prompt || 
+                    currentPersona.description !== originalPersona.description ||
+                    currentPersona.greeting !== originalPersona.greeting ||
                     currentPersona.avatarPrompt !== originalPersona.avatarPrompt ||
                     currentPersona.avatarUrl !== originalPersona.avatarUrl ||
                     currentPersona.memory !== originalPersona.memory

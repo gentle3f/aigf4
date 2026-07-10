@@ -1,20 +1,33 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# aigf4
 
-# Run and deploy your AI Studio app
+Private Venice-powered chat app with romance personas, God Mode persona editing,
+conversation-history imports, and a separate general-purpose Venice AI assistant.
 
-This contains everything you need to run your app locally.
+## Local development
 
-View your app in AI Studio: https://ai.studio/apps/drive/1yTxMsZnoqGrhE4izOsCvgGwTBIWrX5pf
+1. Install dependencies with `npm install`.
+2. Copy the settings from `.env.example` into `.env.local`.
+3. For direct local development, set:
+   - `VITE_VENICE_API_BASE=https://api.venice.ai/api/v1`
+   - `VITE_VENICE_MODELS_API_BASE=https://api.venice.ai/api/v1/models`
+   - `VITE_VENICE_API_KEY=your_key_here`
+4. Start the app with `npm run dev`.
 
-## Run Locally
+Never commit `.env.local`. Direct mode exposes the key to the local browser bundle
+and is intended only for private development.
 
-**Prerequisites:**  Node.js
+## Vercel
 
+Production uses the authenticated `/api/venice-chat` and `/api/venice-models`
+proxies. Configure these server-only environment variables in Vercel:
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+- `VENICE_API_KEY`
+- `APP_PASSWORD`
+- `APP_SESSION_SECRET`
+
+The browser never receives `VENICE_API_KEY` in proxy mode.
+
+## Commands
+
+- Enter God Mode: `god mode`
+- Leave God Mode: `bye god mode`

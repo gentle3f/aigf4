@@ -1,11 +1,11 @@
 import { requireAuthenticatedRequest } from './_auth.js';
 
-const VENICE_UPSTREAM = 'https://api.venice.ai/api/v1/chat/completions';
-const UPSTREAM_TIMEOUT_MS = 120_000;
+const VENICE_MODELS_UPSTREAM = 'https://api.venice.ai/api/v1/models?type=text';
+const UPSTREAM_TIMEOUT_MS = 20_000;
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
+  if (req.method !== 'GET') {
+    res.setHeader('Allow', 'GET');
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
@@ -22,13 +22,12 @@ export default async function handler(req, res) {
   const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
 
   try {
-    const upstream = await fetch(VENICE_UPSTREAM, {
-      method: 'POST',
+    const upstream = await fetch(VENICE_MODELS_UPSTREAM, {
+      method: 'GET',
       headers: {
         Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+        Accept: 'application/json',
       },
-      body: JSON.stringify(req.body || {}),
       signal: controller.signal,
     });
 
@@ -36,15 +35,16 @@ export default async function handler(req, res) {
 
     res.status(upstream.status);
     res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
+    res.setHeader('Cache-Control', 'private, max-age=300');
     return res.send(text);
   } catch (error) {
     const isTimeout = error instanceof Error && error.name === 'AbortError';
     return res.status(isTimeout ? 504 : 502).json({
       error: isTimeout
-        ? 'Venice request timed out.'
+        ? 'Venice model list request timed out.'
         : error instanceof Error
           ? error.message
-          : 'Venice upstream request failed.',
+          : 'Venice model list request failed.',
     });
   } finally {
     clearTimeout(timeout);

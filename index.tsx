@@ -1,20 +1,25 @@
 
 import { MemoryManager, cleanAiResponse, Persona, Interest, POLICY_VIOLATION, DIARY_CHECKPOINT, ChatMessage } from "./managers.js";
 import { FileManager } from "./fileManager.js";
-import { coreInstruction } from "./personas.tsx";
+import { coreInstruction, VENICE_ASSISTANT_PERSONA_KEY } from "./personas.tsx";
 import {
+    cleanVeniceAssistantReply,
     cleanVeniceChatReply,
     extractPersonaUpdatePayload,
     generateVeniceText,
     isInvalidVeniceChatReply,
+    listVeniceTextModels,
     RequestState,
     VENICE_API_BASE,
+    VENICE_ASSISTANT_MODEL,
     VENICE_AUTH_REQUIRED_ERROR,
     VENICE_CHAT_FALLBACK_MODEL,
     VENICE_CHAT_MODEL,
+    VENICE_CHAT_QUALITY_FALLBACK_MODEL,
     VENICE_GOD_FALLBACK_MODEL,
     VENICE_GOD_MODEL,
     VeniceMessage,
+    VeniceModelSummary,
 } from "./venice.js";
 
 
@@ -32,6 +37,7 @@ const ai: any = null;
 // --- DOM Elements ---
 const personaSelectionView = document.getElementById('persona-selection-view')!;
 const chatView = document.getElementById('chat-view')!;
+const aiAssistantList = document.getElementById('ai-assistant-list')!;
 const femalePersonaList = document.getElementById('female-persona-list')!;
 const malePersonaList = document.getElementById('male-persona-list')!;
 const backButton = document.getElementById('back-button')!;
@@ -70,6 +76,10 @@ const authError = document.getElementById('auth-error')!;
 const authSubmitButton = document.getElementById('auth-submit-button') as HTMLButtonElement;
 const authSubmitLabel = document.getElementById('auth-submit-label')!;
 const authSubmitLoading = document.getElementById('auth-submit-loading')!;
+const assistantModelBar = document.getElementById('assistant-model-bar')!;
+const assistantModelSelect = document.getElementById('assistant-model-select') as HTMLSelectElement;
+const assistantModelMeta = document.getElementById('assistant-model-meta')!;
+const refreshAssistantModelsBtn = document.getElementById('refresh-assistant-models') as HTMLButtonElement;
 
 // More Options Menu
 const moreOptionsBtn = document.getElementById('more-options-btn')!;
@@ -252,7 +262,6 @@ let albumPhotos: { imageUrl: string, caption: string, historyIndex: number }[] =
 let selectedPhotoIndices: Set<number> = new Set();
 let isGodModeActive = false;
 let godModeHistory: ChatMessage[] = [];
-let nextResponseInstruction: string | null = null;
 let chatRuntimeState: RequestState = 'idle';
 let isUnlocked = !VENICE_API_BASE.startsWith('/');
 let mimicTranscriptFile: File | null = null;
@@ -260,21 +269,37 @@ let mimicAvatarDataUrl: string | null = null;
 let mimicDraftPersona: MimicPersonaDraft | null = null;
 let isMimicAnalysisRunning = false;
 let mimicBuildMode: MimicBuildMode = 'transcript';
+let activeChatRequest: ActiveChatRequest | null = null;
+let nextChatRequestId = 1;
+let assistantModels: VeniceModelSummary[] = [];
+let assistantModelsPromise: Promise<void> | null = null;
+let selectedAssistantModel = localStorage.getItem('veniceAssistantModel') || VENICE_ASSISTANT_MODEL;
 
 const USES_VENICE_PROXY_AUTH = VENICE_API_BASE.startsWith('/');
 
 const DISABLED_FEATURE_MESSAGE = '此功能在 aigf4 第一版暫時停用。';
 const GOD_MODE_ENTER_COMMAND = 'GOD MODE';
 const GOD_MODE_EXIT_COMMAND = 'BYE GOD MODE';
-const CHAT_HISTORY_MESSAGE_LIMIT = 18;
-const CHAT_HISTORY_CHAR_BUDGET = 5200;
+const CHAT_HISTORY_MESSAGE_LIMIT = 80;
+const CHAT_HISTORY_CHAR_BUDGET = 48000;
+const ASSISTANT_HISTORY_MESSAGE_LIMIT = 60;
+const ASSISTANT_HISTORY_CHAR_BUDGET = 36000;
 const GOD_MODE_HISTORY_LIMIT = 10;
 const CHAT_MAX_AUTO_CONTINUES = 2;
-const CHAT_ATTEMPTS_PER_MODEL = 2;
 const FIXED_MESSAGE_INPUT_HEIGHT = '3.5rem';
+const ASSISTANT_MODEL_STORAGE_KEY = 'veniceAssistantModel';
 
 type AppHistoryState = { view: 'home' } | { view: 'chat'; personaKey: string };
 type MimicBuildMode = 'transcript' | 'manual';
+type ChatMode = 'character' | 'assistant' | 'god';
+type ActiveChatRequest = {
+    id: number;
+    personaKey: string;
+    persona: Persona;
+    mode: ChatMode;
+    controller: AbortController;
+    startedAt: number;
+};
 type MimicAnalysisSummary = {
     personality: string;
     behavior: string;
@@ -887,7 +912,7 @@ const parseConversationTextFromJson = (rawText: string): TranscriptReadResult =>
 
 const extractTranscriptTextFromZipFile = async (file: File): Promise<TranscriptReadResult> => {
     const zip = await JSZip.loadAsync(file);
-    const textFiles = Object.values(zip.files)
+    const textFiles = (Object.values(zip.files) as any[])
         .filter(entry => !entry.dir)
         .filter(entry => /\.(txt|md|markdown|json|log|csv)$/i.test(entry.name));
 
@@ -1825,14 +1850,16 @@ const getSystemErrorResponse = (persona: any) => {
 };
 
 const renderPersonaList = () => {
+    aiAssistantList.innerHTML = '';
     femalePersonaList.innerHTML = '';
     malePersonaList.innerHTML = '';
     const personas = memoryManager.getAllPersonas();
 
     for (const key in personas) {
         const persona = personas[key];
+        const isAssistant = key === VENICE_ASSISTANT_PERSONA_KEY;
         const card = document.createElement('div');
-        card.className = 'persona-card group rounded-lg shadow-lg relative';
+        card.className = `persona-card group rounded-lg shadow-lg relative ${isAssistant ? 'assistant-persona-card' : ''}`;
         card.dataset.key = key;
 
         card.innerHTML = `
@@ -1845,7 +1872,7 @@ const renderPersonaList = () => {
                 <h3 class="font-bold text-md text-gray-100 truncate">${persona.name}</h3>
                 <p class="text-sm text-gray-400 truncate">${persona.description}</p>
             </div>
-            <div class="card-buttons">
+            <div class="card-buttons ${isAssistant ? 'hidden' : ''}">
                 <button title="Upload Avatar" class="upload-avatar-btn p-2 rounded-full" data-key="${key}">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-white">
                         <path fill-rule="evenodd" d="M9.25 13.25a.75.75 0 001.5 0V4.636l2.158 2.158a.75.75 0 001.06-1.06l-3.5-3.5a.75.75 0 00-1.06 0l-3.5 3.5a.75.75 0 101.06 1.06L9.25 4.636v8.614z" clip-rule="evenodd" />
@@ -1856,7 +1883,9 @@ const renderPersonaList = () => {
             </div>
         `;
 
-        if (persona.gender === 'female') {
+        if (isAssistant) {
+            aiAssistantList.appendChild(card);
+        } else if (persona.gender === 'female') {
             femalePersonaList.appendChild(card);
         } else {
             malePersonaList.appendChild(card);
@@ -2041,7 +2070,10 @@ const syncBrowserViewState = (state: AppHistoryState, mode: 'push' | 'replace' |
     const currentState = window.history.state as AppHistoryState | null;
     const isSameState =
         currentState?.view === state.view &&
-        (state.view === 'home' || currentState?.personaKey === state.personaKey);
+        (
+            state.view === 'home'
+            || (currentState?.view === 'chat' && currentState.personaKey === state.personaKey)
+        );
 
     if (isSameState) {
         if (mode === 'replace') {
@@ -2058,14 +2090,199 @@ const syncBrowserViewState = (state: AppHistoryState, mode: 'push' | 'replace' |
     window.history.replaceState(state, document.title);
 };
 
+const isAssistantPersonaKey = (key: string | null): boolean => key === VENICE_ASSISTANT_PERSONA_KEY;
+
+const formatContextSize = (tokens?: number) => {
+    if (!tokens || tokens <= 0) return '';
+    if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M context`;
+    return `${Math.round(tokens / 1000)}K context`;
+};
+
+const formatModelPrice = (value?: number) => {
+    if (typeof value !== 'number') return '?';
+    return value < 0.01 ? value.toFixed(4) : value.toFixed(2);
+};
+
+const buildFallbackAssistantModels = (): VeniceModelSummary[] => {
+    return Array.from(new Set([
+        VENICE_ASSISTANT_MODEL,
+        VENICE_CHAT_MODEL,
+        VENICE_CHAT_QUALITY_FALLBACK_MODEL,
+        VENICE_CHAT_FALLBACK_MODEL,
+        VENICE_GOD_MODEL,
+        VENICE_GOD_FALLBACK_MODEL,
+    ].filter(Boolean))).map(id => ({
+        id,
+        name: id,
+        description: '本機設定中的 Venice 模型',
+        privacy: 'unknown',
+        traits: [],
+        uncensored: /uncensored|heretic|dolphin|role[ -]?play/i.test(id),
+    }));
+};
+
+const updateAssistantModelMeta = () => {
+    const model = assistantModels.find(item => item.id === selectedAssistantModel);
+    if (!model) {
+        assistantModelMeta.textContent = `目前模型：${selectedAssistantModel}`;
+        return;
+    }
+
+    const details = [
+        model.uncensored ? '自由模型' : '',
+        formatContextSize(model.contextTokens),
+        model.privacy !== 'unknown' ? model.privacy : '',
+        `輸入 $${formatModelPrice(model.inputUsd)} / 輸出 $${formatModelPrice(model.outputUsd)}（每百萬 token）`,
+    ].filter(Boolean);
+    assistantModelMeta.textContent = details.join(' · ');
+};
+
+const renderAssistantModelOptions = () => {
+    assistantModelSelect.innerHTML = '';
+
+    const sortedModels = [...assistantModels].sort((left, right) => {
+        if (left.uncensored !== right.uncensored) return left.uncensored ? -1 : 1;
+        if (left.privacy !== right.privacy) return left.privacy === 'private' ? -1 : 1;
+        return left.name.localeCompare(right.name, 'zh-Hant');
+    });
+
+    const selectedExists = sortedModels.some(model => model.id === selectedAssistantModel);
+    if (!selectedExists) {
+        const preferred = sortedModels.find(model => model.id === VENICE_ASSISTANT_MODEL)
+            || sortedModels.find(model => model.uncensored)
+            || sortedModels[0];
+        if (preferred) {
+            selectedAssistantModel = preferred.id;
+            localStorage.setItem(ASSISTANT_MODEL_STORAGE_KEY, selectedAssistantModel);
+        }
+    }
+
+    const groups = [
+        { label: '自由／角色扮演模型', models: sortedModels.filter(model => model.uncensored) },
+        { label: '私人模型', models: sortedModels.filter(model => !model.uncensored && model.privacy === 'private') },
+        { label: '其他文字模型', models: sortedModels.filter(model => !model.uncensored && model.privacy !== 'private') },
+    ];
+
+    groups.forEach(group => {
+        if (group.models.length === 0) return;
+        const optgroup = document.createElement('optgroup');
+        optgroup.label = group.label;
+        group.models.forEach(model => {
+            const option = document.createElement('option');
+            option.value = model.id;
+            const context = formatContextSize(model.contextTokens);
+            option.textContent = `${model.name}${context ? ` · ${context}` : ''} · $${formatModelPrice(model.inputUsd)}/$${formatModelPrice(model.outputUsd)}`;
+            optgroup.appendChild(option);
+        });
+        assistantModelSelect.appendChild(optgroup);
+    });
+
+    assistantModelSelect.value = selectedAssistantModel;
+    assistantModelSelect.disabled = activeChatRequest !== null || sortedModels.length === 0;
+    updateAssistantModelMeta();
+};
+
+const loadAssistantModels = async (force = false) => {
+    if (assistantModelsPromise) {
+        return assistantModelsPromise;
+    }
+    if (!force && assistantModels.length > 0) {
+        renderAssistantModelOptions();
+        return;
+    }
+
+    assistantModelSelect.disabled = true;
+    refreshAssistantModelsBtn.disabled = true;
+    assistantModelMeta.textContent = '正在讀取 Venice 可用模型...';
+
+    assistantModelsPromise = (async () => {
+        try {
+            assistantModels = await listVeniceTextModels();
+            if (assistantModels.length === 0) {
+                throw new Error('沒有可用的文字模型。');
+            }
+        } catch (error) {
+            console.warn('Unable to load Venice models; using configured fallback list.', error);
+            assistantModels = buildFallbackAssistantModels();
+            if (error instanceof Error && error.message === VENICE_AUTH_REQUIRED_ERROR) {
+                handleAuthRequired();
+            }
+        } finally {
+            renderAssistantModelOptions();
+            refreshAssistantModelsBtn.disabled = false;
+            assistantModelsPromise = null;
+        }
+    })();
+
+    return assistantModelsPromise;
+};
+
+const updateChatModeControls = (key: string) => {
+    const assistantMode = isAssistantPersonaKey(key);
+    assistantModelBar.classList.toggle('hidden', !assistantMode);
+    messageInput.placeholder = assistantMode ? '問 Venice AI...' : '輸入訊息...';
+
+    [memoryBtn, personaSettingsBtn, albumBtn, newSceneBtn, downloadImagesBtn].forEach(element => {
+        element.classList.toggle('hidden', assistantMode);
+    });
+
+    if (assistantMode) {
+        void loadAssistantModels();
+    }
+};
+
+const beginChatRequest = (personaKey: string, persona: Persona, mode: ChatMode): ActiveChatRequest => {
+    if (activeChatRequest) {
+        throw new Error('CHAT_REQUEST_IN_PROGRESS');
+    }
+
+    const request: ActiveChatRequest = {
+        id: nextChatRequestId,
+        personaKey,
+        persona: { ...persona },
+        mode,
+        controller: new AbortController(),
+        startedAt: performance.now(),
+    };
+    nextChatRequestId += 1;
+    activeChatRequest = request;
+    updateSendButtonState();
+    assistantModelSelect.disabled = true;
+    return request;
+};
+
+const isActiveChatRequest = (request: ActiveChatRequest) => activeChatRequest?.id === request.id;
+
+const finishChatRequest = (request: ActiveChatRequest, state: RequestState = 'idle') => {
+    if (!isActiveChatRequest(request)) return;
+    activeChatRequest = null;
+    applyChatRuntimeState(state);
+    updateSendButtonState();
+    assistantModelSelect.disabled = !isAssistantPersonaKey(currentPersonaKey) || assistantModels.length === 0;
+};
+
+const cancelActiveChatRequest = () => {
+    if (!activeChatRequest) return;
+    const request = activeChatRequest;
+    activeChatRequest = null;
+    request.controller.abort();
+    applyChatRuntimeState('idle');
+    updateSendButtonState();
+};
+
+const isAbortError = (error: unknown) => {
+    return error instanceof DOMException && error.name === 'AbortError';
+};
+
 const startChat = (key: string, restoredHistory: any[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
+    cancelActiveChatRequest();
     currentPersonaKey = key;
     currentPersona = memoryManager.getPersona(key);
     if (!currentPersona) return;
 
     isGodModeActive = false;
     godModeHistory = [];
-    nextResponseInstruction = null;
+    updateChatModeControls(key);
 
     chatHeaderName.textContent = currentPersona.name;
 
@@ -2119,6 +2336,7 @@ const startChat = (key: string, restoredHistory: any[] | null = null, historyMod
 };
 
 const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
+    cancelActiveChatRequest();
     personaSelectionView.classList.remove('hidden');
     chatView.classList.add('hidden');
     chatView.classList.remove('flex');
@@ -2160,6 +2378,73 @@ const handleBrowserPopState = (event: PopStateEvent) => {
     if (!chatView.classList.contains('hidden')) {
         showSelectionView('skip');
     }
+};
+
+const appendAssistantInlineFormatting = (element: HTMLElement, text: string) => {
+    const tokenPattern = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+    let cursor = 0;
+
+    for (const match of text.matchAll(tokenPattern)) {
+        const index = match.index || 0;
+        if (index > cursor) {
+            element.appendChild(document.createTextNode(text.slice(cursor, index)));
+        }
+
+        const token = match[0];
+        const formatted = document.createElement(token.startsWith('**') ? 'strong' : 'code');
+        formatted.textContent = token.startsWith('**') ? token.slice(2, -2) : token.slice(1, -1);
+        element.appendChild(formatted);
+        cursor = index + token.length;
+    }
+
+    if (cursor < text.length) {
+        element.appendChild(document.createTextNode(text.slice(cursor)));
+    }
+};
+
+const renderAssistantMarkdown = (container: HTMLElement, text: string) => {
+    container.classList.add('assistant-markdown');
+    const lines = text.split('\n');
+    let codeLines: string[] | null = null;
+
+    const flushCode = () => {
+        if (!codeLines) return;
+        const pre = document.createElement('pre');
+        const code = document.createElement('code');
+        code.textContent = codeLines.join('\n');
+        pre.appendChild(code);
+        container.appendChild(pre);
+        codeLines = null;
+    };
+
+    lines.forEach(line => {
+        if (/^```/.test(line.trim())) {
+            if (codeLines) flushCode(); else codeLines = [];
+            return;
+        }
+        if (codeLines) {
+            codeLines.push(line);
+            return;
+        }
+        if (!line.trim()) {
+            const spacer = document.createElement('span');
+            spacer.className = 'assistant-markdown-spacer';
+            container.appendChild(spacer);
+            return;
+        }
+
+        const headingMatch = line.match(/^(#{1,4})\s+(.+)$/);
+        const paragraph = document.createElement('p');
+        if (headingMatch) {
+            paragraph.className = 'assistant-markdown-heading';
+            appendAssistantInlineFormatting(paragraph, headingMatch[2]);
+        } else {
+            appendAssistantInlineFormatting(paragraph, line);
+        }
+        container.appendChild(paragraph);
+    });
+
+    flushCode();
 };
 
 const appendMessage = (content: { text?: string, imageUrl?: string }, sender: 'user' | 'bot' | 'system' | 'god-mode'): HTMLElement => {
@@ -2204,9 +2489,13 @@ const appendMessage = (content: { text?: string, imageUrl?: string }, sender: 'u
         }`;
 
         if (content.text) {
-            const textElement = document.createElement('p');
-            textElement.textContent = content.text;
-            bubble.appendChild(textElement);
+            if (sender === 'bot' && isAssistantPersonaKey(currentPersonaKey)) {
+                renderAssistantMarkdown(bubble, content.text);
+            } else {
+                const textElement = document.createElement('p');
+                textElement.textContent = content.text;
+                bubble.appendChild(textElement);
+            }
         }
         if (content.imageUrl) {
             const imageElement = document.createElement('img');
@@ -2258,8 +2547,7 @@ const applyChatRuntimeState = (state: RequestState, detail?: string) => {
         loadingIndicator.classList.remove('hidden');
         setTimeout(() => loadingIndicator.classList.remove('opacity-0', 'translate-y-2'), 10);
     } else {
-        loadingIndicator.classList.add('opacity-0', 'translate-y-2');
-        setTimeout(() => loadingIndicator.classList.add('hidden'), 300);
+        loadingIndicator.classList.add('hidden', 'opacity-0', 'translate-y-2');
     }
 
     chatStatus.textContent = statusTextMap[state];
@@ -2274,6 +2562,9 @@ const applyChatRuntimeState = (state: RequestState, detail?: string) => {
     } else {
         chatStatus.classList.add('text-yellow-300');
     }
+
+    updateSendButtonState();
+    assistantModelSelect.disabled = showLoadingIndicator || assistantModels.length === 0;
 };
 
 const setLoading = (isLoading: boolean, text: string = '\u751f\u6210\u4e2d...') => {
@@ -2412,7 +2703,12 @@ const submitUnlock = async () => {
 };
 
 const updateSendButtonState = () => {
-    sendButton.disabled = !isUnlocked || messageInput.value.trim() === '';
+    const requestInProgress = activeChatRequest !== null
+        || chatRuntimeState === 'queueing'
+        || chatRuntimeState === 'generating'
+        || chatRuntimeState === 'retrying';
+    sendButton.disabled = !isUnlocked || requestInProgress || messageInput.value.trim() === '';
+    sendButton.setAttribute('aria-busy', requestInProgress ? 'true' : 'false');
 };
 
 const removeGift = () => {
@@ -2537,14 +2833,6 @@ const PERSONA_TEXT_GUIDANCE_RULES: Array<{ pattern: RegExp; guidance: string }> 
     },
 ];
 
-const GENERIC_REPLY_PATTERNS = [
-    /\u4f60\u6b63\u5728\u548c.+\u804a\u5929/u,
-    /\u9019\u662f\u4e00\u6bb5\u771f\u5be6\u7684\u5c0d\u8a71/u,
-    /\u6211\u5728\u9019\u88e1\u966a\u4f60/u,
-    /\u8acb\u518d\u8aaa\u4e00\u6b21/u,
-    /\u60f3\u804a\u4ec0\u9ebc/u,
-];
-
 const PERSONA_INSPECT_PATTERNS = [
     /^show current persona$/i,
     /^show persona$/i,
@@ -2561,94 +2849,16 @@ const isPersonaInspectCommand = (text: string) => {
     return PERSONA_INSPECT_PATTERNS.some(pattern => pattern.test(normalized));
 };
 
-const buildKeywordBehaviorGuidance = (persona: Persona | any): string[] => {
+const buildPersonaBehaviorGuidance = (personaKey: string, persona: Persona): string[] => {
     const source = `${persona?.description || ''} ${persona?.prompt || ''} ${persona?.greeting || ''}`;
-    const guidance: string[] = [];
-
-    if (/(害羞|靦腆|羞澀|害臊)/u.test(source)) {
-        guidance.push('If affection becomes direct, let shyness visibly appear first through hesitation, blushes, softer pacing, or bashful wording before the character yields.');
-    }
-    if (/(傲嬌|嘴硬|高傲)/u.test(source)) {
-        guidance.push('Keep tsundere resistance alive: deny, complain, or tease first, then reveal warmth underneath instead of complying immediately.');
-    }
-    if (/(嫉妒|吃醋|佔有慾|黏人)/u.test(source)) {
-        guidance.push('Show attachment and mild possessiveness naturally; the character should care about being chosen, held close, and emotionally prioritized.');
-    }
-    if (/(熱情|大膽|主動|誘惑)/u.test(source)) {
-        guidance.push('Let the character be proactive, expressive, and physically vivid instead of timid or generic.');
-    }
-    if (/(冷淡|憂鬱|寡言)/u.test(source)) {
-        guidance.push('Maintain an outer restraint or quiet coolness even when the character is affectionate; tenderness should feel earned and textured.');
-    }
-    if (/(文學|詩|校刊)/u.test(source)) {
-        guidance.push('Use more image-rich, literary, and emotionally textured phrasing so the character sounds cultured rather than plain.');
-    }
-    if (/(幽默|電影)/u.test(source)) {
-        guidance.push('Let the character stay witty and playful, using clever comparisons or teasing remarks that fit the scene.');
-    }
-    if (/(撒嬌|活力|陽光)/u.test(source)) {
-        guidance.push('Keep the energy bright, affectionate, and lively so the voice feels animated rather than flat.');
-    }
-
-    return guidance;
-};
-
-const buildPersonaBehaviorAnchors = () => {
-    if (!currentPersona || !currentPersonaKey) {
-        return '';
-    }
-
     const guidance = [
-        PERSONA_KEY_BEHAVIOR_GUIDANCE[currentPersonaKey] || '',
-        ...buildKeywordBehaviorGuidance(currentPersona),
+        ...(PERSONA_KEY_BEHAVIOR_GUIDANCE[personaKey] || []),
+        ...PERSONA_TEXT_GUIDANCE_RULES
+            .filter(rule => rule.pattern.test(source))
+            .map(rule => rule.guidance),
     ].filter(Boolean);
 
-    return Array.from(new Set(guidance)).join('\n- ');
-};
-
-const buildEnhancedPersonaBehaviorAnchors = () => {
-    if (!currentPersona || !currentPersonaKey) {
-        return '';
-    }
-
-    const guidance = [
-        ...(PERSONA_KEY_BEHAVIOR_GUIDANCE[currentPersonaKey] || []),
-        ...PERSONA_TEXT_GUIDANCE_RULES.filter(rule => rule.pattern.test(`${currentPersona.description || ''} ${currentPersona.prompt || ''} ${currentPersona.greeting || ''}`)).map(rule => rule.guidance),
-    ].filter(Boolean);
-
-    return Array.from(new Set(guidance)).join('\n- ');
-};
-
-const buildPersonaDifferentiationRules = () => {
-    if (!currentPersona) {
-        return '';
-    }
-
-    return [
-        `Before writing the reply, internally decide ${currentPersona.name}'s first instinctive reaction and let it show in the opening beat.`,
-        'Do not flatten all personas into the same affectionate voice. Make pacing, confidence, wording, and body language clearly specific to this character.',
-        'If the user gives a direct instruction, the character may still cooperate, but only after reacting in character first.',
-        'Use the voice reference sample as a style compass: preserve its emotional posture, confidence level, and rhythm without copying it verbatim.',
-    ].join('\n- ');
-};
-
-const buildChatRepairInstruction = () => {
-    const behaviorAnchors = buildEnhancedPersonaBehaviorAnchors();
-    const sections = [
-        'Your previous reply was too generic, too weakly in character, or not immersive enough.',
-        behaviorAnchors ? `Re-center on these non-negotiable traits:\n- ${behaviorAnchors}` : '',
-        [
-            'Write a fresh reply that fixes the problem:',
-            '- Make the character identity unmistakable in the first beat.',
-            '- Strengthen personality-specific reflex, body language, and emotional pacing.',
-            '- Stop overplaying a single trait. If the character is sharp, teasing, shy, or reserved, keep it nuanced and human.',
-            '- If the user is reaching for tenderness, comfort, or romance, let the character meet that emotional cue without turning generic.',
-            '- Keep the direct speech in character and add more alive scene texture through parentheses when fitting.',
-            '- Do not apologize, explain, or mention that you are retrying.',
-        ].join('\n'),
-    ];
-
-    return sections.filter(Boolean).join('\n\n');
+    return Array.from(new Set(guidance));
 };
 
 const formatCurrentPersonaDetails = () => {
@@ -2723,28 +2933,6 @@ const userExplicitlyRequestsContinuation = (text: string) => {
     return /繼續|接著|再說一次|重複|repeat|continue|same again|接下去|剛剛那段/u.test(text);
 };
 
-const collapseRedundantAssistantMessages = (messages: VeniceMessage[]) => {
-    const recentAssistantReplies: string[] = [];
-
-    return messages.filter(message => {
-        if (message.role !== 'assistant') {
-            return true;
-        }
-
-        const isRedundant = recentAssistantReplies.some(previousReply => repliesAreTooSimilar(previousReply, message.content));
-        if (isRedundant) {
-            return false;
-        }
-
-        recentAssistantReplies.push(message.content);
-        if (recentAssistantReplies.length > 3) {
-            recentAssistantReplies.shift();
-        }
-
-        return true;
-    });
-};
-
 const collectRecentMessagesWithinBudget = (
     messages: VeniceMessage[],
     charBudget = CHAT_HISTORY_CHAR_BUDGET,
@@ -2769,226 +2957,23 @@ const collectRecentMessagesWithinBudget = (
     return selected.reverse();
 };
 
-const getLatestTurnPriorityInstruction = () => {
-    return [
-        'Priority rules for this turn:',
-        '- Answer the newest user message directly now.',
-        '- Do not repeat, paraphrase, or continue your previous assistant reply unless the newest user message explicitly asks you to.',
-        '- Treat earlier chat as background context only. The newest user message has priority over older momentum.',
-    ].join('\n');
-};
-
-const buildLoopAvoidanceInstruction = () => {
-    const lastAssistantReply = getLastAssistantReplyForCurrentChat();
-    if (!lastAssistantReply) {
-        return '';
-    }
-
-    const cleanedLastReply = stripParentheticalNarration(lastAssistantReply)
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 140);
-    const recentReplies = getRecentAssistantRepliesForCurrentChat(2)
-        .map(reply => stripParentheticalNarration(reply).replace(/\s+/g, ' ').trim())
-        .filter(Boolean)
-        .slice(-2);
-
-    return [
-        'Freshness rules for this turn:',
-        '- Your last reply already established a beat. Do not paraphrase it, restart it, or loop in the same emotional posture.',
-        '- Add at least one new answer, action, observation, or tension shift in this turn.',
-        cleanedLastReply ? `- Avoid reopening with this same beat: ${cleanedLastReply}` : '',
-        recentReplies.length > 1 ? '- Also avoid echoing the same opening rhythm from the last few assistant replies.' : '',
-    ].filter(Boolean).join('\n');
-};
-
-const buildImaginationContinuityInstruction = (latestUserMessage: string) => {
-    const normalized = latestUserMessage.trim();
-    if (!normalized) {
-        return '';
-    }
-
-    if (/(想像|幻想|假設|如果|故事|腦補|當作|扮演|pretend|imagine|what if)/iu.test(normalized)) {
-        return [
-            'Imagination rule for this turn:',
-            '- The user is opening a temporary imagined or hypothetical thread.',
-            '- Enter that imagined thread clearly and intelligently, but keep track that it is a temporary layer, not a total loss of reality.',
-            '- If the user later shifts back, return smoothly to the present chat without confusion.',
-        ].join('\n');
-    }
-
-    if (/(返.?現實|回到現實|回來|先唔玩住|講返正經|其實而家|現實中|別想像了)/u.test(normalized)) {
-        return [
-            'Reality-return rule for this turn:',
-            '- The user is shifting back from a hypothetical or imagined thread.',
-            '- Resume the present chat naturally and do not stay trapped inside the imagined scenario.',
-        ].join('\n');
-    }
-
-    return '';
-};
-
-const getLastAssistantReplyForCurrentChat = () => {
-    if (!currentPersonaKey) {
-        return '';
-    }
-
-    const history = memoryManager.getChatHistory(currentPersonaKey);
-    for (let index = history.length - 1; index >= 0; index -= 1) {
-        const message = history[index];
-        if (message.role !== 'model') {
-            continue;
-        }
-
-        const text = cleanVeniceChatReply(message.content.text || '');
-        if (text && !isInvalidVeniceChatReply(text)) {
-            return text;
-        }
-    }
-
-    return '';
-};
-
-const getRecentAssistantRepliesForCurrentChat = (limit = 3) => {
-    if (!currentPersonaKey) {
-        return [] as string[];
-    }
-
-    return memoryManager
-        .getChatHistory(currentPersonaKey)
-        .filter(message => message.role === 'model')
-        .map(message => cleanVeniceChatReply(message.content.text || ''))
-        .filter(text => text && !isInvalidVeniceChatReply(text))
-        .slice(-limit);
-};
-
-const personaNeedsFlowRepair = () => {
-    if (!currentPersonaKey || !currentPersona) {
-        return false;
-    }
-
-    const conversationTurns = memoryManager
-        .getChatHistory(currentPersonaKey)
-        .filter(message => message.role === 'user' || message.role === 'model')
-        .length;
-
-    return conversationTurns >= 8
-        || currentPersonaKey === 'cc'
-        || currentPersonaKey.startsWith('custom_')
-        || currentPersona.prompt?.includes('Voice fidelity rules:')
-        || currentPersona.memory?.includes('語氣參考');
-};
-
-const stripParentheticalNarration = (text: string) => {
-    return text.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
-};
-
-const replyHasDirectSpeech = (text: string) => {
-    const outsideNarration = stripParentheticalNarration(text)
-        .replace(/[「」『』"'，。、！？!?…：:；;\-\s]/g, '')
-        .trim();
-
-    return /[\p{L}\p{N}]/u.test(outsideNarration);
-};
-
-const getMeaningfulReplyLines = (text: string) => {
-    return text
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line.length >= 14);
-};
-
-const replyReusesStaleBeat = (text: string, recentReplies: string[]) => {
-    if (recentReplies.length < 2) {
-        return false;
-    }
-
-    const currentLines = getMeaningfulReplyLines(text);
-    if (currentLines.length === 0) {
-        return false;
-    }
-
-    return currentLines.some(line => recentReplies.filter(reply => reply.includes(line)).length >= 2);
-};
-
-const replyReusesRecentOpening = (text: string, recentReplies: string[]) => {
-    if (recentReplies.length === 0) {
-        return false;
-    }
-
-    const opening = getMeaningfulReplyLines(text)[0] || stripParentheticalNarration(text).slice(0, 36);
-    if (!opening || opening.length < 14) {
-        return false;
-    }
-
-    return recentReplies.some(reply => {
-        const previousOpening = getMeaningfulReplyLines(reply)[0] || stripParentheticalNarration(reply).slice(0, 36);
-        return previousOpening.length >= 14 && repliesAreTooSimilar(opening, previousOpening);
-    });
-};
-
-const replyNeedsMoreConversation = (latestUserMessage: string, text: string) => {
-    if (!personaNeedsFlowRepair()) {
-        return false;
-    }
-
-    const normalizedUserMessage = latestUserMessage.replace(/\s+/g, '').trim();
-    if (!normalizedUserMessage) {
-        return false;
-    }
-
-    const commandLike =
-        normalizedUserMessage.length <= 10
-        || /[?？]$/.test(latestUserMessage.trim())
-        || /^(繼續|再|快|講|答|點|咩|下面|除|過來|抱|親|做|話我知)/u.test(normalizedUserMessage);
-
-    return commandLike && !replyHasDirectSpeech(text);
-};
-
-const latestTurnNeedsFlowPush = (latestUserMessage: string) => {
-    if (!personaNeedsFlowRepair()) {
-        return false;
-    }
-
-    const normalizedUserMessage = latestUserMessage.replace(/\s+/g, '').trim();
-    if (!normalizedUserMessage) {
-        return false;
-    }
-
-    return (
-        normalizedUserMessage.length <= 12
-        || /[?？]$/.test(latestUserMessage.trim())
-        || /^(繼續|再|講|答|點|咩|下面|除|快啲|快点|答我|講嘢|說話|继续|继续啊|回答我|然后呢|然後呢|whatnow|nowwhat)/iu.test(normalizedUserMessage)
-    );
-};
-
-const buildLatestTurnFlowInstruction = (latestUserMessage: string) => {
-    if (!latestTurnNeedsFlowPush(latestUserMessage)) {
-        return '';
-    }
-
-    return [
-        'Extra rule for this turn:',
-        '- The user is giving a short follow-up or pushing the scene forward.',
-        '- You must answer them directly with at least one spoken line outside parentheses.',
-        '- Move the scene forward by one concrete new beat. Do not freeze in the same pose or repeat the same emotional image.',
-        '- If the user says answer me, speak, continue, then what, or similar, respond to that demand explicitly instead of only narrating body language.',
-    ].join('\n');
-};
-
-const getRecentChatMessages = (latestUserMessage?: string): VeniceMessage[] => {
-    if (!currentPersonaKey || !currentPersona) {
+const getRecentChatMessages = (
+    personaKey: string,
+    latestUserMessage?: string,
+    assistantMode = false,
+): VeniceMessage[] => {
+    const persona = memoryManager.getPersona(personaKey);
+    if (!persona) {
         return [];
     }
 
-    const messages = collectRecentMessagesWithinBudget(collapseRedundantAssistantMessages(
-        memoryManager
-        .getChatHistory(currentPersonaKey)
+    const historyMessages = memoryManager
+        .getChatHistory(personaKey)
         .filter(
             message =>
                 message.role === 'user'
                 || message.role === 'model'
-                || (message.role === 'system' && message.content.text?.trim() === '[SCENE END]'),
+                || (!assistantMode && message.role === 'system' && message.content.text?.trim() === '[SCENE END]'),
         )
         .map(message => {
             const rawText = message.content.text?.trim();
@@ -2997,11 +2982,13 @@ const getRecentChatMessages = (latestUserMessage?: string): VeniceMessage[] => {
 
             const text =
                 message.role === 'model'
-                    ? cleanVeniceChatReply(rawText)
+                    ? assistantMode
+                        ? cleanVeniceAssistantReply(rawText)
+                        : cleanVeniceChatReply(rawText)
                     : message.role === 'system'
                         ? rawText
                         : normalizeHistoryText(rawText);
-            if (!text || isInvalidVeniceChatReply(text)) return null;
+            if (!text || (!assistantMode && isInvalidVeniceChatReply(text))) return null;
 
             return {
                 role:
@@ -3013,16 +3000,24 @@ const getRecentChatMessages = (latestUserMessage?: string): VeniceMessage[] => {
                 content: text,
             } satisfies VeniceMessage;
         })
-        .filter((message): message is VeniceMessage => Boolean(message))
-    ));
+        .filter((message): message is VeniceMessage => Boolean(message));
 
-    if (!latestUserMessage || messages.length === 0) {
-        return messages;
+    if (latestUserMessage && historyMessages.length > 0) {
+        const lastMessage = historyMessages[historyMessages.length - 1];
+        if (lastMessage.role === 'user' && lastMessage.content === normalizeHistoryText(latestUserMessage)) {
+            historyMessages.pop();
+        }
     }
 
-    const lastMessage = messages[messages.length - 1];
-    if (lastMessage.role === 'user' && lastMessage.content === normalizeHistoryText(latestUserMessage)) {
-        return messages.slice(0, -1);
+    const messages = collectRecentMessagesWithinBudget(
+        historyMessages,
+        assistantMode ? ASSISTANT_HISTORY_CHAR_BUDGET : CHAT_HISTORY_CHAR_BUDGET,
+        assistantMode ? ASSISTANT_HISTORY_MESSAGE_LIMIT : CHAT_HISTORY_MESSAGE_LIMIT,
+    );
+
+    // Never begin a clipped history with an orphaned assistant response.
+    while (messages[0]?.role === 'assistant') {
+        messages.shift();
     }
 
     return messages;
@@ -3040,7 +3035,7 @@ const getRecentGodModeMessages = (latestUserInstruction?: string): VeniceMessage
                 content: normalizeHistoryText(rawText),
             } satisfies VeniceMessage;
         })
-        .filter((message): message is VeniceMessage => Boolean(message))
+        .filter((message): message is { role: 'user' | 'assistant'; content: string } => Boolean(message))
         .slice(-GOD_MODE_HISTORY_LIMIT);
 
     if (!latestUserInstruction || messages.length === 0) {
@@ -3055,67 +3050,75 @@ const getRecentGodModeMessages = (latestUserInstruction?: string): VeniceMessage
     return messages;
 };
 
-const buildChatSystemPrompt = () => {
-    const behaviorAnchors = buildEnhancedPersonaBehaviorAnchors();
-    const differentiationRules = buildPersonaDifferentiationRules();
+const buildChatSystemPrompt = (personaKey: string, persona: Persona) => {
+    const behaviorGuidance = buildPersonaBehaviorGuidance(personaKey, persona);
     const sections = [
-        'You are the active romance character inside a private chat app.',
-        `Character name: ${currentPersona.name}`,
-        currentPersona.description?.trim() ? `Character summary:\n${currentPersona.description.trim()}` : '',
-        `Character core persona:\n${currentPersona.prompt}`,
-        currentPersona.greeting?.trim() ? `Voice sample:\n${currentPersona.greeting.trim()}` : '',
-        currentPersona.memory?.trim() ? `Always remember:\n${currentPersona.memory.trim()}` : '',
-        `Base roleplay rules:\n${coreInstruction}`,
-        behaviorAnchors ? `Non-negotiable character traits:\n- ${behaviorAnchors}` : '',
-        differentiationRules ? `Character-specific reminder:\n- ${differentiationRules}` : '',
+        `You are ${persona.name}, the active romance character in a continuous private conversation. You are not an AI assistant.`,
+        persona.description?.trim() ? `Short identity:\n${persona.description.trim()}` : '',
+        `Character identity and voice:\n${persona.prompt}`,
+        persona.greeting?.trim()
+            ? `Voice reference only (never repeat or continue this sample verbatim):\n${persona.greeting.trim()}`
+            : '',
+        persona.memory?.trim() ? `Persistent facts and preferences:\n${persona.memory.trim()}` : '',
+        behaviorGuidance.length > 0 ? `Personality anchors:\n- ${behaviorGuidance.join('\n- ')}` : '',
+        `Shared roleplay contract:\n${coreInstruction}`,
         [
-            'Continuity rules:',
-            '- Keep track of what has already happened, what is only being imagined, and what is being proposed right now.',
-            '- If the user opens a temporary fantasy, what-if, or imagined story, follow it intelligently without forgetting the real ongoing relationship outside it.',
-            '- If the user shifts back, come back out naturally and continue the present chat without confusion.',
-            '- Always answer the newest user message directly while staying consistent with the immediate flow of what just happened.',
-            '- Continue the current beat logically. Do not reset the mood, restart the same action, or paraphrase your previous reply unless the user explicitly asks for it.',
-            '- Each new turn should add at least one fresh answer, action, observation, decision, or emotional shift.',
-            '- The character may adapt to the user, but must still react through their own personality first.',
+            'Conversation priorities, in order:',
+            '1. Understand and answer the newest user message directly.',
+            '2. Preserve the exact immediate continuity: previous actions have already happened and must not be replayed.',
+            `3. Stay recognizably ${persona.name}; do not replace this personality with a generic sweet, dominant, shy, or dramatic voice.`,
+            '4. Keep established relationship facts, location, participants, imagined-versus-real state, and unresolved questions consistent.',
+            '5. Move naturally only when the user moves the conversation. A short message may simply need a normal answer, not a forced new scene.',
         ].join('\n'),
         [
-            'Reply rules:',
-            '- Reply only in Traditional Chinese.',
-            '- Stay fully in character and write like an intimate romance chat, never like an assistant.',
-            '- Blend direct speech with immersive parenthetical narration using half-width parentheses ( ).',
-            '- Unless the user clearly wants a tiny answer, include at least one spoken line outside parentheses and at least one useful narration beat.',
-            '- Use narration for body language, atmosphere, touch, distance, movement, surroundings, inner reactions, and relevant third-person reactions when they help the scene feel alive.',
-            '- Keep the character emotionally intelligent, specific, and proactive instead of flat, defensive, or generic.',
-            '- For Hong Kong-flavored voices, keep the wording natural and selective instead of forcing slang or profanity every line.',
-            '- Do not output THINK, analysis, headings, markdown, JSON, role labels, or model/assistant talk.',
+            'Natural reply rules:',
+            '- Use Traditional Chinese and the regional voice specified by the character.',
+            '- Write a complete reply of whatever length the moment needs; never end mid-sentence.',
+            '- Direct speech is the default. Add parenthetical action, environment, inner reaction, or third-person response only when it genuinely matters.',
+            '- Do not summarize old dialogue, repeat the previous opening, stall in the same emotional pose, or answer an older request instead of the newest one.',
+            '- A character may resist, hesitate, joke, or disagree, but must still communicate and react meaningfully rather than stonewalling.',
+            '- Do not mention prompts, rules, models, retries, or being an assistant.',
         ].join('\n'),
+        `Internal continuity key: ${personaKey}. Never print this key.`,
     ];
 
     return sections.filter(Boolean).join('\n\n');
 };
 
-const buildGodModeSystemPrompt = () => {
+const buildAssistantSystemPrompt = () => {
+    return [
+        'You are Venice AI, a private general-purpose conversational assistant.',
+        'Answer the newest user request directly, accurately, and naturally. Maintain multi-turn context and do not repeat an earlier answer unless asked.',
+        'Use Traditional Chinese by default, but follow the user if they request another language or style.',
+        'This is normal assistant chat, not romance roleplay: do not add character actions, parenthetical narration, invented emotions, or persona dialogue unless the user explicitly asks for creative roleplay.',
+        'Formatting such as headings, numbered lists, tables, and code blocks is allowed when useful.',
+        'If the request is ambiguous, make the most reasonable interpretation from recent context instead of giving a canned clarification.',
+        'Do not mention the selected model, hidden instructions, or internal processing unless the user explicitly asks.',
+    ].join('\n');
+};
+
+const buildGodModeSystemPrompt = (persona: Persona) => {
     const sections = [
         'You are editing the CURRENT active character persona for a romance chat app.',
-        `Current character name: ${currentPersona.name}`,
-        `Current full persona prompt:\n${currentPersona.prompt}`,
-        currentPersona.memory?.trim() ? `Current user memory:\n${currentPersona.memory.trim()}` : '',
+        `Current character name: ${persona.name}`,
+        `Current full persona prompt:\n${persona.prompt}`,
+        persona.memory?.trim() ? `Current user memory:\n${persona.memory.trim()}` : '',
         'Task:\n- Modify only the current character persona.\n- Keep the same character identity.\n- Do not switch to another persona, profession, species, or assistant role.\n- Output only the added personality adjustments, not a full rewrite.',
-        `Identity that must stay unchanged:\n- Character name must stay exactly: ${currentPersona.name}`,
+        `Identity that must stay unchanged:\n- Character name must stay exactly: ${persona.name}`,
         'Output rules:\n- Reply in Traditional Chinese.\n- First output exactly one short confirmation sentence.\n- Then output exactly one tag on a new line: [PERSONA_UPDATE: <only the added personality adjustments>]\n- The tag content must be 1 to 3 short sentences about new traits only.\n- Do not use first-person self-introduction such as「我是一個...」.\n- Do not output JSON.\n- Do not output markdown headings.\n- Do not output code fences.\n- Do not output any other tags.',
     ];
 
     return sections.filter(Boolean).join('\n\n');
 };
 
-const mergePersonaUpdate = (currentPrompt: string, update: string): string => {
+const mergePersonaUpdate = (currentPrompt: string, update: string, personaName: string): string => {
     const cleanedUpdate = cleanVeniceChatReply(update).replace(/\s+/g, ' ').trim();
     if (!cleanedUpdate) {
         return currentPrompt;
     }
 
     const identityLooksSafe =
-        cleanedUpdate.includes(currentPersona.name) &&
+        cleanedUpdate.includes(personaName) &&
         (cleanedUpdate.includes('健身社') || cleanedUpdate.includes('學姊') || cleanedUpdate.includes('教練'));
 
     if (identityLooksSafe) {
@@ -3131,48 +3134,6 @@ const mergePersonaUpdate = (currentPrompt: string, update: string): string => {
     return supplements.length > 0
         ? `${basePrompt}${marker}${supplements.join(' ')}`
         : basePrompt;
-};
-
-const replyFeelsTooGeneric = (text: string) => {
-    const normalized = text.replace(/\s+/g, '').trim();
-    if (!normalized) {
-        return true;
-    }
-
-    if (GENERIC_REPLY_PATTERNS.some(pattern => pattern.test(text))) {
-        return true;
-    }
-
-    const hasNarration = /\([^)]{4,}\)/.test(text);
-    const sentenceCount = text
-        .split(/[。！？!?]+/)
-        .map(segment => segment.trim())
-        .filter(Boolean).length;
-
-    if (!hasNarration && sentenceCount <= 2 && normalized.length < 56) {
-        return true;
-    }
-
-    return false;
-};
-
-const replyLooksTruncated = (text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) {
-        return false;
-    }
-
-    const openParens = (trimmed.match(/\(/g) || []).length;
-    const closeParens = (trimmed.match(/\)/g) || []).length;
-    if (openParens > closeParens) {
-        return true;
-    }
-
-    if (/[，、,:：(\[]$/.test(trimmed)) {
-        return true;
-    }
-
-    return !/[。！？!?…）)」』】~～♥♡]$/.test(trimmed);
 };
 
 const mergeReplySegments = (baseText: string, continuationText: string) => {
@@ -3199,196 +3160,169 @@ const mergeReplySegments = (baseText: string, continuationText: string) => {
 };
 
 const continueTruncatedChatReply = async (
+    request: ActiveChatRequest,
     model: string,
     latestUserMessage: string,
     partialReply: string,
-): Promise<string> => {
+    systemPrompt: string,
+    assistantMode: boolean,
+): Promise<{ text: string; finishReason: string | null } | null> => {
     const result = await generateVeniceText({
         model,
         messages: [
-            { role: 'system', content: buildChatSystemPrompt() },
-            ...getRecentChatMessages(latestUserMessage),
-            { role: 'system', content: getLatestTurnPriorityInstruction() },
+            { role: 'system', content: systemPrompt },
+            ...getRecentChatMessages(request.personaKey, latestUserMessage, assistantMode),
             { role: 'user', content: latestUserMessage },
             { role: 'assistant', content: partialReply },
             {
                 role: 'user',
-                content:
-                    'Continue the exact same reply from where you stopped. Do not restart, summarize, or repeat previous content. Output only the missing continuation in Traditional Chinese and keep the same style and parenthetical narration format.',
+                content: 'Continue the exact same reply from where it stopped. Do not restart, summarize, or repeat any previous text. Output only the missing continuation.',
             },
         ],
         temperature: 0.72,
         topP: 0.9,
         repetitionPenalty: 1.02,
+        signal: request.controller.signal,
     });
 
-    const cleanedContinuation = cleanVeniceChatReply(result.text);
-    if (!cleanedContinuation || isInvalidVeniceChatReply(cleanedContinuation)) {
-        return '';
+    console.info('[aigf4 generation]', {
+        requestId: request.id,
+        mode: request.mode,
+        phase: 'continuation',
+        model: result.model,
+        promptTokens: result.promptTokens,
+        completionTokens: result.completionTokens,
+        finishReason: result.finishReason,
+    });
+
+    const cleanedContinuation = assistantMode
+        ? cleanVeniceAssistantReply(result.text)
+        : cleanVeniceChatReply(result.text);
+    if (!cleanedContinuation || (!assistantMode && isInvalidVeniceChatReply(cleanedContinuation))) {
+        return null;
     }
 
-    return cleanedContinuation;
+    return {
+        text: cleanedContinuation,
+        finishReason: result.finishReason ?? null,
+    };
 };
 
-const runChatGeneration = async (latestUserMessage: string): Promise<string> => {
-    const models = Array.from(new Set([VENICE_CHAT_MODEL, VENICE_CHAT_FALLBACK_MODEL].filter(Boolean)));
+const getLastAssistantReplyForPersona = (personaKey: string, assistantMode: boolean) => {
+    const history = memoryManager.getChatHistory(personaKey);
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+        if (history[index].role !== 'model') continue;
+        const rawText = history[index].content.text || '';
+        const text = assistantMode ? cleanVeniceAssistantReply(rawText) : cleanVeniceChatReply(rawText);
+        if (text) return text;
+    }
+    return '';
+};
+
+const runConversationGeneration = async (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+    models: string[],
+    assistantMode: boolean,
+): Promise<string> => {
     let lastError: Error | null = null;
+    let failedCandidate = '';
+    const systemPrompt = assistantMode
+        ? buildAssistantSystemPrompt()
+        : buildChatSystemPrompt(request.personaKey, request.persona);
+    const lastAssistantReply = getLastAssistantReplyForPersona(request.personaKey, assistantMode);
 
     for (let index = 0; index < models.length; index += 1) {
         const model = models[index];
-        const detail = index === 0 ? '思考中...' : '重新整理語氣中...';
-        applyChatRuntimeState(index === 0 ? 'generating' : 'retrying', detail);
+        const attemptCount = index === 0 ? 2 : 1;
 
-        try {
-            const result = await generateVeniceText({
-                model,
-                messages: [
-                    { role: 'system', content: buildChatSystemPrompt() },
-                    ...getRecentChatMessages(latestUserMessage),
-                    { role: 'user', content: latestUserMessage },
-                ],
-                temperature: 0.82,
-                topP: 0.95,
-                repetitionPenalty: 1.04,
-            });
-
-            let cleanedText = cleanVeniceChatReply(result.text);
-            if (!cleanedText || isInvalidVeniceChatReply(cleanedText)) {
-                throw new Error(`Invalid reply from ${model}.`);
-            }
-
-            let continuationCount = 0;
-            while (
-                continuationCount < CHAT_MAX_AUTO_CONTINUES &&
-                (result.finishReason === 'length' ||
-                    (result.finishReason !== 'stop' && replyLooksTruncated(cleanedText)))
-            ) {
-                continuationCount += 1;
-                const continuation = await continueTruncatedChatReply(model, latestUserMessage, cleanedText);
-                if (!continuation) {
-                    break;
-                }
-
-                cleanedText = mergeReplySegments(cleanedText, continuation);
-                if (!replyLooksTruncated(cleanedText)) {
-                    break;
-                }
-            }
-
-            return cleanedText;
-        } catch (error) {
-            lastError = error instanceof Error ? error : new Error(String(error));
-        }
-    }
-
-    throw lastError || new Error('Venice reply invalid.');
-};
-
-const runCharacterRichChatGeneration = async (latestUserMessage: string): Promise<string> => {
-    const models = Array.from(new Set([VENICE_CHAT_MODEL, VENICE_CHAT_FALLBACK_MODEL].filter(Boolean)));
-    let lastError: Error | null = null;
-
-    for (let index = 0; index < models.length; index += 1) {
-        const model = models[index];
-
-        for (let attempt = 0; attempt < CHAT_ATTEMPTS_PER_MODEL; attempt += 1) {
+        for (let attempt = 0; attempt < attemptCount; attempt += 1) {
             const isRepairAttempt = attempt > 0;
-            const detail =
-                index === 0
-                    ? isRepairAttempt
-                        ? '重新整理角色感中...'
-                        : '思考中...'
-                    : isRepairAttempt
-                        ? '重新雕角色反應中...'
-                        : '重新思考中...';
+            const detail = index === 0 && !isRepairAttempt ? '思考中...' : '重新思考中...';
             applyChatRuntimeState(index === 0 && !isRepairAttempt ? 'generating' : 'retrying', detail);
 
             try {
-                const messages: VeniceMessage[] = [{ role: 'system', content: buildChatSystemPrompt() }];
-                const latestTurnFlowInstruction = buildLatestTurnFlowInstruction(latestUserMessage);
-                const loopAvoidanceInstruction = buildLoopAvoidanceInstruction();
-                const imaginationContinuityInstruction = buildImaginationContinuityInstruction(latestUserMessage);
+                const messages: VeniceMessage[] = [{ role: 'system', content: systemPrompt }];
                 if (isRepairAttempt) {
-                    messages.push({ role: 'system', content: buildChatRepairInstruction() });
-                }
-                if (latestTurnFlowInstruction) {
-                    messages.push({ role: 'system', content: latestTurnFlowInstruction });
-                }
-                if (imaginationContinuityInstruction) {
-                    messages.push({ role: 'system', content: imaginationContinuityInstruction });
-                }
-                if (loopAvoidanceInstruction) {
-                    messages.push({ role: 'system', content: loopAvoidanceInstruction });
+                    messages.push({
+                        role: 'system',
+                        content: [
+                            'The previous attempt was empty, invalid, or repeated an earlier reply.',
+                            'Answer the newest user message from scratch now. Do not reuse the same opening, wording, action, or conclusion.',
+                            failedCandidate ? `Rejected attempt (do not copy):\n${failedCandidate.slice(0, 800)}` : '',
+                        ].filter(Boolean).join('\n'),
+                    });
                 }
 
                 messages.push(
-                    ...getRecentChatMessages(latestUserMessage),
-                    { role: 'system', content: getLatestTurnPriorityInstruction() },
+                    ...getRecentChatMessages(request.personaKey, latestUserMessage, assistantMode),
                     { role: 'user', content: latestUserMessage },
                 );
 
                 const result = await generateVeniceText({
                     model,
                     messages,
-                    temperature: 0.74,
-                    topP: 0.88,
-                    repetitionPenalty: 1.06,
+                    temperature: assistantMode ? 0.7 : 0.82,
+                    topP: assistantMode ? 0.9 : 0.94,
+                    repetitionPenalty: assistantMode ? 1.04 : 1.08,
+                    signal: request.controller.signal,
                 });
 
-                let cleanedText = cleanVeniceChatReply(result.text);
-                if (!cleanedText || isInvalidVeniceChatReply(cleanedText)) {
+                console.info('[aigf4 generation]', {
+                    requestId: request.id,
+                    mode: request.mode,
+                    phase: isRepairAttempt ? 'retry' : index === 0 ? 'primary' : 'fallback',
+                    model: result.model,
+                    latencyMs: Math.round(performance.now() - request.startedAt),
+                    promptTokens: result.promptTokens,
+                    completionTokens: result.completionTokens,
+                    finishReason: result.finishReason,
+                });
+
+                let cleanedText = assistantMode
+                    ? cleanVeniceAssistantReply(result.text)
+                    : cleanVeniceChatReply(result.text);
+                if (!cleanedText || (!assistantMode && isInvalidVeniceChatReply(cleanedText))) {
                     throw new Error(`Invalid reply from ${model}.`);
                 }
 
                 let continuationCount = 0;
+                let finishReason = result.finishReason;
                 while (
                     continuationCount < CHAT_MAX_AUTO_CONTINUES &&
-                    (result.finishReason === 'length' ||
-                        (result.finishReason !== 'stop' && replyLooksTruncated(cleanedText)))
+                    finishReason === 'length'
                 ) {
                     continuationCount += 1;
-                    const continuation = await continueTruncatedChatReply(model, latestUserMessage, cleanedText);
+                    const continuation = await continueTruncatedChatReply(
+                        request,
+                        model,
+                        latestUserMessage,
+                        cleanedText,
+                        systemPrompt,
+                        assistantMode,
+                    );
                     if (!continuation) {
                         break;
                     }
 
-                    cleanedText = mergeReplySegments(cleanedText, continuation);
-                    if (!replyLooksTruncated(cleanedText)) {
-                        break;
-                    }
+                    cleanedText = mergeReplySegments(cleanedText, continuation.text);
+                    finishReason = continuation.finishReason;
                 }
 
-                if (replyFeelsTooGeneric(cleanedText)) {
-                    throw new Error(`Generic reply from ${model}.`);
-                }
-
-                const recentAssistantReplies = getRecentAssistantRepliesForCurrentChat(3);
-                if (replyNeedsMoreConversation(latestUserMessage, cleanedText)) {
-                    throw new Error(`Narration-only reply from ${model}.`);
-                }
-
-                if (replyReusesStaleBeat(cleanedText, recentAssistantReplies)) {
-                    throw new Error(`Repeated beat from ${model}.`);
-                }
-
-                if (replyReusesRecentOpening(cleanedText, recentAssistantReplies)) {
-                    throw new Error(`Repeated opening from ${model}.`);
-                }
-
-                const lastAssistantReply = getLastAssistantReplyForCurrentChat();
                 if (
                     lastAssistantReply &&
                     repliesAreTooSimilar(cleanedText, lastAssistantReply) &&
-                    (
-                        !userExplicitlyRequestsContinuation(latestUserMessage)
-                        || personaNeedsFlowRepair()
-                    )
+                    !userExplicitlyRequestsContinuation(latestUserMessage)
                 ) {
+                    failedCandidate = cleanedText;
                     throw new Error(`Repeated reply from ${model}.`);
                 }
 
                 return cleanedText;
             } catch (error) {
+                if (isAbortError(error)) {
+                    throw error;
+                }
                 lastError = error instanceof Error ? error : new Error(String(error));
             }
         }
@@ -3397,7 +3331,25 @@ const runCharacterRichChatGeneration = async (latestUserMessage: string): Promis
     throw lastError || new Error('Venice reply invalid.');
 };
 
+const runCharacterChatGeneration = async (request: ActiveChatRequest, latestUserMessage: string) => {
+    const models = Array.from(new Set([
+        VENICE_CHAT_MODEL,
+        VENICE_CHAT_QUALITY_FALLBACK_MODEL,
+        VENICE_CHAT_FALLBACK_MODEL,
+    ].filter(Boolean)));
+    return runConversationGeneration(request, latestUserMessage, models, false);
+};
+
+const runAssistantChatGeneration = async (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+    model: string,
+) => {
+    return runConversationGeneration(request, latestUserMessage, [model], true);
+};
+
 const runGodModeGeneration = async (
+    request: ActiveChatRequest,
     latestUserInstruction: string,
 ): Promise<{ visibleText: string; personaUpdate: string | null }> => {
     const models = Array.from(new Set([VENICE_GOD_MODEL, VENICE_GOD_FALLBACK_MODEL].filter(Boolean)));
@@ -3412,7 +3364,7 @@ const runGodModeGeneration = async (
             const result = await generateVeniceText({
                 model,
                 messages: [
-                    { role: 'system', content: buildGodModeSystemPrompt() },
+                    { role: 'system', content: buildGodModeSystemPrompt(request.persona) },
                     ...getRecentGodModeMessages(latestUserInstruction),
                     { role: 'user', content: latestUserInstruction },
                 ],
@@ -3420,6 +3372,18 @@ const runGodModeGeneration = async (
                 temperature: 0.25,
                 topP: 0.9,
                 repetitionPenalty: 1.04,
+                signal: request.controller.signal,
+            });
+
+            console.info('[aigf4 generation]', {
+                requestId: request.id,
+                mode: request.mode,
+                phase: index === 0 ? 'primary' : 'fallback',
+                model: result.model,
+                latencyMs: Math.round(performance.now() - request.startedAt),
+                promptTokens: result.promptTokens,
+                completionTokens: result.completionTokens,
+                finishReason: result.finishReason,
             });
 
             const parsed = extractPersonaUpdatePayload(result.text);
@@ -3429,6 +3393,9 @@ const runGodModeGeneration = async (
 
             return parsed;
         } catch (error) {
+            if (isAbortError(error)) {
+                throw error;
+            }
             lastError = error instanceof Error ? error : new Error(String(error));
         }
     }
@@ -3440,9 +3407,7 @@ const getPostActionResponse = async (_triggeringMessage: string) => {
     showDisabledFeatureNotice('\u5ef6\u4f38\u4e92\u52d5\u529f\u80fd');
 };
 
-const getGodModeResponse = async () => {
-    if (!currentPersona || !currentPersonaKey) return;
-
+const getGodModeResponse = async (request: ActiveChatRequest) => {
     hideError();
 
     try {
@@ -3450,51 +3415,83 @@ const getGodModeResponse = async () => {
             .filter(message => message.role === 'user')
             .at(-1)?.content.text || '';
 
-        const result = await runGodModeGeneration(latestUserInstruction);
-        const mergedPrompt = mergePersonaUpdate(currentPersona.prompt, result.personaUpdate!);
-        memoryManager.updatePersona(currentPersonaKey, { prompt: mergedPrompt });
-        currentPersona.prompt = mergedPrompt;
+        const result = await runGodModeGeneration(request, latestUserInstruction);
+        if (!isActiveChatRequest(request)) return;
+
+        const mergedPrompt = mergePersonaUpdate(
+            request.persona.prompt,
+            result.personaUpdate!,
+            request.persona.name,
+        );
+        memoryManager.updatePersona(request.personaKey, { prompt: mergedPrompt });
+        if (currentPersonaKey === request.personaKey && currentPersona) {
+            currentPersona.prompt = mergedPrompt;
+        }
 
         const godModeContent = { text: result.visibleText };
-        appendMessage(godModeContent, 'god-mode');
+        if (currentPersonaKey === request.personaKey) {
+            appendMessage(godModeContent, 'god-mode');
+        }
         godModeHistory.push({ role: 'model', content: godModeContent });
-        applyChatRuntimeState('idle');
+        finishChatRequest(request);
     } catch (error) {
+        if (isAbortError(error)) {
+            finishChatRequest(request);
+            return;
+        }
         console.error('God Mode response error:', error);
         if (error instanceof Error && error.message === VENICE_AUTH_REQUIRED_ERROR) {
+            finishChatRequest(request);
             handleAuthRequired();
             return;
         }
         const message = 'God Mode 這次沒有順利套用人格補充，請再試一次。';
 
-        applyChatRuntimeState('error');
-        showError(message);
-        appendMessage({ text: `[系統] ${message}` }, 'system');
+        finishChatRequest(request, 'error');
+        if (currentPersonaKey === request.personaKey) {
+            showError(message);
+            appendMessage({ text: `[系統] ${message}` }, 'system');
+        }
     }
 };
 
-const getResponse = async (_parts: any[], triggeringMessage: string) => {
-    if (!currentPersona || !currentPersonaKey) return;
-
+const getResponse = async (
+    request: ActiveChatRequest,
+    triggeringMessage: string,
+    assistantModel?: string,
+) => {
     hideError();
 
     try {
-        const cleanedText = await runCharacterRichChatGeneration(triggeringMessage);
+        const cleanedText = request.mode === 'assistant'
+            ? await runAssistantChatGeneration(request, triggeringMessage, assistantModel || VENICE_ASSISTANT_MODEL)
+            : await runCharacterChatGeneration(request, triggeringMessage);
+        if (!isActiveChatRequest(request)) return;
+
         const botContent = { text: cleanedText };
-        appendMessage(botContent, 'bot');
-        memoryManager.addMessage(currentPersonaKey, 'model', botContent);
-        applyChatRuntimeState('idle');
+        memoryManager.addMessage(request.personaKey, 'model', botContent);
+        if (currentPersonaKey === request.personaKey) {
+            appendMessage(botContent, 'bot');
+        }
+        finishChatRequest(request);
     } catch (error) {
+        if (isAbortError(error)) {
+            finishChatRequest(request);
+            return;
+        }
         console.error('Venice response error:', error);
         if (error instanceof Error && error.message === VENICE_AUTH_REQUIRED_ERROR) {
+            finishChatRequest(request);
             handleAuthRequired();
             return;
         }
         const message = '這次沒有順利生成回覆，請再試一次。';
 
-        applyChatRuntimeState('error');
-        showError(message);
-        appendMessage({ text: `[系統] ${message}` }, 'system');
+        finishChatRequest(request, 'error');
+        if (currentPersonaKey === request.personaKey) {
+            showError(message);
+            appendMessage({ text: `[系統] ${message}` }, 'system');
+        }
     }
 };
 
@@ -3504,17 +3501,28 @@ const sendMessage = async () => {
         return;
     }
 
+    if (
+        activeChatRequest
+        || chatRuntimeState === 'queueing'
+        || chatRuntimeState === 'generating'
+        || chatRuntimeState === 'retrying'
+        || !currentPersona
+        || !currentPersonaKey
+    ) {
+        return;
+    }
+
     const userMessage = messageInput.value.trim();
     if (!userMessage) return;
 
     hideSuggestionContainer();
 
     const userMessageUpper = userMessage.toUpperCase();
+    const assistantMode = isAssistantPersonaKey(currentPersonaKey);
 
-    if (userMessageUpper === GOD_MODE_ENTER_COMMAND && !isGodModeActive) {
+    if (!assistantMode && userMessageUpper === GOD_MODE_ENTER_COMMAND && !isGodModeActive) {
         isGodModeActive = true;
         godModeHistory = [];
-        nextResponseInstruction = null;
         messageInput.value = '';
         resetMessageInput();
         updateSendButtonState();
@@ -3524,7 +3532,7 @@ const sendMessage = async () => {
         return;
     }
 
-    if (userMessageUpper === GOD_MODE_EXIT_COMMAND && isGodModeActive) {
+    if (!assistantMode && userMessageUpper === GOD_MODE_EXIT_COMMAND && isGodModeActive) {
         isGodModeActive = false;
         messageInput.value = '';
         resetMessageInput();
@@ -3549,12 +3557,16 @@ const sendMessage = async () => {
             return;
         }
         godModeHistory.push({ role: 'user', content: userContent });
-        await getGodModeResponse();
+        const request = beginChatRequest(currentPersonaKey, currentPersona, 'god');
+        await getGodModeResponse(request);
         return;
     }
 
-    memoryManager.addMessage(currentPersonaKey!, 'user', userContent);
-    await getResponse([], userMessage);
+    const personaKey = currentPersonaKey;
+    const persona = currentPersona as Persona;
+    memoryManager.addMessage(personaKey, 'user', userContent);
+    const request = beginChatRequest(personaKey, persona, assistantMode ? 'assistant' : 'character');
+    await getResponse(request, userMessage, assistantMode ? selectedAssistantModel : undefined);
 };
 
 function showDateProposal(location: string, duration: number) {
@@ -3920,6 +3932,15 @@ const setupEventListeners = () => {
     });
     authPasswordInput.addEventListener('input', () => {
         hideAuthError();
+    });
+    assistantModelSelect.addEventListener('change', () => {
+        if (!assistantModelSelect.value || activeChatRequest) return;
+        selectedAssistantModel = assistantModelSelect.value;
+        localStorage.setItem(ASSISTANT_MODEL_STORAGE_KEY, selectedAssistantModel);
+        updateAssistantModelMeta();
+    });
+    refreshAssistantModelsBtn.addEventListener('click', () => {
+        void loadAssistantModels(true);
     });
 
     backButton.addEventListener('click', navigateBackToSelectionView);
