@@ -2957,6 +2957,42 @@ const collectRecentMessagesWithinBudget = (
     return selected.reverse();
 };
 
+const collapseRedundantCompletedTurns = (messages: VeniceMessage[]) => {
+    const selected: VeniceMessage[] = [];
+    let recentAssistantReplies: string[] = [];
+
+    messages.forEach(message => {
+        if (message.role === 'system') {
+            selected.push(message);
+            recentAssistantReplies = [];
+            return;
+        }
+
+        if (message.role !== 'assistant') {
+            selected.push(message);
+            return;
+        }
+
+        const isRedundant = recentAssistantReplies.some(previousReply => {
+            return repliesAreTooSimilar(previousReply, message.content);
+        });
+
+        if (isRedundant) {
+            // Remove the complete failed turn rather than orphaning its user message.
+            if (selected.at(-1)?.role === 'user') {
+                selected.pop();
+            }
+            return;
+        }
+
+        selected.push(message);
+        recentAssistantReplies.push(message.content);
+        recentAssistantReplies = recentAssistantReplies.slice(-3);
+    });
+
+    return selected;
+};
+
 const getRecentChatMessages = (
     personaKey: string,
     latestUserMessage?: string,
@@ -2967,40 +3003,52 @@ const getRecentChatMessages = (
         return [];
     }
 
-    const historyMessages = memoryManager
+    const sourceHistory = memoryManager
         .getChatHistory(personaKey)
         .filter(
             message =>
                 message.role === 'user'
                 || message.role === 'model'
                 || (!assistantMode && message.role === 'system' && message.content.text?.trim() === '[SCENE END]'),
-        )
-        .map(message => {
-            const rawText = message.content.text?.trim();
-            if (!rawText) return null;
-            if (message.role !== 'system' && (/\[PERSONA_UPDATE:/i.test(rawText) || /^THINK\b/i.test(rawText))) return null;
+        );
+    const historyMessages: VeniceMessage[] = [];
 
-            const text =
-                message.role === 'model'
-                    ? assistantMode
-                        ? cleanVeniceAssistantReply(rawText)
-                        : cleanVeniceChatReply(rawText)
+    sourceHistory.forEach(message => {
+        const rawText = message.content.text?.trim();
+        const isContaminated = !rawText
+            || (message.role !== 'system' && (/\[PERSONA_UPDATE:/i.test(rawText) || /^THINK\b/i.test(rawText)));
+        if (isContaminated) {
+            if (message.role === 'model' && historyMessages.at(-1)?.role === 'user') {
+                historyMessages.pop();
+            }
+            return;
+        }
+
+        const text =
+            message.role === 'model'
+                ? assistantMode
+                    ? cleanVeniceAssistantReply(rawText)
+                    : cleanVeniceChatReply(rawText)
+                : message.role === 'system'
+                    ? rawText
+                    : normalizeHistoryText(rawText);
+        if (!text || (message.role === 'model' && !assistantMode && isInvalidVeniceChatReply(text))) {
+            if (message.role === 'model' && historyMessages.at(-1)?.role === 'user') {
+                historyMessages.pop();
+            }
+            return;
+        }
+
+        historyMessages.push({
+            role:
+                message.role === 'user'
+                    ? 'user'
                     : message.role === 'system'
-                        ? rawText
-                        : normalizeHistoryText(rawText);
-            if (!text || (!assistantMode && isInvalidVeniceChatReply(text))) return null;
-
-            return {
-                role:
-                    message.role === 'user'
-                        ? 'user'
-                        : message.role === 'system'
-                            ? 'system'
-                            : 'assistant',
-                content: text,
-            } satisfies VeniceMessage;
-        })
-        .filter((message): message is VeniceMessage => Boolean(message));
+                        ? 'system'
+                        : 'assistant',
+            content: text,
+        });
+    });
 
     if (latestUserMessage && historyMessages.length > 0) {
         const lastMessage = historyMessages[historyMessages.length - 1];
@@ -3010,7 +3058,7 @@ const getRecentChatMessages = (
     }
 
     const messages = collectRecentMessagesWithinBudget(
-        historyMessages,
+        collapseRedundantCompletedTurns(historyMessages),
         assistantMode ? ASSISTANT_HISTORY_CHAR_BUDGET : CHAT_HISTORY_CHAR_BUDGET,
         assistantMode ? ASSISTANT_HISTORY_MESSAGE_LIMIT : CHAT_HISTORY_MESSAGE_LIMIT,
     );
