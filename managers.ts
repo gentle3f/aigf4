@@ -9,9 +9,10 @@ const SEEDED_CUSTOM_PERSONAS_VERSION = 'cc_seed_v4';
 const SEEDED_CUSTOM_PERSONAS_VERSION_KEY = 'seededCustomPersonasVersion';
 const BUILT_IN_CC_KEY = 'cc';
 const LEGACY_CC_SEED_KEY = 'custom_seed_cc';
-const BUILT_IN_CC_VERSION = 'cc_v3';
+const BUILT_IN_CC_VERSION = 'cc_v3_1';
 const BUILT_IN_CC_VERSION_KEY = 'builtInCcPersonaVersion';
 const PERSONA_SUPPLEMENT_MARKER = '\n\n人格補充：';
+const SCENE_END_MARKER = '[SCENE END]';
 const LEGACY_CC_DESCRIPTION = '港式語感、嘴硬會收、私下其實很暖的曖昧系女生';
 const LEGACY_CC_GREETING = '喂，你做咩突然咁靜呀？(我攤喺床上望住螢幕，指尖敲咗兩下手機殼) 我啱啱諗起你，想搵你講兩句。你而家有冇空？';
 const LEGACY_CC_MEMORY_PREFIX = '香港女生語感；以自然港式口語、短句、反問';
@@ -294,6 +295,16 @@ export class MemoryManager {
                         : current.memory,
                 };
                 this.persistModifiedPersonas();
+            }
+
+            const ccHistory = this.chatHistories[BUILT_IN_CC_KEY];
+            const shouldStartFreshScene =
+                (storedVersion !== BUILT_IN_CC_VERSION || hasLegacyBundledPrompt) &&
+                ccHistory?.some(message => message.role === 'user') &&
+                ccHistory.at(-1)?.content.text?.trim() !== SCENE_END_MARKER;
+            if (shouldStartFreshScene) {
+                ccHistory.push({ role: 'system', content: { text: SCENE_END_MARKER } });
+                this.persistChatHistories();
             }
 
             localStorage.setItem(BUILT_IN_CC_VERSION_KEY, BUILT_IN_CC_VERSION);

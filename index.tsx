@@ -350,6 +350,8 @@ const GOD_MODE_HISTORY_LIMIT = 10;
 const CHAT_MAX_AUTO_CONTINUES = 2;
 const CHAT_MODEL_ATTEMPT_TIMEOUT_MS = 45_000;
 const CHAT_MODEL_TIMEOUT_ERROR = 'CHAT_MODEL_TIMEOUT';
+const SCENE_END_MARKER = '[SCENE END]';
+const SCENE_START_LABEL = '--- 新場景開始 ---';
 const FIXED_MESSAGE_INPUT_HEIGHT = '3.5rem';
 const ASSISTANT_MODEL_STORAGE_KEY = 'veniceAssistantModel';
 const IMAGE_GENERATE_MODEL_STORAGE_KEY = 'veniceImageGenerateModel';
@@ -2944,7 +2946,12 @@ const startChat = (key: string, restoredHistory: any[] | null = null, historyMod
         } else if (message.role === 'model') {
             appendMessage(message.content, 'bot');
         } else if (message.role === 'system') {
-            appendMessage(message.content, 'system');
+            appendMessage(
+                message.content.text?.trim() === SCENE_END_MARKER
+                    ? { ...message.content, text: SCENE_START_LABEL }
+                    : message.content,
+                'system',
+            );
         }
     });
 
@@ -3682,14 +3689,25 @@ const getRecentChatMessages = (
         return [];
     }
 
-    const sourceHistory = memoryManager
+    const completeHistory = memoryManager
         .getChatHistory(personaKey)
         .filter(
             message =>
                 message.role === 'user'
                 || message.role === 'model'
-                || (!assistantMode && message.role === 'system' && message.content.text?.trim() === '[SCENE END]'),
+                || (!assistantMode && message.role === 'system' && message.content.text?.trim() === SCENE_END_MARKER),
         );
+    let activeSceneStart = 0;
+    if (!assistantMode) {
+        for (let index = completeHistory.length - 1; index >= 0; index -= 1) {
+            const message = completeHistory[index];
+            if (message.role === 'system' && message.content.text?.trim() === SCENE_END_MARKER) {
+                activeSceneStart = index;
+                break;
+            }
+        }
+    }
+    const sourceHistory = completeHistory.slice(activeSceneStart);
     const historyMessages: VeniceMessage[] = [];
 
     sourceHistory.forEach(message => {
@@ -4818,8 +4836,8 @@ const savePersonaSettings = () => {
 
 const startNewScene = () => {
     if (!currentPersonaKey) return;
-    appendMessage({ text: '--- ?�場?��?�?---' }, 'system');
-    memoryManager.addMessage(currentPersonaKey, 'system', { text: '[SCENE END]' });
+    appendMessage({ text: SCENE_START_LABEL }, 'system');
+    memoryManager.addMessage(currentPersonaKey, 'system', { text: SCENE_END_MARKER });
     moreOptionsMenu.classList.add('hidden');
 };
 
