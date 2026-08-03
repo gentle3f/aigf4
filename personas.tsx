@@ -81,7 +81,7 @@ export const ccV3Persona = {
 };
 
 
-export const personas: { [key: string]: any } = {
+const legacyPersonaCatalog: { [key: string]: any } = {
     [VENICE_ASSISTANT_PERSONA_KEY]: veniceAiPersona,
     // --- Female Personas ---
     cc: ccV3Persona,
@@ -328,3 +328,9 @@ export const personas: { [key: string]: any } = {
         avatarUrl: "/legacy-avatars/comfyui_00058.jpg"
     }
 };
+
+export const personas: { [key: string]: any } = Object.fromEntries(
+    Object.entries(legacyPersonaCatalog).filter(([key, persona]) => (
+        key === VENICE_ASSISTANT_PERSONA_KEY || persona.gender === 'female'
+    )),
+);

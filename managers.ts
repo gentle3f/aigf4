@@ -434,7 +434,7 @@ export class MemoryManager {
             prompt: personaData.prompt,
             greeting: personaData.greeting,
             avatarPrompt: personaData.avatarPrompt,
-            gender: personaData.gender,
+            gender: "female",
             avatarUrl: null,
             memory: ""
         };

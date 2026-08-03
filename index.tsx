@@ -30,6 +30,7 @@ import {
     VeniceImageMode,
     VeniceImageModelSummary,
 } from "./veniceImage.js";
+import { createRandomAdultFemalePersona } from "./randomPersona.js";
 
 
 declare var JSZip: any;
@@ -48,7 +49,6 @@ const personaSelectionView = document.getElementById('persona-selection-view')!;
 const chatView = document.getElementById('chat-view')!;
 const aiAssistantList = document.getElementById('ai-assistant-list')!;
 const femalePersonaList = document.getElementById('female-persona-list')!;
-const malePersonaList = document.getElementById('male-persona-list')!;
 const backButton = document.getElementById('back-button')!;
 const chatHeaderName = document.getElementById('chat-header-name')!;
 const chatHeaderAvatarContainer = document.getElementById('chat-header-avatar-container')!;
@@ -71,6 +71,7 @@ const giftPreviewContainer = document.getElementById('gift-preview-container')!;
 const giftPreviewImage = document.getElementById('gift-preview-image') as HTMLImageElement;
 const removeGiftBtn = document.getElementById('remove-gift-btn')!;
 const randomRecruitBtn = document.getElementById('random-recruit-btn') as HTMLButtonElement;
+const randomRecruitStatus = document.getElementById('random-recruit-status')!;
 const createPersonaBtn = document.getElementById('create-persona-btn')!;
 const clearChatBtn = document.getElementById('clear-chat-btn') as HTMLButtonElement;
 const suggestionButton = document.getElementById('suggestion-button') as HTMLButtonElement;
@@ -130,6 +131,7 @@ const clearImageResultsBtn = document.getElementById('clear-image-results') as H
 const moreOptionsBtn = document.getElementById('more-options-btn')!;
 const moreOptionsMenu = document.getElementById('more-options-menu')!;
 const personaSettingsBtn = document.getElementById('persona-settings-btn')!;
+const changeAvatarBtn = document.getElementById('change-avatar-btn') as HTMLButtonElement;
 
 // Save Before Exit Modal
 const saveExitModal = document.getElementById('save-exit-modal')!;
@@ -231,6 +233,8 @@ const personaSettingsSubtitle = document.getElementById('persona-settings-subtit
 const personaDescriptionEditor = document.getElementById('persona-description-editor') as HTMLInputElement;
 const personaPromptEditor = document.getElementById('persona-prompt-editor') as HTMLTextAreaElement;
 const personaGreetingEditor = document.getElementById('persona-greeting-editor') as HTMLTextAreaElement;
+const personaSettingsAvatarPreview = document.getElementById('persona-settings-avatar-preview')!;
+const personaSettingsAvatarBtn = document.getElementById('persona-settings-avatar-btn') as HTMLButtonElement;
 const mimicImportBtn = document.getElementById('mimic-import-btn') as HTMLButtonElement;
 const mimicImportModal = document.getElementById('mimic-import-modal')!;
 const closeMimicImportModal = document.getElementById('close-mimic-import-modal')!;
@@ -245,6 +249,7 @@ const mimicAvatarPreview = document.getElementById('mimic-avatar-preview')!;
 const mimicAvatarStatus = document.getElementById('mimic-avatar-status')!;
 const mimicModeTranscriptBtn = document.getElementById('mimic-mode-transcript-btn') as HTMLButtonElement;
 const mimicModeManualBtn = document.getElementById('mimic-mode-manual-btn') as HTMLButtonElement;
+const mimicRandomCompleteBtn = document.getElementById('mimic-random-complete-btn') as HTMLButtonElement;
 const mimicNameInput = document.getElementById('mimic-name-input') as HTMLInputElement;
 const mimicTranscriptSection = document.getElementById('mimic-transcript-section')!;
 const mimicManualSection = document.getElementById('mimic-manual-section')!;
@@ -336,10 +341,11 @@ let imageSource: ImageStudioSource | null = null;
 let imageResults: ImageStudioResult[] = [];
 let imageRequestController: AbortController | null = null;
 let isImageRequestRunning = false;
+let isRandomRecruiting = false;
 
 const USES_VENICE_PROXY_AUTH = VENICE_API_BASE.startsWith('/');
 
-const DISABLED_FEATURE_MESSAGE = '此功能在 aigf4 第一版暫時停用。';
+const DISABLED_FEATURE_MESSAGE = '此功能在目前版本暫時停用。';
 const GOD_MODE_ENTER_COMMAND = 'GOD MODE';
 const GOD_MODE_EXIT_COMMAND = 'BYE GOD MODE';
 const CHAT_HISTORY_MESSAGE_LIMIT = 80;
@@ -438,29 +444,93 @@ const HOME_HISTORY_STATE: AppHistoryState = { view: 'home' };
 const MIMIC_CHUNK_CHAR_LIMIT = 2600;
 const MIMIC_MAX_ANALYSIS_CHUNKS = 10;
 const MIMIC_SAMPLE_CHUNK_CHAR_LIMIT = 1800;
-const RANDOM_FEMALE_NAMES = ['IU', '小雨', 'Yuki', 'Sora', 'Ami', 'Luna', 'Mina', '允熙', '詩恩', '晴夏'];
-const RANDOM_MALE_NAMES = ['阿哲', 'Kaito', 'Jin', 'Haru', '洛川', '志宇', '承勳', 'Minho', '以安', '晨遠'];
-const RANDOM_OCCUPATIONS = ['歌手', '演員', '攝影師', '插畫師', '甜點師', '咖啡店店長', '設計師', '模特兒', '作家', '舞者'];
-const RANDOM_PERSONALITIES = [
-    '外表看起來冷靜有禮，其實很會偷偷在意人，熟了之後會偏心、會記小事。',
-    '有點嘴硬，先吐槽再關心，但真正喜歡的人一靠近就會慢慢軟下來。',
-    '平常節奏穩，不愛太吵，情緒細膩，對信任的人會越來越溫柔。',
-    '自尊心高一點，喜歡掌握自己的步調，可是私底下其實很需要被理解和安撫。',
-    '開朗會接話，懂得帶氣氛，但感情上不是亂來型，真正動心後會很偏愛對方。',
-];
-const RANDOM_BACKGROUNDS = [
-    '平常工作很忙，對外形象成熟穩定，私下反而比較真性情，只會在少數人面前露出軟的一面。',
-    '因為一直被很多人注意，所以對關係有自己的節奏，不會一下子太熱，但熟了之後會主動很多。',
-    '生活圈看起來光鮮，可是其實更喜歡安靜的陪伴，對真正重要的人會留很多例外。',
-    '身邊人都覺得她很會撐場面，可是回到私下聊天時會變得更真、更黏一點，也更容易吃醋。',
-    '對外常常很得體克制，但在親密關係裡會慢慢顯露佔有慾、撒嬌和想被偏心的那一面。',
-];
 
 
 // --- Functions ---
 
 const randomlyRecruitNewPersona = async () => {
-    showDisabledFeatureNotice('隨機招募');
+    if (isRandomRecruiting) return;
+
+    isRandomRecruiting = true;
+    randomRecruitBtn.disabled = true;
+    randomRecruitBtn.textContent = '正在建立角色...';
+    randomRecruitStatus.textContent = '正在抽選成年女性身分、職業與鮮明人格...';
+    randomRecruitStatus.classList.remove('hidden', 'text-red-300', 'text-emerald-300');
+    randomRecruitStatus.classList.add('text-teal-200');
+
+    let personaKey: string | null = null;
+    try {
+        const existingNames = Object.values(memoryManager.getAllPersonas()).map(persona => persona.name);
+        const persona = createRandomAdultFemalePersona(existingNames);
+        personaKey = memoryManager.saveCustomPersona({
+            name: persona.name,
+            emoji: persona.emoji,
+            description: persona.description,
+            prompt: persona.prompt,
+            greeting: persona.greeting,
+            avatarPrompt: persona.avatarPrompt,
+            gender: 'female',
+        });
+        memoryManager.updatePersona(personaKey, { memory: persona.memory });
+        renderPersonaList();
+
+        randomRecruitBtn.textContent = '正在生成專屬頭像...';
+        randomRecruitStatus.textContent = `已建立 ${persona.name}（${persona.occupation}），正在由 Venice 生成隨機頭像...`;
+        await loadImageModels('generate');
+        const model = imageModels.generate.find(item => item.id === VENICE_IMAGE_GENERATE_MODEL)
+            || imageModels.generate.find(item => item.traits.includes('most_uncensored'))
+            || imageModels.generate[0];
+        if (!model) throw new Error('目前沒有可用的 Venice 圖片模型。');
+
+        const supportedRatios = model.constraints.aspectRatios || [];
+        const aspectRatio = supportedRatios.includes('1:1')
+            ? '1:1'
+            : supportedRatios[0];
+        const supportedResolutions = model.constraints.resolutions || [];
+        const resolution = supportedResolutions.includes('1K')
+            ? '1K'
+            : supportedResolutions[0];
+        const result = await requestVeniceImage({
+            mode: 'generate',
+            model: model.id,
+            prompt: persona.avatarPrompt,
+            negativePrompt: 'minor, child, teenager, young-looking, schoolgirl, male, multiple people, duplicate face, text, watermark, blurry, low quality, deformed hands',
+            aspectRatio,
+            resolution,
+            width: supportedRatios.length === 0 ? 1024 : undefined,
+            height: supportedRatios.length === 0 ? 1024 : undefined,
+            variants: 1,
+            steps: model.constraints.steps?.default,
+            adultConfirmed: true,
+        });
+        if (!result.blobs[0]) throw new Error('Venice 沒有傳回頭像。');
+
+        const avatarUrl = await createOptimizedAvatarDataUrl(result.blobs[0]);
+        memoryManager.updatePersona(personaKey, { avatarUrl });
+        renderPersonaList();
+        randomRecruitStatus.textContent = `${persona.name} 已建立完成，專屬頭像也已儲存。`;
+        randomRecruitStatus.classList.remove('text-teal-200');
+        randomRecruitStatus.classList.add('text-emerald-300');
+        startChat(personaKey, null, 'push');
+    } catch (error) {
+        const message = error instanceof Error ? error.message : '隨機角色建立失敗。';
+        if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
+
+        randomRecruitStatus.textContent = personaKey
+            ? `角色已建立，但頭像生成失敗：${message}`
+            : `建立失敗：${message}`;
+        randomRecruitStatus.classList.remove('text-teal-200');
+        randomRecruitStatus.classList.add('text-red-300');
+        if (personaKey) {
+            renderPersonaList();
+            alert(`角色已保留，但隨機頭像生成失敗。你仍可在角色卡或聊天選單自行更換頭像。\n\n${message}`);
+            startChat(personaKey, null, 'push');
+        }
+    } finally {
+        isRandomRecruiting = false;
+        randomRecruitBtn.disabled = false;
+        randomRecruitBtn.textContent = '隨機生成角色';
+    }
 };
 
 const showPersonaCreator = () => {
@@ -487,18 +557,7 @@ const escapeRegExp = (value: string) => {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 };
 
-const getSelectedMimicGender = (): 'female' | 'male' => {
-    const checked = document.querySelector<HTMLInputElement>('input[name="mimic-gender"]:checked');
-    return checked?.value === 'male' ? 'male' : 'female';
-};
-
-const pickRandomItem = <T,>(items: T[]): T => {
-    return items[Math.floor(Math.random() * items.length)];
-};
-
-const getRandomNameForGender = (gender: 'female' | 'male') => {
-    return pickRandomItem(gender === 'male' ? RANDOM_MALE_NAMES : RANDOM_FEMALE_NAMES);
-};
+const getSelectedMimicGender = (): 'female' => 'female';
 
 const applyMimicModeButtonState = (button: HTMLButtonElement, active: boolean) => {
     button.classList.toggle('bg-sky-500', active);
@@ -524,7 +583,7 @@ const updateMimicModeUI = () => {
         setMimicAnalysisStatus(
             isTranscriptMode
                 ? '選好檔案後就可以開始分析。'
-                : '填好名字後就能直接生成角色草稿；沒有靈感時可先按「隨機填入」。',
+                : '填好名字後就能直接生成角色草稿；沒有靈感時可先按「隨機角色設定」。',
         );
     }
 };
@@ -538,17 +597,14 @@ const setMimicBuildMode = (mode: MimicBuildMode) => {
 };
 
 const fillRandomManualFields = () => {
-    const gender = getSelectedMimicGender();
-    mimicNameInput.value = getRandomNameForGender(gender);
-    mimicOccupationInput.value = pickRandomItem(RANDOM_OCCUPATIONS);
-    mimicPersonalityInput.value = pickRandomItem(RANDOM_PERSONALITIES);
-    mimicBackgroundInput.value = pickRandomItem(RANDOM_BACKGROUNDS);
-
-    if (!mimicNotesInput.value.trim()) {
-        mimicNotesInput.value = '保留本人原本的氣質和節奏，但和我聊天時可以更有偏心感、曖昧感和戀愛推進。';
-    }
-
-    setMimicAnalysisStatus('已隨機填入設定，可以直接生成角色草稿。');
+    const existingNames = Object.values(memoryManager.getAllPersonas()).map(persona => persona.name);
+    const persona = createRandomAdultFemalePersona(existingNames);
+    mimicNameInput.value = persona.name;
+    mimicOccupationInput.value = persona.occupation;
+    mimicPersonalityInput.value = persona.personality;
+    mimicBackgroundInput.value = persona.background;
+    mimicNotesInput.value = persona.notes;
+    setMimicAnalysisStatus(`已隨機填入「${persona.occupation}」設定；可以再修改，或直接生成角色草稿。`);
 };
 
 const buildManualFallbackAnalysis = (seed: ManualPersonaSeed): MimicAnalysisSummary => ({
@@ -665,10 +721,6 @@ const resetMimicImportState = () => {
     mimicNotesInput.value = '';
     mimicTranscriptInput.value = '';
     mimicAvatarInput.value = '';
-    const defaultGender = document.querySelector<HTMLInputElement>('input[name="mimic-gender"][value="female"]');
-    if (defaultGender) {
-        defaultGender.checked = true;
-    }
     mimicTranscriptStatus.textContent = '尚未選擇檔案。支援 `.txt`、`.md`、`.json`、`.log`、`.csv`、`.zip`。';
     mimicTranscriptMeta.textContent = '長紀錄會先辨識聊天格式與說話者，再自動切段分析，最後合成成一個角色草稿。';
     renderMimicAvatarPreview();
@@ -696,6 +748,7 @@ const setMimicBusyState = (isBusy: boolean) => {
     pickMimicAvatarBtn.disabled = isBusy;
     mimicModeTranscriptBtn.disabled = isBusy;
     mimicModeManualBtn.disabled = isBusy;
+    mimicRandomCompleteBtn.disabled = isBusy;
     mimicManualRandomBtn.disabled = isBusy;
 };
 
@@ -1550,6 +1603,7 @@ const buildMimicSynthesisPrompt = (
             : '',
         [
             'Core rules:',
+            '- The final character is an adult woman. If age is unclear, treat her as at least 25 years old; never create a minor or school-age character.',
             '- Preserve the target person\'s ORIGINAL personality, usual behavior, tone, and regional language identity first.',
             '- This is for a romance-oriented chat app, so the final result should feel romantically interactive, intimate, and emotionally present.',
             '- Do not erase the original person just to make them romantic. The romance layer must still sound like that person.',
@@ -1595,8 +1649,10 @@ const buildManualPersonaSynthesisPrompt = (seed: ManualPersonaSeed) => {
         seed.notes ? `Extra user requests:\n${seed.notes}` : '',
         [
             'Core rules:',
+            '- The final character is an adult woman. If age is not specified, make her at least 25 years old; never create a minor or school-age character.',
             '- Use the manual description as the source of truth. Do not invent a completely unrelated person.',
             '- This app is romance-oriented, so the final persona should be emotionally present, interactive, and capable of moving toward intimacy with the user.',
+            '- Adult romantic and consensual intimate tension may develop naturally. Do not reduce the character to generic explicit lines; preserve emotional pacing and personality.',
             '- Keep the original vibe first. Romance should feel like an extension of that person, not a generic flirt mask.',
             '- If the name or setup points to a celebrity, public figure, idol, or familiar real-person archetype, keep the recognizable public aura only through the user-provided cues. Do not talk about being famous unless it naturally belongs in the background.',
             '- The character should listen to the user more than in real life, but still react through their own pride, warmth, shyness, wit, habits, and pacing.',
@@ -1937,12 +1993,13 @@ const getSystemErrorResponse = (persona: any) => {
 const renderPersonaList = () => {
     aiAssistantList.innerHTML = '';
     femalePersonaList.innerHTML = '';
-    malePersonaList.innerHTML = '';
     const personas = memoryManager.getAllPersonas();
 
     for (const key in personas) {
         const persona = personas[key];
         const isAssistant = key === VENICE_ASSISTANT_PERSONA_KEY;
+        if (!isAssistant && persona.gender !== 'female') continue;
+
         const card = document.createElement('div');
         card.className = `persona-card group rounded-lg shadow-lg relative ${isAssistant ? 'assistant-persona-card' : ''}`;
         card.dataset.key = key;
@@ -1958,22 +2015,21 @@ const renderPersonaList = () => {
                 <p class="text-sm text-gray-400 truncate">${persona.description}</p>
             </div>
             <div class="card-buttons ${isAssistant ? 'hidden' : ''}">
-                <button title="Upload Avatar" class="upload-avatar-btn p-2 rounded-full" data-key="${key}">
+                <button title="更換 ${persona.name} 的頭像" aria-label="更換 ${persona.name} 的頭像" class="upload-avatar-btn avatar-card-action p-2 rounded-full" data-key="${key}">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-white">
                         <path fill-rule="evenodd" d="M9.25 13.25a.75.75 0 001.5 0V4.636l2.158 2.158a.75.75 0 001.06-1.06l-3.5-3.5a.75.75 0 00-1.06 0l-3.5 3.5a.75.75 0 101.06 1.06L9.25 4.636v8.614z" clip-rule="evenodd" />
                         <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
                     </svg>
+                    <span>頭像</span>
                 </button>
-                ${key.startsWith('custom_') ? `<button title="Delete Persona" class="delete-persona-btn p-2 rounded-full" data-key="${key}"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-white"><path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.58.22-2.365.468a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193v-.443A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25-.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clip-rule="evenodd"></path></svg></button>` : ''}
+                ${key.startsWith('custom_') ? `<button title="刪除 ${persona.name}" aria-label="刪除 ${persona.name}" class="delete-persona-btn p-2 rounded-full" data-key="${key}"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-white"><path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.58.22-2.365.468a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193v-.443A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25-.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clip-rule="evenodd"></path></svg></button>` : ''}
             </div>
         `;
 
         if (isAssistant) {
             aiAssistantList.appendChild(card);
-        } else if (persona.gender === 'female') {
-            femalePersonaList.appendChild(card);
         } else {
-            malePersonaList.appendChild(card);
+            femalePersonaList.appendChild(card);
         }
 
         card.addEventListener('click', (e) => {
@@ -1986,8 +2042,7 @@ const renderPersonaList = () => {
     document.querySelectorAll('.upload-avatar-btn').forEach(button => {
         button.addEventListener('click', (e) => {
             e.stopPropagation();
-            currentPersonaKeyForUpload = (button as HTMLElement).dataset.key!;
-            avatarUploadInput.click();
+            requestPersonaAvatarUpload((button as HTMLElement).dataset.key!);
         });
     });
 
@@ -1998,11 +2053,69 @@ const renderPersonaList = () => {
             if (!key) return;
 
             const persona = memoryManager.getPersona(key);
-            if (persona && confirm(`�T�w�n�R�� ${persona.name} �ܡH�o�Ӱʧ@�L�k�_��C`)) {
+            if (persona && confirm(`確定要刪除 ${persona.name} 嗎？這個動作無法復原。`)) {
                 deleteCustomPersona(key);
             }
         });
     });
+};
+
+const requestPersonaAvatarUpload = (key: string) => {
+    const persona = memoryManager.getPersona(key);
+    if (!persona || key === VENICE_ASSISTANT_PERSONA_KEY) return;
+    currentPersonaKeyForUpload = key;
+    avatarUploadInput.click();
+};
+
+const readBlobAsDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('無法讀取圖片。'));
+    reader.readAsDataURL(blob);
+});
+
+const createOptimizedAvatarDataUrl = async (blob: Blob): Promise<string> => {
+    if (!blob.type.startsWith('image/')) throw new Error('請選擇有效的圖片檔案。');
+    if (blob.size > 25 * 1024 * 1024) throw new Error('頭像圖片不可超過 25MB。');
+
+    const sourceUrl = URL.createObjectURL(blob);
+    const image = new Image();
+    image.src = sourceUrl;
+    try {
+        await image.decode();
+        const sourceSize = Math.min(image.naturalWidth, image.naturalHeight);
+        if (sourceSize < 64) throw new Error('頭像圖片尺寸太小。');
+
+        const sourceX = Math.max(0, Math.round((image.naturalWidth - sourceSize) / 2));
+        const sourceY = Math.max(0, Math.round((image.naturalHeight - sourceSize) / 2));
+        const outputSize = Math.min(512, sourceSize);
+        const canvas = document.createElement('canvas');
+        canvas.width = outputSize;
+        canvas.height = outputSize;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('瀏覽器無法處理這張圖片。');
+        context.drawImage(
+            image,
+            sourceX,
+            sourceY,
+            sourceSize,
+            sourceSize,
+            0,
+            0,
+            outputSize,
+            outputSize,
+        );
+
+        const optimizedBlob = await new Promise<Blob>((resolve, reject) => {
+            canvas.toBlob(result => {
+                if (result) resolve(result);
+                else reject(new Error('無法壓縮頭像。'));
+            }, 'image/webp', 0.84);
+        });
+        return readBlobAsDataUrl(optimizedBlob);
+    } finally {
+        URL.revokeObjectURL(sourceUrl);
+    }
 };
 
 const openAvatarPromptEditor = (key: string) => {
@@ -2031,19 +2144,26 @@ const saveAvatarPrompt = () => {
     }
 };
 
-const handleAvatarUpload = (event: Event) => {
+const handleAvatarUpload = async (event: Event) => {
     const file = (event.target as HTMLInputElement).files?.[0];
-    if (file && currentPersonaKeyForUpload) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const dataUrl = e.target?.result as string;
-            memoryManager.updatePersona(currentPersonaKeyForUpload!, { avatarUrl: dataUrl });
+    const targetKey = currentPersonaKeyForUpload;
+    try {
+        if (file && targetKey) {
+            const dataUrl = await createOptimizedAvatarDataUrl(file);
+            memoryManager.updatePersona(targetKey, { avatarUrl: dataUrl });
             renderPersonaList();
-            currentPersonaKeyForUpload = null;
-        };
-        reader.readAsDataURL(file);
+            if (targetKey === currentPersonaKey) {
+                currentPersona = memoryManager.getPersona(targetKey) || currentPersona;
+                renderChatHeaderAvatar();
+                renderPersonaSettingsAvatar();
+            }
+        }
+    } catch (error) {
+        alert(error instanceof Error ? error.message : '頭像更新失敗。');
+    } finally {
+        currentPersonaKeyForUpload = null;
+        (event.target as HTMLInputElement).value = '';
     }
-    (event.target as HTMLInputElement).value = '';
 };
 
 const handleMimicTranscriptUpload = (event: Event) => {
@@ -2062,19 +2182,22 @@ const handleMimicTranscriptUpload = (event: Event) => {
     mimicTranscriptInput.value = '';
 };
 
-const handleMimicAvatarUpload = (event: Event) => {
+const handleMimicAvatarUpload = async (event: Event) => {
     const file = (event.target as HTMLInputElement).files?.[0];
     if (!file) {
         return;
     }
 
-    const reader = new FileReader();
-    reader.onload = loadEvent => {
-        mimicAvatarDataUrl = loadEvent.target?.result as string;
+    try {
+        mimicAvatarStatus.textContent = '正在壓縮頭像...';
+        mimicAvatarDataUrl = await createOptimizedAvatarDataUrl(file);
         renderMimicAvatarPreview();
-    };
-    reader.readAsDataURL(file);
-    mimicAvatarInput.value = '';
+    } catch (error) {
+        mimicAvatarDataUrl = null;
+        mimicAvatarStatus.textContent = error instanceof Error ? error.message : '頭像載入失敗。';
+    } finally {
+        mimicAvatarInput.value = '';
+    }
 };
 
 const runMimicAnalysisFromModal = async () => {
@@ -2854,7 +2977,7 @@ const updateChatModeControls = (key: string) => {
     assistantModelBar.classList.toggle('hidden', !assistantMode);
     messageInput.placeholder = assistantMode ? '問 Venice AI...' : '輸入訊息...';
 
-    [memoryBtn, personaSettingsBtn, albumBtn, newSceneBtn, downloadImagesBtn].forEach(element => {
+    [memoryBtn, personaSettingsBtn, changeAvatarBtn, albumBtn, newSceneBtn, downloadImagesBtn].forEach(element => {
         element.classList.toggle('hidden', assistantMode);
     });
 
@@ -2906,32 +3029,67 @@ const isAbortError = (error: unknown) => {
     return error instanceof DOMException && error.name === 'AbortError';
 };
 
+const renderPersonaAvatar = (
+    container: HTMLElement,
+    persona: Persona | null,
+    imageClassName: string,
+    fallbackClassName: string,
+) => {
+    container.innerHTML = '';
+    if (!persona) return;
+
+    if (persona.avatarUrl && !persona.avatarUrl.startsWith('generating_')) {
+        const image = document.createElement('img');
+        image.src = persona.avatarUrl;
+        image.alt = persona.name;
+        image.className = imageClassName;
+        container.appendChild(image);
+        return;
+    }
+
+    const fallback = document.createElement('div');
+    fallback.className = fallbackClassName;
+    fallback.textContent = persona.emoji;
+    container.appendChild(fallback);
+};
+
+const renderChatHeaderAvatar = () => {
+    renderPersonaAvatar(
+        chatHeaderAvatarContainer,
+        currentPersona,
+        'w-12 h-12 rounded-full object-cover',
+        'w-12 h-12 rounded-full bg-gray-700 flex items-center justify-center emoji-avatar',
+    );
+};
+
+const renderPersonaSettingsAvatar = () => {
+    renderPersonaAvatar(
+        personaSettingsAvatarPreview,
+        currentPersona,
+        'h-full w-full object-cover',
+        'h-full w-full flex items-center justify-center text-3xl',
+    );
+};
+
 const startChat = (key: string, restoredHistory: any[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
     cancelActiveChatRequest();
+    const selectedPersona = memoryManager.getPersona(key);
+    if (!selectedPersona || (key !== VENICE_ASSISTANT_PERSONA_KEY && selectedPersona.gender !== 'female')) {
+        currentPersonaKey = null;
+        currentPersona = null;
+        showSelectionView('replace');
+        return;
+    }
+
     currentPersonaKey = key;
-    currentPersona = memoryManager.getPersona(key);
-    if (!currentPersona) return;
+    currentPersona = selectedPersona;
 
     isGodModeActive = false;
     godModeHistory = [];
     updateChatModeControls(key);
 
     chatHeaderName.textContent = currentPersona.name;
-
-    const avatarContainer = chatHeaderAvatarContainer;
-    avatarContainer.innerHTML = '';
-    if (currentPersona.avatarUrl && !currentPersona.avatarUrl.startsWith('generating_')) {
-        const img = document.createElement('img');
-        img.src = currentPersona.avatarUrl;
-        img.alt = currentPersona.name;
-        img.className = 'w-12 h-12 rounded-full object-cover';
-        avatarContainer.appendChild(img);
-    } else {
-        const emojiDiv = document.createElement('div');
-        emojiDiv.className = 'w-12 h-12 rounded-full bg-gray-700 flex items-center justify-center emoji-avatar';
-        emojiDiv.textContent = currentPersona.emoji;
-        avatarContainer.appendChild(emojiDiv);
-    }
+    renderChatHeaderAvatar();
 
     chatContainer.innerHTML = '';
     const chatHistory = restoredHistory || memoryManager.getChatHistory(key);
@@ -3242,7 +3400,7 @@ const setAuthSubmitting = (isSubmitting: boolean) => {
     authSubmitButton.disabled = isSubmitting;
     authPasswordInput.disabled = isSubmitting;
     authSubmitLoading.classList.toggle('hidden', !isSubmitting);
-    authSubmitLabel.textContent = isSubmitting ? '\u9a57\u8b49\u4e2d...' : '\u9032\u5165 aigf4';
+    authSubmitLabel.textContent = isSubmitting ? '驗證中...' : '進入 G工作室';
 };
 
 const setUnlockedState = (unlocked: boolean) => {
@@ -3367,7 +3525,7 @@ const removeGift = () => {
 };
 
 const showDisabledFeatureNotice = (featureName: string) => {
-    alert(`${featureName} \u5728 aigf4 \u7b2c\u4e00\u7248\u66ab\u6642\u505c\u7528\u3002`);
+    alert(`${featureName} 在目前版本暫時停用。`);
 };
 
 const resetMessageInput = () => {
@@ -4551,7 +4709,7 @@ function showInterestUnlockedToast(_interest: Interest) {
 }
 
 function renderInterests() {
-    interestsGridContainer.innerHTML = '<p class="text-gray-400 col-span-1 md:col-span-2 text-center">興趣技能在 aigf4 第一版暫時停用。</p>';
+    interestsGridContainer.innerHTML = '<p class="text-gray-400 col-span-1 md:col-span-2 text-center">興趣技能在目前版本暫時停用。</p>';
 }
 
 function openInterestsModal() {
@@ -4770,6 +4928,7 @@ const openPersonaSettings = () => {
     if (!currentPersona) return;
 
     personaSettingsSubtitle.textContent = `正在編輯：${currentPersona.name}`;
+    renderPersonaSettingsAvatar();
     personaDescriptionEditor.value = currentPersona.description || '';
     personaPromptEditor.value = currentPersona.prompt || '';
     personaGreetingEditor.value = currentPersona.greeting || '';
@@ -4939,8 +5098,7 @@ const setupEventListeners = () => {
     
     createPersonaBtn.addEventListener('click', () => openMimicImportModal('manual'));
     randomRecruitBtn.addEventListener('click', () => {
-        openMimicImportModal('manual');
-        fillRandomManualFields();
+        void randomlyRecruitNewPersona();
     });
     closeCreatorModal.addEventListener('click', hidePersonaCreator);
     cancelCreatorBtn.addEventListener('click', hidePersonaCreator);
@@ -4990,6 +5148,10 @@ const setupEventListeners = () => {
     zipUploadInput.addEventListener('change', (e) => fileManager.handleZipUpload(e));
     mimicModeTranscriptBtn.addEventListener('click', () => setMimicBuildMode('transcript'));
     mimicModeManualBtn.addEventListener('click', () => setMimicBuildMode('manual'));
+    mimicRandomCompleteBtn.addEventListener('click', () => {
+        hideMimicImportModalView();
+        void randomlyRecruitNewPersona();
+    });
     mimicManualRandomBtn.addEventListener('click', fillRandomManualFields);
     pickMimicTranscriptBtn.addEventListener('click', () => mimicTranscriptInput.click());
     pickMimicAvatarBtn.addEventListener('click', () => mimicAvatarInput.click());
@@ -5040,6 +5202,13 @@ const setupEventListeners = () => {
     personaSettingsBtn.addEventListener('click', () => {
         openPersonaSettings();
         moreOptionsMenu.classList.add('hidden');
+    });
+    changeAvatarBtn.addEventListener('click', () => {
+        if (currentPersonaKey) requestPersonaAvatarUpload(currentPersonaKey);
+        moreOptionsMenu.classList.add('hidden');
+    });
+    personaSettingsAvatarBtn.addEventListener('click', () => {
+        if (currentPersonaKey) requestPersonaAvatarUpload(currentPersonaKey);
     });
     closeMemoryModal.addEventListener('click', closeMemoryEditor);
     cancelMemoryEdit.addEventListener('click', closeMemoryEditor);

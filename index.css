@@ -182,9 +182,12 @@ body {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    opacity: 0;
-    transform: translateX(10px);
+    opacity: 1;
+    transform: translateX(0);
     transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.persona-card .card-buttons.hidden {
+    display: none;
 }
 .persona-card:hover .card-buttons {
     opacity: 1;
@@ -194,6 +197,15 @@ body {
     background-color: rgba(31, 41, 55, 0.8); /* gray-800 with transparency */
     border: 1px solid #4b5563; /* gray-600 */
     backdrop-filter: blur(4px);
+}
+.persona-card .card-buttons .avatar-card-action {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding-inline: 0.55rem;
+    color: white;
+    font-size: 0.7rem;
+    font-weight: 700;
 }
 .persona-card .card-buttons button:hover {
     background-color: rgba(251, 191, 36, 0.9); /* yellow-400 with transparency */
@@ -222,6 +234,21 @@ body {
     max-width: min(85%, 44rem);
     word-wrap: break-word;
     box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+}
+
+@media (max-width: 520px) {
+    .persona-card .card-buttons {
+        top: 6px;
+        right: 6px;
+    }
+
+    .persona-card .card-buttons .avatar-card-action {
+        padding: 0.42rem;
+    }
+
+    .persona-card .card-buttons .avatar-card-action span {
+        display: none;
+    }
 }
 .assistant-persona-card {
     background:

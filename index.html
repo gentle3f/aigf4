@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>戀愛俱樂部</title>
+    <title>G工作室</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Serif+Display&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -15,8 +15,8 @@
     <div id="auth-gate" class="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/90 px-4">
         <div class="auth-card w-full max-w-md rounded-3xl border border-white/10 bg-slate-900/90 p-8 text-white shadow-2xl">
             <p class="auth-eyebrow">Private Preview</p>
-            <h1 class="mt-3 text-3xl font-black tracking-tight">aigf4</h1>
-            <p class="mt-3 text-sm leading-6 text-slate-300">這個版本暫時先鎖住，輸入密碼後才可進入與使用聊天功能。</p>
+            <h1 class="mt-3 text-3xl font-black tracking-tight">G工作室</h1>
+            <p class="mt-3 text-sm leading-6 text-slate-300">這個私人版本暫時先鎖住，輸入密碼後才可進入工作空間。</p>
             <form id="auth-form" class="mt-6 space-y-4">
                 <div>
                     <label for="auth-password-input" class="mb-2 block text-sm font-medium text-slate-200">密碼</label>
@@ -24,7 +24,7 @@
                 </div>
                 <p id="auth-error" class="hidden rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200"></p>
                 <button id="auth-submit-button" type="submit" class="flex w-full items-center justify-center gap-3 rounded-2xl bg-yellow-400 px-4 py-3 text-base font-bold text-slate-950 transition hover:bg-yellow-300">
-                    <span id="auth-submit-label">進入 aigf4</span>
+                    <span id="auth-submit-label">進入 G工作室</span>
                     <svg id="auth-submit-loading" class="hidden h-5 w-5 animate-spin text-slate-950" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -39,8 +39,8 @@
         <!-- Persona Selection View -->
         <div id="persona-selection-view" class="flex flex-col h-full">
             <header class="text-center py-6 md:py-8 px-4">
-                <h1 class="main-title">戀愛俱樂部</h1>
-                <p class="text-md md:text-lg text-gray-200 mt-2">遇見你的AI戀人，創造專屬於你的戀愛故事</p>
+                <h1 class="main-title">G工作室</h1>
+                <p class="text-md md:text-lg text-gray-200 mt-2">私人角色、互動與創作空間</p>
             </header>
             <main class="flex-grow p-4 overflow-y-auto">
                 <section class="mb-7">
@@ -75,13 +75,9 @@
                         <span class="image-studio-entry-arrow" aria-hidden="true">進入</span>
                     </button>
                 </section>
-                <h2 class="text-xl font-semibold text-white mb-4 px-4">女朋友</h2>
+                <h2 class="text-xl font-semibold text-white mb-4 px-4">角色檔案</h2>
                 <div id="female-persona-list" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-                    <!-- Female personas here -->
-                </div>
-                <h2 class="text-xl font-semibold text-white mt-6 mb-4 px-4">男朋友</h2>
-                <div id="male-persona-list" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-                    <!-- Male personas here -->
+                    <!-- Adult female personas are rendered here -->
                 </div>
                  <footer class="text-center pt-8 pb-4">
                     <a href="https://linktr.ee/dseditor" target="_blank" rel="noopener noreferrer" class="text-xs text-gray-400 hover:text-yellow-300 transition-colors">
@@ -92,8 +88,9 @@
             <footer class="p-4 grid grid-cols-2 gap-4 border-t border-gray-700 bg-gray-900/50 md:rounded-b-lg">
                 <button id="mimic-import-btn" class="w-full bg-sky-500 hover:bg-sky-600 text-white font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">從聊天紀錄建立</button>
                 <button id="create-persona-btn" class="w-full bg-yellow-400 hover:bg-yellow-500 text-gray-900 font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">手動建立角色</button>
-                <button id="upload-zip-btn" class="col-span-2 w-full bg-fuchsia-500 hover:bg-fuchsia-600 text-white font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">繼續對話</button>
-                <button id="random-recruit-btn" class="hidden w-full bg-teal-500 hover:bg-teal-600 text-white font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">隨機招募</button>
+                <button id="random-recruit-btn" class="w-full bg-teal-500 hover:bg-teal-600 disabled:bg-teal-900 disabled:text-teal-200 text-white font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105 disabled:hover:scale-100">隨機生成角色</button>
+                <button id="upload-zip-btn" class="w-full bg-fuchsia-500 hover:bg-fuchsia-600 text-white font-bold py-3 px-4 rounded-lg text-lg transition-transform hover:scale-105">繼續對話</button>
+                <p id="random-recruit-status" class="hidden col-span-2 text-sm text-teal-200" role="status" aria-live="polite"></p>
             </footer>
         </div>
 
@@ -120,6 +117,7 @@
                         <div id="more-options-menu" class="hidden absolute right-0 mt-2 w-48 bg-gray-800 border border-gray-700 rounded-md shadow-lg z-20">
                             <button id="memory-btn" class="dropdown-item">角色記憶</button>
                             <button id="persona-settings-btn" class="dropdown-item">人格設定</button>
+                            <button id="change-avatar-btn" class="dropdown-item">更換角色頭像</button>
                             <button id="interests-btn" class="dropdown-item hidden">興趣技能</button>
                             <button id="date-btn" class="dropdown-item hidden">安排約會</button>
                             <button id="manual-generate-diary-btn" class="dropdown-item hidden">戀愛日記</button>
@@ -392,19 +390,7 @@
                             <input type="text" id="persona-custom-club" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white placeholder-gray-400 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400" placeholder="請輸入社團名稱">
                         </div>
                     </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-300 mb-2">角色性別</label>
-                        <div class="flex items-center space-x-4">
-                            <label class="flex items-center text-gray-300 cursor-pointer">
-                                <input type="radio" name="persona-gender" value="female" class="form-radio h-4 w-4 text-yellow-500 bg-gray-700 border-gray-600 focus:ring-yellow-400" checked>
-                                <span class="ml-2">女性</span>
-                            </label>
-                            <label class="flex items-center text-gray-300 cursor-pointer">
-                                <input type="radio" name="persona-gender" value="male" class="form-radio h-4 w-4 text-yellow-500 bg-gray-700 border-gray-600 focus:ring-yellow-400">
-                                <span class="ml-2">男性</span>
-                            </label>
-                        </div>
-                    </div>
+                    <p class="rounded-lg border border-rose-400/20 bg-rose-400/10 px-3 py-2 text-sm text-rose-100">目前角色庫固定建立成年女性角色。</p>
                     <div class="flex justify-end space-x-3 mt-6">
                         <button id="cancel-creator" class="px-4 py-2 text-gray-300 border border-gray-600 rounded-md hover:bg-gray-700">取消</button>
                         <button id="generate-persona" class="px-4 py-2 bg-yellow-400 text-gray-900 font-bold rounded-md hover:bg-yellow-500">生成角色</button>
@@ -666,6 +652,13 @@
                 </button>
             </div>
             <div class="p-5 overflow-y-auto space-y-4">
+                <div class="flex items-center gap-4 rounded-xl border border-gray-700 bg-gray-900/50 p-4">
+                    <div id="persona-settings-avatar-preview" class="h-20 w-20 shrink-0 overflow-hidden rounded-2xl bg-gray-700 flex items-center justify-center text-3xl">👤</div>
+                    <div>
+                        <button id="persona-settings-avatar-btn" type="button" class="rounded-lg bg-gray-700 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-600">更換角色頭像</button>
+                        <p class="mt-2 text-xs leading-5 text-gray-400">所有內建及自訂角色都可以更換；圖片會先壓縮再儲存在這部裝置。</p>
+                    </div>
+                </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-300 mb-2">角色簡述</label>
                     <input id="persona-description-editor" type="text" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400" placeholder="例如：害羞溫柔、容易臉紅、很在意你">
@@ -703,6 +696,7 @@
                 <div class="flex flex-wrap gap-3">
                     <button id="mimic-mode-transcript-btn" type="button" class="px-4 py-2 rounded-full bg-sky-500 text-white text-sm font-semibold">從聊天紀錄分析</button>
                     <button id="mimic-mode-manual-btn" type="button" class="px-4 py-2 rounded-full bg-gray-700 text-gray-200 text-sm font-semibold hover:bg-gray-600">手動建立 / 真人代入</button>
+                    <button id="mimic-random-complete-btn" type="button" class="px-4 py-2 rounded-full bg-teal-500 text-white text-sm font-semibold hover:bg-teal-600">一鍵隨機角色＋頭像</button>
                 </div>
                 <div class="grid gap-5 lg:grid-cols-[1.05fr,1fr]">
                     <div class="space-y-4">
@@ -717,21 +711,9 @@
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-300 mb-2">對方名字</label>
-                            <input id="mimic-name-input" type="text" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="例如：小雨、Yuki、阿哲">
+                            <input id="mimic-name-input" type="text" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="例如：小雨、Yuki、允熙">
                         </div>
-                        <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-2">角色性別</label>
-                            <div class="flex gap-4 text-sm text-gray-200">
-                                <label class="inline-flex items-center gap-2">
-                                    <input type="radio" name="mimic-gender" value="female" class="form-radio h-4 w-4 text-sky-400" checked>
-                                    <span>女性</span>
-                                </label>
-                                <label class="inline-flex items-center gap-2">
-                                    <input type="radio" name="mimic-gender" value="male" class="form-radio h-4 w-4 text-sky-400">
-                                    <span>男性</span>
-                                </label>
-                            </div>
-                        </div>
+                        <p class="rounded-xl border border-rose-400/20 bg-rose-400/10 p-3 text-sm leading-6 text-rose-100">新增角色固定為成年女性；隨機模式亦只會產生明確成年角色。</p>
                         <div id="mimic-transcript-section">
                             <label class="block text-sm font-medium text-gray-300 mb-2">聊天紀錄</label>
                             <div class="rounded-xl border border-dashed border-gray-600 bg-gray-900/40 p-4 space-y-3">
@@ -748,11 +730,11 @@
                                             <p class="text-sm font-medium text-gray-200">手動設定角色來源</p>
                                             <p class="text-xs text-gray-500 mt-1">沒有聊天紀錄也可以做，例如上傳 IU 的頭像、填名字，再描述她的職業、背景和你想要的互動感。</p>
                                         </div>
-                                        <button id="mimic-manual-random-btn" type="button" class="shrink-0 px-3 py-2 rounded-lg bg-teal-500 hover:bg-teal-600 text-white text-sm font-medium">隨機填入</button>
+                                        <button id="mimic-manual-random-btn" type="button" class="shrink-0 px-3 py-2 rounded-lg bg-teal-500 hover:bg-teal-600 text-white text-sm font-medium">隨機角色設定</button>
                                     </div>
                                     <div>
                                         <label class="block text-sm font-medium text-gray-300 mb-2">職業 / 身分</label>
-                                        <input id="mimic-occupation-input" type="text" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="例如：歌手、演員、設計師、同班同學、鄰居">
+                                        <input id="mimic-occupation-input" type="text" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="例如：私人保鑣、酒吧主人、魔女、星艦艦長">
                                     </div>
                                     <div>
                                         <label class="block text-sm font-medium text-gray-300 mb-2">原始人格</label>
