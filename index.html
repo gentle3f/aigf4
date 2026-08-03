@@ -6,7 +6,7 @@
     <title>戀愛俱樂部</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Serif+Display&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="index.css" />
 <link rel="stylesheet" href="/index.css">
 </head>
@@ -53,6 +53,27 @@
                     <div id="ai-assistant-list" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
                         <!-- Venice assistant is rendered here -->
                     </div>
+                </section>
+                <section class="mb-8 px-4">
+                    <div class="mb-4 flex items-end justify-between gap-3">
+                        <div>
+                            <h2 class="text-xl font-semibold text-white">創作工具</h2>
+                            <p class="mt-1 text-sm text-gray-400">使用 Venice 建立或修改私人圖片</p>
+                        </div>
+                    </div>
+                    <button id="image-studio-entry" type="button" class="image-studio-entry w-full text-left">
+                        <span class="image-studio-entry-orb" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 16.5 8.5 11.75a2.12 2.12 0 0 1 3 0l.75.75 2.25-2.25a2.12 2.12 0 0 1 3 0l2.75 2.75M8.25 8.25h.008v.008H8.25V8.25Z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M6 20.25h12A2.25 2.25 0 0 0 20.25 18V6A2.25 2.25 0 0 0 18 3.75H6A2.25 2.25 0 0 0 3.75 6v12A2.25 2.25 0 0 0 6 20.25Z" />
+                            </svg>
+                        </span>
+                        <span class="min-w-0 flex-1">
+                            <span class="block text-lg font-bold text-white">Venice 圖片工作室</span>
+                            <span class="mt-1 block text-sm leading-6 text-rose-100/70">文生圖與圖生圖，支援自由模型、比例選擇及原圖修改</span>
+                        </span>
+                        <span class="image-studio-entry-arrow" aria-hidden="true">進入</span>
+                    </button>
                 </section>
                 <h2 class="text-xl font-semibold text-white mb-4 px-4">女朋友</h2>
                 <div id="female-persona-list" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
@@ -174,6 +195,137 @@
                 </div>
                 </div>
             </footer>
+        </div>
+
+        <!-- Venice Image Studio View -->
+        <div id="image-studio-view" class="hidden h-full min-h-0 flex-col overflow-hidden">
+            <header class="image-studio-header flex shrink-0 items-center justify-between gap-4 px-4 py-3 sm:px-6">
+                <div class="flex min-w-0 items-center gap-3">
+                    <button id="image-studio-back" type="button" class="image-studio-icon-button" aria-label="返回首頁">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="m15 18-6-6 6-6" />
+                        </svg>
+                    </button>
+                    <div class="min-w-0">
+                        <p class="image-studio-kicker">PRIVATE CANVAS</p>
+                        <h1 class="truncate text-xl font-black text-white sm:text-2xl">Venice 圖片工作室</h1>
+                    </div>
+                </div>
+                <span class="image-session-pill">只保留本次瀏覽</span>
+            </header>
+
+            <main class="image-studio-main min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+                <div class="image-studio-grid mx-auto max-w-7xl">
+                    <section class="image-studio-panel image-studio-controls">
+                        <div class="image-mode-tabs" role="tablist" aria-label="圖片生成模式">
+                            <button id="image-mode-generate" type="button" class="image-mode-tab is-active" role="tab" aria-selected="true">
+                                <span>01</span> 文生圖
+                            </button>
+                            <button id="image-mode-edit" type="button" class="image-mode-tab" role="tab" aria-selected="false">
+                                <span>02</span> 圖生圖
+                            </button>
+                        </div>
+
+                        <div class="mt-5">
+                            <div class="flex items-center justify-between gap-3">
+                                <label for="image-model-select" class="image-field-label">模型</label>
+                                <button id="refresh-image-models" type="button" class="image-inline-action">更新清單</button>
+                            </div>
+                            <select id="image-model-select" class="image-field mt-2 w-full">
+                                <option value="">載入模型中...</option>
+                            </select>
+                            <p id="image-model-meta" class="mt-2 text-xs leading-5 text-slate-400">正在讀取模型能力與價格。</p>
+                        </div>
+
+                        <div id="image-source-section" class="mt-5 hidden">
+                            <label class="image-field-label">來源圖片</label>
+                            <input id="image-source-input" type="file" accept="image/jpeg,image/png,image/webp" class="hidden">
+                            <button id="image-source-dropzone" type="button" class="image-source-dropzone mt-2 w-full">
+                                <span id="image-source-empty" class="flex flex-col items-center gap-2 py-6">
+                                    <svg class="h-8 w-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5V6.75A2.25 2.25 0 0 1 5.25 4.5h13.5A2.25 2.25 0 0 1 21 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25H8.25M3 16.5l4.72-4.72a2.25 2.25 0 0 1 3.18 0l1.6 1.6m0 0 2.35-2.35a2.25 2.25 0 0 1 3.18 0L21 14m-18 2.5V19a2 2 0 0 0 2 2h2.5" />
+                                    </svg>
+                                    <span class="font-semibold text-slate-200">選擇 JPEG、PNG 或 WebP</span>
+                                    <span class="text-xs text-slate-500">上傳前會在裝置內壓縮，不加入聊天或匯出檔</span>
+                                </span>
+                                <span id="image-source-preview-wrap" class="hidden">
+                                    <img id="image-source-preview" alt="來源圖片預覽" class="mx-auto max-h-72 rounded-xl object-contain">
+                                    <span id="image-source-meta" class="mt-3 block text-xs text-slate-400"></span>
+                                </span>
+                            </button>
+                        </div>
+
+                        <div class="mt-5">
+                            <div class="flex items-center justify-between gap-3">
+                                <label for="image-prompt" class="image-field-label">畫面描述</label>
+                                <span id="image-prompt-count" class="text-xs text-slate-500">0 / 1500</span>
+                            </div>
+                            <textarea id="image-prompt" class="image-field mt-2 min-h-36 w-full resize-y" placeholder="描述人物、姿勢、服裝、場景、光線、鏡頭和風格..." spellcheck="false"></textarea>
+                        </div>
+
+                        <div id="image-negative-section" class="mt-5">
+                            <label for="image-negative-prompt" class="image-field-label">避免出現</label>
+                            <textarea id="image-negative-prompt" class="image-field mt-2 min-h-24 w-full resize-y" spellcheck="false">minor, child, underage, young-looking, deformed hands, extra fingers, extra limbs, duplicate person, blurry face, text, watermark</textarea>
+                        </div>
+
+                        <div class="mt-5 grid grid-cols-2 gap-3">
+                            <div>
+                                <label for="image-aspect-ratio" class="image-field-label">畫面比例</label>
+                                <select id="image-aspect-ratio" class="image-field mt-2 w-full"></select>
+                            </div>
+                            <div id="image-resolution-wrap">
+                                <label for="image-resolution" class="image-field-label">解析度</label>
+                                <select id="image-resolution" class="image-field mt-2 w-full"></select>
+                            </div>
+                            <div id="image-variant-wrap">
+                                <label for="image-variants" class="image-field-label">張數</label>
+                                <select id="image-variants" class="image-field mt-2 w-full">
+                                    <option value="1">1 張</option>
+                                    <option value="2">2 張</option>
+                                    <option value="3">3 張</option>
+                                    <option value="4">4 張</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="image-seed" class="image-field-label">Seed</label>
+                                <input id="image-seed" type="number" min="-999999999" max="999999999" class="image-field mt-2 w-full" placeholder="隨機">
+                            </div>
+                        </div>
+
+                        <label class="image-consent mt-5 flex cursor-pointer items-start gap-3">
+                            <input id="image-adult-confirm" type="checkbox" class="mt-1 h-4 w-4 shrink-0 accent-rose-400">
+                            <span>我確認所有人物均為 18 歲或以上，並有權使用來源圖片；不製作未經同意的真人色情內容。</span>
+                        </label>
+
+                        <p id="image-studio-error" class="mt-4 hidden rounded-xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-200"></p>
+
+                        <button id="image-generate-button" type="button" class="image-generate-button mt-5 w-full" disabled>
+                            <span id="image-generate-label">開始生成</span>
+                            <span id="image-generate-spinner" class="hidden h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white"></span>
+                        </button>
+                        <div class="mt-3 flex items-center justify-between gap-3 text-xs">
+                            <span id="image-studio-status" class="text-slate-400">填寫描述後即可生成</span>
+                            <span id="image-cost-estimate" class="font-semibold text-rose-200"></span>
+                        </div>
+                    </section>
+
+                    <section class="image-studio-panel image-studio-gallery flex min-h-[28rem] flex-col">
+                        <div class="flex items-start justify-between gap-4">
+                            <div>
+                                <p class="image-studio-kicker">SESSION GALLERY</p>
+                                <h2 class="mt-1 text-xl font-bold text-white">本次作品</h2>
+                            </div>
+                            <button id="clear-image-results" type="button" class="image-inline-action hidden">全部清除</button>
+                        </div>
+                        <div id="image-studio-empty" class="image-studio-empty flex flex-1 flex-col items-center justify-center px-6 py-12 text-center">
+                            <div class="image-empty-mark">+</div>
+                            <p class="mt-5 text-lg font-semibold text-slate-200">先讓第一幅畫面出現</p>
+                            <p class="mt-2 max-w-sm text-sm leading-6 text-slate-500">生成結果只存在目前頁面。喜歡的作品請直接下載，不會令聊天備份變大。</p>
+                        </div>
+                        <div id="image-studio-results" class="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2"></div>
+                    </section>
+                </div>
+            </main>
         </div>
     </div>
 

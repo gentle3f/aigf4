@@ -90,7 +90,9 @@ export const VENICE_API_BASE =
 export const VENICE_MODELS_API_BASE =
   import.meta.env.VITE_VENICE_MODELS_API_BASE ||
   (VENICE_API_BASE.startsWith('/') ? '/api/venice-models' : `${VENICE_API_BASE}/models`);
-export const VENICE_API_KEY = import.meta.env.VITE_VENICE_API_KEY || '';
+export const VENICE_API_KEY = import.meta.env.DEV
+  ? import.meta.env.VITE_VENICE_API_KEY || ''
+  : '';
 export const VENICE_CHAT_MODEL =
   import.meta.env.VITE_VENICE_CHAT_MODEL || 'olafangensan-glm-4.7-flash-heretic';
 export const VENICE_CHAT_QUALITY_FALLBACK_MODEL =
