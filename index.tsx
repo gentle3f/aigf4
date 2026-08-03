@@ -112,6 +112,7 @@ const imageResolutionWrap = document.getElementById('image-resolution-wrap')!;
 const imageResolution = document.getElementById('image-resolution') as HTMLSelectElement;
 const imageVariantWrap = document.getElementById('image-variant-wrap')!;
 const imageVariants = document.getElementById('image-variants') as HTMLSelectElement;
+const imageSeedWrap = document.getElementById('image-seed-wrap')!;
 const imageSeed = document.getElementById('image-seed') as HTMLInputElement;
 const imageAdultConfirm = document.getElementById('image-adult-confirm') as HTMLInputElement;
 const imageStudioError = document.getElementById('image-studio-error')!;
@@ -2557,6 +2558,9 @@ const setImageStudioMode = (mode: VeniceImageMode) => {
     imageSourceSection.classList.toggle('hidden', isGenerate);
     imageNegativeSection.classList.toggle('hidden', !isGenerate);
     imageVariantWrap.classList.toggle('hidden', !isGenerate);
+    imageSeedWrap.classList.toggle('hidden', !isGenerate);
+    imageAspectRatio.value = '';
+    imageResolution.value = '';
     imageGenerateLabel.textContent = isGenerate ? '開始生成' : '開始修改';
     imageStudioStatus.textContent = isGenerate ? '填寫描述後即可生成' : '加入來源圖片及修改指令';
     imageStudioError.classList.add('hidden');
