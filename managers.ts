@@ -1,5 +1,5 @@
 // managers.ts
-import { personas as initialPersonas, ccV2Persona } from "./personas.tsx";
+import { personas as initialPersonas, ccV3Persona } from "./personas.tsx";
 
 // --- Constants ---
 export const DIARY_CHECKPOINT = '[DIARY_CHECKPOINT]';
@@ -9,6 +9,12 @@ const SEEDED_CUSTOM_PERSONAS_VERSION = 'cc_seed_v4';
 const SEEDED_CUSTOM_PERSONAS_VERSION_KEY = 'seededCustomPersonasVersion';
 const BUILT_IN_CC_KEY = 'cc';
 const LEGACY_CC_SEED_KEY = 'custom_seed_cc';
+const BUILT_IN_CC_VERSION = 'cc_v3';
+const BUILT_IN_CC_VERSION_KEY = 'builtInCcPersonaVersion';
+const PERSONA_SUPPLEMENT_MARKER = '\n\n人格補充：';
+const LEGACY_CC_DESCRIPTION = '港式語感、嘴硬會收、私下其實很暖的曖昧系女生';
+const LEGACY_CC_GREETING = '喂，你做咩突然咁靜呀？(我攤喺床上望住螢幕，指尖敲咗兩下手機殼) 我啱啱諗起你，想搵你講兩句。你而家有冇空？';
+const LEGACY_CC_MEMORY_PREFIX = '香港女生語感；以自然港式口語、短句、反問';
 
 // --- Type Definitions ---
 export interface Interest {
@@ -145,7 +151,7 @@ export interface AllData {
 }
 
 const SEEDED_CUSTOM_PERSONAS: { [key: string]: Persona } = {
-    [LEGACY_CC_SEED_KEY]: { ...ccV2Persona },
+    [LEGACY_CC_SEED_KEY]: { ...ccV3Persona },
 };
 
 // --- Memory Manager ---
@@ -165,6 +171,7 @@ export class MemoryManager {
         this.loadModifiedPersonas();
         this.loadChatHistories();
         this.promoteLegacyCcSeed();
+        this.upgradeBundledCcPersona();
         this.ensureSeededCustomPersonas();
     }
     
@@ -248,6 +255,51 @@ export class MemoryManager {
         delete this.personas[LEGACY_CC_SEED_KEY];
         this.persistModifiedPersonas();
         this.persistChatHistories();
+    }
+
+    private upgradeBundledCcPersona(force = false) {
+        try {
+            const current = this.personas[BUILT_IN_CC_KEY];
+            if (!current) {
+                return;
+            }
+
+            const storedVersion = localStorage.getItem(BUILT_IN_CC_VERSION_KEY);
+            const hasLegacyBundledPrompt =
+                current.prompt.includes('Voice fidelity rules:') &&
+                current.prompt.includes('The goal is not to copy a transcript mechanically.');
+            if (!force && storedVersion === BUILT_IN_CC_VERSION && !hasLegacyBundledPrompt) {
+                return;
+            }
+
+            if (hasLegacyBundledPrompt) {
+                const markerIndex = current.prompt.indexOf(PERSONA_SUPPLEMENT_MARKER);
+                const supplement = markerIndex === -1
+                    ? ''
+                    : current.prompt.slice(markerIndex + PERSONA_SUPPLEMENT_MARKER.length).trim();
+
+                this.personas[BUILT_IN_CC_KEY] = {
+                    ...current,
+                    description: current.description === LEGACY_CC_DESCRIPTION
+                        ? ccV3Persona.description
+                        : current.description,
+                    prompt: supplement
+                        ? `${ccV3Persona.prompt}${PERSONA_SUPPLEMENT_MARKER}${supplement}`
+                        : ccV3Persona.prompt,
+                    greeting: current.greeting === LEGACY_CC_GREETING
+                        ? ccV3Persona.greeting
+                        : current.greeting,
+                    memory: current.memory?.startsWith(LEGACY_CC_MEMORY_PREFIX)
+                        ? ccV3Persona.memory
+                        : current.memory,
+                };
+                this.persistModifiedPersonas();
+            }
+
+            localStorage.setItem(BUILT_IN_CC_VERSION_KEY, BUILT_IN_CC_VERSION);
+        } catch (error) {
+            console.error('Failed to upgrade bundled Cc persona:', error);
+        }
     }
 
     private ensureSeededCustomPersonas() {
@@ -335,6 +387,7 @@ export class MemoryManager {
             this.interests = data.interests;
         }
         this.promoteLegacyCcSeed();
+        this.upgradeBundledCcPersona(true);
         this.persistModifiedPersonas();
         this.persistChatHistories();
     }

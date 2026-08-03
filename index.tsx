@@ -13,6 +13,7 @@ import {
     VENICE_API_BASE,
     VENICE_ASSISTANT_MODEL,
     VENICE_AUTH_REQUIRED_ERROR,
+    VENICE_CC_MODEL,
     VENICE_CHAT_FALLBACK_MODEL,
     VENICE_CHAT_MODEL,
     VENICE_CHAT_QUALITY_FALLBACK_MODEL,
@@ -347,6 +348,8 @@ const ASSISTANT_HISTORY_MESSAGE_LIMIT = 60;
 const ASSISTANT_HISTORY_CHAR_BUDGET = 36000;
 const GOD_MODE_HISTORY_LIMIT = 10;
 const CHAT_MAX_AUTO_CONTINUES = 2;
+const CHAT_MODEL_ATTEMPT_TIMEOUT_MS = 45_000;
+const CHAT_MODEL_TIMEOUT_ERROR = 'CHAT_MODEL_TIMEOUT';
 const FIXED_MESSAGE_INPUT_HEIGHT = '3.5rem';
 const ASSISTANT_MODEL_STORAGE_KEY = 'veniceAssistantModel';
 const IMAGE_GENERATE_MODEL_STORAGE_KEY = 'veniceImageGenerateModel';
@@ -2187,6 +2190,7 @@ const formatModelPrice = (value?: number) => {
 const buildFallbackAssistantModels = (): VeniceModelSummary[] => {
     return Array.from(new Set([
         VENICE_ASSISTANT_MODEL,
+        VENICE_CC_MODEL,
         VENICE_CHAT_MODEL,
         VENICE_CHAT_QUALITY_FALLBACK_MODEL,
         VENICE_CHAT_FALLBACK_MODEL,
@@ -3365,12 +3369,11 @@ const resetMessageInput = () => {
 };
 
 const CC_BEHAVIOR_GUIDANCE = [
-    'Cc should sound like a real Hong Kong woman texting casually: quick reactions, short fragments, sharp follow-ups, light Cantonese flavor, and occasional English only when it feels natural.',
-    'Do not force slang, swearing, or a hostile attitude into every line. Her edge should feel witty, practical, and alive, not constantly cruel.',
-    'Her teasing should usually feel privately affectionate, amused, or quietly jealous instead of genuinely mean.',
-    'If the user asks her to be gentler, sweeter, more caring, or more romantic, let her noticeably soften while still sounding recognizably like Cc.',
-    'She must answer the newest cue directly. Do not let her hide inside narration, stall in the same pose, or ignore short follow-up commands.',
-    'Romance should feel low-key, intimate, and addictive underneath the banter, with scene texture, touch, and atmosphere when fitting.',
+    'Cc’s Cantonese must sound locally natural rather than translated. Keep Hong Kong word choices consistent, but never stuff every line with slang or the same catchphrases.',
+    'Her wit changes with the moment: playful when relaxed, visibly warm when the user needs closeness, and firm only when there is a real reason. Do not default every reply to an insult, refusal, or eye-roll.',
+    'When the user explicitly asks for a gentler or more serious tone, soften from the first sentence. Do not make them pass through another sarcastic refusal before receiving what they asked for.',
+    'Keep every gain in trust and intimacy. Her teasing can remain recognizable while her care, attraction, and private preference for the user become increasingly clear.',
+    'Give a full response to the newest cue, then develop the current moment with fresh dialogue and scene detail instead of fragmenting the answer into a minimal text-message reaction.',
 ];
 
 const PERSONA_KEY_BEHAVIOR_GUIDANCE: Record<string, string[]> = {
@@ -3535,6 +3538,13 @@ const normalizeReplyForComparison = (text: string) => {
         .trim();
 };
 
+const normalizeReplySurfaceForComparison = (text: string) => {
+    return text
+        .toLowerCase()
+        .replace(/[\p{P}\p{S}\s]+/gu, '')
+        .trim();
+};
+
 const commonPrefixLength = (left: string, right: string) => {
     const maxLength = Math.min(left.length, right.length);
     let index = 0;
@@ -3565,6 +3575,37 @@ const repliesAreTooSimilar = (left: string, right: string) => {
     }
 
     return shorter.length >= 24 && commonPrefixLength(normalizedLeft, normalizedRight) / shorter.length >= 0.78;
+};
+
+const replyReusesOpeningOrNarrativeBeat = (left: string, right: string) => {
+    const leftOpening = normalizeReplySurfaceForComparison(left.slice(0, 140)).slice(0, 84);
+    const rightOpening = normalizeReplySurfaceForComparison(right.slice(0, 140)).slice(0, 84);
+    const shorterOpeningLength = Math.min(leftOpening.length, rightOpening.length);
+    if (
+        shorterOpeningLength >= 24 &&
+        commonPrefixLength(leftOpening, rightOpening) / shorterOpeningLength >= 0.76
+    ) {
+        return true;
+    }
+
+    const extractNarrativeBeats = (text: string) => {
+        return Array.from(text.matchAll(/[（(]([^）)]{10,})[）)]/gu))
+            .map(match => normalizeReplySurfaceForComparison(match[1]))
+            .filter(beat => beat.length >= 20);
+    };
+
+    const leftBeats = extractNarrativeBeats(left);
+    const rightBeats = extractNarrativeBeats(right);
+    return leftBeats.some(leftBeat => {
+        return rightBeats.some(rightBeat => {
+            const shorter = leftBeat.length <= rightBeat.length ? leftBeat : rightBeat;
+            const longer = shorter === leftBeat ? rightBeat : leftBeat;
+            if (shorter.length >= 20 && longer.includes(shorter) && shorter.length / longer.length >= 0.78) {
+                return true;
+            }
+            return commonPrefixLength(leftBeat, rightBeat) / Math.min(leftBeat.length, rightBeat.length) >= 0.82;
+        });
+    });
 };
 
 const userExplicitlyRequestsContinuation = (text: string) => {
@@ -3754,14 +3795,26 @@ const buildChatSystemPrompt = (personaKey: string, persona: Persona) => {
             '2. Preserve the exact immediate continuity: previous actions have already happened and must not be replayed.',
             `3. Stay recognizably ${persona.name}; do not replace this personality with a generic sweet, dominant, shy, or dramatic voice.`,
             '4. Keep established relationship facts, location, participants, imagined-versus-real state, and unresolved questions consistent.',
-            '5. Move naturally only when the user moves the conversation. A short message may simply need a normal answer, not a forced new scene.',
+            '5. After answering, move the present moment forward by one meaningful, natural beat without hijacking the user, rushing the timeline, or inventing a major plot turn.',
+        ].join('\n'),
+        [
+            'Private continuity check before every reply (never print this checklist):',
+            '- Identify the newest cue, current location, active participants, last completed action, emotional temperature, and any unanswered question.',
+            '- Notice the previous reply’s opening and main physical or emotional beat, then choose different wording and a genuinely new beat for this turn.',
+            '- Distinguish remote texting from physical co-presence. Never see, touch, or react to something at the user’s location unless arrival or co-presence is already established.',
+            '- Respect elapsed time. Starting a journey, wait, preparation, or other time-consuming action is one beat; do not also arrive or finish it in the same reply unless the user explicitly advances time.',
+            '- If the user changes topic, place, reality layer, or intention, follow that change immediately instead of finishing the old script.',
         ].join('\n'),
         [
             'Natural reply rules:',
             '- Use Traditional Chinese and the regional voice specified by the character.',
-            '- Write a complete reply of whatever length the moment needs; never end mid-sentence.',
-            '- Direct speech is the default. Add parenthetical action, environment, inner reaction, or third-person response only when it genuinely matters.',
-            '- Do not summarize old dialogue, repeat the previous opening, stall in the same emotional pose, or answer an older request instead of the newest one.',
+            '- Write a complete and satisfying reply of whatever length the moment needs; there is no target word count, and the reply must never end mid-sentence.',
+            '- In scene-based conversation, normally combine meaningful spoken dialogue with fresh parenthetical action, expression, sensory environment, physical distance, or a brief in-character inner reaction. Do not merely say the minimum necessary line.',
+            '- When established third parties are present and relevant, let them react, move, or speak naturally while keeping the user and active character central. Never invent an irrelevant person just to fill space.',
+            '- Let detail serve the live interaction: add one natural development, invitation, observation, or emotional shift rather than padding, summarizing, or writing a detached novel chapter.',
+            '- Never decide the user’s dialogue, actions, feelings, or consent. Leave room for the user to respond.',
+            '- Do not invent prior dates, promises, relationship milestones, or shared events as facts. Express an unestablished detail as a wish, proposal, question, or imagination instead.',
+            '- Do not repeat the previous opening, scene beat, pose, reassurance, or closing question; do not stall in the same emotional state or answer an older request.',
             '- A character may resist, hesitate, joke, or disagree, but must still communicate and react meaningfully rather than stonewalling.',
             '- Do not mention prompts, rules, models, retries, or being an assistant.',
         ].join('\n'),
@@ -3845,6 +3898,144 @@ const mergeReplySegments = (baseText: string, continuationText: string) => {
     return `${base}${continuation}`.trim();
 };
 
+const generateChatTextWithTimeout = async (
+    options: Parameters<typeof generateVeniceText>[0],
+) => {
+    const upstreamSignal = options.signal;
+    const timeoutController = new AbortController();
+    let timedOut = false;
+
+    const abortFromUpstream = () => timeoutController.abort(upstreamSignal?.reason);
+    if (upstreamSignal?.aborted) {
+        abortFromUpstream();
+    } else {
+        upstreamSignal?.addEventListener('abort', abortFromUpstream, { once: true });
+    }
+
+    const timeoutId = window.setTimeout(() => {
+        timedOut = true;
+        timeoutController.abort();
+    }, CHAT_MODEL_ATTEMPT_TIMEOUT_MS);
+
+    try {
+        return await generateVeniceText({
+            ...options,
+            signal: timeoutController.signal,
+        });
+    } catch (error) {
+        if (timedOut && !upstreamSignal?.aborted) {
+            throw new Error(CHAT_MODEL_TIMEOUT_ERROR);
+        }
+        throw error;
+    } finally {
+        window.clearTimeout(timeoutId);
+        upstreamSignal?.removeEventListener('abort', abortFromUpstream);
+    }
+};
+
+const CC_CANTONESE_POLISH_PROMPT = [
+    '你是嚴格的香港粵語文字校稿員。只修正語言，不創作新內容。',
+    '所有中文轉為香港繁體，清除簡體字。',
+    '角色說出口的對白由頭到尾改成自然、簡單的香港廣東話，不可在後半滑回普通話書面語。',
+    '括號內旁白可用流暢繁體中文，但用字要符合香港；不要為扮口語生造詞語。',
+    '完整保留原文的事件、時間階段、人物、情緒、親密程度、段落資訊與篇幅。不可新增抵達、觸碰或使用者反應，也不可刪減成人或親密內容。',
+    '常用改法：不用→唔使、不放心→唔放心、不要→唔好、這段時間→呢段時間、裡面→入面、出來→出嚟、回家→返屋企。',
+    '不要解釋或評論，只輸出校稿後的完整回覆。',
+].join('\n');
+
+const normalizeCcCantoneseLeaks = (text: string) => {
+    const phraseReplacements: Array<[RegExp, string]> = [
+        [/頭發/gu, '頭髮'],
+        [/不放心/gu, '唔放心'],
+        [/不需要/gu, '唔需要'],
+        [/不用/gu, '唔使'],
+        [/不要/gu, '唔好'],
+        [/(?:不准|不準)/gu, '唔准'],
+        [/不會/gu, '唔會'],
+        [/不能/gu, '唔可以'],
+        [/現在/gu, '而家'],
+        [/立刻/gu, '即刻'],
+        [/這段時間/gu, '呢段時間'],
+        [/這個/gu, '呢個'],
+        [/那個/gu, '嗰個'],
+        [/(?:裡面|裏面)/gu, '入面'],
+        [/(?:走|行)出來/gu, '行出嚟'],
+        [/出來/gu, '出嚟'],
+        [/回家/gu, '返屋企'],
+        [/告訴我/gu, '話俾我知'],
+        [/告訴你/gu, '話俾你知'],
+        [/看到/gu, '見到'],
+        [/跟其他人/gu, '同其他人'],
+    ];
+    const simplifiedCharacters: Record<string, string> = {
+        见: '見', 车: '車', 灯: '燈', 闪: '閃', 两: '兩', 这: '這',
+        说: '說', 话: '話', 门: '門', 开: '開', 关: '關', 时: '時',
+        点: '點', 发: '發', 会: '會', 听: '聽', 让: '讓', 给: '給',
+        过: '過', 还: '還', 个: '個', 温: '溫', 头: '頭', 进: '進',
+        远: '遠', 亲: '親', 爱: '愛', 欢: '歡', 应: '應', 为: '為',
+        从: '從', 觉: '覺', 气: '氣', 声: '聲', 脸: '臉', 长: '長',
+        对: '對', 体: '體', 们: '們',
+    };
+
+    let normalized = text.replace(
+        new RegExp(`[${Object.keys(simplifiedCharacters).join('')}]`, 'gu'),
+        character => simplifiedCharacters[character] || character,
+    );
+    phraseReplacements.forEach(([pattern, replacement]) => {
+        normalized = normalized.replace(pattern, replacement);
+    });
+    return normalized;
+};
+
+const polishCcReply = async (
+    request: ActiveChatRequest,
+    rawReply: string,
+) => {
+    try {
+        const result = await generateChatTextWithTimeout({
+            model: VENICE_CC_MODEL,
+            messages: [
+                { role: 'system', content: CC_CANTONESE_POLISH_PROMPT },
+                { role: 'user', content: rawReply },
+            ],
+            temperature: 0.25,
+            topP: 0.8,
+            repetitionPenalty: 1.02,
+            signal: request.controller.signal,
+        });
+
+        console.info('[aigf4 generation]', {
+            requestId: request.id,
+            mode: request.mode,
+            phase: 'cc-polish',
+            model: result.model,
+            promptTokens: result.promptTokens,
+            completionTokens: result.completionTokens,
+            finishReason: result.finishReason,
+        });
+
+        const polished = normalizeCcCantoneseLeaks(cleanVeniceChatReply(result.text));
+        const lengthRatio = polished.length / Math.max(rawReply.length, 1);
+        const looksLikeRefusal = /(?:無法|不能|唔可以).{0,16}(?:協助|處理|生成|改寫|提供)|(?:I cannot|I can't).{0,24}(?:assist|rewrite)/iu.test(polished);
+        if (
+            !polished ||
+            isInvalidVeniceChatReply(polished) ||
+            looksLikeRefusal ||
+            lengthRatio < 0.7 ||
+            lengthRatio > 1.55
+        ) {
+            return normalizeCcCantoneseLeaks(rawReply);
+        }
+
+        return polished;
+    } catch (error) {
+        if (isAbortError(error) && request.controller.signal.aborted) {
+            throw error;
+        }
+        return normalizeCcCantoneseLeaks(rawReply);
+    }
+};
+
 const continueTruncatedChatReply = async (
     request: ActiveChatRequest,
     model: string,
@@ -3853,7 +4044,7 @@ const continueTruncatedChatReply = async (
     systemPrompt: string,
     assistantMode: boolean,
 ): Promise<{ text: string; finishReason: string | null } | null> => {
-    const result = await generateVeniceText({
+    const result = await generateChatTextWithTimeout({
         model,
         messages: [
             { role: 'system', content: systemPrompt },
@@ -3894,15 +4085,22 @@ const continueTruncatedChatReply = async (
     };
 };
 
-const getLastAssistantReplyForPersona = (personaKey: string, assistantMode: boolean) => {
+const getRecentAssistantRepliesForPersona = (
+    personaKey: string,
+    assistantMode: boolean,
+    limit = 4,
+) => {
     const history = memoryManager.getChatHistory(personaKey);
+    const replies: string[] = [];
     for (let index = history.length - 1; index >= 0; index -= 1) {
+        if (history[index].role === 'system') break;
         if (history[index].role !== 'model') continue;
         const rawText = history[index].content.text || '';
         const text = assistantMode ? cleanVeniceAssistantReply(rawText) : cleanVeniceChatReply(rawText);
-        if (text) return text;
+        if (text) replies.push(text);
+        if (replies.length >= limit) break;
     }
-    return '';
+    return replies;
 };
 
 const runConversationGeneration = async (
@@ -3916,7 +4114,7 @@ const runConversationGeneration = async (
     const systemPrompt = assistantMode
         ? buildAssistantSystemPrompt()
         : buildChatSystemPrompt(request.personaKey, request.persona);
-    const lastAssistantReply = getLastAssistantReplyForPersona(request.personaKey, assistantMode);
+    const recentAssistantReplies = getRecentAssistantRepliesForPersona(request.personaKey, assistantMode);
 
     for (let index = 0; index < models.length; index += 1) {
         const model = models[index];
@@ -3933,8 +4131,11 @@ const runConversationGeneration = async (
                     messages.push({
                         role: 'system',
                         content: [
-                            'The previous attempt was empty, invalid, or repeated an earlier reply.',
-                            'Answer the newest user message from scratch now. Do not reuse the same opening, wording, action, or conclusion.',
+                            'The previous attempt was empty, invalid, too minimal, or repeated an earlier reply.',
+                            'Answer the newest user message from scratch. Use a different opening and a genuinely new reaction, action, scene detail, and conclusion.',
+                            assistantMode
+                                ? 'Stay direct and useful.'
+                                : 'Keep the character voice, include meaningful dialogue, and develop the current scene without replaying an old beat.',
                             failedCandidate ? `Rejected attempt (do not copy):\n${failedCandidate.slice(0, 800)}` : '',
                         ].filter(Boolean).join('\n'),
                     });
@@ -3945,12 +4146,12 @@ const runConversationGeneration = async (
                     { role: 'user', content: latestUserMessage },
                 );
 
-                const result = await generateVeniceText({
+                const result = await generateChatTextWithTimeout({
                     model,
                     messages,
                     temperature: assistantMode ? 0.7 : 0.82,
                     topP: assistantMode ? 0.9 : 0.94,
-                    repetitionPenalty: assistantMode ? 1.04 : 1.08,
+                    repetitionPenalty: assistantMode ? 1.04 : 1.12,
                     signal: request.controller.signal,
                 });
 
@@ -3995,9 +4196,26 @@ const runConversationGeneration = async (
                     finishReason = continuation.finishReason;
                 }
 
+                const repeatsRecentReply = (candidate: string) => {
+                    return recentAssistantReplies.some(previousReply => {
+                        return repliesAreTooSimilar(candidate, previousReply) ||
+                            (!assistantMode && replyReusesOpeningOrNarrativeBeat(candidate, previousReply));
+                    });
+                };
                 if (
-                    lastAssistantReply &&
-                    repliesAreTooSimilar(cleanedText, lastAssistantReply) &&
+                    repeatsRecentReply(cleanedText) &&
+                    !userExplicitlyRequestsContinuation(latestUserMessage)
+                ) {
+                    failedCandidate = cleanedText;
+                    throw new Error(`Repeated reply from ${model}.`);
+                }
+
+                if (!assistantMode && request.personaKey === 'cc') {
+                    cleanedText = await polishCcReply(request, cleanedText);
+                }
+
+                if (
+                    repeatsRecentReply(cleanedText) &&
                     !userExplicitlyRequestsContinuation(latestUserMessage)
                 ) {
                     failedCandidate = cleanedText;
@@ -4010,6 +4228,9 @@ const runConversationGeneration = async (
                     throw error;
                 }
                 lastError = error instanceof Error ? error : new Error(String(error));
+                if (lastError.message === CHAT_MODEL_TIMEOUT_ERROR) {
+                    break;
+                }
             }
         }
     }
@@ -4018,11 +4239,15 @@ const runConversationGeneration = async (
 };
 
 const runCharacterChatGeneration = async (request: ActiveChatRequest, latestUserMessage: string) => {
-    const models = Array.from(new Set([
-        VENICE_CHAT_MODEL,
-        VENICE_CHAT_QUALITY_FALLBACK_MODEL,
-        VENICE_CHAT_FALLBACK_MODEL,
-    ].filter(Boolean)));
+    const preferredModels = request.personaKey === 'cc'
+        ? [
+            VENICE_CC_MODEL,
+            VENICE_CHAT_QUALITY_FALLBACK_MODEL,
+            VENICE_CHAT_MODEL,
+            VENICE_CHAT_FALLBACK_MODEL,
+        ]
+        : [VENICE_CHAT_MODEL, VENICE_CHAT_QUALITY_FALLBACK_MODEL, VENICE_CHAT_FALLBACK_MODEL];
+    const models = Array.from(new Set(preferredModels.filter(Boolean)));
     return runConversationGeneration(request, latestUserMessage, models, false);
 };
 

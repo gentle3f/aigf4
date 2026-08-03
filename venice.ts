@@ -97,6 +97,8 @@ export const VENICE_CHAT_MODEL =
   import.meta.env.VITE_VENICE_CHAT_MODEL || 'olafangensan-glm-4.7-flash-heretic';
 export const VENICE_CHAT_QUALITY_FALLBACK_MODEL =
   import.meta.env.VITE_VENICE_CHAT_QUALITY_FALLBACK_MODEL || 'gemma-4-uncensored';
+export const VENICE_CC_MODEL =
+  import.meta.env.VITE_VENICE_CC_MODEL || 'qwen-3-6-plus';
 export const VENICE_CHAT_FALLBACK_MODEL =
   import.meta.env.VITE_VENICE_CHAT_FALLBACK_MODEL || 'venice-uncensored-1-2';
 export const VENICE_GOD_MODEL =
