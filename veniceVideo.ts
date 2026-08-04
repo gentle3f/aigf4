@@ -93,9 +93,9 @@ export type VeniceVideoRetrieveResult =
     };
 
 export const VENICE_VIDEO_IMAGE_MODEL =
-  import.meta.env.VITE_VENICE_VIDEO_IMAGE_MODEL || 'wan-2-7-image-to-video';
+  import.meta.env.VITE_VENICE_VIDEO_IMAGE_MODEL || 'wan-2-7-enhanced-image-to-video';
 export const VENICE_VIDEO_TEXT_MODEL =
-  import.meta.env.VITE_VENICE_VIDEO_TEXT_MODEL || 'wan-2-7-text-to-video';
+  import.meta.env.VITE_VENICE_VIDEO_TEXT_MODEL || 'wan-2-7-enhanced-text-to-video';
 
 const DIRECT_VENICE_BASE = 'https://api.venice.ai/api/v1';
 const VENICE_API_KEY = import.meta.env.DEV
