@@ -160,15 +160,6 @@ const videoPromptHint = document.getElementById('video-prompt-hint')!;
 const videoPromptOptimizeButton = document.getElementById('video-prompt-optimize') as HTMLButtonElement;
 const videoPromptOptimizeLabel = document.getElementById('video-prompt-optimize-label')!;
 const videoPromptOptimizeSpinner = document.getElementById('video-prompt-optimize-spinner')!;
-const videoMotionDirector = document.getElementById('video-motion-director') as HTMLDetailsElement;
-const videoDirectorSummary = document.getElementById('video-director-summary')!;
-const videoDirectorTemplates = document.getElementById('video-director-templates')!;
-const videoDirectorGroups = document.getElementById('video-director-groups')!;
-const videoDirectorTimeline = document.getElementById('video-director-timeline')!;
-const videoDirectorAdvisory = document.getElementById('video-director-advisory')!;
-const videoDirectorReset = document.getElementById('video-director-reset') as HTMLButtonElement;
-const videoDirectorReplace = document.getElementById('video-director-replace') as HTMLButtonElement;
-const videoDirectorAppend = document.getElementById('video-director-append') as HTMLButtonElement;
 const videoNegativePrompt = document.getElementById('video-negative-prompt') as HTMLTextAreaElement;
 const videoDuration = document.getElementById('video-duration') as HTMLSelectElement;
 const videoResolutionWrap = document.getElementById('video-resolution-wrap')!;
@@ -427,15 +418,6 @@ let videoQuoteUsd: number | null = null;
 let videoPromptOptimizerController: AbortController | null = null;
 let isVideoPromptOptimizing = false;
 let lastVideoPromptOptimization: { settingsKey: string; output: string } | null = null;
-let selectedVideoDirectorTemplateId: string | null = 'confident-lookback';
-let videoDirectorSelection: VideoDirectorSelection = {
-    start: 'profile-standing',
-    action: 'look-back',
-    ending: 'eye-contact',
-    camera: 'slow-push',
-    setting: 'warm-suite',
-    tempo: 'slow-controlled',
-};
 let isVideoRequestRunning = false;
 let pendingVideoJob: PersistedVideoJob | null = null;
 let videoLastProgressIndex = -1;
@@ -529,27 +511,6 @@ type PersistedVideoJob = {
     mode: VeniceVideoMode;
     queuedAt: number;
 };
-type VideoDirectorGroupKey = 'start' | 'action' | 'ending' | 'camera' | 'setting' | 'tempo';
-type VideoDirectorOption = {
-    id: string;
-    label: string;
-    prompt: string;
-};
-type VideoDirectorGroup = {
-    key: VideoDirectorGroupKey;
-    label: string;
-    note: string;
-    options: VideoDirectorOption[];
-};
-type VideoDirectorSelection = Record<VideoDirectorGroupKey, string>;
-type VideoDirectorTemplate = {
-    id: string;
-    name: string;
-    description: string;
-    minDuration: number;
-    people: 1 | 2;
-    selection: VideoDirectorSelection;
-};
 type MimicAnalysisSummary = {
     personality: string;
     behavior: string;
@@ -603,140 +564,6 @@ const HOME_HISTORY_STATE: AppHistoryState = { view: 'home' };
 const MIMIC_CHUNK_CHAR_LIMIT = 2600;
 const MIMIC_MAX_ANALYSIS_CHUNKS = 10;
 const MIMIC_SAMPLE_CHUNK_CHAR_LIMIT = 1800;
-
-const VIDEO_DIRECTOR_GROUPS: VideoDirectorGroup[] = [
-    {
-        key: 'start',
-        label: '起始姿勢',
-        note: '文字模式決定第一幀',
-        options: [
-            { id: 'profile-standing', label: '側身站立', prompt: '以穩定的側身站姿開始，肩膀略向鏡頭，重心放在後腳。' },
-            { id: 'front-standing', label: '正面站立', prompt: '以放鬆的正面站姿開始，雙腳自然分開，重心清楚。' },
-            { id: 'seated-edge', label: '坐在邊沿', prompt: '坐在床沿或座椅邊緣，背部自然挺直，雙手放鬆。' },
-            { id: 'wall-lean', label: '側身靠牆', prompt: '側身靠牆站立，一腳微彎，姿態穩定而放鬆。' },
-            { id: 'floor-seated', label: '側坐地面', prompt: '坐在地面，一腿屈起，身體略側向鏡頭，姿態穩定。' },
-            { id: 'duo-facing', label: '雙人對望', prompt: '兩位成年人相隔一步面對面站立，姿勢自然，身份清楚分離。' },
-        ],
-    },
-    {
-        key: 'action',
-        label: '主要動作',
-        note: '只選一段清楚動作',
-        options: [
-            { id: 'look-back', label: '慢慢回眸', prompt: '先望向遠處，再用肩膀帶動上半身，慢慢回頭望向鏡頭。' },
-            { id: 'approach-camera', label: '向前兩步', prompt: '朝鏡頭緩慢走兩步，每一步都清楚落地，身體保持自然平衡。' },
-            { id: 'hair-touch', label: '整理頭髮', prompt: '抬手把頭髮撥到耳後，再放下手臂，過程流暢而自然。' },
-            { id: 'full-turn', label: '完整轉身', prompt: '以腳步帶動身體完成一次緩慢轉身，衣物與頭髮自然跟隨動作。' },
-            { id: 'sit-rise', label: '坐姿起身', prompt: '雙腳先穩定著地，再從坐姿平順站起來，重心轉移清楚。' },
-            { id: 'gentle-dance', label: '輕柔舞步', prompt: '做一小段緩慢舞步與半圈旋轉，手臂和軀幹保持連貫。' },
-            { id: 'reach-lens', label: '伸手靠近', prompt: '保持眼神交流，緩慢向鏡頭伸出一隻手，手指自然張開。' },
-            { id: 'duo-approach', label: '雙人靠近', prompt: '兩人先交換眼神，再各自向對方靠近半步，動作同步但身份保持穩定。' },
-        ],
-    },
-    {
-        key: 'ending',
-        label: '結尾姿勢',
-        note: '給模型明確停止點',
-        options: [
-            { id: 'eye-contact', label: '對鏡微笑', prompt: '最後停下來直視鏡頭，保持溫柔而自然的微笑。' },
-            { id: 'close-hold', label: '近鏡停留', prompt: '最後在較靠近鏡頭的位置穩定停下，保持自然呼吸與眼神交流。' },
-            { id: 'profile-hold', label: '側身定格', prompt: '最後以清楚的側身輪廓停住，頭部略微轉向鏡頭。' },
-            { id: 'look-away', label: '移開視線', prompt: '最後輕輕移開視線望向一旁，姿勢保持放鬆。' },
-            { id: 'eyes-close', label: '閉眼停留', prompt: '最後慢慢閉上雙眼，保持安靜而平穩的姿勢。' },
-            { id: 'duo-embrace', label: '雙人相擁', prompt: '最後兩位成年人自然靠近並輕輕相擁，臉部與四肢保持清楚。' },
-        ],
-    },
-    {
-        key: 'camera',
-        label: '鏡頭運動',
-        note: '簡單通常更穩定',
-        options: [
-            { id: 'fixed-medium', label: '固定中景', prompt: '鏡頭保持固定中景，不切鏡，不突然縮放。' },
-            { id: 'slow-push', label: '緩慢推近', prompt: '鏡頭從中景非常緩慢地推近至中近景，保持穩定。' },
-            { id: 'gentle-follow', label: '平順跟拍', prompt: '鏡頭以相同速度平順跟隨主體，保持主體在畫面中央。' },
-            { id: 'short-orbit', label: '小幅環繞', prompt: '鏡頭只環繞主體約三十度，速度緩慢，不完成整圈。' },
-            { id: 'low-tilt', label: '低角度上移', prompt: '鏡頭由略低角度平順上移至平視高度，不突然晃動。' },
-            { id: 'close-up', label: '表情特寫', prompt: '鏡頭保持臉部與肩膀特寫，優先保留眼神和細微表情。' },
-        ],
-    },
-    {
-        key: 'setting',
-        label: '場景與光線',
-        note: '控制整體氣氛',
-        options: [
-            { id: 'warm-suite', label: '暖光套房', prompt: '高級套房內的暖色側光與柔和背景景深，空氣安靜。' },
-            { id: 'neon-rooftop', label: '霓虹天台', prompt: '夜晚城市天台，藍色與桃紅霓虹反射在地面，遠處燈光閃爍。' },
-            { id: 'soft-bedroom', label: '床邊柔光', prompt: '整潔臥室的床邊柔光，薄紗窗簾輕微擺動，背景簡潔。' },
-            { id: 'rain-window', label: '雨夜窗邊', prompt: '雨夜窗邊，玻璃上有流動水珠，室內暖光映在輪廓上。' },
-            { id: 'steam-room', label: '蒸氣空間', prompt: '帶有輕薄蒸氣的現代浴室或更衣空間，柔光穿過霧氣。' },
-            { id: 'sunset-balcony', label: '日落露台', prompt: '日落露台的金色逆光，微風吹動頭髮與周圍布料。' },
-            { id: 'studio-light', label: '攝影棚光', prompt: '簡潔攝影棚背景，一盞柔光箱塑造清晰輪廓與自然膚色。' },
-        ],
-    },
-    {
-        key: 'tempo',
-        label: '動作節奏',
-        note: '配合影片長度',
-        options: [
-            { id: 'slow-controlled', label: '緩慢克制', prompt: '整段動作緩慢而克制，每一步完成後才進入下一步。' },
-            { id: 'natural', label: '自然流暢', prompt: '使用接近日常的自然速度，動作之間沒有停頓或跳格。' },
-            { id: 'confident', label: '自信俐落', prompt: '動作節奏自信而清楚，沒有猶豫，但仍保持物理連貫。' },
-            { id: 'dreamy', label: '夢幻慢鏡', prompt: '呈現輕微慢動作感，頭髮、布料與環境有細膩的次級動態。' },
-            { id: 'dramatic', label: '戲劇停頓', prompt: '在主要轉折前後加入短暫停頓，讓表情與姿勢更明確。' },
-        ],
-    },
-];
-
-const VIDEO_DIRECTOR_TEMPLATES: VideoDirectorTemplate[] = [
-    {
-        id: 'confident-lookback',
-        name: '自信回眸',
-        description: '側身、回頭、眼神停留',
-        minDuration: 5,
-        people: 1,
-        selection: { start: 'profile-standing', action: 'look-back', ending: 'eye-contact', camera: 'slow-push', setting: 'warm-suite', tempo: 'slow-controlled' },
-    },
-    {
-        id: 'neon-approach',
-        name: '霓虹靠近',
-        description: '向前兩步、近鏡停留',
-        minDuration: 5,
-        people: 1,
-        selection: { start: 'front-standing', action: 'approach-camera', ending: 'close-hold', camera: 'fixed-medium', setting: 'neon-rooftop', tempo: 'confident' },
-    },
-    {
-        id: 'bedside-softness',
-        name: '床沿柔光',
-        description: '整理頭髮、緩慢推近',
-        minDuration: 5,
-        people: 1,
-        selection: { start: 'seated-edge', action: 'hair-touch', ending: 'eye-contact', camera: 'slow-push', setting: 'soft-bedroom', tempo: 'dreamy' },
-    },
-    {
-        id: 'wall-silhouette',
-        name: '牆邊剪影',
-        description: '完整轉身、側身定格',
-        minDuration: 8,
-        people: 1,
-        selection: { start: 'wall-lean', action: 'full-turn', ending: 'profile-hold', camera: 'short-orbit', setting: 'sunset-balcony', tempo: 'dramatic' },
-    },
-    {
-        id: 'slow-dance',
-        name: '輕柔舞步',
-        description: '半圈旋轉、攝影機跟拍',
-        minDuration: 8,
-        people: 1,
-        selection: { start: 'front-standing', action: 'gentle-dance', ending: 'eye-contact', camera: 'gentle-follow', setting: 'studio-light', tempo: 'dreamy' },
-    },
-    {
-        id: 'duo-tension',
-        name: '雙人靠近',
-        description: '對望、靠近、自然相擁',
-        minDuration: 8,
-        people: 2,
-        selection: { start: 'duo-facing', action: 'duo-approach', ending: 'duo-embrace', camera: 'fixed-medium', setting: 'rain-window', tempo: 'slow-controlled' },
-    },
-];
 
 
 // --- Functions ---
@@ -3527,274 +3354,6 @@ const clearVideoStudioError = () => {
     videoStudioError.classList.add('hidden');
 };
 
-const getVideoDirectorOption = (key: VideoDirectorGroupKey, optionId: string) => {
-    return VIDEO_DIRECTOR_GROUPS
-        .find(group => group.key === key)
-        ?.options.find(option => option.id === optionId);
-};
-
-const getMatchingVideoDirectorTemplate = () => {
-    return VIDEO_DIRECTOR_TEMPLATES.find(template => {
-        return VIDEO_DIRECTOR_GROUPS.every(group => {
-            return template.selection[group.key] === videoDirectorSelection[group.key];
-        });
-    }) || null;
-};
-
-const getVideoDirectorPeopleCount = () => {
-    const template = getMatchingVideoDirectorTemplate();
-    if (template) return template.people;
-    return Object.values(videoDirectorSelection).some(value => value.startsWith('duo-')) ? 2 : 1;
-};
-
-const getSelectedVideoDurationSeconds = () => {
-    const parsed = Number.parseInt(videoDuration.value, 10);
-    return Number.isFinite(parsed) ? parsed : 0;
-};
-
-const selectVideoDirectorOption = (key: VideoDirectorGroupKey, optionId: string) => {
-    const storyKeys: VideoDirectorGroupKey[] = ['start', 'action', 'ending'];
-    let next = { ...videoDirectorSelection, [key]: optionId };
-    if (storyKeys.includes(key) && optionId.startsWith('duo-')) {
-        next = {
-            ...next,
-            start: 'duo-facing',
-            action: 'duo-approach',
-            ending: 'duo-embrace',
-            [key]: optionId,
-        };
-    } else if (storyKeys.includes(key) && getVideoDirectorPeopleCount() === 2) {
-        next = {
-            ...next,
-            start: 'profile-standing',
-            action: 'look-back',
-            ending: 'eye-contact',
-            [key]: optionId,
-        };
-    }
-    videoDirectorSelection = next;
-};
-
-const buildVideoDirectorPrompt = () => {
-    const start = getVideoDirectorOption('start', videoDirectorSelection.start);
-    const action = getVideoDirectorOption('action', videoDirectorSelection.action);
-    const ending = getVideoDirectorOption('ending', videoDirectorSelection.ending);
-    const camera = getVideoDirectorOption('camera', videoDirectorSelection.camera);
-    const setting = getVideoDirectorOption('setting', videoDirectorSelection.setting);
-    const tempo = getVideoDirectorOption('tempo', videoDirectorSelection.tempo);
-    if (!start || !action || !ending || !camera || !setting || !tempo) return '';
-
-    const firstFrame = videoStudioMode === 'image-to-video'
-        ? '起始狀態：以上傳圖片作為固定第一幀，從圖片中的原始姿勢自然開始；保持每個人物的身份、臉部、身形與背景連續。'
-        : `起始姿勢：${start.prompt}`;
-    const peopleContinuity = getVideoDirectorPeopleCount() === 2
-        ? '兩位人物的臉部、身體與位置必須清楚分離，不可融合、交換身份或增加第三個人。'
-        : '全程保持同一人物的臉部、身形與身份穩定。';
-
-    return [
-        '畫面中的所有人物均為明確成年人。',
-        firstFrame,
-        `第一個動作：${action.prompt}`,
-        `然後以此結束：${ending.prompt}`,
-        `鏡頭：${camera.prompt}`,
-        `場景與光線：${setting.prompt}`,
-        `節奏：${tempo.prompt}`,
-        peopleContinuity,
-        '使用一個連續鏡頭，完整呈現每個動作，不可把第一個動作變成起始姿勢，也不可跳過中間步驟。',
-    ].join('\n');
-};
-
-const updateVideoDirectorDisabledState = () => {
-    const locked = isVideoRequestRunning || isVideoPromptOptimizing || Boolean(pendingVideoJob) || !isUnlocked;
-    videoMotionDirector.querySelectorAll<HTMLButtonElement>('button').forEach(button => {
-        button.disabled = locked || button.dataset.directorLocked === 'true';
-    });
-};
-
-const renderVideoDirectorTimeline = () => {
-    const beats: Array<{ label: string; text: string }> = [
-        {
-            label: 'START',
-            text: videoStudioMode === 'image-to-video'
-                ? '來源圖片固定為第一幀，姿勢不會被範本偷偷改寫。'
-                : getVideoDirectorOption('start', videoDirectorSelection.start)?.label || '',
-        },
-        { label: 'ACTION', text: getVideoDirectorOption('action', videoDirectorSelection.action)?.label || '' },
-        { label: 'END', text: getVideoDirectorOption('ending', videoDirectorSelection.ending)?.label || '' },
-        { label: 'CAMERA', text: getVideoDirectorOption('camera', videoDirectorSelection.camera)?.label || '' },
-        { label: 'MOOD', text: `${getVideoDirectorOption('setting', videoDirectorSelection.setting)?.label || ''} · ${getVideoDirectorOption('tempo', videoDirectorSelection.tempo)?.label || ''}` },
-    ];
-
-    videoDirectorTimeline.replaceChildren(...beats.map((beat, index) => {
-        const row = document.createElement('div');
-        row.className = 'video-director-beat';
-        const number = document.createElement('span');
-        number.className = 'video-director-beat-index';
-        number.textContent = String(index + 1).padStart(2, '0');
-        const content = document.createElement('span');
-        const label = document.createElement('span');
-        label.className = 'video-director-beat-label';
-        label.textContent = beat.label;
-        const text = document.createElement('span');
-        text.className = 'video-director-beat-text block';
-        text.textContent = beat.text;
-        content.append(label, text);
-        row.append(number, content);
-        return row;
-    }));
-};
-
-const updateVideoDirectorAdvisory = () => {
-    const template = getMatchingVideoDirectorTemplate();
-    const duration = getSelectedVideoDurationSeconds();
-    const messages: string[] = [];
-    let warning = false;
-
-    if (videoStudioMode === 'image-to-video') {
-        messages.push('圖片模式會沿用來源圖的起始姿勢；範本只控制後續動作與結尾。');
-    } else {
-        messages.push('文字模式會把所選起始姿勢寫入第一幀描述。');
-    }
-
-    if (template && duration && duration < template.minDuration) {
-        warning = true;
-        messages.push(`${template.name} 建議至少 ${template.minDuration} 秒；目前 ${duration} 秒可能令動作過急或漏步驟。`);
-    }
-
-    if (getVideoDirectorPeopleCount() === 2) {
-        messages.push(videoStudioMode === 'image-to-video'
-            ? '雙人範本需要來源圖片本身已清楚包含兩位已授權成年人，否則容易出現換臉或融合。'
-            : '雙人範本只安排兩位成年人，提示詞會固定各自身份並禁止增加第三人。');
-    }
-
-    videoDirectorAdvisory.textContent = messages.join(' ');
-    videoDirectorAdvisory.classList.toggle('is-warning', warning);
-};
-
-const renderVideoDirector = () => {
-    const matchedTemplate = getMatchingVideoDirectorTemplate();
-    selectedVideoDirectorTemplateId = matchedTemplate?.id || null;
-    videoDirectorSummary.textContent = matchedTemplate
-        ? `${matchedTemplate.name} · ${videoStudioMode === 'image-to-video' ? '來源圖起步' : '文字建構第一幀'}`
-        : `自訂分鏡 · ${videoStudioMode === 'image-to-video' ? '來源圖起步' : '文字建構第一幀'}`;
-
-    videoDirectorTemplates.replaceChildren(...VIDEO_DIRECTOR_TEMPLATES.map((template, index) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'video-director-template';
-        button.classList.toggle('is-active', template.id === selectedVideoDirectorTemplateId);
-        button.dataset.templateId = template.id;
-        button.setAttribute('aria-pressed', String(template.id === selectedVideoDirectorTemplateId));
-        const code = document.createElement('span');
-        code.className = 'video-director-template-code';
-        code.textContent = `RECIPE ${String(index + 1).padStart(2, '0')} · ${template.minDuration}s+`;
-        const title = document.createElement('span');
-        title.className = 'video-director-template-title';
-        title.textContent = template.name;
-        const meta = document.createElement('span');
-        meta.className = 'video-director-template-meta';
-        meta.textContent = template.description;
-        button.append(code, title, meta);
-        button.addEventListener('click', () => {
-            videoDirectorSelection = { ...template.selection };
-            selectedVideoDirectorTemplateId = template.id;
-            renderVideoDirector();
-            videoStudioStatus.textContent = `已選擇「${template.name}」分鏡；確認後可套用至提示詞`;
-        });
-        return button;
-    }));
-
-    videoDirectorGroups.replaceChildren(...VIDEO_DIRECTOR_GROUPS.map(group => {
-        const section = document.createElement('section');
-        section.className = 'video-director-group';
-        const heading = document.createElement('div');
-        heading.className = 'video-director-group-heading';
-        const label = document.createElement('span');
-        label.className = 'video-field-label';
-        label.textContent = group.label;
-        const note = document.createElement('span');
-        note.className = 'video-director-group-note';
-        note.textContent = group.key === 'start' && videoStudioMode === 'image-to-video'
-            ? '已由來源圖片固定'
-            : group.note;
-        heading.append(label, note);
-        const chips = document.createElement('div');
-        chips.className = 'video-director-chips';
-        chips.setAttribute('role', 'radiogroup');
-        chips.setAttribute('aria-label', group.label);
-
-        if (group.key === 'start' && videoStudioMode === 'image-to-video') {
-            const lockedChip = document.createElement('button');
-            lockedChip.type = 'button';
-            lockedChip.className = 'video-director-chip is-active is-locked';
-            lockedChip.textContent = '來源圖片姿勢';
-            lockedChip.dataset.directorLocked = 'true';
-            lockedChip.setAttribute('role', 'radio');
-            lockedChip.setAttribute('aria-checked', 'true');
-            chips.appendChild(lockedChip);
-        } else {
-            group.options.forEach(option => {
-                const chip = document.createElement('button');
-                const active = videoDirectorSelection[group.key] === option.id;
-                chip.type = 'button';
-                chip.className = 'video-director-chip';
-                chip.classList.toggle('is-active', active);
-                chip.textContent = option.label;
-                chip.setAttribute('role', 'radio');
-                chip.setAttribute('aria-checked', String(active));
-                chip.addEventListener('click', () => {
-                    selectVideoDirectorOption(group.key, option.id);
-                    renderVideoDirector();
-                });
-                chips.appendChild(chip);
-            });
-        }
-
-        section.append(heading, chips);
-        return section;
-    }));
-
-    renderVideoDirectorTimeline();
-    updateVideoDirectorAdvisory();
-    updateVideoDirectorDisabledState();
-};
-
-const applyVideoDirectorPrompt = (mode: 'replace' | 'append') => {
-    if (isVideoRequestRunning || isVideoPromptOptimizing || pendingVideoJob) return;
-    const directorPrompt = buildVideoDirectorPrompt();
-    if (!directorPrompt) {
-        showVideoStudioError('分鏡尚未完整，請重新選擇範本。');
-        return;
-    }
-
-    const existing = videoPrompt.value.trim();
-    const nextPrompt = mode === 'append' && existing
-        ? `${existing}\n\n${directorPrompt}`
-        : directorPrompt;
-    const maxLength = getSelectedVideoModel()?.constraints.prompt_character_limit || 2500;
-    if (nextPrompt.length > maxLength) {
-        showVideoStudioError(`加入後會超過目前模型的 ${maxLength} 字元限制，請使用「取代提示詞」或刪減原有描述。`);
-        return;
-    }
-
-    videoPrompt.value = nextPrompt;
-    updateVideoPromptCounter();
-    clearVideoStudioError();
-    videoStudioStatus.textContent = mode === 'append'
-        ? '分鏡已加入現有描述；可再按魔法棒依目前模型優化'
-        : '分鏡已寫入提示詞；可再按魔法棒依目前模型優化';
-    videoPrompt.focus();
-};
-
-const resetVideoDirector = () => {
-    const template = VIDEO_DIRECTOR_TEMPLATES[0];
-    if (!template) return;
-    videoDirectorSelection = { ...template.selection };
-    selectedVideoDirectorTemplateId = template.id;
-    renderVideoDirector();
-    videoStudioStatus.textContent = '動作導演已重設為「自信回眸」';
-};
-
 const containsDisallowedMinorTerms = (text: string) => {
     return /\b(?:minor|underage|child|kid|teen(?:ager)?|schoolgirl|schoolboy|loli|shota)\b|(?:未成年|幼女|兒童|小孩|學生妹)/i.test(text);
 };
@@ -4037,7 +3596,6 @@ const updateVideoModelControls = () => {
     ].filter(Boolean);
     videoModelMeta.textContent = details.join(' · ');
     updateVideoPromptCounter();
-    renderVideoDirector();
     scheduleVideoQuote();
 };
 
@@ -4167,7 +3725,6 @@ const setVideoStudioMode = (mode: VeniceVideoMode) => {
     videoCostEstimate.textContent = '';
     videoModelSelect.innerHTML = '<option value="">載入模型中...</option>';
     setVideoProgressState('idle');
-    renderVideoDirector();
     void loadVideoModels(mode);
     updateVideoGenerateButton();
 };
@@ -4276,7 +3833,6 @@ const setVideoStudioBusy = (busy: boolean) => {
     videoAdultConfirm.disabled = controlsLocked;
     updateVideoJobAction();
     updateVideoPromptOptimizerButton();
-    updateVideoDirectorDisabledState();
     updateVideoGenerateButton();
 };
 
@@ -4627,7 +4183,7 @@ const runVideoGeneration = async () => {
     clearVideoStudioError();
 
     if (!model || !prompt || !videoAdultConfirm.checked || typeof videoQuoteUsd !== 'number') {
-        showVideoStudioError('請完成描述、模型報價，以及成年、肖像權與自願同意確認。');
+        showVideoStudioError('請完成描述、模型報價及成年／圖片權利確認。');
         return;
     }
     if (videoStudioMode === 'image-to-video' && !videoSource) {
@@ -5188,7 +4744,6 @@ const setUnlockedState = (unlocked: boolean) => {
         appShell.classList.remove('app-shell-locked');
         updateSendButtonState();
         updateVideoPromptOptimizerButton();
-        updateVideoDirectorDisabledState();
         updateVideoGenerateButton();
         return;
     }
@@ -5205,7 +4760,6 @@ const setUnlockedState = (unlocked: boolean) => {
 
     updateSendButtonState();
     updateVideoPromptOptimizerButton();
-    updateVideoDirectorDisabledState();
     updateVideoGenerateButton();
 };
 
@@ -6881,14 +6435,8 @@ const setupEventListeners = () => {
     videoPromptOptimizeButton.addEventListener('click', () => {
         void runVideoPromptOptimization();
     });
-    videoDirectorReset.addEventListener('click', resetVideoDirector);
-    videoDirectorReplace.addEventListener('click', () => applyVideoDirectorPrompt('replace'));
-    videoDirectorAppend.addEventListener('click', () => applyVideoDirectorPrompt('append'));
     [videoDuration, videoResolution, videoAspectRatio].forEach(select => {
-        select.addEventListener('change', () => {
-            scheduleVideoQuote();
-            if (select === videoDuration) updateVideoDirectorAdvisory();
-        });
+        select.addEventListener('change', () => scheduleVideoQuote());
     });
     videoAudio.addEventListener('change', () => scheduleVideoQuote());
     videoAdultConfirm.addEventListener('change', () => {
@@ -7135,7 +6683,6 @@ const init = async () => {
     } else {
         setVideoProgressState('idle');
     }
-    renderVideoDirector();
     setVideoStudioBusy(false);
     const unlocked = await refreshAuthSession();
     if (unlocked && pendingVideoJob) void resumePendingVideoJob('auto');
