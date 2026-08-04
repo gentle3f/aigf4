@@ -446,7 +446,7 @@
                                 <span id="video-generate-label">開始生成影片</span>
                                 <span id="video-generate-spinner" class="hidden h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white"></span>
                             </button>
-                            <button id="video-cancel-button" type="button" class="video-cancel-button hidden">停止等待</button>
+                            <button id="video-cancel-button" type="button" class="video-cancel-button hidden">暫停查詢</button>
                         </div>
 
                         <div class="video-progress-track mt-4" aria-label="影片生成進度">
@@ -474,7 +474,7 @@
                                 <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8.25 6.533c0-1.03 1.116-1.674 2.009-1.16l7.238 4.167a1.34 1.34 0 0 1 0 2.32l-7.238 4.167c-.893.514-2.009-.13-2.009-1.16V6.533Z" /></svg>
                             </div>
                             <p class="mt-5 text-lg font-semibold text-slate-200">影片會在這裡開始播放</p>
-                            <p class="mt-2 max-w-sm text-sm leading-6 text-slate-500">影片以 Venice 非同步排隊生成，通常需等待數分鐘。完成後請下載保存，重新整理頁面便會清除。</p>
+                            <p class="mt-2 max-w-sm text-sm leading-6 text-slate-500">影片以 Venice 非同步排隊生成，通常需等待數分鐘。未完成工作會保存並在重新進入後自動恢復；完成後請下載保存。</p>
                         </div>
                         <div id="video-studio-results" class="mt-5 grid grid-cols-1 gap-5"></div>
                     </section>

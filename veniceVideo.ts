@@ -269,7 +269,9 @@ export async function retrieveVeniceVideo(
   const payload: Record<string, unknown> = {
     model,
     queue_id: queueId,
-    delete_media_on_completion: !downloadUrl,
+    // Keep the remote file until the browser has received it so an interrupted
+    // download remains recoverable through the persisted queue.
+    delete_media_on_completion: false,
   };
   if (isProxyMode()) payload.action = 'retrieve';
 

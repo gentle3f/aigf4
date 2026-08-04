@@ -412,7 +412,7 @@ let videoQuoteTimer: number | null = null;
 let videoQuoteVersion = 0;
 let videoQuoteUsd: number | null = null;
 let isVideoRequestRunning = false;
-let activeVideoQueue: { model: string; queueId: string; downloadUrl?: string } | null = null;
+let pendingVideoJob: PersistedVideoJob | null = null;
 let videoLastProgressIndex = -1;
 let isRandomRecruiting = false;
 
@@ -439,6 +439,7 @@ const IMAGE_ADULT_CONFIRM_STORAGE_KEY = 'veniceImageAdultConfirmed';
 const VIDEO_IMAGE_MODEL_STORAGE_KEY = 'veniceVideoImageModel';
 const VIDEO_TEXT_MODEL_STORAGE_KEY = 'veniceVideoTextModel';
 const VIDEO_ADULT_CONFIRM_STORAGE_KEY = 'veniceVideoAdultConfirmed';
+const VIDEO_PENDING_JOB_STORAGE_KEY = 'veniceVideoPendingJobV1';
 const VIDEO_POLL_INTERVAL_MS = 5_000;
 const VIDEO_POLL_TIMEOUT_MS = 15 * 60_000;
 
@@ -491,6 +492,16 @@ type VideoStudioResult = {
     queueId: string;
     createdAt: Date;
     needsRemoteCleanup: boolean;
+};
+type PersistedVideoJob = {
+    version: 1;
+    model: string;
+    modelName: string;
+    queueId: string;
+    downloadUrl?: string;
+    prompt: string;
+    mode: VeniceVideoMode;
+    queuedAt: number;
 };
 type MimicAnalysisSummary = {
     personality: string;
@@ -3231,8 +3242,72 @@ const formatVideoPrivacy = (privacy: string) => {
     return privacy === 'unknown' ? '' : privacy;
 };
 
+const readPersistedVideoJob = (): PersistedVideoJob | null => {
+    try {
+        const raw = localStorage.getItem(VIDEO_PENDING_JOB_STORAGE_KEY);
+        if (!raw) return null;
+        const value = JSON.parse(raw) as Partial<PersistedVideoJob>;
+        const validMode = value.mode === 'image-to-video' || value.mode === 'text-to-video';
+        const validDownloadUrl = value.downloadUrl === undefined
+            || (typeof value.downloadUrl === 'string' && /^https:\/\//i.test(value.downloadUrl));
+        if (
+            value.version !== 1
+            || typeof value.model !== 'string'
+            || !value.model.trim()
+            || typeof value.queueId !== 'string'
+            || !/^[a-z0-9_-]+$/i.test(value.queueId)
+            || typeof value.prompt !== 'string'
+            || !value.prompt.trim()
+            || typeof value.queuedAt !== 'number'
+            || !Number.isFinite(value.queuedAt)
+            || value.queuedAt <= 0
+            || !validMode
+            || !validDownloadUrl
+        ) {
+            throw new Error('Invalid persisted video job.');
+        }
+        return {
+            version: 1,
+            model: value.model,
+            modelName: typeof value.modelName === 'string' && value.modelName.trim()
+                ? value.modelName
+                : value.model,
+            queueId: value.queueId,
+            downloadUrl: value.downloadUrl,
+            prompt: value.prompt,
+            mode: value.mode as VeniceVideoMode,
+            queuedAt: value.queuedAt,
+        };
+    } catch (error) {
+        console.warn('Unable to restore persisted Venice video job.', error);
+        localStorage.removeItem(VIDEO_PENDING_JOB_STORAGE_KEY);
+        return null;
+    }
+};
+
+const persistVideoJob = (job: PersistedVideoJob): boolean => {
+    pendingVideoJob = job;
+    try {
+        localStorage.setItem(VIDEO_PENDING_JOB_STORAGE_KEY, JSON.stringify(job));
+        return true;
+    } catch (error) {
+        console.warn('Unable to persist Venice video job.', error);
+        showVideoStudioError('工作已提交，但瀏覽器無法保存恢復資料；完成前請保持此分頁開啟。');
+        return false;
+    }
+};
+
+const clearPersistedVideoJob = () => {
+    pendingVideoJob = null;
+    try {
+        localStorage.removeItem(VIDEO_PENDING_JOB_STORAGE_KEY);
+    } catch (error) {
+        console.warn('Unable to clear persisted Venice video job.', error);
+    }
+};
+
 const setVideoProgressState = (
-    state: 'idle' | 'quoting' | 'quoted' | 'queueing' | 'generating' | 'completed' | 'error',
+    state: 'idle' | 'quoting' | 'quoted' | 'queueing' | 'generating' | 'paused' | 'completed' | 'error',
 ) => {
     const stageIndexes: Record<string, number> = { quote: 0, queue: 1, generate: 2, complete: 3 };
     let activeIndex = -1;
@@ -3248,6 +3323,7 @@ const setVideoProgressState = (
         activeIndex = 2;
         completedThrough = 1;
     }
+    if (state === 'paused') completedThrough = 1;
     if (state === 'completed') completedThrough = 3;
     if (state === 'error') activeIndex = Math.max(0, videoLastProgressIndex);
 
@@ -3271,6 +3347,11 @@ const clearVideoStudioError = () => {
 };
 
 const updateVideoGenerateButton = () => {
+    if (pendingVideoJob) {
+        videoGenerateButton.disabled = isVideoRequestRunning || !isUnlocked;
+        if (!isVideoRequestRunning) videoGenerateLabel.textContent = '繼續查詢未完成影片';
+        return;
+    }
     const modelReady = Boolean(videoModelSelect.value);
     const promptReady = Boolean(videoPrompt.value.trim());
     const sourceReady = videoStudioMode === 'text-to-video' || Boolean(videoSource);
@@ -3318,7 +3399,7 @@ const cancelPendingVideoQuote = () => {
 };
 
 const scheduleVideoQuote = (delay = 320) => {
-    if (isVideoRequestRunning) return;
+    if (isVideoRequestRunning || pendingVideoJob) return;
     cancelPendingVideoQuote();
     const pricing = getVideoPricingOptions();
     videoQuoteUsd = null;
@@ -3452,7 +3533,7 @@ const renderVideoModelOptions = () => {
     });
 
     videoModelSelect.value = selectedVideoModels[videoStudioMode];
-    videoModelSelect.disabled = isVideoRequestRunning || models.length === 0;
+    videoModelSelect.disabled = isVideoRequestRunning || Boolean(pendingVideoJob) || models.length === 0;
     updateVideoModelControls();
 };
 
@@ -3480,7 +3561,7 @@ const loadVideoModels = async (mode: VeniceVideoMode = videoStudioMode, force = 
             }
         } finally {
             videoModelPromises[mode] = null;
-            refreshVideoModelsBtn.disabled = false;
+            refreshVideoModelsBtn.disabled = isVideoRequestRunning || Boolean(pendingVideoJob);
             if (mode === videoStudioMode) renderVideoModelOptions();
         }
     })();
@@ -3489,7 +3570,7 @@ const loadVideoModels = async (mode: VeniceVideoMode = videoStudioMode, force = 
 };
 
 const setVideoStudioMode = (mode: VeniceVideoMode) => {
-    if (isVideoRequestRunning) return;
+    if (isVideoRequestRunning || pendingVideoJob) return;
     if (videoStudioMode === mode) {
         if (!videoModels[mode].length) void loadVideoModels(mode);
         return;
@@ -3583,7 +3664,7 @@ const setVideoSourceFromBlob = async (sourceBlob: Blob, name: string) => {
 };
 
 const loadVideoSourceFile = async (file?: File) => {
-    if (!file || isVideoRequestRunning) return;
+    if (!file || isVideoRequestRunning || pendingVideoJob) return;
     clearVideoStudioError();
     videoStudioStatus.textContent = '正在準備來源圖片...';
     try {
@@ -3597,24 +3678,33 @@ const loadVideoSourceFile = async (file?: File) => {
     }
 };
 
+const updateVideoJobAction = () => {
+    const showAction = isVideoRequestRunning || Boolean(pendingVideoJob);
+    videoCancelButton.classList.toggle('hidden', !showAction);
+    videoCancelButton.textContent = isVideoRequestRunning
+        ? pendingVideoJob ? '暫停查詢' : '停止等待'
+        : '放棄未完成工作';
+};
+
 const setVideoStudioBusy = (busy: boolean) => {
     isVideoRequestRunning = busy;
+    const controlsLocked = busy || Boolean(pendingVideoJob);
     videoGenerateSpinner.classList.toggle('hidden', !busy);
-    videoCancelButton.classList.toggle('hidden', !busy);
     if (busy) videoGenerateLabel.textContent = '影片生成中...';
-    videoModeImageBtn.disabled = busy;
-    videoModeTextBtn.disabled = busy;
-    videoModelSelect.disabled = busy || videoModels[videoStudioMode].length === 0;
-    refreshVideoModelsBtn.disabled = busy;
-    videoSourceDropzone.disabled = busy;
-    videoSourceRemove.disabled = busy;
-    videoPrompt.disabled = busy;
-    videoNegativePrompt.disabled = busy;
-    videoDuration.disabled = busy;
-    videoResolution.disabled = busy;
-    videoAspectRatio.disabled = busy;
-    videoAudio.disabled = busy;
-    videoAdultConfirm.disabled = busy;
+    videoModeImageBtn.disabled = controlsLocked;
+    videoModeTextBtn.disabled = controlsLocked;
+    videoModelSelect.disabled = controlsLocked || videoModels[videoStudioMode].length === 0;
+    refreshVideoModelsBtn.disabled = controlsLocked;
+    videoSourceDropzone.disabled = controlsLocked;
+    videoSourceRemove.disabled = controlsLocked;
+    videoPrompt.disabled = controlsLocked;
+    videoNegativePrompt.disabled = controlsLocked;
+    videoDuration.disabled = controlsLocked;
+    videoResolution.disabled = controlsLocked;
+    videoAspectRatio.disabled = controlsLocked;
+    videoAudio.disabled = controlsLocked;
+    videoAdultConfirm.disabled = controlsLocked;
+    updateVideoJobAction();
     updateVideoGenerateButton();
 };
 
@@ -3716,16 +3806,133 @@ const clearVideoResults = () => {
 };
 
 const cancelVideoRequest = () => {
-    if (!isVideoRequestRunning || !videoRequestController) return;
-    const warning = activeVideoQueue
-        ? '影片已經送到 Venice。停止只會中止本頁等待，生成可能仍會繼續且無法退回費用。確定停止？'
-        : '正在送出影片工作，無法確認 Venice 是否已收到。確定停止等待？';
-    if (!window.confirm(warning)) return;
-    videoRequestController.abort();
-    videoStudioStatus.textContent = '已停止等待；Venice 上的工作可能仍會繼續';
+    if (isVideoRequestRunning && videoRequestController) {
+        const warning = pendingVideoJob
+            ? '暫停只會停止本頁查詢，Venice 仍會繼續生成。工作紀錄會保留，重新進入後自動恢復。確定暫停？'
+            : '正在送出影片工作，無法確認 Venice 是否已收到。確定停止等待？';
+        if (!window.confirm(warning)) return;
+        videoRequestController.abort();
+        videoStudioStatus.textContent = pendingVideoJob
+            ? '已暫停查詢；未完成工作已保存'
+            : '已停止等待；Venice 可能已收到工作';
+        return;
+    }
+
+    if (!pendingVideoJob) return;
+    const confirmed = window.confirm(
+        '這只會刪除本機的恢復紀錄，不會取消 Venice 已收費的生成。刪除後本網站不能再找回這個 queue ID。確定放棄？',
+    );
+    if (!confirmed) return;
+    clearPersistedVideoJob();
+    setVideoProgressState('idle');
+    videoStudioStatus.textContent = '未完成工作紀錄已刪除；遠端生成不會因此取消';
+    clearVideoStudioError();
+    setVideoStudioBusy(false);
+};
+
+const pollPersistedVideoJob = async (job: PersistedVideoJob, controller: AbortController) => {
+    const pollingStartedAt = performance.now();
+    let consecutivePollErrors = 0;
+
+    while (performance.now() - pollingStartedAt < VIDEO_POLL_TIMEOUT_MS) {
+        let retrieved;
+        try {
+            retrieved = await retrieveVeniceVideo(
+                job.model,
+                job.queueId,
+                job.downloadUrl,
+                controller.signal,
+            );
+            consecutivePollErrors = 0;
+        } catch (error) {
+            if (controller.signal.aborted) throw error;
+            if (error instanceof Error && error.message === VENICE_AUTH_REQUIRED_ERROR) throw error;
+            consecutivePollErrors += 1;
+            if (consecutivePollErrors > 4) throw error;
+            videoStudioStatus.textContent = `暫時無法查詢進度，將自動重試（${consecutivePollErrors}/4）`;
+            await waitForVideoPoll(controller.signal);
+            continue;
+        }
+
+        if (retrieved.kind === 'completed') {
+            const url = retrieved.blob
+                ? URL.createObjectURL(retrieved.blob)
+                : retrieved.downloadUrl;
+            if (!url) throw new Error('影片已完成，但沒有可播放的檔案。');
+            const now = new Date();
+            videoResults = [{
+                id: `${now.getTime()}-${job.queueId}`,
+                url,
+                isObjectUrl: Boolean(retrieved.blob),
+                prompt: job.prompt,
+                model: job.modelName,
+                modelId: job.model,
+                queueId: job.queueId,
+                createdAt: now,
+                needsRemoteCleanup: Boolean(retrieved.downloadUrl),
+            }, ...videoResults];
+            clearPersistedVideoJob();
+            renderVideoResults();
+            setVideoProgressState('completed');
+            videoStudioStatus.textContent = `影片完成 · 共等待 ${formatVideoWait(now.getTime() - job.queuedAt)}`;
+
+            if (retrieved.blob) {
+                void completeVeniceVideo(job.model, job.queueId).catch(error => {
+                    console.warn('Unable to clean up completed Venice video media.', error);
+                });
+            }
+            return;
+        }
+
+        const waited = retrieved.executionDuration ?? Date.now() - job.queuedAt;
+        const estimate = retrieved.averageExecutionTime;
+        videoStudioStatus.textContent = estimate
+            ? `生成中 · 已等待 ${formatVideoWait(waited)} · 一般約 ${formatVideoWait(estimate)}`
+            : `生成中 · 已等待 ${formatVideoWait(waited)}`;
+        await waitForVideoPoll(controller.signal);
+    }
+
+    throw new Error('本次查詢已達 15 分鐘，未完成工作仍已保存，可稍後繼續查詢。');
+};
+
+const resumePendingVideoJob = async (source: 'auto' | 'manual' = 'manual') => {
+    const job = pendingVideoJob;
+    if (!job || isVideoRequestRunning || !isUnlocked) return;
+
+    cancelPendingVideoQuote();
+    clearVideoStudioError();
+    const controller = new AbortController();
+    videoRequestController = controller;
+    setVideoStudioBusy(true);
+    setVideoProgressState('generating');
+    videoStudioStatus.textContent = source === 'auto'
+        ? `正在自動恢復未完成工作 · ${job.modelName}`
+        : `正在繼續查詢未完成工作 · ${job.modelName}`;
+
+    try {
+        await pollPersistedVideoJob(job, controller);
+    } catch (error) {
+        if (controller.signal.aborted) {
+            setVideoProgressState('paused');
+            videoStudioStatus.textContent = '已暫停查詢；未完成工作已保存，重新進入後會自動恢復';
+        } else {
+            const message = error instanceof Error ? error.message : '無法查詢未完成影片。';
+            showVideoStudioError(message);
+            videoStudioStatus.textContent = '查詢已暫停；系統保留原有工作，沒有重新提交或重複扣費';
+            setVideoProgressState('error');
+            if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
+        }
+    } finally {
+        if (videoRequestController === controller) videoRequestController = null;
+        setVideoStudioBusy(false);
+    }
 };
 
 const runVideoGeneration = async () => {
+    if (pendingVideoJob) {
+        await resumePendingVideoJob('manual');
+        return;
+    }
     const model = getSelectedVideoModel();
     const prompt = videoPrompt.value.trim();
     clearVideoStudioError();
@@ -3757,11 +3964,9 @@ const runVideoGeneration = async () => {
     cancelPendingVideoQuote();
     const controller = new AbortController();
     videoRequestController = controller;
-    activeVideoQueue = null;
     setVideoStudioBusy(true);
     setVideoProgressState('queueing');
-    videoStudioStatus.textContent = '正在提交一次生成工作，請勿重新整理頁面...';
-    const startedAt = performance.now();
+    videoStudioStatus.textContent = '正在提交一次生成工作；取得 queue ID 後即可安全恢復...';
 
     try {
         const queued = await queueVeniceVideo({
@@ -3772,77 +3977,40 @@ const runVideoGeneration = async () => {
             adultConfirmed: true,
             signal: controller.signal,
         });
-        activeVideoQueue = queued;
+        const job: PersistedVideoJob = {
+            version: 1,
+            model: queued.model,
+            modelName: model.name,
+            queueId: queued.queueId,
+            downloadUrl: queued.downloadUrl,
+            prompt,
+            mode: videoStudioMode,
+            queuedAt: Date.now(),
+        };
+        const wasPersisted = persistVideoJob(job);
+        updateVideoJobAction();
         setVideoProgressState('generating');
-        videoStudioStatus.textContent = '已進入 Venice 隊列，等待模型生成...';
-
-        let consecutivePollErrors = 0;
-        while (performance.now() - startedAt < VIDEO_POLL_TIMEOUT_MS) {
-            await waitForVideoPoll(controller.signal);
-            let retrieved;
-            try {
-                retrieved = await retrieveVeniceVideo(
-                    queued.model,
-                    queued.queueId,
-                    queued.downloadUrl,
-                    controller.signal,
-                );
-                consecutivePollErrors = 0;
-            } catch (error) {
-                if (controller.signal.aborted) throw error;
-                consecutivePollErrors += 1;
-                if (consecutivePollErrors > 4) throw error;
-                videoStudioStatus.textContent = `暫時無法查詢進度，將自動重試（${consecutivePollErrors}/4）`;
-                continue;
-            }
-
-            if (retrieved.kind === 'completed') {
-                const url = retrieved.blob
-                    ? URL.createObjectURL(retrieved.blob)
-                    : retrieved.downloadUrl;
-                if (!url) throw new Error('影片已完成，但沒有可播放的檔案。');
-                const now = new Date();
-                videoResults = [{
-                    id: `${now.getTime()}-${queued.queueId}`,
-                    url,
-                    isObjectUrl: Boolean(retrieved.blob),
-                    prompt,
-                    model: model.name,
-                    modelId: queued.model,
-                    queueId: queued.queueId,
-                    createdAt: now,
-                    needsRemoteCleanup: Boolean(retrieved.downloadUrl),
-                }, ...videoResults];
-                renderVideoResults();
-                setVideoProgressState('completed');
-                const elapsed = formatVideoWait(performance.now() - startedAt);
-                videoStudioStatus.textContent = `影片完成 · 等待 ${elapsed}`;
-                return;
-            }
-
-            const waited = retrieved.executionDuration ?? performance.now() - startedAt;
-            const estimate = retrieved.averageExecutionTime;
-            videoStudioStatus.textContent = estimate
-                ? `生成中 · 已等待 ${formatVideoWait(waited)} · 一般約 ${formatVideoWait(estimate)}`
-                : `生成中 · 已等待 ${formatVideoWait(waited)}`;
-        }
-
-        throw new Error('影片生成等待超過 15 分鐘。工作可能仍在 Venice 完成，請稍後再試。');
+        videoStudioStatus.textContent = wasPersisted
+            ? '已進入 Venice 隊列；工作已保存，現在可安全重新進入網站'
+            : '已進入 Venice 隊列，但無法保存恢復資料；請保持此分頁開啟';
+        await pollPersistedVideoJob(job, controller);
     } catch (error) {
         if (controller.signal.aborted) {
-            setVideoProgressState('quoted');
+            setVideoProgressState(pendingVideoJob ? 'paused' : 'quoted');
+            videoStudioStatus.textContent = pendingVideoJob
+                ? '已暫停查詢；未完成工作已保存，重新進入後會自動恢復'
+                : '已停止等待；尚未取得可保存的 queue ID';
         } else {
             const message = error instanceof Error ? error.message : '影片生成失敗。';
             showVideoStudioError(message);
-            videoStudioStatus.textContent = activeVideoQueue
-                ? '查詢或生成失敗；系統沒有重複提交工作'
+            videoStudioStatus.textContent = pendingVideoJob
+                ? '查詢已暫停；工作已保存，系統沒有重複提交或扣費'
                 : '影片工作未能成功提交';
             setVideoProgressState('error');
             if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
         }
     } finally {
         if (videoRequestController === controller) videoRequestController = null;
-        activeVideoQueue = null;
         setVideoStudioBusy(false);
     }
 };
@@ -3861,6 +4029,9 @@ const showVideoStudio = (historyMode: 'push' | 'replace' | 'skip' = 'push') => {
     void loadVideoModels(videoStudioMode);
     updateVideoGenerateButton();
     syncBrowserViewState({ view: 'video' }, historyMode);
+    if (pendingVideoJob && !isVideoRequestRunning && isUnlocked) {
+        void resumePendingVideoJob('auto');
+    }
 };
 
 const navigateBackFromVideoStudio = () => {
@@ -4411,6 +4582,7 @@ const submitUnlock = async () => {
         }
 
         setUnlockedState(true);
+        if (pendingVideoJob) void resumePendingVideoJob('auto');
     } catch (error) {
         setUnlockedState(false);
         showAuthError(
@@ -5994,7 +6166,7 @@ const setupEventListeners = () => {
     videoModeImageBtn.addEventListener('click', () => setVideoStudioMode('image-to-video'));
     videoModeTextBtn.addEventListener('click', () => setVideoStudioMode('text-to-video'));
     videoModelSelect.addEventListener('change', () => {
-        if (!videoModelSelect.value || isVideoRequestRunning) return;
+        if (!videoModelSelect.value || isVideoRequestRunning || pendingVideoJob) return;
         selectedVideoModels[videoStudioMode] = videoModelSelect.value;
         localStorage.setItem(
             videoStudioMode === 'image-to-video'
@@ -6250,8 +6422,16 @@ const init = async () => {
     setupEventListeners();
     setAuthSubmitting(false);
     applyChatRuntimeState('idle');
-    setVideoProgressState('idle');
-    await refreshAuthSession();
+    pendingVideoJob = readPersistedVideoJob();
+    if (pendingVideoJob) {
+        setVideoProgressState('paused');
+        videoStudioStatus.textContent = `找到未完成工作 · ${pendingVideoJob.modelName} · 登入後自動恢復`;
+    } else {
+        setVideoProgressState('idle');
+    }
+    setVideoStudioBusy(false);
+    const unlocked = await refreshAuthSession();
+    if (unlocked && pendingVideoJob) void resumePendingVideoJob('auto');
 };
 
 void init();

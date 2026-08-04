@@ -46,6 +46,8 @@ The browser never receives `VENICE_API_KEY` in proxy mode.
 - The current model list and exact USD quote load before a generation can be submitted.
 - Video queue requests are never retried automatically, preventing duplicate charges.
 - Polling retries do not create another generation job.
+- Unfinished queue metadata is stored in `localStorage` and polling resumes automatically
+  after a reload or a new visit. Source images are never persisted with that metadata.
 - Completed MP4 files stay in the current browser session only and are not written to
   chat history, `localStorage`, or exported ZIP files.
 
