@@ -107,6 +107,8 @@ export const VENICE_GOD_FALLBACK_MODEL =
   import.meta.env.VITE_VENICE_GOD_FALLBACK_MODEL || 'zai-org-glm-4.7-flash';
 export const VENICE_ASSISTANT_MODEL =
   import.meta.env.VITE_VENICE_ASSISTANT_MODEL || 'venice-uncensored-1-2';
+export const VENICE_VIDEO_PROMPT_MODEL =
+  import.meta.env.VITE_VENICE_VIDEO_PROMPT_MODEL || 'google-gemma-4-31b-it';
 
 const REQUEST_HEADERS = (): HeadersInit => {
   const headers: HeadersInit = {

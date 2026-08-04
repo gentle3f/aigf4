@@ -404,10 +404,19 @@
                         <div class="mt-5">
                             <div class="flex items-center justify-between gap-3">
                                 <label for="video-prompt" class="video-field-label">動態描述</label>
-                                <span id="video-prompt-count" class="text-xs text-slate-500">0 / 2500</span>
+                                <div class="flex items-center gap-2">
+                                    <button id="video-prompt-optimize" type="button" class="video-prompt-wand" aria-label="依目前影片模型魔法優化提示詞" title="保留原意，依目前模型及影片設定重寫提示詞" disabled>
+                                        <svg id="video-prompt-wand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="m15 4 5 5M13.5 5.5l5 5M4 20l10.25-10.25M6.5 4.5v-2M5.5 3.5h2M18.5 18v-2M17.5 17h2M4.5 12v-1.5M3.75 11.25h1.5" />
+                                        </svg>
+                                        <span id="video-prompt-optimize-label">魔法優化</span>
+                                        <span id="video-prompt-optimize-spinner" class="hidden h-3.5 w-3.5 animate-spin rounded-full border-2 border-cyan-100/30 border-t-cyan-100" aria-hidden="true"></span>
+                                    </button>
+                                    <span id="video-prompt-count" class="text-xs text-slate-500">0 / 2500</span>
+                                </div>
                             </div>
                             <textarea id="video-prompt" class="video-field mt-2 min-h-36 w-full resize-y" placeholder="描述人物動作、鏡頭移動、節奏與環境變化，例如：她慢慢望向鏡頭，頭髮隨微風擺動，鏡頭輕微推近..." spellcheck="false"></textarea>
-                            <p id="video-prompt-hint" class="mt-2 text-xs leading-5 text-slate-500">圖片模式應描述「如何動」，不需要重新描述圖片內容。</p>
+                            <p id="video-prompt-hint" class="mt-2 text-xs leading-5 text-slate-500">圖片模式應描述「如何動」；魔法棒會保留原意並依所選模型補足動作、鏡頭與環境。</p>
                         </div>
 
                         <div class="mt-5">

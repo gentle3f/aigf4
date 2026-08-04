@@ -44,6 +44,7 @@ The browser never receives `VENICE_API_KEY` in proxy mode.
 
 - Image-to-video and text-to-video both default to the Wan 2.7 model family.
 - The current model list and exact USD quote load before a generation can be submitted.
+- The prompt magic wand rewrites the draft for the selected model family and video settings.
 - Video queue requests are never retried automatically, preventing duplicate charges.
 - Polling retries do not create another generation job.
 - Unfinished queue metadata is stored in `localStorage` and polling resumes automatically

@@ -19,6 +19,7 @@ import {
     VENICE_CHAT_QUALITY_FALLBACK_MODEL,
     VENICE_GOD_FALLBACK_MODEL,
     VENICE_GOD_MODEL,
+    VENICE_VIDEO_PROMPT_MODEL,
     VeniceMessage,
     VeniceModelSummary,
 } from "./venice.js";
@@ -156,6 +157,9 @@ const videoSourceRemove = document.getElementById('video-source-remove') as HTML
 const videoPrompt = document.getElementById('video-prompt') as HTMLTextAreaElement;
 const videoPromptCount = document.getElementById('video-prompt-count')!;
 const videoPromptHint = document.getElementById('video-prompt-hint')!;
+const videoPromptOptimizeButton = document.getElementById('video-prompt-optimize') as HTMLButtonElement;
+const videoPromptOptimizeLabel = document.getElementById('video-prompt-optimize-label')!;
+const videoPromptOptimizeSpinner = document.getElementById('video-prompt-optimize-spinner')!;
 const videoNegativePrompt = document.getElementById('video-negative-prompt') as HTMLTextAreaElement;
 const videoDuration = document.getElementById('video-duration') as HTMLSelectElement;
 const videoResolutionWrap = document.getElementById('video-resolution-wrap')!;
@@ -411,6 +415,9 @@ let videoQuoteController: AbortController | null = null;
 let videoQuoteTimer: number | null = null;
 let videoQuoteVersion = 0;
 let videoQuoteUsd: number | null = null;
+let videoPromptOptimizerController: AbortController | null = null;
+let isVideoPromptOptimizing = false;
+let lastVideoPromptOptimization: { settingsKey: string; output: string } | null = null;
 let isVideoRequestRunning = false;
 let pendingVideoJob: PersistedVideoJob | null = null;
 let videoLastProgressIndex = -1;
@@ -440,6 +447,7 @@ const VIDEO_IMAGE_MODEL_STORAGE_KEY = 'veniceVideoImageModel';
 const VIDEO_TEXT_MODEL_STORAGE_KEY = 'veniceVideoTextModel';
 const VIDEO_ADULT_CONFIRM_STORAGE_KEY = 'veniceVideoAdultConfirmed';
 const VIDEO_PENDING_JOB_STORAGE_KEY = 'veniceVideoPendingJobV1';
+const VIDEO_PROMPT_OPTIMIZER_TIMEOUT_MS = 45_000;
 const VIDEO_POLL_INTERVAL_MS = 5_000;
 const VIDEO_POLL_TIMEOUT_MS = 15 * 60_000;
 
@@ -3346,9 +3354,56 @@ const clearVideoStudioError = () => {
     videoStudioError.classList.add('hidden');
 };
 
+const containsDisallowedMinorTerms = (text: string) => {
+    return /\b(?:minor|underage|child|kid|teen(?:ager)?|schoolgirl|schoolboy|loli|shota)\b|(?:未成年|幼女|兒童|小孩|學生妹)/i.test(text);
+};
+
+const getVideoPromptModelStyle = (model: VeniceVideoModelSummary) => {
+    const identity = `${model.id} ${model.name}`.toLowerCase();
+    if (identity.includes('seedance')) {
+        return 'Use structured cinematic language: shot size, deliberate camera movement, lighting, location, then an exact chronological action sequence.';
+    }
+    if (identity.includes('grok')) {
+        return 'Use natural, mood-driven language. Prioritize emotion, atmosphere, subtle expression, and how the moment should feel over dense lens jargon.';
+    }
+    if (/happy[\s-]?horse/.test(identity)) {
+        return 'Use clear practical motion language with realistic body mechanics, weight shifts, balance, limb direction, timing, and fluid camera tracking.';
+    }
+    if (identity.includes('wan')) {
+        return 'Be exceptionally explicit and detailed. Separate the initial state from the visible action timeline, then use First, Then, and Finally where needed. State exactly who does what, to whom or what, in which direction, in what order, and how each movement finishes. Never rely on implication.';
+    }
+    if (/(?:kling|runway|veo|ltx|pixverse|vidu)/.test(identity)) {
+        return 'Use one coherent cinematic shot with a precise subject, chronological action beats, restrained camera direction, lighting, environment motion, and continuity.';
+    }
+    return 'Use a balanced production-ready prompt with a concrete subject, chronological action, camera movement, environment, lighting, timing, and continuity.';
+};
+
+const getVideoPromptSettingsKey = (model: VeniceVideoModelSummary) => JSON.stringify({
+    mode: videoStudioMode,
+    model: model.id,
+    duration: videoDuration.value,
+    resolution: videoResolutionWrap.classList.contains('hidden') ? '' : videoResolution.value,
+    aspectRatio: videoAspectRatioWrap.classList.contains('hidden') ? '' : videoAspectRatio.value,
+    audio: model.constraints.audio_configurable
+        ? videoAudio.checked
+        : model.constraints.audio === true,
+});
+
+const updateVideoPromptOptimizerButton = () => {
+    const modelReady = Boolean(getSelectedVideoModel());
+    const promptReady = Boolean(videoPrompt.value.trim());
+    videoPromptOptimizeButton.disabled = isVideoPromptOptimizing
+        || isVideoRequestRunning
+        || Boolean(pendingVideoJob)
+        || !isUnlocked
+        || !modelReady
+        || !promptReady;
+    videoPromptOptimizeButton.setAttribute('aria-busy', String(isVideoPromptOptimizing));
+};
+
 const updateVideoGenerateButton = () => {
     if (pendingVideoJob) {
-        videoGenerateButton.disabled = isVideoRequestRunning || !isUnlocked;
+        videoGenerateButton.disabled = isVideoRequestRunning || isVideoPromptOptimizing || !isUnlocked;
         if (!isVideoRequestRunning) videoGenerateLabel.textContent = '繼續查詢未完成影片';
         return;
     }
@@ -3357,6 +3412,7 @@ const updateVideoGenerateButton = () => {
     const sourceReady = videoStudioMode === 'text-to-video' || Boolean(videoSource);
     const quoteReady = typeof videoQuoteUsd === 'number';
     videoGenerateButton.disabled = isVideoRequestRunning
+        || isVideoPromptOptimizing
         || !modelReady
         || !promptReady
         || !sourceReady
@@ -3373,6 +3429,7 @@ const updateVideoPromptCounter = () => {
     const maxLength = getSelectedVideoModel()?.constraints.prompt_character_limit || 2500;
     videoPrompt.maxLength = maxLength;
     videoPromptCount.textContent = `${videoPrompt.value.length} / ${maxLength}`;
+    updateVideoPromptOptimizerButton();
     updateVideoGenerateButton();
 };
 
@@ -3399,7 +3456,7 @@ const cancelPendingVideoQuote = () => {
 };
 
 const scheduleVideoQuote = (delay = 320) => {
-    if (isVideoRequestRunning || pendingVideoJob) return;
+    if (isVideoRequestRunning || isVideoPromptOptimizing || pendingVideoJob) return;
     cancelPendingVideoQuote();
     const pricing = getVideoPricingOptions();
     videoQuoteUsd = null;
@@ -3438,6 +3495,71 @@ const scheduleVideoQuote = (delay = 320) => {
             updateVideoGenerateButton();
         }
     }, delay);
+};
+
+const cleanOptimizedVideoPrompt = (raw: string) => {
+    const tagged = extractXmlTag(raw, 'optimized_prompt');
+    if (!tagged) return '';
+    return tagged
+        .replace(/^```(?:text|markdown)?\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .replace(/^["“]|["”]$/g, '')
+        .replace(/\r\n?/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+};
+
+const buildVideoPromptOptimizerMessages = (
+    model: VeniceVideoModelSummary,
+    originalPrompt: string,
+    maxCharacters: number,
+): VeniceMessage[] => {
+    const resolution = videoResolutionWrap.classList.contains('hidden') ? 'model default' : videoResolution.value;
+    const aspectRatio = videoAspectRatioWrap.classList.contains('hidden') ? 'model default' : videoAspectRatio.value;
+    const audioEnabled = model.constraints.audio_configurable
+        ? videoAudio.checked
+        : model.constraints.audio === true;
+    const modeRule = videoStudioMode === 'image-to-video'
+        ? [
+            'The uploaded source image is the approved first frame.',
+            'Do not waste words redescribing fixed appearance that the draft did not ask to change.',
+            'Focus on exactly how the visible subject moves, the chronological transition, camera movement, secondary environmental motion, and continuity from the first frame.',
+        ].join(' ')
+        : [
+            'There is no source image.',
+            'Fully establish the subject, appearance, action, camera, environment, lighting, atmosphere, and continuity needed to create the first frame and the motion.',
+        ].join(' ');
+
+    const systemPrompt = [
+        'You are a specialist prompt optimizer for Venice AI video generation.',
+        `Target model: ${model.name} (${model.id}).`,
+        `Target mode: ${videoStudioMode}. Duration: ${videoDuration.value || 'model default'}. Resolution: ${resolution}. Aspect ratio: ${aspectRatio}. Audio enabled: ${audioEnabled ? 'yes' : 'no'}.`,
+        `Model-specific prompting style: ${getVideoPromptModelStyle(model)}`,
+        `Mode rule: ${modeRule}`,
+        '',
+        'Rewrite the user draft into one production-ready English video prompt.',
+        'Preserve the exact requested people, identities, relationships, actions, direction, setting, intensity, order, and final outcome. Do not replace, soften, intensify, or moralize about the request.',
+        'Silently identify every requested action beat before writing. The output must include every beat in the same order; never merge a requested action into the initial state or skip an intermediate transition.',
+        'The initial state may contain only facts that are explicitly true before the first requested action. Never infer that the result of the first action has already happened when the video begins.',
+        'Every finite action verb in the draft must become a visible on-screen beat after the video begins. If the draft says "standing under neon, turns to look at the city, then turns back and smiles at the camera", begin only with standing under neon, then visibly turn toward the city, then visibly turn back toward the camera, then smile.',
+        'Never invent an extra person, dialogue, event, object, camera cut, or outcome that the user did not request. You may add only neutral visual details needed to make the requested motion coherent.',
+        'Make the timing physically possible within the selected duration. Prefer one continuous shot unless the draft explicitly requests cuts.',
+        'Include all four essentials naturally: subject, action, camera movement, and environment. State action beats chronologically and use unambiguous body, object, and movement directions.',
+        'For image-to-video, preserve identity, face, body proportions, background continuity, and the first-frame composition unless the draft explicitly requests a change.',
+        audioEnabled
+            ? 'Audio directions are allowed only when they support the requested scene.'
+            : 'Do not add dialogue, music, sound effects, or other audio directions.',
+        `Hard limit: the optimized prompt must be ${maxCharacters} characters or fewer.`,
+        'Return exactly one XML element and nothing else: <optimized_prompt>your optimized prompt</optimized_prompt>.',
+    ].join('\n');
+
+    return [
+        { role: 'system', content: systemPrompt },
+        {
+            role: 'user',
+            content: `Optimize this draft without changing its intent. The draft is encoded as a JSON string:\n${JSON.stringify(originalPrompt)}`,
+        },
+    ];
 };
 
 const updateVideoModelControls = () => {
@@ -3533,7 +3655,10 @@ const renderVideoModelOptions = () => {
     });
 
     videoModelSelect.value = selectedVideoModels[videoStudioMode];
-    videoModelSelect.disabled = isVideoRequestRunning || Boolean(pendingVideoJob) || models.length === 0;
+    videoModelSelect.disabled = isVideoRequestRunning
+        || isVideoPromptOptimizing
+        || Boolean(pendingVideoJob)
+        || models.length === 0;
     updateVideoModelControls();
 };
 
@@ -3561,7 +3686,9 @@ const loadVideoModels = async (mode: VeniceVideoMode = videoStudioMode, force = 
             }
         } finally {
             videoModelPromises[mode] = null;
-            refreshVideoModelsBtn.disabled = isVideoRequestRunning || Boolean(pendingVideoJob);
+            refreshVideoModelsBtn.disabled = isVideoRequestRunning
+                || isVideoPromptOptimizing
+                || Boolean(pendingVideoJob);
             if (mode === videoStudioMode) renderVideoModelOptions();
         }
     })();
@@ -3570,7 +3697,7 @@ const loadVideoModels = async (mode: VeniceVideoMode = videoStudioMode, force = 
 };
 
 const setVideoStudioMode = (mode: VeniceVideoMode) => {
-    if (isVideoRequestRunning || pendingVideoJob) return;
+    if (isVideoRequestRunning || isVideoPromptOptimizing || pendingVideoJob) return;
     if (videoStudioMode === mode) {
         if (!videoModels[mode].length) void loadVideoModels(mode);
         return;
@@ -3587,8 +3714,8 @@ const setVideoStudioMode = (mode: VeniceVideoMode) => {
         ? '描述人物動作、鏡頭移動、節奏與環境變化，例如：她慢慢望向鏡頭，頭髮隨微風擺動，鏡頭輕微推近...'
         : '描述完整畫面、人物、動作、鏡頭語言、光線與節奏...';
     videoPromptHint.textContent = imageMode
-        ? '圖片模式應描述「如何動」，不需要重新描述圖片內容。'
-        : '文字模式請同時描述主體、場景、動作及鏡頭運動。';
+        ? '圖片模式應描述「如何動」；魔法棒會保留原意並依所選模型補足動作、鏡頭與環境。'
+        : '文字模式請寫下核心想法；魔法棒會依所選模型補齊主體、場景、動作與鏡頭。';
     videoStudioStatus.textContent = imageMode
         ? '加入來源圖片及動態描述後即可生成'
         : '填寫影片描述後即可生成';
@@ -3664,7 +3791,7 @@ const setVideoSourceFromBlob = async (sourceBlob: Blob, name: string) => {
 };
 
 const loadVideoSourceFile = async (file?: File) => {
-    if (!file || isVideoRequestRunning || pendingVideoJob) return;
+    if (!file || isVideoRequestRunning || isVideoPromptOptimizing || pendingVideoJob) return;
     clearVideoStudioError();
     videoStudioStatus.textContent = '正在準備來源圖片...';
     try {
@@ -3688,7 +3815,7 @@ const updateVideoJobAction = () => {
 
 const setVideoStudioBusy = (busy: boolean) => {
     isVideoRequestRunning = busy;
-    const controlsLocked = busy || Boolean(pendingVideoJob);
+    const controlsLocked = busy || isVideoPromptOptimizing || Boolean(pendingVideoJob);
     videoGenerateSpinner.classList.toggle('hidden', !busy);
     if (busy) videoGenerateLabel.textContent = '影片生成中...';
     videoModeImageBtn.disabled = controlsLocked;
@@ -3705,7 +3832,125 @@ const setVideoStudioBusy = (busy: boolean) => {
     videoAudio.disabled = controlsLocked;
     videoAdultConfirm.disabled = controlsLocked;
     updateVideoJobAction();
+    updateVideoPromptOptimizerButton();
     updateVideoGenerateButton();
+};
+
+const setVideoPromptOptimizerBusy = (busy: boolean) => {
+    isVideoPromptOptimizing = busy;
+    videoPromptOptimizeButton.classList.toggle('is-optimizing', busy);
+    videoPromptOptimizeSpinner.classList.toggle('hidden', !busy);
+    videoPromptOptimizeLabel.textContent = busy ? '優化中...' : '魔法優化';
+    setVideoStudioBusy(isVideoRequestRunning);
+};
+
+const cancelVideoPromptOptimization = () => {
+    videoPromptOptimizerController?.abort();
+};
+
+const runVideoPromptOptimization = async () => {
+    const model = getSelectedVideoModel();
+    const originalPrompt = videoPrompt.value.trim();
+    if (!model || !originalPrompt || isVideoPromptOptimizing || isVideoRequestRunning || pendingVideoJob) return;
+
+    clearVideoStudioError();
+    if (containsDisallowedMinorTerms(originalPrompt)) {
+        showVideoStudioError('影片工作室只可使用明確成年的角色，請先修改描述。');
+        return;
+    }
+
+    const settingsKey = getVideoPromptSettingsKey(model);
+    if (
+        lastVideoPromptOptimization
+        && lastVideoPromptOptimization.settingsKey === settingsKey
+        && lastVideoPromptOptimization.output === originalPrompt
+    ) {
+        videoStudioStatus.textContent = `這段提示已針對 ${model.name} 優化，可直接生成或手動修改`;
+        return;
+    }
+
+    const maxCharacters = Math.max(
+        120,
+        Math.min(model.constraints.prompt_character_limit || 2500, 2400),
+    );
+    const models = Array.from(new Set([
+        VENICE_VIDEO_PROMPT_MODEL,
+        VENICE_CHAT_MODEL,
+        VENICE_ASSISTANT_MODEL,
+    ].filter(Boolean)));
+    const controller = new AbortController();
+    let timedOut = false;
+    let lastError: Error | null = null;
+    const startedAt = performance.now();
+    const shouldRefreshQuote = typeof videoQuoteUsd !== 'number';
+    videoPromptOptimizerController = controller;
+    cancelPendingVideoQuote();
+    setVideoPromptOptimizerBusy(true);
+    videoStudioStatus.textContent = `正在依 ${model.name} 的提示風格魔法優化...`;
+    const timeoutId = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, VIDEO_PROMPT_OPTIMIZER_TIMEOUT_MS);
+
+    try {
+        const messages = buildVideoPromptOptimizerMessages(model, originalPrompt, maxCharacters);
+        for (const optimizerModel of models) {
+            if (controller.signal.aborted) break;
+            try {
+                const result = await generateVeniceText({
+                    model: optimizerModel,
+                    messages,
+                    maxCompletionTokens: 760,
+                    temperature: 0.22,
+                    topP: 0.88,
+                    repetitionPenalty: 1.03,
+                    signal: controller.signal,
+                });
+                const optimizedPrompt = cleanOptimizedVideoPrompt(result.text);
+                if (!optimizedPrompt) throw new Error('提示詞優化器沒有回傳有效格式。');
+                if (optimizedPrompt.length > maxCharacters) {
+                    throw new Error(`提示詞優化器超過 ${maxCharacters} 字元限制。`);
+                }
+
+                videoPrompt.value = optimizedPrompt;
+                lastVideoPromptOptimization = { settingsKey, output: optimizedPrompt };
+                updateVideoPromptCounter();
+                videoStudioStatus.textContent = `已針對 ${model.name} 優化 · 保留原意，送出前仍可修改`;
+                clearVideoStudioError();
+                console.info('[aigf4 video prompt optimizer]', {
+                    videoModel: model.id,
+                    optimizerModel: result.model,
+                    latencyMs: Math.round(performance.now() - startedAt),
+                    promptTokens: result.promptTokens,
+                    completionTokens: result.completionTokens,
+                });
+                return;
+            } catch (error) {
+                if (controller.signal.aborted) throw error;
+                lastError = error instanceof Error ? error : new Error(String(error));
+            }
+        }
+        throw lastError || new Error('提示詞優化失敗。');
+    } catch (error) {
+        if (controller.signal.aborted && !timedOut) {
+            clearVideoStudioError();
+            videoStudioStatus.textContent = '魔法優化已取消；原本提示沒有修改';
+            return;
+        }
+        const message = timedOut
+            ? '提示詞優化超過 45 秒，原文已保留，請再試一次。'
+            : error instanceof Error
+                ? error.message
+                : '提示詞優化失敗，原文已保留。';
+        showVideoStudioError(message);
+        videoStudioStatus.textContent = '魔法優化失敗；沒有修改原本提示，也沒有送出影片';
+        if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
+    } finally {
+        window.clearTimeout(timeoutId);
+        if (videoPromptOptimizerController === controller) videoPromptOptimizerController = null;
+        setVideoPromptOptimizerBusy(false);
+        if (shouldRefreshQuote) scheduleVideoQuote(0);
+    }
 };
 
 const waitForVideoPoll = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
@@ -3950,7 +4195,7 @@ const runVideoGeneration = async () => {
         showVideoStudioError(`這個模型要求來源圖片最短一邊至少 ${minimumShortSide}px。`);
         return;
     }
-    if (/\b(?:minor|underage|child|kid|teen(?:ager)?|schoolgirl|schoolboy|loli|shota)\b|(?:未成年|幼女|兒童|小孩|學生妹)/i.test(prompt)) {
+    if (containsDisallowedMinorTerms(prompt)) {
         showVideoStudioError('影片工作室只可使用明確成年的角色，請修改描述。');
         return;
     }
@@ -4035,6 +4280,7 @@ const showVideoStudio = (historyMode: 'push' | 'replace' | 'skip' = 'push') => {
 };
 
 const navigateBackFromVideoStudio = () => {
+    cancelVideoPromptOptimization();
     const currentState = window.history.state as AppHistoryState | null;
     if (currentState?.view === 'video') {
         window.history.back();
@@ -4208,6 +4454,7 @@ const startChat = (key: string, restoredHistory: any[] | null = null, historyMod
 const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
     cancelActiveChatRequest();
     cancelImageRequest();
+    cancelVideoPromptOptimization();
     personaSelectionView.classList.remove('hidden');
     chatView.classList.add('hidden');
     chatView.classList.remove('flex');
@@ -4496,6 +4743,8 @@ const setUnlockedState = (unlocked: boolean) => {
         authGate.classList.add('hidden');
         appShell.classList.remove('app-shell-locked');
         updateSendButtonState();
+        updateVideoPromptOptimizerButton();
+        updateVideoGenerateButton();
         return;
     }
 
@@ -4510,6 +4759,8 @@ const setUnlockedState = (unlocked: boolean) => {
     }
 
     updateSendButtonState();
+    updateVideoPromptOptimizerButton();
+    updateVideoGenerateButton();
 };
 
 const handleAuthRequired = (message: string = '\u767b\u5165\u5df2\u5931\u6548\uff0c\u8acb\u518d\u8f38\u5165\u5bc6\u78bc\u3002') => {
@@ -6166,7 +6417,7 @@ const setupEventListeners = () => {
     videoModeImageBtn.addEventListener('click', () => setVideoStudioMode('image-to-video'));
     videoModeTextBtn.addEventListener('click', () => setVideoStudioMode('text-to-video'));
     videoModelSelect.addEventListener('change', () => {
-        if (!videoModelSelect.value || isVideoRequestRunning || pendingVideoJob) return;
+        if (!videoModelSelect.value || isVideoRequestRunning || isVideoPromptOptimizing || pendingVideoJob) return;
         selectedVideoModels[videoStudioMode] = videoModelSelect.value;
         localStorage.setItem(
             videoStudioMode === 'image-to-video'
@@ -6181,6 +6432,9 @@ const setupEventListeners = () => {
         void loadVideoModels(videoStudioMode, true);
     });
     videoPrompt.addEventListener('input', updateVideoPromptCounter);
+    videoPromptOptimizeButton.addEventListener('click', () => {
+        void runVideoPromptOptimization();
+    });
     [videoDuration, videoResolution, videoAspectRatio].forEach(select => {
         select.addEventListener('change', () => scheduleVideoQuote());
     });
