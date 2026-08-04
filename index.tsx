@@ -4627,7 +4627,7 @@ const runVideoGeneration = async () => {
     clearVideoStudioError();
 
     if (!model || !prompt || !videoAdultConfirm.checked || typeof videoQuoteUsd !== 'number') {
-        showVideoStudioError('請完成描述、模型報價及成年／圖片權利確認。');
+        showVideoStudioError('請完成描述、模型報價，以及成年、肖像權與自願同意確認。');
         return;
     }
     if (videoStudioMode === 'image-to-video' && !videoSource) {
