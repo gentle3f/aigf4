@@ -1,7 +1,7 @@
 # aigf4
 
 Private Venice-powered app with romance personas, God Mode persona editing,
-conversation-history imports, a general-purpose assistant, and an image studio.
+conversation-history imports, a general-purpose assistant, and image/video studios.
 
 ## Local development
 
@@ -12,6 +12,8 @@ conversation-history imports, a general-purpose assistant, and an image studio.
    - `VITE_VENICE_MODELS_API_BASE=https://api.venice.ai/api/v1/models`
    - `VITE_VENICE_IMAGE_API_BASE=https://api.venice.ai/api/v1/image`
    - `VITE_VENICE_IMAGE_MODELS_API_BASE=https://api.venice.ai/api/v1/models`
+   - `VITE_VENICE_VIDEO_API_BASE=https://api.venice.ai/api/v1/video`
+   - `VITE_VENICE_VIDEO_MODELS_API_BASE=https://api.venice.ai/api/v1/models`
    - `VITE_VENICE_API_KEY=your_key_here`
 4. Start the app with `npm run dev`.
 
@@ -20,7 +22,7 @@ and is intended only for private development.
 
 ## Vercel
 
-Production uses authenticated text and image proxies. Configure these server-only
+Production uses authenticated text, image, and video proxies. Configure these server-only
 environment variables in Vercel:
 
 - `VENICE_API_KEY`
@@ -36,6 +38,15 @@ The browser never receives `VENICE_API_KEY` in proxy mode.
 - Available models, capabilities, privacy mode, and pricing load from Venice at runtime.
 - Source images are compressed in the browser before upload.
 - Generated images stay in the current browser session only and are not written to
+  chat history, `localStorage`, or exported ZIP files.
+
+## Video studio
+
+- Image-to-video and text-to-video both default to the Wan 2.7 model family.
+- The current model list and exact USD quote load before a generation can be submitted.
+- Video queue requests are never retried automatically, preventing duplicate charges.
+- Polling retries do not create another generation job.
+- Completed MP4 files stay in the current browser session only and are not written to
   chat history, `localStorage`, or exported ZIP files.
 
 ## Commands

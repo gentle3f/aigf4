@@ -61,19 +61,33 @@
                             <p class="mt-1 text-sm text-gray-400">使用 Venice 建立或修改私人圖片</p>
                         </div>
                     </div>
-                    <button id="image-studio-entry" type="button" class="image-studio-entry w-full text-left">
-                        <span class="image-studio-entry-orb" aria-hidden="true">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 16.5 8.5 11.75a2.12 2.12 0 0 1 3 0l.75.75 2.25-2.25a2.12 2.12 0 0 1 3 0l2.75 2.75M8.25 8.25h.008v.008H8.25V8.25Z" />
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M6 20.25h12A2.25 2.25 0 0 0 20.25 18V6A2.25 2.25 0 0 0 18 3.75H6A2.25 2.25 0 0 0 3.75 6v12A2.25 2.25 0 0 0 6 20.25Z" />
-                            </svg>
-                        </span>
-                        <span class="min-w-0 flex-1">
-                            <span class="block text-lg font-bold text-white">Venice 圖片工作室</span>
-                            <span class="mt-1 block text-sm leading-6 text-rose-100/70">文生圖與圖生圖，支援自由模型、比例選擇及原圖修改</span>
-                        </span>
-                        <span class="image-studio-entry-arrow" aria-hidden="true">進入</span>
-                    </button>
+                    <div class="studio-entry-grid">
+                        <button id="image-studio-entry" type="button" class="image-studio-entry w-full text-left">
+                            <span class="image-studio-entry-orb" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 16.5 8.5 11.75a2.12 2.12 0 0 1 3 0l.75.75 2.25-2.25a2.12 2.12 0 0 1 3 0l2.75 2.75M8.25 8.25h.008v.008H8.25V8.25Z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 20.25h12A2.25 2.25 0 0 0 20.25 18V6A2.25 2.25 0 0 0 18 3.75H6A2.25 2.25 0 0 0 3.75 6v12A2.25 2.25 0 0 0 6 20.25Z" />
+                                </svg>
+                            </span>
+                            <span class="min-w-0 flex-1">
+                                <span class="block text-lg font-bold text-white">Venice 圖片工作室</span>
+                                <span class="mt-1 block text-sm leading-6 text-rose-100/70">文生圖與圖生圖，支援自由模型、比例選擇及原圖修改</span>
+                            </span>
+                            <span class="image-studio-entry-arrow" aria-hidden="true">進入</span>
+                        </button>
+                        <button id="video-studio-entry" type="button" class="video-studio-entry w-full text-left">
+                            <span class="video-studio-entry-orb" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 10.5 20.4 7.71a.75.75 0 0 1 1.14.64v7.3a.75.75 0 0 1-1.14.64l-4.65-2.79m-10.5 5.25h8.25A2.25 2.25 0 0 0 15.75 16.5v-9A2.25 2.25 0 0 0 13.5 5.25H5.25A2.25 2.25 0 0 0 3 7.5v9a2.25 2.25 0 0 0 2.25 2.25Z" />
+                                </svg>
+                            </span>
+                            <span class="min-w-0 flex-1">
+                                <span class="block text-lg font-bold text-white">Venice 影片工作室</span>
+                                <span class="mt-1 block text-sm leading-6 text-cyan-100/70">讓圖片動起來或由文字建立短片，生成前先顯示即時報價</span>
+                            </span>
+                            <span class="video-studio-entry-arrow" aria-hidden="true">進入</span>
+                        </button>
+                    </div>
                 </section>
                 <h2 class="text-xl font-semibold text-white mb-4 px-4">角色檔案</h2>
                 <div id="female-persona-list" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
@@ -321,6 +335,148 @@
                             <p class="mt-2 max-w-sm text-sm leading-6 text-slate-500">生成結果只存在目前頁面。喜歡的作品請直接下載，不會令聊天備份變大。</p>
                         </div>
                         <div id="image-studio-results" class="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2"></div>
+                    </section>
+                </div>
+            </main>
+        </div>
+
+        <!-- Venice Video Studio View -->
+        <div id="video-studio-view" class="hidden h-full min-h-0 flex-col overflow-hidden">
+            <header class="video-studio-header flex shrink-0 items-center justify-between gap-4 px-4 py-3 sm:px-6">
+                <div class="flex min-w-0 items-center gap-3">
+                    <button id="video-studio-back" type="button" class="video-studio-icon-button" aria-label="返回首頁">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="m15 18-6-6 6-6" />
+                        </svg>
+                    </button>
+                    <div class="min-w-0">
+                        <p class="video-studio-kicker">MOTION LAB</p>
+                        <h1 class="truncate text-xl font-black text-white sm:text-2xl">Venice 影片工作室</h1>
+                    </div>
+                </div>
+                <span class="video-session-pill">即時報價 · Session only</span>
+            </header>
+
+            <main class="video-studio-main min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+                <div class="video-studio-grid mx-auto max-w-7xl">
+                    <section class="video-studio-panel video-studio-controls">
+                        <div class="video-mode-tabs" role="tablist" aria-label="影片生成模式">
+                            <button id="video-mode-image" type="button" class="video-mode-tab is-active" role="tab" aria-selected="true">
+                                <span>01</span> 圖片變影片
+                            </button>
+                            <button id="video-mode-text" type="button" class="video-mode-tab" role="tab" aria-selected="false">
+                                <span>02</span> 文字生成影片
+                            </button>
+                        </div>
+
+                        <div class="mt-5">
+                            <div class="flex items-center justify-between gap-3">
+                                <label for="video-model-select" class="video-field-label">模型</label>
+                                <button id="refresh-video-models" type="button" class="video-inline-action">更新清單</button>
+                            </div>
+                            <select id="video-model-select" class="video-field mt-2 w-full">
+                                <option value="">載入模型中...</option>
+                            </select>
+                            <p id="video-model-meta" class="mt-2 text-xs leading-5 text-slate-400">正在讀取模型能力。</p>
+                        </div>
+
+                        <div id="video-source-section" class="mt-5">
+                            <div class="flex items-center justify-between gap-3">
+                                <label class="video-field-label">來源圖片</label>
+                                <button id="video-source-remove" type="button" class="video-inline-action hidden">移除</button>
+                            </div>
+                            <input id="video-source-input" type="file" accept="image/jpeg,image/png,image/webp" class="hidden">
+                            <button id="video-source-dropzone" type="button" class="video-source-dropzone mt-2 w-full">
+                                <span id="video-source-empty" class="flex flex-col items-center gap-2 py-6">
+                                    <svg class="h-9 w-9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 10.5 20.4 7.71a.75.75 0 0 1 1.14.64v7.3a.75.75 0 0 1-1.14.64l-4.65-2.79M3.75 17.25V6.75A2.25 2.25 0 0 1 6 4.5h7.5a2.25 2.25 0 0 1 2.25 2.25v10.5A2.25 2.25 0 0 1 13.5 19.5H6a2.25 2.25 0 0 1-2.25-2.25Z" />
+                                    </svg>
+                                    <span class="font-semibold text-slate-200">選擇 JPEG、PNG 或 WebP</span>
+                                    <span class="text-xs text-slate-500">圖片只用於本次生成，不會寫入聊天紀錄或匯出檔</span>
+                                </span>
+                                <span id="video-source-preview-wrap" class="hidden">
+                                    <img id="video-source-preview" alt="影片來源圖片預覽" class="mx-auto max-h-72 rounded-xl object-contain">
+                                    <span id="video-source-meta" class="mt-3 block text-xs text-slate-400"></span>
+                                </span>
+                            </button>
+                        </div>
+
+                        <div class="mt-5">
+                            <div class="flex items-center justify-between gap-3">
+                                <label for="video-prompt" class="video-field-label">動態描述</label>
+                                <span id="video-prompt-count" class="text-xs text-slate-500">0 / 2500</span>
+                            </div>
+                            <textarea id="video-prompt" class="video-field mt-2 min-h-36 w-full resize-y" placeholder="描述人物動作、鏡頭移動、節奏與環境變化，例如：她慢慢望向鏡頭，頭髮隨微風擺動，鏡頭輕微推近..." spellcheck="false"></textarea>
+                            <p id="video-prompt-hint" class="mt-2 text-xs leading-5 text-slate-500">圖片模式應描述「如何動」，不需要重新描述圖片內容。</p>
+                        </div>
+
+                        <div class="mt-5">
+                            <label for="video-negative-prompt" class="video-field-label">避免出現</label>
+                            <textarea id="video-negative-prompt" class="video-field mt-2 min-h-20 w-full resize-y" spellcheck="false">minor, child, underage, young-looking, distorted face, deformed hands, extra limbs, duplicate person, flicker, jitter, text, watermark</textarea>
+                        </div>
+
+                        <div class="mt-5 grid grid-cols-2 gap-3">
+                            <div>
+                                <label for="video-duration" class="video-field-label">片長</label>
+                                <select id="video-duration" class="video-field mt-2 w-full"></select>
+                            </div>
+                            <div id="video-resolution-wrap">
+                                <label for="video-resolution" class="video-field-label">解像度</label>
+                                <select id="video-resolution" class="video-field mt-2 w-full"></select>
+                            </div>
+                            <div id="video-aspect-ratio-wrap">
+                                <label for="video-aspect-ratio" class="video-field-label">畫面比例</label>
+                                <select id="video-aspect-ratio" class="video-field mt-2 w-full"></select>
+                            </div>
+                            <label id="video-audio-wrap" class="video-audio-option hidden">
+                                <input id="video-audio" type="checkbox" class="h-4 w-4 accent-cyan-300">
+                                <span>同步生成音訊</span>
+                            </label>
+                        </div>
+
+                        <label class="video-consent mt-5 flex cursor-pointer items-start gap-3">
+                            <input id="video-adult-confirm" type="checkbox" class="mt-1 h-4 w-4 shrink-0 accent-cyan-300">
+                            <span>我已年滿 18 歲；畫面內所有人物均為成年人，且我擁有圖片及肖像使用權。不得以未經同意的真人照片製作性化內容。</span>
+                        </label>
+
+                        <p id="video-studio-error" class="mt-4 hidden rounded-xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-200"></p>
+
+                        <div class="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+                            <button id="video-generate-button" type="button" class="video-generate-button" disabled>
+                                <span id="video-generate-label">開始生成影片</span>
+                                <span id="video-generate-spinner" class="hidden h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white"></span>
+                            </button>
+                            <button id="video-cancel-button" type="button" class="video-cancel-button hidden">停止等待</button>
+                        </div>
+
+                        <div class="video-progress-track mt-4" aria-label="影片生成進度">
+                            <span data-video-stage="quote">報價</span>
+                            <span data-video-stage="queue">排隊</span>
+                            <span data-video-stage="generate">生成</span>
+                            <span data-video-stage="complete">完成</span>
+                        </div>
+                        <div class="mt-3 flex items-start justify-between gap-3 text-xs">
+                            <span id="video-studio-status" class="leading-5 text-slate-400">加入來源圖片及動態描述後即可生成</span>
+                            <span id="video-cost-estimate" class="shrink-0 font-semibold text-cyan-200"></span>
+                        </div>
+                    </section>
+
+                    <section class="video-studio-panel video-studio-gallery flex min-h-[28rem] flex-col">
+                        <div class="flex items-start justify-between gap-4">
+                            <div>
+                                <p class="video-studio-kicker">SESSION REELS</p>
+                                <h2 class="mt-1 text-xl font-bold text-white">本次影片</h2>
+                            </div>
+                            <button id="clear-video-results" type="button" class="video-inline-action hidden">全部清除</button>
+                        </div>
+                        <div id="video-studio-empty" class="video-studio-empty flex flex-1 flex-col items-center justify-center px-6 py-12 text-center">
+                            <div class="video-empty-mark">
+                                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8.25 6.533c0-1.03 1.116-1.674 2.009-1.16l7.238 4.167a1.34 1.34 0 0 1 0 2.32l-7.238 4.167c-.893.514-2.009-.13-2.009-1.16V6.533Z" /></svg>
+                            </div>
+                            <p class="mt-5 text-lg font-semibold text-slate-200">影片會在這裡開始播放</p>
+                            <p class="mt-2 max-w-sm text-sm leading-6 text-slate-500">影片以 Venice 非同步排隊生成，通常需等待數分鐘。完成後請下載保存，重新整理頁面便會清除。</p>
+                        </div>
+                        <div id="video-studio-results" class="mt-5 grid grid-cols-1 gap-5"></div>
                     </section>
                 </div>
             </main>

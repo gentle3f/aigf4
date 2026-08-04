@@ -30,6 +30,17 @@ import {
     VeniceImageMode,
     VeniceImageModelSummary,
 } from "./veniceImage.js";
+import {
+    completeVeniceVideo,
+    listVeniceVideoModels,
+    queueVeniceVideo,
+    quoteVeniceVideo,
+    retrieveVeniceVideo,
+    VENICE_VIDEO_IMAGE_MODEL,
+    VENICE_VIDEO_TEXT_MODEL,
+    VeniceVideoMode,
+    VeniceVideoModelSummary,
+} from "./veniceVideo.js";
 import { createRandomAdultFemalePersona } from "./randomPersona.js";
 
 
@@ -126,6 +137,45 @@ const imageCostEstimate = document.getElementById('image-cost-estimate')!;
 const imageStudioEmpty = document.getElementById('image-studio-empty')!;
 const imageStudioResults = document.getElementById('image-studio-results')!;
 const clearImageResultsBtn = document.getElementById('clear-image-results') as HTMLButtonElement;
+const videoStudioEntry = document.getElementById('video-studio-entry') as HTMLButtonElement;
+const videoStudioView = document.getElementById('video-studio-view')!;
+const videoStudioBack = document.getElementById('video-studio-back') as HTMLButtonElement;
+const videoModeImageBtn = document.getElementById('video-mode-image') as HTMLButtonElement;
+const videoModeTextBtn = document.getElementById('video-mode-text') as HTMLButtonElement;
+const videoModelSelect = document.getElementById('video-model-select') as HTMLSelectElement;
+const videoModelMeta = document.getElementById('video-model-meta')!;
+const refreshVideoModelsBtn = document.getElementById('refresh-video-models') as HTMLButtonElement;
+const videoSourceSection = document.getElementById('video-source-section')!;
+const videoSourceInput = document.getElementById('video-source-input') as HTMLInputElement;
+const videoSourceDropzone = document.getElementById('video-source-dropzone') as HTMLButtonElement;
+const videoSourceEmpty = document.getElementById('video-source-empty')!;
+const videoSourcePreviewWrap = document.getElementById('video-source-preview-wrap')!;
+const videoSourcePreview = document.getElementById('video-source-preview') as HTMLImageElement;
+const videoSourceMeta = document.getElementById('video-source-meta')!;
+const videoSourceRemove = document.getElementById('video-source-remove') as HTMLButtonElement;
+const videoPrompt = document.getElementById('video-prompt') as HTMLTextAreaElement;
+const videoPromptCount = document.getElementById('video-prompt-count')!;
+const videoPromptHint = document.getElementById('video-prompt-hint')!;
+const videoNegativePrompt = document.getElementById('video-negative-prompt') as HTMLTextAreaElement;
+const videoDuration = document.getElementById('video-duration') as HTMLSelectElement;
+const videoResolutionWrap = document.getElementById('video-resolution-wrap')!;
+const videoResolution = document.getElementById('video-resolution') as HTMLSelectElement;
+const videoAspectRatioWrap = document.getElementById('video-aspect-ratio-wrap')!;
+const videoAspectRatio = document.getElementById('video-aspect-ratio') as HTMLSelectElement;
+const videoAudioWrap = document.getElementById('video-audio-wrap')!;
+const videoAudio = document.getElementById('video-audio') as HTMLInputElement;
+const videoAdultConfirm = document.getElementById('video-adult-confirm') as HTMLInputElement;
+const videoStudioError = document.getElementById('video-studio-error')!;
+const videoGenerateButton = document.getElementById('video-generate-button') as HTMLButtonElement;
+const videoGenerateLabel = document.getElementById('video-generate-label')!;
+const videoGenerateSpinner = document.getElementById('video-generate-spinner')!;
+const videoCancelButton = document.getElementById('video-cancel-button') as HTMLButtonElement;
+const videoStudioStatus = document.getElementById('video-studio-status')!;
+const videoCostEstimate = document.getElementById('video-cost-estimate')!;
+const videoStudioEmpty = document.getElementById('video-studio-empty')!;
+const videoStudioResults = document.getElementById('video-studio-results')!;
+const clearVideoResultsBtn = document.getElementById('clear-video-results') as HTMLButtonElement;
+const videoProgressSteps = Array.from(document.querySelectorAll<HTMLElement>('[data-video-stage]'));
 
 // More Options Menu
 const moreOptionsBtn = document.getElementById('more-options-btn')!;
@@ -341,6 +391,29 @@ let imageSource: ImageStudioSource | null = null;
 let imageResults: ImageStudioResult[] = [];
 let imageRequestController: AbortController | null = null;
 let isImageRequestRunning = false;
+let videoStudioMode: VeniceVideoMode = 'image-to-video';
+let videoModels: Record<VeniceVideoMode, VeniceVideoModelSummary[]> = {
+    'image-to-video': [],
+    'text-to-video': [],
+};
+let videoModelPromises: Record<VeniceVideoMode, Promise<void> | null> = {
+    'image-to-video': null,
+    'text-to-video': null,
+};
+let selectedVideoModels: Record<VeniceVideoMode, string> = {
+    'image-to-video': localStorage.getItem('veniceVideoImageModel') || VENICE_VIDEO_IMAGE_MODEL,
+    'text-to-video': localStorage.getItem('veniceVideoTextModel') || VENICE_VIDEO_TEXT_MODEL,
+};
+let videoSource: VideoStudioSource | null = null;
+let videoResults: VideoStudioResult[] = [];
+let videoRequestController: AbortController | null = null;
+let videoQuoteController: AbortController | null = null;
+let videoQuoteTimer: number | null = null;
+let videoQuoteVersion = 0;
+let videoQuoteUsd: number | null = null;
+let isVideoRequestRunning = false;
+let activeVideoQueue: { model: string; queueId: string; downloadUrl?: string } | null = null;
+let videoLastProgressIndex = -1;
 let isRandomRecruiting = false;
 
 const USES_VENICE_PROXY_AUTH = VENICE_API_BASE.startsWith('/');
@@ -363,8 +436,17 @@ const ASSISTANT_MODEL_STORAGE_KEY = 'veniceAssistantModel';
 const IMAGE_GENERATE_MODEL_STORAGE_KEY = 'veniceImageGenerateModel';
 const IMAGE_EDIT_MODEL_STORAGE_KEY = 'veniceImageEditModel';
 const IMAGE_ADULT_CONFIRM_STORAGE_KEY = 'veniceImageAdultConfirmed';
+const VIDEO_IMAGE_MODEL_STORAGE_KEY = 'veniceVideoImageModel';
+const VIDEO_TEXT_MODEL_STORAGE_KEY = 'veniceVideoTextModel';
+const VIDEO_ADULT_CONFIRM_STORAGE_KEY = 'veniceVideoAdultConfirmed';
+const VIDEO_POLL_INTERVAL_MS = 5_000;
+const VIDEO_POLL_TIMEOUT_MS = 15 * 60_000;
 
-type AppHistoryState = { view: 'home' } | { view: 'chat'; personaKey: string } | { view: 'image' };
+type AppHistoryState =
+    | { view: 'home' }
+    | { view: 'chat'; personaKey: string }
+    | { view: 'image' }
+    | { view: 'video' };
 type MimicBuildMode = 'transcript' | 'manual';
 type ChatMode = 'character' | 'assistant' | 'god';
 type ActiveChatRequest = {
@@ -390,6 +472,25 @@ type ImageStudioResult = {
     prompt: string;
     model: string;
     createdAt: Date;
+};
+type VideoStudioSource = {
+    blob: Blob;
+    dataUrl: string;
+    previewUrl: string;
+    width: number;
+    height: number;
+    name: string;
+};
+type VideoStudioResult = {
+    id: string;
+    url: string;
+    isObjectUrl: boolean;
+    prompt: string;
+    model: string;
+    modelId: string;
+    queueId: string;
+    createdAt: Date;
+    needsRemoteCleanup: boolean;
 };
 type MimicAnalysisSummary = {
     personality: string;
@@ -2281,6 +2382,7 @@ const syncBrowserViewState = (state: AppHistoryState, mode: 'push' | 'replace' |
         (
             state.view === 'home'
             || state.view === 'image'
+            || state.view === 'video'
             || (currentState?.view === 'chat' && currentState.personaKey === state.personaKey)
         );
 
@@ -2953,6 +3055,8 @@ const showImageStudio = (historyMode: 'push' | 'replace' | 'skip' = 'push') => {
     personaSelectionView.classList.add('hidden');
     chatView.classList.add('hidden');
     chatView.classList.remove('flex');
+    videoStudioView.classList.add('hidden');
+    videoStudioView.classList.remove('flex');
     imageStudioView.classList.remove('hidden');
     imageStudioView.classList.add('flex');
     imageAdultConfirm.checked = sessionStorage.getItem(IMAGE_ADULT_CONFIRM_STORAGE_KEY) === 'true';
@@ -2966,6 +3070,802 @@ const navigateBackFromImageStudio = () => {
     cancelImageRequest();
     const currentState = window.history.state as AppHistoryState | null;
     if (currentState?.view === 'image') {
+        window.history.back();
+        return;
+    }
+    showSelectionView('replace');
+};
+
+const buildFallbackVideoModels = (mode: VeniceVideoMode): VeniceVideoModelSummary[] => {
+    if (mode === 'text-to-video') {
+        return [
+            {
+                id: VENICE_VIDEO_TEXT_MODEL,
+                name: 'Wan 2.7',
+                mode,
+                privacy: 'anonymized',
+                modelSets: ['uncensored', 'high_resolution', 'long_duration', 'venice_recommendations'],
+                traits: [],
+                constraints: {
+                    model_type: mode,
+                    aspect_ratios: ['16:9', '9:16', '1:1'],
+                    resolutions: ['720p', '1080p'],
+                    durations: ['5s', '10s', '15s'],
+                    audio: false,
+                    audio_configurable: false,
+                },
+            },
+            {
+                id: 'grok-imagine-1-5-text-to-video-private',
+                name: 'Grok Imagine 1.5',
+                mode,
+                privacy: 'private',
+                modelSets: ['photorealistic', 'high_resolution', 'audio'],
+                traits: [],
+                constraints: {
+                    model_type: mode,
+                    aspect_ratios: ['16:9', '4:3', '3:2', '1:1', '2:3', '3:4', '9:16'],
+                    resolutions: ['480p', '720p', '1080p'],
+                    durations: Array.from({ length: 15 }, (_, index) => `${index + 1}s`),
+                    audio: true,
+                    audio_configurable: false,
+                    prompt_character_limit: 4096,
+                },
+            },
+            {
+                id: 'happyhorse-1-1-text-to-video',
+                name: 'HappyHorse 1.1',
+                mode,
+                privacy: 'anonymized',
+                modelSets: ['high_resolution', 'audio'],
+                traits: [],
+                constraints: {
+                    model_type: mode,
+                    aspect_ratios: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '4:5'],
+                    resolutions: ['720p', '1080p'],
+                    durations: Array.from({ length: 13 }, (_, index) => `${index + 3}s`),
+                    audio: true,
+                    audio_configurable: false,
+                },
+            },
+        ];
+    }
+
+    return [
+        {
+            id: VENICE_VIDEO_IMAGE_MODEL,
+            name: 'Wan 2.7',
+            mode,
+            privacy: 'anonymized',
+            modelSets: ['uncensored', 'high_resolution', 'long_duration', 'venice_recommendations'],
+            traits: [],
+            constraints: {
+                model_type: mode,
+                aspect_ratios: [],
+                resolutions: ['720p', '1080p'],
+                durations: ['5s', '10s', '15s'],
+                audio: false,
+                audio_configurable: false,
+            },
+        },
+        {
+            id: 'wan-2.1-pro-image-to-video',
+            name: 'Wan 2.1 Pro',
+            mode,
+            privacy: 'private',
+            modelSets: ['uncensored', 'open_source'],
+            traits: [],
+            constraints: {
+                model_type: mode,
+                aspect_ratios: ['16:9'],
+                resolutions: [],
+                durations: ['6s'],
+                audio: false,
+                audio_configurable: false,
+            },
+        },
+        {
+            id: 'grok-imagine-image-to-video-private',
+            name: 'Grok Imagine',
+            mode,
+            privacy: 'private',
+            modelSets: ['photorealistic', 'audio', 'long_duration'],
+            traits: [],
+            constraints: {
+                model_type: mode,
+                aspect_ratios: [],
+                resolutions: ['480p', '720p'],
+                durations: Array.from({ length: 15 }, (_, index) => `${index + 1}s`),
+                audio: true,
+                audio_configurable: false,
+                prompt_character_limit: 4096,
+            },
+        },
+        {
+            id: 'grok-imagine-1-5-image-to-video-private',
+            name: 'Grok Imagine 1.5',
+            mode,
+            privacy: 'private',
+            modelSets: ['photorealistic', 'high_resolution', 'audio', 'venice_recommendations'],
+            traits: [],
+            constraints: {
+                model_type: mode,
+                aspect_ratios: [],
+                resolutions: ['480p', '720p', '1080p'],
+                durations: Array.from({ length: 15 }, (_, index) => `${index + 1}s`),
+                audio: true,
+                audio_configurable: false,
+                prompt_character_limit: 4096,
+            },
+        },
+        {
+            id: 'ltx-2-v2-3-fast-image-to-video',
+            name: 'LTX Video 2.3 Fast',
+            mode,
+            privacy: 'anonymized',
+            modelSets: ['high_resolution', 'audio', 'open_source'],
+            traits: [],
+            constraints: {
+                model_type: mode,
+                aspect_ratios: ['16:9', '9:16'],
+                resolutions: ['1080p', '1440p', '2160p'],
+                durations: ['6s', '8s', '10s', '12s', '14s', '16s', '18s', '20s'],
+                audio: true,
+                audio_configurable: true,
+            },
+        },
+    ];
+};
+
+const getSelectedVideoModel = () => {
+    return videoModels[videoStudioMode].find(model => model.id === selectedVideoModels[videoStudioMode]);
+};
+
+const isUncensoredVideoModel = (model: VeniceVideoModelSummary) => {
+    return model.modelSets.some(value => value.toLowerCase() === 'uncensored');
+};
+
+const formatVideoPrivacy = (privacy: string) => {
+    if (privacy === 'private') return '私人處理';
+    if (privacy === 'anonymized') return '匿名化處理';
+    return privacy === 'unknown' ? '' : privacy;
+};
+
+const setVideoProgressState = (
+    state: 'idle' | 'quoting' | 'quoted' | 'queueing' | 'generating' | 'completed' | 'error',
+) => {
+    const stageIndexes: Record<string, number> = { quote: 0, queue: 1, generate: 2, complete: 3 };
+    let activeIndex = -1;
+    let completedThrough = -1;
+
+    if (state === 'quoting') activeIndex = 0;
+    if (state === 'quoted') completedThrough = 0;
+    if (state === 'queueing') {
+        activeIndex = 1;
+        completedThrough = 0;
+    }
+    if (state === 'generating') {
+        activeIndex = 2;
+        completedThrough = 1;
+    }
+    if (state === 'completed') completedThrough = 3;
+    if (state === 'error') activeIndex = Math.max(0, videoLastProgressIndex);
+
+    if (activeIndex >= 0 && state !== 'error') videoLastProgressIndex = activeIndex;
+    videoProgressSteps.forEach(step => {
+        const index = stageIndexes[step.dataset.videoStage || ''] ?? -1;
+        step.classList.toggle('is-complete', index >= 0 && index <= completedThrough);
+        step.classList.toggle('is-active', index === activeIndex && state !== 'error');
+        step.classList.toggle('is-error', index === activeIndex && state === 'error');
+    });
+};
+
+const showVideoStudioError = (message: string) => {
+    videoStudioError.textContent = message;
+    videoStudioError.classList.remove('hidden');
+};
+
+const clearVideoStudioError = () => {
+    videoStudioError.textContent = '';
+    videoStudioError.classList.add('hidden');
+};
+
+const updateVideoGenerateButton = () => {
+    const modelReady = Boolean(videoModelSelect.value);
+    const promptReady = Boolean(videoPrompt.value.trim());
+    const sourceReady = videoStudioMode === 'text-to-video' || Boolean(videoSource);
+    const quoteReady = typeof videoQuoteUsd === 'number';
+    videoGenerateButton.disabled = isVideoRequestRunning
+        || !modelReady
+        || !promptReady
+        || !sourceReady
+        || !quoteReady
+        || !videoAdultConfirm.checked;
+    if (!isVideoRequestRunning) {
+        videoGenerateLabel.textContent = quoteReady
+            ? `開始生成 · US$${formatModelPrice(videoQuoteUsd as number)}`
+            : '開始生成影片';
+    }
+};
+
+const updateVideoPromptCounter = () => {
+    const maxLength = getSelectedVideoModel()?.constraints.prompt_character_limit || 2500;
+    videoPrompt.maxLength = maxLength;
+    videoPromptCount.textContent = `${videoPrompt.value.length} / ${maxLength}`;
+    updateVideoGenerateButton();
+};
+
+const getVideoPricingOptions = () => {
+    const model = getSelectedVideoModel();
+    if (!model || !videoDuration.value) return null;
+    return {
+        model: model.id,
+        duration: videoDuration.value,
+        resolution: videoResolutionWrap.classList.contains('hidden') ? undefined : videoResolution.value,
+        aspectRatio: videoAspectRatioWrap.classList.contains('hidden') ? undefined : videoAspectRatio.value,
+        audio: model.constraints.audio_configurable ? videoAudio.checked : undefined,
+    };
+};
+
+const cancelPendingVideoQuote = () => {
+    videoQuoteVersion += 1;
+    if (videoQuoteTimer !== null) {
+        window.clearTimeout(videoQuoteTimer);
+        videoQuoteTimer = null;
+    }
+    videoQuoteController?.abort();
+    videoQuoteController = null;
+};
+
+const scheduleVideoQuote = (delay = 320) => {
+    if (isVideoRequestRunning) return;
+    cancelPendingVideoQuote();
+    const pricing = getVideoPricingOptions();
+    videoQuoteUsd = null;
+    updateVideoGenerateButton();
+    if (!pricing) {
+        videoCostEstimate.textContent = '';
+        setVideoProgressState('idle');
+        return;
+    }
+
+    const version = videoQuoteVersion;
+    videoCostEstimate.textContent = '正在報價...';
+    setVideoProgressState('quoting');
+    videoQuoteTimer = window.setTimeout(async () => {
+        videoQuoteTimer = null;
+        const controller = new AbortController();
+        videoQuoteController = controller;
+        try {
+            const quote = await quoteVeniceVideo({ ...pricing, signal: controller.signal });
+            if (version !== videoQuoteVersion) return;
+            videoQuoteUsd = quote;
+            videoCostEstimate.textContent = `即時報價 US$${formatModelPrice(quote)}`;
+            videoStudioStatus.textContent = '報價已更新，生成時只會提交一次';
+            clearVideoStudioError();
+            setVideoProgressState('quoted');
+        } catch (error) {
+            if (controller.signal.aborted || version !== videoQuoteVersion) return;
+            const message = error instanceof Error ? error.message : '無法取得影片報價。';
+            videoCostEstimate.textContent = '報價失敗';
+            videoStudioStatus.textContent = '無法取得即時報價';
+            showVideoStudioError(message);
+            setVideoProgressState('error');
+            if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
+        } finally {
+            if (videoQuoteController === controller) videoQuoteController = null;
+            updateVideoGenerateButton();
+        }
+    }, delay);
+};
+
+const updateVideoModelControls = () => {
+    const model = getSelectedVideoModel();
+    if (!model) {
+        videoModelMeta.textContent = '模型能力資料暫時不可用。';
+        videoQuoteUsd = null;
+        updateVideoGenerateButton();
+        return;
+    }
+
+    const constraints = model.constraints;
+    const durations = constraints.durations?.length ? constraints.durations : ['5s'];
+    const resolutions = constraints.resolutions || [];
+    const aspectRatios = constraints.aspect_ratios || [];
+    replaceSelectOptions(videoDuration, durations, durations.includes('5s') ? '5s' : durations[0]);
+    videoResolutionWrap.classList.toggle('hidden', resolutions.length === 0);
+    replaceSelectOptions(videoResolution, resolutions, resolutions.includes('720p') ? '720p' : resolutions[0]);
+    videoAspectRatioWrap.classList.toggle('hidden', aspectRatios.length === 0);
+    replaceSelectOptions(videoAspectRatio, aspectRatios, aspectRatios.includes('16:9') ? '16:9' : aspectRatios[0]);
+    videoAudioWrap.classList.toggle('hidden', constraints.audio_configurable !== true);
+    if (!constraints.audio_configurable) videoAudio.checked = constraints.audio === true;
+
+    const details = [
+        model.id === (videoStudioMode === 'image-to-video' ? VENICE_VIDEO_IMAGE_MODEL : VENICE_VIDEO_TEXT_MODEL)
+            ? '目前推薦'
+            : '',
+        isUncensoredVideoModel(model) ? '自由模型' : '',
+        formatVideoPrivacy(model.privacy),
+        model.modelSets.includes('photorealistic') ? '寫實人物' : '',
+        model.modelSets.includes('high_resolution') ? '高解像度' : '',
+        constraints.audio ? '包含音訊' : '無音訊',
+        `${durations[0]}–${durations[durations.length - 1]}`,
+    ].filter(Boolean);
+    videoModelMeta.textContent = details.join(' · ');
+    updateVideoPromptCounter();
+    scheduleVideoQuote();
+};
+
+const renderVideoModelOptions = () => {
+    const preferredId = videoStudioMode === 'image-to-video'
+        ? VENICE_VIDEO_IMAGE_MODEL
+        : VENICE_VIDEO_TEXT_MODEL;
+    const models = [...videoModels[videoStudioMode]].sort((left, right) => {
+        if (left.id === preferredId) return -1;
+        if (right.id === preferredId) return 1;
+        const leftUncensored = isUncensoredVideoModel(left);
+        const rightUncensored = isUncensoredVideoModel(right);
+        if (leftUncensored !== rightUncensored) return leftUncensored ? -1 : 1;
+        if (left.privacy !== right.privacy) return left.privacy === 'private' ? -1 : 1;
+        return left.name.localeCompare(right.name, 'zh-Hant');
+    });
+
+    if (!models.some(model => model.id === selectedVideoModels[videoStudioMode])) {
+        selectedVideoModels[videoStudioMode] = models.find(model => model.id === preferredId)?.id
+            || models.find(isUncensoredVideoModel)?.id
+            || models[0]?.id
+            || '';
+    }
+
+    videoModelSelect.innerHTML = '';
+    const groups = [
+        { label: '推薦', models: models.filter(model => model.id === preferredId) },
+        {
+            label: '自由模型',
+            models: models.filter(model => model.id !== preferredId && isUncensoredVideoModel(model)),
+        },
+        {
+            label: '其他私人模型',
+            models: models.filter(model => model.id !== preferredId && !isUncensoredVideoModel(model) && model.privacy === 'private'),
+        },
+        {
+            label: '其他模型',
+            models: models.filter(model => model.id !== preferredId && !isUncensoredVideoModel(model) && model.privacy !== 'private'),
+        },
+    ];
+    groups.forEach(group => {
+        if (!group.models.length) return;
+        const optgroup = document.createElement('optgroup');
+        optgroup.label = group.label;
+        group.models.forEach(model => {
+            const option = document.createElement('option');
+            option.value = model.id;
+            const labels = [
+                isUncensoredVideoModel(model) ? '自由' : '',
+                model.privacy === 'private' ? '私人' : '',
+                model.modelSets.includes('photorealistic') ? '寫實' : '',
+            ].filter(Boolean);
+            option.textContent = `${model.name}${labels.length ? ` · ${labels.join(' · ')}` : ''}`;
+            optgroup.appendChild(option);
+        });
+        videoModelSelect.appendChild(optgroup);
+    });
+
+    videoModelSelect.value = selectedVideoModels[videoStudioMode];
+    videoModelSelect.disabled = isVideoRequestRunning || models.length === 0;
+    updateVideoModelControls();
+};
+
+const loadVideoModels = async (mode: VeniceVideoMode = videoStudioMode, force = false) => {
+    if (videoModelPromises[mode]) return videoModelPromises[mode];
+    if (!force && videoModels[mode].length > 0) {
+        if (mode === videoStudioMode) renderVideoModelOptions();
+        return;
+    }
+
+    videoModelSelect.disabled = true;
+    refreshVideoModelsBtn.disabled = true;
+    videoModelMeta.textContent = '正在讀取 Venice 影片模型...';
+    cancelPendingVideoQuote();
+
+    videoModelPromises[mode] = (async () => {
+        try {
+            videoModels[mode] = await listVeniceVideoModels(mode);
+            if (!videoModels[mode].length) throw new Error('沒有可用的影片模型。');
+        } catch (error) {
+            console.warn('Unable to load Venice video models; using fallback list.', error);
+            videoModels[mode] = buildFallbackVideoModels(mode);
+            if (error instanceof Error && error.message === VENICE_AUTH_REQUIRED_ERROR) {
+                handleAuthRequired();
+            }
+        } finally {
+            videoModelPromises[mode] = null;
+            refreshVideoModelsBtn.disabled = false;
+            if (mode === videoStudioMode) renderVideoModelOptions();
+        }
+    })();
+
+    return videoModelPromises[mode];
+};
+
+const setVideoStudioMode = (mode: VeniceVideoMode) => {
+    if (isVideoRequestRunning) return;
+    if (videoStudioMode === mode) {
+        if (!videoModels[mode].length) void loadVideoModels(mode);
+        return;
+    }
+
+    videoStudioMode = mode;
+    const imageMode = mode === 'image-to-video';
+    videoModeImageBtn.classList.toggle('is-active', imageMode);
+    videoModeImageBtn.setAttribute('aria-selected', String(imageMode));
+    videoModeTextBtn.classList.toggle('is-active', !imageMode);
+    videoModeTextBtn.setAttribute('aria-selected', String(!imageMode));
+    videoSourceSection.classList.toggle('hidden', !imageMode);
+    videoPrompt.placeholder = imageMode
+        ? '描述人物動作、鏡頭移動、節奏與環境變化，例如：她慢慢望向鏡頭，頭髮隨微風擺動，鏡頭輕微推近...'
+        : '描述完整畫面、人物、動作、鏡頭語言、光線與節奏...';
+    videoPromptHint.textContent = imageMode
+        ? '圖片模式應描述「如何動」，不需要重新描述圖片內容。'
+        : '文字模式請同時描述主體、場景、動作及鏡頭運動。';
+    videoStudioStatus.textContent = imageMode
+        ? '加入來源圖片及動態描述後即可生成'
+        : '填寫影片描述後即可生成';
+    clearVideoStudioError();
+    cancelPendingVideoQuote();
+    videoQuoteUsd = null;
+    videoCostEstimate.textContent = '';
+    videoModelSelect.innerHTML = '<option value="">載入模型中...</option>';
+    setVideoProgressState('idle');
+    void loadVideoModels(mode);
+    updateVideoGenerateButton();
+};
+
+const clearVideoSource = () => {
+    if (videoSource) URL.revokeObjectURL(videoSource.previewUrl);
+    videoSource = null;
+    videoSourcePreview.removeAttribute('src');
+    videoSourceMeta.textContent = '';
+    videoSourceEmpty.classList.remove('hidden');
+    videoSourcePreviewWrap.classList.add('hidden');
+    videoSourceRemove.classList.add('hidden');
+    videoSourceInput.value = '';
+    updateVideoGenerateButton();
+};
+
+const setVideoSourceFromBlob = async (sourceBlob: Blob, name: string) => {
+    if (!sourceBlob.type.startsWith('image/')) throw new Error('請選擇 JPEG、PNG 或 WebP 圖片。');
+    if (sourceBlob.size > 25 * 1024 * 1024) throw new Error('來源圖片不可超過 25MB。');
+
+    const rawUrl = URL.createObjectURL(sourceBlob);
+    const sourceImage = new Image();
+    sourceImage.src = rawUrl;
+    try {
+        await sourceImage.decode();
+        if (Math.min(sourceImage.naturalWidth, sourceImage.naturalHeight) < 300) {
+            throw new Error('來源圖片太小，最短一邊至少需要 300px。');
+        }
+
+        const scale = Math.min(1, 1600 / Math.max(sourceImage.naturalWidth, sourceImage.naturalHeight));
+        const width = Math.round(sourceImage.naturalWidth * scale);
+        const height = Math.round(sourceImage.naturalHeight * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('瀏覽器無法處理這張圖片。');
+        context.drawImage(sourceImage, 0, 0, width, height);
+
+        let compressed = await canvasToBlob(canvas, 0.86);
+        if (compressed.size > 2_450_000) compressed = await canvasToBlob(canvas, 0.66);
+        if (compressed.size > 2_450_000) throw new Error('壓縮後的圖片仍然太大，請改用較小的來源圖。');
+
+        clearVideoSource();
+        const previewUrl = URL.createObjectURL(compressed);
+        const base64 = await blobToBase64(compressed);
+        videoSource = {
+            blob: compressed,
+            dataUrl: `data:image/webp;base64,${base64}`,
+            previewUrl,
+            width,
+            height,
+            name,
+        };
+        videoSourcePreview.src = previewUrl;
+        videoSourceMeta.textContent = `${name} · ${width} × ${height} · ${(compressed.size / 1024).toFixed(0)} KB`;
+        videoSourceEmpty.classList.add('hidden');
+        videoSourcePreviewWrap.classList.remove('hidden');
+        videoSourceRemove.classList.remove('hidden');
+        updateVideoGenerateButton();
+    } finally {
+        URL.revokeObjectURL(rawUrl);
+    }
+};
+
+const loadVideoSourceFile = async (file?: File) => {
+    if (!file || isVideoRequestRunning) return;
+    clearVideoStudioError();
+    videoStudioStatus.textContent = '正在準備來源圖片...';
+    try {
+        await setVideoSourceFromBlob(file, file.name);
+        videoStudioStatus.textContent = '來源圖片已準備好';
+    } catch (error) {
+        showVideoStudioError(error instanceof Error ? error.message : '無法讀取來源圖片。');
+        videoStudioStatus.textContent = '來源圖片載入失敗';
+    } finally {
+        videoSourceInput.value = '';
+    }
+};
+
+const setVideoStudioBusy = (busy: boolean) => {
+    isVideoRequestRunning = busy;
+    videoGenerateSpinner.classList.toggle('hidden', !busy);
+    videoCancelButton.classList.toggle('hidden', !busy);
+    if (busy) videoGenerateLabel.textContent = '影片生成中...';
+    videoModeImageBtn.disabled = busy;
+    videoModeTextBtn.disabled = busy;
+    videoModelSelect.disabled = busy || videoModels[videoStudioMode].length === 0;
+    refreshVideoModelsBtn.disabled = busy;
+    videoSourceDropzone.disabled = busy;
+    videoSourceRemove.disabled = busy;
+    videoPrompt.disabled = busy;
+    videoNegativePrompt.disabled = busy;
+    videoDuration.disabled = busy;
+    videoResolution.disabled = busy;
+    videoAspectRatio.disabled = busy;
+    videoAudio.disabled = busy;
+    videoAdultConfirm.disabled = busy;
+    updateVideoGenerateButton();
+};
+
+const waitForVideoPoll = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+        reject(new DOMException('Aborted', 'AbortError'));
+        return;
+    }
+    const timeout = window.setTimeout(() => {
+        signal.removeEventListener('abort', handleAbort);
+        resolve();
+    }, VIDEO_POLL_INTERVAL_MS);
+    const handleAbort = () => {
+        window.clearTimeout(timeout);
+        reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', handleAbort, { once: true });
+});
+
+const formatVideoWait = (milliseconds: number) => {
+    const totalSeconds = Math.max(0, Math.round(milliseconds / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return minutes ? `${minutes} 分 ${seconds} 秒` : `${seconds} 秒`;
+};
+
+const cleanupVideoResult = (result: VideoStudioResult) => {
+    if (result.isObjectUrl) URL.revokeObjectURL(result.url);
+    if (result.needsRemoteCleanup) {
+        void completeVeniceVideo(result.modelId, result.queueId).catch(error => {
+            console.warn('Unable to clean up Venice video media.', error);
+        });
+    }
+};
+
+const removeVideoResult = (id: string) => {
+    const result = videoResults.find(item => item.id === id);
+    if (result) cleanupVideoResult(result);
+    videoResults = videoResults.filter(item => item.id !== id);
+    renderVideoResults();
+};
+
+const renderVideoResults = () => {
+    videoStudioResults.innerHTML = '';
+    videoStudioEmpty.classList.toggle('hidden', videoResults.length > 0);
+    clearVideoResultsBtn.classList.toggle('hidden', videoResults.length === 0);
+
+    videoResults.forEach((result, index) => {
+        const card = document.createElement('article');
+        card.className = 'video-result-card';
+        card.style.animationDelay = `${Math.min(index, 5) * 60}ms`;
+
+        const video = document.createElement('video');
+        video.src = result.url;
+        video.controls = true;
+        video.playsInline = true;
+        video.preload = 'metadata';
+
+        const body = document.createElement('div');
+        body.className = 'video-result-body';
+        const prompt = document.createElement('p');
+        prompt.className = 'video-result-prompt';
+        prompt.textContent = result.prompt;
+        const meta = document.createElement('p');
+        meta.className = 'video-result-meta';
+        meta.textContent = `${result.model} · ${result.createdAt.toLocaleTimeString('zh-Hant', { hour: '2-digit', minute: '2-digit' })}`;
+
+        const actions = document.createElement('div');
+        actions.className = 'video-result-actions';
+        const downloadButton = document.createElement('button');
+        downloadButton.type = 'button';
+        downloadButton.className = 'video-result-action';
+        downloadButton.textContent = '下載 MP4';
+        downloadButton.addEventListener('click', () => {
+            const anchor = document.createElement('a');
+            anchor.href = result.url;
+            anchor.download = `venice-video-${result.createdAt.toISOString().replace(/[:.]/g, '-')}.mp4`;
+            anchor.rel = 'noopener';
+            if (!result.isObjectUrl) anchor.target = '_blank';
+            anchor.click();
+        });
+        const removeButton = document.createElement('button');
+        removeButton.type = 'button';
+        removeButton.className = 'video-result-action';
+        removeButton.textContent = '移除';
+        removeButton.addEventListener('click', () => removeVideoResult(result.id));
+        actions.append(downloadButton, removeButton);
+        body.append(prompt, meta, actions);
+        card.append(video, body);
+        videoStudioResults.appendChild(card);
+    });
+};
+
+const clearVideoResults = () => {
+    videoResults.forEach(cleanupVideoResult);
+    videoResults = [];
+    renderVideoResults();
+    videoStudioStatus.textContent = '本次影片已清除';
+};
+
+const cancelVideoRequest = () => {
+    if (!isVideoRequestRunning || !videoRequestController) return;
+    const warning = activeVideoQueue
+        ? '影片已經送到 Venice。停止只會中止本頁等待，生成可能仍會繼續且無法退回費用。確定停止？'
+        : '正在送出影片工作，無法確認 Venice 是否已收到。確定停止等待？';
+    if (!window.confirm(warning)) return;
+    videoRequestController.abort();
+    videoStudioStatus.textContent = '已停止等待；Venice 上的工作可能仍會繼續';
+};
+
+const runVideoGeneration = async () => {
+    const model = getSelectedVideoModel();
+    const prompt = videoPrompt.value.trim();
+    clearVideoStudioError();
+
+    if (!model || !prompt || !videoAdultConfirm.checked || typeof videoQuoteUsd !== 'number') {
+        showVideoStudioError('請完成描述、模型報價及成年／圖片權利確認。');
+        return;
+    }
+    if (videoStudioMode === 'image-to-video' && !videoSource) {
+        showVideoStudioError('圖片變影片需要先加入一張來源圖片。');
+        return;
+    }
+    const minimumShortSide = model.constraints.reference_image_min_short_side_pixels || 0;
+    if (videoSource && Math.min(videoSource.width, videoSource.height) < minimumShortSide) {
+        showVideoStudioError(`這個模型要求來源圖片最短一邊至少 ${minimumShortSide}px。`);
+        return;
+    }
+    if (/\b(?:minor|underage|child|kid|teen(?:ager)?|schoolgirl|schoolboy|loli|shota)\b|(?:未成年|幼女|兒童|小孩|學生妹)/i.test(prompt)) {
+        showVideoStudioError('影片工作室只可使用明確成年的角色，請修改描述。');
+        return;
+    }
+
+    const pricing = getVideoPricingOptions();
+    if (!pricing) {
+        showVideoStudioError('影片設定尚未準備好。');
+        return;
+    }
+
+    cancelPendingVideoQuote();
+    const controller = new AbortController();
+    videoRequestController = controller;
+    activeVideoQueue = null;
+    setVideoStudioBusy(true);
+    setVideoProgressState('queueing');
+    videoStudioStatus.textContent = '正在提交一次生成工作，請勿重新整理頁面...';
+    const startedAt = performance.now();
+
+    try {
+        const queued = await queueVeniceVideo({
+            ...pricing,
+            prompt,
+            negativePrompt: videoNegativePrompt.value.trim(),
+            sourceImageDataUrl: videoStudioMode === 'image-to-video' ? videoSource?.dataUrl : undefined,
+            adultConfirmed: true,
+            signal: controller.signal,
+        });
+        activeVideoQueue = queued;
+        setVideoProgressState('generating');
+        videoStudioStatus.textContent = '已進入 Venice 隊列，等待模型生成...';
+
+        let consecutivePollErrors = 0;
+        while (performance.now() - startedAt < VIDEO_POLL_TIMEOUT_MS) {
+            await waitForVideoPoll(controller.signal);
+            let retrieved;
+            try {
+                retrieved = await retrieveVeniceVideo(
+                    queued.model,
+                    queued.queueId,
+                    queued.downloadUrl,
+                    controller.signal,
+                );
+                consecutivePollErrors = 0;
+            } catch (error) {
+                if (controller.signal.aborted) throw error;
+                consecutivePollErrors += 1;
+                if (consecutivePollErrors > 4) throw error;
+                videoStudioStatus.textContent = `暫時無法查詢進度，將自動重試（${consecutivePollErrors}/4）`;
+                continue;
+            }
+
+            if (retrieved.kind === 'completed') {
+                const url = retrieved.blob
+                    ? URL.createObjectURL(retrieved.blob)
+                    : retrieved.downloadUrl;
+                if (!url) throw new Error('影片已完成，但沒有可播放的檔案。');
+                const now = new Date();
+                videoResults = [{
+                    id: `${now.getTime()}-${queued.queueId}`,
+                    url,
+                    isObjectUrl: Boolean(retrieved.blob),
+                    prompt,
+                    model: model.name,
+                    modelId: queued.model,
+                    queueId: queued.queueId,
+                    createdAt: now,
+                    needsRemoteCleanup: Boolean(retrieved.downloadUrl),
+                }, ...videoResults];
+                renderVideoResults();
+                setVideoProgressState('completed');
+                const elapsed = formatVideoWait(performance.now() - startedAt);
+                videoStudioStatus.textContent = `影片完成 · 等待 ${elapsed}`;
+                return;
+            }
+
+            const waited = retrieved.executionDuration ?? performance.now() - startedAt;
+            const estimate = retrieved.averageExecutionTime;
+            videoStudioStatus.textContent = estimate
+                ? `生成中 · 已等待 ${formatVideoWait(waited)} · 一般約 ${formatVideoWait(estimate)}`
+                : `生成中 · 已等待 ${formatVideoWait(waited)}`;
+        }
+
+        throw new Error('影片生成等待超過 15 分鐘。工作可能仍在 Venice 完成，請稍後再試。');
+    } catch (error) {
+        if (controller.signal.aborted) {
+            setVideoProgressState('quoted');
+        } else {
+            const message = error instanceof Error ? error.message : '影片生成失敗。';
+            showVideoStudioError(message);
+            videoStudioStatus.textContent = activeVideoQueue
+                ? '查詢或生成失敗；系統沒有重複提交工作'
+                : '影片工作未能成功提交';
+            setVideoProgressState('error');
+            if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
+        }
+    } finally {
+        if (videoRequestController === controller) videoRequestController = null;
+        activeVideoQueue = null;
+        setVideoStudioBusy(false);
+    }
+};
+
+const showVideoStudio = (historyMode: 'push' | 'replace' | 'skip' = 'push') => {
+    cancelActiveChatRequest();
+    personaSelectionView.classList.add('hidden');
+    chatView.classList.add('hidden');
+    chatView.classList.remove('flex');
+    imageStudioView.classList.add('hidden');
+    imageStudioView.classList.remove('flex');
+    videoStudioView.classList.remove('hidden');
+    videoStudioView.classList.add('flex');
+    videoAdultConfirm.checked = sessionStorage.getItem(VIDEO_ADULT_CONFIRM_STORAGE_KEY) === 'true';
+    renderVideoResults();
+    void loadVideoModels(videoStudioMode);
+    updateVideoGenerateButton();
+    syncBrowserViewState({ view: 'video' }, historyMode);
+};
+
+const navigateBackFromVideoStudio = () => {
+    const currentState = window.history.state as AppHistoryState | null;
+    if (currentState?.view === 'video') {
         window.history.back();
         return;
     }
@@ -3116,6 +4016,8 @@ const startChat = (key: string, restoredHistory: any[] | null = null, historyMod
     personaSelectionView.classList.add('hidden');
     imageStudioView.classList.add('hidden');
     imageStudioView.classList.remove('flex');
+    videoStudioView.classList.add('hidden');
+    videoStudioView.classList.remove('flex');
     chatView.classList.remove('hidden');
     chatView.classList.add('flex');
     saveExitModal.classList.add('hidden');
@@ -3140,6 +4042,8 @@ const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
     chatView.classList.remove('flex');
     imageStudioView.classList.add('hidden');
     imageStudioView.classList.remove('flex');
+    videoStudioView.classList.add('hidden');
+    videoStudioView.classList.remove('flex');
     saveExitModal.classList.add('hidden');
     currentPersona = null;
     currentPersonaKey = null;
@@ -3182,7 +4086,18 @@ const handleBrowserPopState = (event: PopStateEvent) => {
         return;
     }
 
-    if (!chatView.classList.contains('hidden') || !imageStudioView.classList.contains('hidden')) {
+    if (state?.view === 'video') {
+        if (videoStudioView.classList.contains('hidden')) {
+            showVideoStudio('skip');
+        }
+        return;
+    }
+
+    if (
+        !chatView.classList.contains('hidden')
+        || !imageStudioView.classList.contains('hidden')
+        || !videoStudioView.classList.contains('hidden')
+    ) {
         showSelectionView('skip');
     }
 };
@@ -5074,9 +5989,66 @@ const setupEventListeners = () => {
         void runImageGeneration();
     });
     clearImageResultsBtn.addEventListener('click', clearImageResults);
+    videoStudioEntry.addEventListener('click', () => showVideoStudio('push'));
+    videoStudioBack.addEventListener('click', navigateBackFromVideoStudio);
+    videoModeImageBtn.addEventListener('click', () => setVideoStudioMode('image-to-video'));
+    videoModeTextBtn.addEventListener('click', () => setVideoStudioMode('text-to-video'));
+    videoModelSelect.addEventListener('change', () => {
+        if (!videoModelSelect.value || isVideoRequestRunning) return;
+        selectedVideoModels[videoStudioMode] = videoModelSelect.value;
+        localStorage.setItem(
+            videoStudioMode === 'image-to-video'
+                ? VIDEO_IMAGE_MODEL_STORAGE_KEY
+                : VIDEO_TEXT_MODEL_STORAGE_KEY,
+            videoModelSelect.value,
+        );
+        clearVideoStudioError();
+        updateVideoModelControls();
+    });
+    refreshVideoModelsBtn.addEventListener('click', () => {
+        void loadVideoModels(videoStudioMode, true);
+    });
+    videoPrompt.addEventListener('input', updateVideoPromptCounter);
+    [videoDuration, videoResolution, videoAspectRatio].forEach(select => {
+        select.addEventListener('change', () => scheduleVideoQuote());
+    });
+    videoAudio.addEventListener('change', () => scheduleVideoQuote());
+    videoAdultConfirm.addEventListener('change', () => {
+        sessionStorage.setItem(VIDEO_ADULT_CONFIRM_STORAGE_KEY, String(videoAdultConfirm.checked));
+        updateVideoGenerateButton();
+    });
+    videoSourceDropzone.addEventListener('click', () => videoSourceInput.click());
+    videoSourceInput.addEventListener('change', () => {
+        void loadVideoSourceFile(videoSourceInput.files?.[0]);
+    });
+    videoSourceRemove.addEventListener('click', () => {
+        clearVideoSource();
+        videoStudioStatus.textContent = '來源圖片已移除';
+    });
+    videoSourceDropzone.addEventListener('dragover', event => {
+        event.preventDefault();
+        videoSourceDropzone.classList.add('is-dragging');
+    });
+    videoSourceDropzone.addEventListener('dragleave', () => {
+        videoSourceDropzone.classList.remove('is-dragging');
+    });
+    videoSourceDropzone.addEventListener('drop', event => {
+        event.preventDefault();
+        videoSourceDropzone.classList.remove('is-dragging');
+        void loadVideoSourceFile(event.dataTransfer?.files?.[0]);
+    });
+    videoGenerateButton.addEventListener('click', () => {
+        void runVideoGeneration();
+    });
+    videoCancelButton.addEventListener('click', cancelVideoRequest);
+    clearVideoResultsBtn.addEventListener('click', clearVideoResults);
     window.addEventListener('beforeunload', () => {
         imageResults.forEach(result => URL.revokeObjectURL(result.url));
         if (imageSource) URL.revokeObjectURL(imageSource.previewUrl);
+        videoResults.forEach(result => {
+            if (result.isObjectUrl) URL.revokeObjectURL(result.url);
+        });
+        if (videoSource) URL.revokeObjectURL(videoSource.previewUrl);
     });
 
     backButton.addEventListener('click', navigateBackToSelectionView);
@@ -5278,6 +6250,7 @@ const init = async () => {
     setupEventListeners();
     setAuthSubmitting(false);
     applyChatRuntimeState('idle');
+    setVideoProgressState('idle');
     await refreshAuthSession();
 };
 
