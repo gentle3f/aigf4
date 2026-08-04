@@ -157,6 +157,7 @@ const videoSourceRemove = document.getElementById('video-source-remove') as HTML
 const videoPrompt = document.getElementById('video-prompt') as HTMLTextAreaElement;
 const videoPromptCount = document.getElementById('video-prompt-count')!;
 const videoPromptHint = document.getElementById('video-prompt-hint')!;
+const videoPromptFeedback = document.getElementById('video-prompt-feedback')!;
 const videoPromptOptimizeButton = document.getElementById('video-prompt-optimize') as HTMLButtonElement;
 const videoPromptOptimizeLabel = document.getElementById('video-prompt-optimize-label')!;
 const videoPromptOptimizeSpinner = document.getElementById('video-prompt-optimize-spinner')!;
@@ -448,6 +449,7 @@ const VIDEO_TEXT_MODEL_STORAGE_KEY = 'veniceVideoTextModel';
 const VIDEO_ADULT_CONFIRM_STORAGE_KEY = 'veniceVideoAdultConfirmed';
 const VIDEO_PENDING_JOB_STORAGE_KEY = 'veniceVideoPendingJobV1';
 const VIDEO_PROMPT_OPTIMIZER_TIMEOUT_MS = 45_000;
+const VIDEO_PROMPT_OPTIMIZER_ATTEMPT_TIMEOUT_MS = 15_000;
 const VIDEO_POLL_INTERVAL_MS = 5_000;
 const VIDEO_POLL_TIMEOUT_MS = 15 * 60_000;
 
@@ -3497,15 +3499,76 @@ const scheduleVideoQuote = (delay = 320) => {
     }, delay);
 };
 
-const cleanOptimizedVideoPrompt = (raw: string) => {
-    const tagged = extractXmlTag(raw, 'optimized_prompt');
-    if (!tagged) return '';
-    return tagged
+type VideoPromptFeedbackTone = 'info' | 'success' | 'error';
+
+const setVideoPromptFeedback = (message: string, tone: VideoPromptFeedbackTone = 'info') => {
+    videoPromptFeedback.textContent = message;
+    videoPromptFeedback.classList.remove('hidden', 'is-success', 'is-error');
+    if (tone === 'success') videoPromptFeedback.classList.add('is-success');
+    if (tone === 'error') videoPromptFeedback.classList.add('is-error');
+};
+
+const clearVideoPromptFeedback = () => {
+    videoPromptFeedback.textContent = '';
+    videoPromptFeedback.classList.add('hidden');
+    videoPromptFeedback.classList.remove('is-success', 'is-error');
+};
+
+const cleanVideoPromptCandidate = (candidate: string) => {
+    return candidate
         .replace(/^```(?:text|markdown)?\s*/i, '')
         .replace(/\s*```$/i, '')
+        .replace(/<\/?optimized_prompt>/gi, '')
+        .replace(/^#{1,4}\s*(?:optimized\s+)?(?:video\s+)?prompt\s*[:：]?\s*/i, '')
+        .replace(/^(?:optimized\s+)?(?:video\s+)?prompt\s*[:：]\s*/i, '')
         .replace(/^["“]|["”]$/g, '')
         .replace(/\r\n?/g, '\n')
         .replace(/\n{3,}/g, '\n\n')
+        .trim();
+};
+
+const isVideoPromptOptimizerRefusal = (candidate: string) => {
+    return /^(?:#{1,4}\s*)?(?:sorry\b|i(?:['’]m| am)? sorry\b|i apologize\b|i (?:can(?:not|'t)|won't|am unable)\b|i(?:['’]m) unable\b|as an ai\b|(?:很)?抱歉|對不起|我(?:不能|無法)|無法協助|不能協助)/i.test(candidate.trim());
+};
+
+const cleanOptimizedVideoPrompt = (raw: string) => {
+    const tagged = extractXmlTag(raw, 'optimized_prompt');
+    if (tagged) {
+        const cleaned = cleanVideoPromptCandidate(tagged);
+        return isVideoPromptOptimizerRefusal(cleaned) ? '' : cleaned;
+    }
+
+    const unfenced = raw
+        .replace(/^```(?:json|text|markdown)?\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+    let candidate = unfenced;
+    try {
+        const parsed = JSON.parse(unfenced) as unknown;
+        if (typeof parsed === 'string') {
+            candidate = parsed;
+        } else if (parsed && typeof parsed === 'object') {
+            const record = parsed as Record<string, unknown>;
+            const value = record.optimized_prompt ?? record.optimizedPrompt ?? record.prompt;
+            candidate = typeof value === 'string' ? value : '';
+        } else {
+            candidate = '';
+        }
+    } catch {
+        // Some Venice text models return the requested prompt directly without a wrapper.
+    }
+
+    const cleaned = cleanVideoPromptCandidate(candidate);
+    if (!cleaned || isVideoPromptOptimizerRefusal(cleaned)) return '';
+    return cleaned;
+};
+
+const normalizeVideoPromptForComparison = (prompt: string) => {
+    return prompt
+        .normalize('NFKC')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .replace(/[.!?。！？]+$/g, '')
         .trim();
 };
 
@@ -3716,6 +3779,7 @@ const setVideoStudioMode = (mode: VeniceVideoMode) => {
     videoPromptHint.textContent = imageMode
         ? '圖片模式應描述「如何動」；魔法棒會保留原意並依所選模型補足動作、鏡頭與環境。'
         : '文字模式請寫下核心想法；魔法棒會依所選模型補齊主體、場景、動作與鏡頭。';
+    clearVideoPromptFeedback();
     videoStudioStatus.textContent = imageMode
         ? '加入來源圖片及動態描述後即可生成'
         : '填寫影片描述後即可生成';
@@ -3856,6 +3920,7 @@ const runVideoPromptOptimization = async () => {
     clearVideoStudioError();
     if (containsDisallowedMinorTerms(originalPrompt)) {
         showVideoStudioError('影片工作室只可使用明確成年的角色，請先修改描述。');
+        setVideoPromptFeedback('請先把人物明確描述為成年人，再使用魔法優化。', 'error');
         return;
     }
 
@@ -3866,6 +3931,7 @@ const runVideoPromptOptimization = async () => {
         && lastVideoPromptOptimization.output === originalPrompt
     ) {
         videoStudioStatus.textContent = `這段提示已針對 ${model.name} 優化，可直接生成或手動修改`;
+        setVideoPromptFeedback('這段文字已經完成優化；如有修改，再按一次魔法棒即可。', 'success');
         return;
     }
 
@@ -3881,11 +3947,13 @@ const runVideoPromptOptimization = async () => {
     const controller = new AbortController();
     let timedOut = false;
     let lastError: Error | null = null;
+    let unchangedResponseCount = 0;
     const startedAt = performance.now();
     const shouldRefreshQuote = typeof videoQuoteUsd !== 'number';
     videoPromptOptimizerController = controller;
     cancelPendingVideoQuote();
     setVideoPromptOptimizerBusy(true);
+    setVideoPromptFeedback('正在檢查動作次序、鏡頭與場景描述...');
     videoStudioStatus.textContent = `正在依 ${model.name} 的提示風格魔法優化...`;
     const timeoutId = window.setTimeout(() => {
         timedOut = true;
@@ -3896,6 +3964,14 @@ const runVideoPromptOptimization = async () => {
         const messages = buildVideoPromptOptimizerMessages(model, originalPrompt, maxCharacters);
         for (const optimizerModel of models) {
             if (controller.signal.aborted) break;
+            const attemptController = new AbortController();
+            let attemptTimedOut = false;
+            const abortAttempt = () => attemptController.abort();
+            controller.signal.addEventListener('abort', abortAttempt, { once: true });
+            const attemptTimeoutId = window.setTimeout(() => {
+                attemptTimedOut = true;
+                attemptController.abort();
+            }, VIDEO_PROMPT_OPTIMIZER_ATTEMPT_TIMEOUT_MS);
             try {
                 const result = await generateVeniceText({
                     model: optimizerModel,
@@ -3904,18 +3980,30 @@ const runVideoPromptOptimization = async () => {
                     temperature: 0.22,
                     topP: 0.88,
                     repetitionPenalty: 1.03,
-                    signal: controller.signal,
+                    signal: attemptController.signal,
                 });
                 const optimizedPrompt = cleanOptimizedVideoPrompt(result.text);
                 if (!optimizedPrompt) throw new Error('提示詞優化器沒有回傳有效格式。');
                 if (optimizedPrompt.length > maxCharacters) {
                     throw new Error(`提示詞優化器超過 ${maxCharacters} 字元限制。`);
                 }
+                if (
+                    normalizeVideoPromptForComparison(optimizedPrompt)
+                    === normalizeVideoPromptForComparison(originalPrompt)
+                ) {
+                    unchangedResponseCount += 1;
+                    lastError = new Error('優化結果與原文相同。');
+                    continue;
+                }
 
                 videoPrompt.value = optimizedPrompt;
                 lastVideoPromptOptimization = { settingsKey, output: optimizedPrompt };
                 updateVideoPromptCounter();
                 videoStudioStatus.textContent = `已針對 ${model.name} 優化 · 保留原意，送出前仍可修改`;
+                setVideoPromptFeedback(
+                    `優化完成：${originalPrompt.length} → ${optimizedPrompt.length} 字元。送出前仍可手動修改。`,
+                    'success',
+                );
                 clearVideoStudioError();
                 console.info('[aigf4 video prompt optimizer]', {
                     videoModel: model.id,
@@ -3927,14 +4015,29 @@ const runVideoPromptOptimization = async () => {
                 return;
             } catch (error) {
                 if (controller.signal.aborted) throw error;
-                lastError = error instanceof Error ? error : new Error(String(error));
+                lastError = attemptTimedOut
+                    ? new Error('其中一次優化等待超過 15 秒，已自動改試後備服務。')
+                    : error instanceof Error
+                        ? error
+                        : new Error(String(error));
+            } finally {
+                window.clearTimeout(attemptTimeoutId);
+                controller.signal.removeEventListener('abort', abortAttempt);
             }
+        }
+        if (unchangedResponseCount > 0) {
+            videoStudioStatus.textContent = '優化模型認為原文已可直接使用；沒有提交影片';
+            setVideoPromptFeedback(
+                '已嘗試其他優化模型，但結果仍與原文相同。原文已保留，可補充動作順序或鏡頭要求後再試。',
+            );
+            return;
         }
         throw lastError || new Error('提示詞優化失敗。');
     } catch (error) {
         if (controller.signal.aborted && !timedOut) {
             clearVideoStudioError();
             videoStudioStatus.textContent = '魔法優化已取消；原本提示沒有修改';
+            setVideoPromptFeedback('優化已取消，提示詞保持原樣。');
             return;
         }
         const message = timedOut
@@ -3943,6 +4046,7 @@ const runVideoPromptOptimization = async () => {
                 ? error.message
                 : '提示詞優化失敗，原文已保留。';
         showVideoStudioError(message);
+        setVideoPromptFeedback(`這次未能完成優化：${message} 原本提示沒有被修改。`, 'error');
         videoStudioStatus.textContent = '魔法優化失敗；沒有修改原本提示，也沒有送出影片';
         if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
     } finally {
@@ -6426,19 +6530,29 @@ const setupEventListeners = () => {
             videoModelSelect.value,
         );
         clearVideoStudioError();
+        clearVideoPromptFeedback();
         updateVideoModelControls();
     });
     refreshVideoModelsBtn.addEventListener('click', () => {
         void loadVideoModels(videoStudioMode, true);
     });
-    videoPrompt.addEventListener('input', updateVideoPromptCounter);
+    videoPrompt.addEventListener('input', () => {
+        updateVideoPromptCounter();
+        if (!isVideoPromptOptimizing) clearVideoPromptFeedback();
+    });
     videoPromptOptimizeButton.addEventListener('click', () => {
         void runVideoPromptOptimization();
     });
     [videoDuration, videoResolution, videoAspectRatio].forEach(select => {
-        select.addEventListener('change', () => scheduleVideoQuote());
+        select.addEventListener('change', () => {
+            clearVideoPromptFeedback();
+            scheduleVideoQuote();
+        });
     });
-    videoAudio.addEventListener('change', () => scheduleVideoQuote());
+    videoAudio.addEventListener('change', () => {
+        clearVideoPromptFeedback();
+        scheduleVideoQuote();
+    });
     videoAdultConfirm.addEventListener('change', () => {
         sessionStorage.setItem(VIDEO_ADULT_CONFIRM_STORAGE_KEY, String(videoAdultConfirm.checked));
         updateVideoGenerateButton();

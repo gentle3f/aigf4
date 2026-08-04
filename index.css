@@ -1323,6 +1323,27 @@ input[type=number] {
     opacity: 0.42;
 }
 
+.video-prompt-feedback {
+    border-left: 2px solid rgba(103, 232, 249, 0.55);
+    padding: 0.34rem 0.62rem;
+    color: #a5f3fc;
+    background: linear-gradient(90deg, rgba(8, 145, 178, 0.1), transparent);
+    font-size: 0.7rem;
+    line-height: 1.55;
+}
+
+.video-prompt-feedback.is-success {
+    border-color: rgba(74, 222, 128, 0.62);
+    color: #bbf7d0;
+    background: linear-gradient(90deg, rgba(22, 101, 52, 0.12), transparent);
+}
+
+.video-prompt-feedback.is-error {
+    border-color: rgba(248, 113, 113, 0.68);
+    color: #fecaca;
+    background: linear-gradient(90deg, rgba(127, 29, 29, 0.15), transparent);
+}
+
 @keyframes video-wand-pulse {
     from {
         transform: rotate(-8deg) scale(0.94);
