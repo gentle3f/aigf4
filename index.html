@@ -419,6 +419,47 @@
                             <p id="video-prompt-hint" class="mt-2 text-xs leading-5 text-slate-500">圖片模式應描述「如何動」；魔法棒會保留原意並依所選模型補足動作、鏡頭與環境。</p>
                         </div>
 
+                        <details id="video-motion-director" class="video-motion-director mt-5">
+                            <summary>
+                                <span class="video-director-mark" aria-hidden="true">DIRECT</span>
+                                <span class="min-w-0 flex-1">
+                                    <span class="block text-sm font-black text-slate-100">動作導演</span>
+                                    <span id="video-director-summary" class="mt-0.5 block truncate text-xs text-slate-400">用範本組合姿勢、動作、鏡頭與場景</span>
+                                </span>
+                                <svg class="video-director-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="m8 10 4 4 4-4" />
+                                </svg>
+                            </summary>
+                            <div class="video-director-body">
+                                <div class="flex items-start justify-between gap-4">
+                                    <div>
+                                        <p class="video-studio-kicker">SHOT RECIPES</p>
+                                        <h3 class="mt-1 text-base font-black text-white">一鍵分鏡範本</h3>
+                                    </div>
+                                    <span class="video-director-local-badge">本機組合 · 免費</span>
+                                </div>
+                                <p class="mt-2 text-xs leading-5 text-slate-400">先選一個方向，再微調每個步驟。範本只建立提示詞，不會自動送出影片。</p>
+                                <div id="video-director-templates" class="video-director-templates mt-3" role="list" aria-label="影片分鏡範本"></div>
+
+                                <div id="video-director-groups" class="video-director-groups mt-5"></div>
+
+                                <div class="video-director-timeline mt-5">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span class="video-field-label">目前分鏡</span>
+                                        <button id="video-director-reset" type="button" class="video-inline-action">重設</button>
+                                    </div>
+                                    <div id="video-director-timeline" class="mt-3" aria-live="polite"></div>
+                                    <p id="video-director-advisory" class="video-director-advisory mt-3"></p>
+                                </div>
+
+                                <div class="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                    <button id="video-director-replace" type="button" class="video-director-apply">取代提示詞</button>
+                                    <button id="video-director-append" type="button" class="video-director-append">加入現有描述</button>
+                                </div>
+                                <p class="mt-3 text-[0.68rem] leading-5 text-slate-500">只供明確成年、虛構或已取得本人同意的影像使用；不提供真人自動脫衣或未經同意的性化範本。</p>
+                            </div>
+                        </details>
+
                         <div class="mt-5">
                             <label for="video-negative-prompt" class="video-field-label">避免出現</label>
                             <textarea id="video-negative-prompt" class="video-field mt-2 min-h-20 w-full resize-y" spellcheck="false">minor, child, underage, young-looking, distorted face, deformed hands, extra limbs, duplicate person, flicker, jitter, text, watermark</textarea>
