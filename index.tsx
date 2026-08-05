@@ -465,6 +465,7 @@ const VIDEO_IMAGE_MODEL_STORAGE_KEY = 'veniceVideoImageModel';
 const VIDEO_TEXT_MODEL_STORAGE_KEY = 'veniceVideoTextModel';
 const VIDEO_ADULT_CONFIRM_STORAGE_KEY = 'veniceVideoAdultConfirmed';
 const VIDEO_PENDING_JOB_STORAGE_KEY = 'veniceVideoPendingJobV1';
+const RANDOM_PERSONA_VARIATION_HISTORY_KEY = 'aigf4RandomPersonaVariationsV2';
 const VIDEO_PROMPT_OPTIMIZER_TIMEOUT_MS = 45_000;
 const VIDEO_PROMPT_OPTIMIZER_ATTEMPT_TIMEOUT_MS = 15_000;
 const VIDEO_POLL_INTERVAL_MS = 5_000;
@@ -587,20 +588,44 @@ const MIMIC_SAMPLE_CHUNK_CHAR_LIMIT = 1800;
 
 // --- Functions ---
 
+const readRandomPersonaVariationHistory = () => {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(RANDOM_PERSONA_VARIATION_HISTORY_KEY) || '[]') as unknown;
+        return Array.isArray(parsed)
+            ? parsed.filter((value): value is string => typeof value === 'string').slice(-80)
+            : [];
+    } catch {
+        return [];
+    }
+};
+
+const createFreshRandomPersona = () => {
+    const existingPersonas = Object.values(memoryManager.getAllPersonas());
+    const persona = createRandomAdultFemalePersona({
+        existingNames: existingPersonas.map(item => item.name),
+        existingPersonaText: existingPersonas.map(item => (
+            [item.name, item.description, item.prompt, item.memory || ''].filter(Boolean).join('\n')
+        )),
+        avoidVariationKeys: readRandomPersonaVariationHistory(),
+    });
+    const nextHistory = [...readRandomPersonaVariationHistory(), persona.variationKey].slice(-80);
+    localStorage.setItem(RANDOM_PERSONA_VARIATION_HISTORY_KEY, JSON.stringify(nextHistory));
+    return persona;
+};
+
 const randomlyRecruitNewPersona = async () => {
     if (isRandomRecruiting) return;
 
     isRandomRecruiting = true;
     randomRecruitBtn.disabled = true;
     randomRecruitBtn.textContent = '正在建立角色...';
-    randomRecruitStatus.textContent = '正在抽選成年女性身分、職業與鮮明人格...';
+    randomRecruitStatus.textContent = '正在抽選香港成年女性身分、職業、關係與鮮明人格...';
     randomRecruitStatus.classList.remove('hidden', 'text-red-300', 'text-emerald-300');
     randomRecruitStatus.classList.add('text-teal-200');
 
     let personaKey: string | null = null;
     try {
-        const existingNames = Object.values(memoryManager.getAllPersonas()).map(persona => persona.name);
-        const persona = createRandomAdultFemalePersona(existingNames);
+        const persona = createFreshRandomPersona();
         personaKey = memoryManager.saveCustomPersona({
             name: persona.name,
             emoji: persona.emoji,
@@ -614,7 +639,7 @@ const randomlyRecruitNewPersona = async () => {
         renderPersonaList();
 
         randomRecruitBtn.textContent = '正在生成專屬頭像...';
-        randomRecruitStatus.textContent = `已建立 ${persona.name}（${persona.occupation}），正在由 Venice 生成隨機頭像...`;
+        randomRecruitStatus.textContent = `已建立 ${persona.name}（${persona.occupation}），正在由 Venice 生成香港風格專屬頭像...`;
         await loadImageModels('generate');
         const model = imageModels.generate.find(item => item.id === VENICE_IMAGE_GENERATE_MODEL)
             || imageModels.generate.find(item => item.traits.includes('most_uncensored'))
@@ -736,8 +761,7 @@ const setMimicBuildMode = (mode: MimicBuildMode) => {
 };
 
 const fillRandomManualFields = () => {
-    const existingNames = Object.values(memoryManager.getAllPersonas()).map(persona => persona.name);
-    const persona = createRandomAdultFemalePersona(existingNames);
+    const persona = createFreshRandomPersona();
     mimicNameInput.value = persona.name;
     mimicOccupationInput.value = persona.occupation;
     mimicPersonalityInput.value = persona.personality;
@@ -5301,8 +5325,111 @@ const replyReusesOpeningOrNarrativeBeat = (left: string, right: string) => {
     });
 };
 
+const replyReusesCompletedClause = (left: string, right: string) => {
+    const extractClauses = (text: string) => {
+        return text
+            .split(/[。！？!?\n]+/u)
+            .map(clause => normalizeReplySurfaceForComparison(clause))
+            .filter(clause => clause.length >= 18);
+    };
+
+    const leftClauses = extractClauses(left);
+    const rightClauses = extractClauses(right);
+    return leftClauses.some(leftClause => {
+        return rightClauses.some(rightClause => {
+            const shorter = leftClause.length <= rightClause.length ? leftClause : rightClause;
+            const longer = shorter === leftClause ? rightClause : leftClause;
+            if (longer.includes(shorter) && shorter.length / longer.length >= 0.82) {
+                return true;
+            }
+            return commonPrefixLength(leftClause, rightClause) / Math.min(leftClause.length, rightClause.length) >= 0.86;
+        });
+    });
+};
+
 const userExplicitlyRequestsContinuation = (text: string) => {
     return /繼續|接著|再說一次|重複|repeat|continue|same again|接下去|剛剛那段/u.test(text);
+};
+
+const extractDirectlyAddressedNpcNames = (text: string, personaName: string) => {
+    const candidates: string[] = [];
+    const patterns = [
+        /(?:\b(?:hi|hello|hey)\b|你好|嗨|哈囉|喂)[,，!！~～\s]+([A-Z][A-Za-z'-]{1,24}|[\p{Script=Han}]{2,4})/giu,
+        /(?:叫做|名叫)\s*[「『"']?([A-Z][A-Za-z'-]{1,24}|[\p{Script=Han}]{2,4})/giu,
+    ];
+    patterns.forEach(pattern => {
+        for (const match of text.matchAll(pattern)) candidates.push(match[1]);
+    });
+
+    const ignoredNames = new Set([
+        personaName.toLocaleLowerCase(),
+        '大家', '同學', '朋友', '同事', '老師', '醫生', '你好', '哈囉', 'hello', 'there',
+    ]);
+    return Array.from(new Set(candidates
+        .map(name => name.trim().replace(/[，。！？!?,:：；;]+$/u, ''))
+        .filter(name => name.length >= 2 && !ignoredNames.has(name.toLocaleLowerCase()))));
+};
+
+const buildNpcSpeechRequirement = (npcNames: string[]) => {
+    if (npcNames.length === 0) return '';
+    return [
+        `Immediate third-party requirement for the newest turn: ${npcNames.join(', ')} ${npcNames.length === 1 ? 'is' : 'are'} present and directly addressed by the user.`,
+        `Give each addressed NPC at least one plausible spoken reply, visibly attributed in the exact form ${npcNames.map(name => `${name}：「...」`).join(' and ')}.`,
+        'Also show the active character reacting separately. Do not move the user’s greeting into the active character’s mouth, do not make the active character answer under the NPC’s name, and do not write the user’s next line.',
+    ].join('\n');
+};
+
+const extractReferencedNpcNames = (text: string, personaName: string) => {
+    const ignoredNames = new Set([
+        personaName.toLocaleLowerCase(),
+        'Hi', 'Hello', 'Hey', 'The', 'We', 'I', 'You', 'He', 'She', 'They',
+    ].map(name => name.toLocaleLowerCase()));
+    const latinNames = Array.from(text.matchAll(/\b([A-Z][a-z][A-Za-z'-]{1,23})\b/gu))
+        .map(match => match[1])
+        .filter(name => !ignoredNames.has(name.toLocaleLowerCase()));
+    return Array.from(new Set([
+        ...extractDirectlyAddressedNpcNames(text, personaName),
+        ...latinNames,
+    ]));
+};
+
+const buildImmediateTurnOwnershipRequirement = (
+    personaName: string,
+    latestUserMessage: string,
+) => {
+    const referencedNpcNames = extractReferencedNpcNames(latestUserMessage, personaName);
+    return [
+        'Immediate ownership map for the newest user turn:',
+        `- User-side 我 / I / me / 我的 / 我手上 belongs to the USER and anything described there starts in the user’s possession.`,
+        `- User-side 你 / you addresses ${personaName}. Only ${personaName} performs commands aimed at 你 / you.`,
+        referencedNpcNames.length > 0
+            ? `- Distinct named NPCs in this turn: ${referencedNpcNames.join(', ')}. 他 / 她 / 佢 / they refers to the nearest matching named NPC unless the sentence clearly says otherwise.`
+            : '- Keep every previously established third party separate; resolve pronouns from the nearest clear named participant.',
+        '- Preserve who currently holds each object and who performs each action. Do not move an object into the active character’s bag or hand before the user gives it to them.',
+        '- Never write or label a new spoken line for the user. Reply only as the active character and any relevant NPCs.',
+    ].join('\n');
+};
+
+const replyContainsAttributedNpcSpeech = (reply: string, npcNames: string[]) => {
+    return npcNames.every(name => {
+        const escapedName = escapeRegExp(name);
+        const directLabel = new RegExp(`${escapedName}\\s*[:：]\\s*[「『“\"]`, 'iu');
+        const narratedSpeech = new RegExp(
+            `${escapedName}[^。！？!?\\n]{0,14}(?:說|問|答|回答|回應|笑道|低聲道)[^。！？!?\\n]{0,8}[：:]?\\s*[「『“\"]`,
+            'iu',
+        );
+        return directLabel.test(reply) || narratedSpeech.test(reply);
+    });
+};
+
+const replyBreaksSpeakerOwnership = (reply: string) => {
+    const assignsDialogueToUser = /(?:^|[\n）)])\s*你[^。！？!?\n]{0,18}[:：]\s*[「『“"]/u.test(reply);
+    const malformedFirstPersonLabel = /(?:^|[\n）)])\s*我(?:將|把|手|的|嘅)[^。！？!?\n]{0,14}[:：]\s*[「『“"]/u.test(reply);
+    const lastOpeningParenthesis = Math.max(reply.lastIndexOf('('), reply.lastIndexOf('（'));
+    const lastClosingParenthesis = Math.max(reply.lastIndexOf(')'), reply.lastIndexOf('）'));
+    return assignsDialogueToUser
+        || malformedFirstPersonLabel
+        || lastOpeningParenthesis > lastClosingParenthesis;
 };
 
 const collectRecentMessagesWithinBudget = (
@@ -5502,23 +5629,35 @@ const buildChatSystemPrompt = (personaKey: string, persona: Persona) => {
             '5. After answering, move the present moment forward by one meaningful, natural beat without hijacking the user, rushing the timeline, or inventing a major plot turn.',
         ].join('\n'),
         [
+            'Speaker and participant ownership (apply on every turn):',
+            `- Your only first-person identity is ${persona.name}. In your output, 我 / I / me always means ${persona.name}; 你 / you normally means the user. Never swap these identities.`,
+            `- In a user message, 我 / I / me belongs to the user, while 你 / you normally addresses ${persona.name} unless the user explicitly names another addressee.`,
+            '- Every other named person is a distinct third-party character. Keep each person’s name, actions, dialogue, knowledge, relationships, and pronouns separate from both the user and the active character.',
+            '- Resolve 他 / 她 / they from the nearest clear named person and the established scene. When more than one person could match, use names in the reply instead of ambiguous pronouns.',
+            '- User-written narration describes what enters or changes in the scene. User-written dialogue remains the user’s dialogue; never reassign it to the active character or an NPC.',
+            '- When the user introduces, sees, calls, greets, or speaks to a third party, that NPC becomes active immediately. You may write the NPC’s plausible dialogue and actions as well as the active character’s reaction, but never write the user’s next response.',
+            `- Role-ownership example: if the user writes “我們見到一個同學，一齊去打招呼。Hi Peter”, Peter is an NPC being greeted. The reply must contain a clearly attributed line such as Peter：「好耐冇見！」, then show ${persona.name} reacting or joining in; it must not treat ${persona.name} as Peter or ignore him.`,
+        ].join('\n'),
+        [
             'Private continuity check before every reply (never print this checklist):',
-            '- Identify the newest cue, current location, active participants, last completed action, emotional temperature, and any unanswered question.',
+            '- Build a private participant ledger: active character, user, every present third party, who spoke each quoted line, current location, last completed action, emotional temperature, and unanswered questions.',
             '- Notice the previous reply’s opening and main physical or emotional beat, then choose different wording and a genuinely new beat for this turn.',
             '- Distinguish remote texting from physical co-presence. Never see, touch, or react to something at the user’s location unless arrival or co-presence is already established.',
             '- Respect elapsed time. Starting a journey, wait, preparation, or other time-consuming action is one beat; do not also arrive or finish it in the same reply unless the user explicitly advances time.',
             '- If the user changes topic, place, reality layer, or intention, follow that change immediately instead of finishing the old script.',
+            '- In a long conversation, treat earlier completed scenes as history rather than a script to replay. Keep durable facts, but let the current scene, vocabulary, body positions, and emotional beat evolve.',
         ].join('\n'),
         [
             'Natural reply rules:',
             '- Use Traditional Chinese and the regional voice specified by the character.',
             '- Write a complete and satisfying reply of whatever length the moment needs; there is no target word count, and the reply must never end mid-sentence.',
             '- In scene-based conversation, normally combine meaningful spoken dialogue with fresh parenthetical action, expression, sensory environment, physical distance, or a brief in-character inner reaction. Do not merely say the minimum necessary line.',
-            '- When established third parties are present and relevant, let them react, move, or speak naturally while keeping the user and active character central. Never invent an irrelevant person just to fill space.',
+            '- When third parties are introduced or present and relevant, let them react, move, and speak naturally while keeping the user and active character central. Make speaker changes unmistakable through names or clear narration. Never invent an irrelevant person just to fill space.',
             '- Let detail serve the live interaction: add one natural development, invitation, observation, or emotional shift rather than padding, summarizing, or writing a detached novel chapter.',
             '- Never decide the user’s dialogue, actions, feelings, or consent. Leave room for the user to respond.',
             '- Do not invent prior dates, promises, relationship milestones, or shared events as facts. Express an unestablished detail as a wish, proposal, question, or imagination instead.',
             '- Do not repeat the previous opening, scene beat, pose, reassurance, or closing question; do not stall in the same emotional state or answer an older request.',
+            '- Do not end every reply with another question, menu of choices, invitation, or “what will you do?” prompt. Vary endings with a completed action, observation, decision, new NPC response, environmental change, or a natural pause.',
             '- A character may resist, hesitate, joke, or disagree, but must still communicate and react meaningfully rather than stonewalling.',
             '- Do not mention prompts, rules, models, retries, or being an assistant.',
         ].join('\n'),
@@ -5647,6 +5786,30 @@ const CC_CANTONESE_POLISH_PROMPT = [
     '不要解釋或評論，只輸出校稿後的完整回覆。',
 ].join('\n');
 
+const TRADITIONAL_CHARACTER_REPLACEMENTS: Record<string, string> = {
+    见: '見', 车: '車', 灯: '燈', 闪: '閃', 两: '兩', 这: '這', 那: '那',
+    说: '說', 话: '話', 门: '門', 开: '開', 关: '關', 时: '時', 问: '問',
+    点: '點', 发: '發', 会: '會', 听: '聽', 让: '讓', 给: '給', 么: '麼',
+    过: '過', 还: '還', 个: '個', 温: '溫', 头: '頭', 进: '進', 离: '離',
+    远: '遠', 亲: '親', 爱: '愛', 欢: '歡', 应: '應', 为: '為', 与: '與',
+    从: '從', 觉: '覺', 气: '氣', 声: '聲', 脸: '臉', 长: '長', 轻: '輕',
+    对: '對', 体: '體', 们: '們', 边: '邊', 镜: '鏡', 数: '數', 据: '據',
+    码: '碼', 优: '優', 网: '網', 该: '該', 实: '實', 现: '現', 术: '術',
+    书: '書', 画: '畫', 东: '東', 风: '風', 叶: '葉', 线: '線', 专: '專',
+    业: '業', 处: '處', 经: '經', 济: '濟', 动: '動', 阳: '陽', 阴: '陰',
+    云: '雲', 变: '變', 认: '認', 识: '識', 级: '級', 归: '歸', 顺: '順',
+    写: '寫', 读: '讀', 买: '買', 卖: '賣', 师: '師', 赶: '趕', 礼: '禮',
+    继: '繼', 续: '續', 张: '張', 赵: '趙', 刘: '劉', 陈: '陳', 备: '備',
+    选: '選', 样: '樣', 种: '種', 记: '記', 压: '壓', 务: '務', 围: '圍',
+};
+
+const normalizeTraditionalChineseLeaks = (text: string) => {
+    return text.replace(
+        new RegExp(`[${Object.keys(TRADITIONAL_CHARACTER_REPLACEMENTS).join('')}]`, 'gu'),
+        character => TRADITIONAL_CHARACTER_REPLACEMENTS[character] || character,
+    );
+};
+
 const normalizeCcCantoneseLeaks = (text: string) => {
     const phraseReplacements: Array<[RegExp, string]> = [
         [/頭發/gu, '頭髮'],
@@ -5671,20 +5834,7 @@ const normalizeCcCantoneseLeaks = (text: string) => {
         [/看到/gu, '見到'],
         [/跟其他人/gu, '同其他人'],
     ];
-    const simplifiedCharacters: Record<string, string> = {
-        见: '見', 车: '車', 灯: '燈', 闪: '閃', 两: '兩', 这: '這',
-        说: '說', 话: '話', 门: '門', 开: '開', 关: '關', 时: '時',
-        点: '點', 发: '發', 会: '會', 听: '聽', 让: '讓', 给: '給',
-        过: '過', 还: '還', 个: '個', 温: '溫', 头: '頭', 进: '進',
-        远: '遠', 亲: '親', 爱: '愛', 欢: '歡', 应: '應', 为: '為',
-        从: '從', 觉: '覺', 气: '氣', 声: '聲', 脸: '臉', 长: '長',
-        对: '對', 体: '體', 们: '們',
-    };
-
-    let normalized = text.replace(
-        new RegExp(`[${Object.keys(simplifiedCharacters).join('')}]`, 'gu'),
-        character => simplifiedCharacters[character] || character,
-    );
+    let normalized = normalizeTraditionalChineseLeaks(text);
     phraseReplacements.forEach(([pattern, replacement]) => {
         normalized = normalized.replace(pattern, replacement);
     });
@@ -5792,7 +5942,7 @@ const continueTruncatedChatReply = async (
 const getRecentAssistantRepliesForPersona = (
     personaKey: string,
     assistantMode: boolean,
-    limit = 4,
+    limit = 6,
 ) => {
     const history = memoryManager.getChatHistory(personaKey);
     const replies: string[] = [];
@@ -5815,10 +5965,20 @@ const runConversationGeneration = async (
 ): Promise<string> => {
     let lastError: Error | null = null;
     let failedCandidate = '';
-    const systemPrompt = assistantMode
+    const baseSystemPrompt = assistantMode
         ? buildAssistantSystemPrompt()
         : buildChatSystemPrompt(request.personaKey, request.persona);
     const recentAssistantReplies = getRecentAssistantRepliesForPersona(request.personaKey, assistantMode);
+    const addressedNpcNames = assistantMode
+        ? []
+        : extractDirectlyAddressedNpcNames(latestUserMessage, request.persona.name);
+    const npcSpeechRequirement = buildNpcSpeechRequirement(addressedNpcNames);
+    const turnOwnershipRequirement = assistantMode
+        ? ''
+        : buildImmediateTurnOwnershipRequirement(request.persona.name, latestUserMessage);
+    const systemPrompt = [baseSystemPrompt, turnOwnershipRequirement, npcSpeechRequirement]
+        .filter(Boolean)
+        .join('\n\n');
 
     for (let index = 0; index < models.length; index += 1) {
         const model = models[index];
@@ -5839,16 +5999,16 @@ const runConversationGeneration = async (
                             'Answer the newest user message from scratch. Use a different opening and a genuinely new reaction, action, scene detail, and conclusion.',
                             assistantMode
                                 ? 'Stay direct and useful.'
-                                : 'Keep the character voice, include meaningful dialogue, and develop the current scene without replaying an old beat.',
+                                : 'Rebuild the participant ledger before answering. Keep the character voice, respond to any newly introduced NPC, include meaningful dialogue, and develop the current scene without replaying an old beat or ending with the same kind of question.',
+                            turnOwnershipRequirement,
+                            npcSpeechRequirement,
                             failedCandidate ? `Rejected attempt (do not copy):\n${failedCandidate.slice(0, 800)}` : '',
                         ].filter(Boolean).join('\n'),
                     });
                 }
 
-                messages.push(
-                    ...getRecentChatMessages(request.personaKey, latestUserMessage, assistantMode),
-                    { role: 'user', content: latestUserMessage },
-                );
+                messages.push(...getRecentChatMessages(request.personaKey, latestUserMessage, assistantMode));
+                messages.push({ role: 'user', content: latestUserMessage });
 
                 const result = await generateChatTextWithTimeout({
                     model,
@@ -5900,10 +6060,17 @@ const runConversationGeneration = async (
                     finishReason = continuation.finishReason;
                 }
 
+                if (!assistantMode) {
+                    cleanedText = normalizeTraditionalChineseLeaks(cleanedText);
+                }
+
                 const repeatsRecentReply = (candidate: string) => {
                     return recentAssistantReplies.some(previousReply => {
                         return repliesAreTooSimilar(candidate, previousReply) ||
-                            (!assistantMode && replyReusesOpeningOrNarrativeBeat(candidate, previousReply));
+                            (!assistantMode && (
+                                replyReusesOpeningOrNarrativeBeat(candidate, previousReply)
+                                || replyReusesCompletedClause(candidate, previousReply)
+                            ));
                     });
                 };
                 if (
@@ -5916,6 +6083,19 @@ const runConversationGeneration = async (
 
                 if (!assistantMode && request.personaKey === 'cc') {
                     cleanedText = await polishCcReply(request, cleanedText);
+                }
+
+                if (
+                    addressedNpcNames.length > 0
+                    && !replyContainsAttributedNpcSpeech(cleanedText, addressedNpcNames)
+                ) {
+                    failedCandidate = cleanedText;
+                    throw new Error(`Missing attributed NPC speech from ${model}.`);
+                }
+
+                if (!assistantMode && replyBreaksSpeakerOwnership(cleanedText)) {
+                    failedCandidate = cleanedText;
+                    throw new Error(`Broken speaker ownership from ${model}.`);
                 }
 
                 if (

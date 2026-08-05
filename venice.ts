@@ -94,7 +94,7 @@ export const VENICE_API_KEY = import.meta.env.DEV
   ? import.meta.env.VITE_VENICE_API_KEY || ''
   : '';
 export const VENICE_CHAT_MODEL =
-  import.meta.env.VITE_VENICE_CHAT_MODEL || 'olafangensan-glm-4.7-flash-heretic';
+  import.meta.env.VITE_VENICE_CHAT_MODEL || 'qwen-3-6-plus';
 export const VENICE_CHAT_QUALITY_FALLBACK_MODEL =
   import.meta.env.VITE_VENICE_CHAT_QUALITY_FALLBACK_MODEL || 'gemma-4-uncensored';
 export const VENICE_CC_MODEL =
