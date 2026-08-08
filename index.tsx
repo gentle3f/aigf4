@@ -589,6 +589,7 @@ type ActiveChatRequest = {
     personaKey: string;
     persona: Persona;
     mode: ChatMode;
+    characterPhotoRequest?: boolean;
     controller: AbortController;
     startedAt: number;
 };
@@ -7093,18 +7094,6 @@ type CharacterPhotoProposalDraft = {
     aspectRatio: CharacterPhotoProposal['aspectRatio'];
 };
 
-const isCharacterPhotoRequest = (text: string) => {
-    const normalized = text.trim();
-    if (!normalized) return false;
-    if (/(?:不要|唔好|別|毋須|don't|do not)\s*.{0,12}(?:拍|影|傳|send|take)/iu.test(normalized)) {
-        return false;
-    }
-    if (/\b(?:can|may|should|could)\s+i\s+(?:send|show|upload)\b.{0,40}\b(?:photo|picture|pic|selfie|image)\b/iu.test(normalized)) {
-        return false;
-    }
-    return /(?:可以|可唔可以|能不能|可否|請|麻煩|幫我|想你|我要你|你可|你能|你幫).{0,28}(?:拍|影|自拍|傳|send|寄).{0,18}(?:相|照片|相片|自拍|圖片)|^(?:拍|影|自拍|傳|send|寄).{0,22}(?:相|照片|相片|自拍|圖片)|(?:相|照片|相片|自拍).{0,18}(?:俾|給|傳|send).{0,8}(?:我|me)|\b(?:can|could|would|will)\s+(?:you|u)\b.{0,55}\b(?:take|send|show|share|snap|shoot)\b.{0,35}\b(?:photo|picture|pic|selfie|image|nude)\b|^(?:please\s+|pls\s+)?(?:take|send|show|share|snap|shoot)\b.{0,55}\b(?:photo|picture|pic|selfie|image|nude)\b|\bi\s+(?:want|would like)\b.{0,35}\b(?:photo|picture|pic|selfie|image)\b.{0,30}\b(?:of you|from you)\b/iu.test(normalized);
-};
-
 const extractPhotoProposalSection = (text: string, tag: string) => {
     const escapedTag = escapeRegExp(tag);
     return text.match(new RegExp(`<${escapedTag}>\\s*([\\s\\S]*?)\\s*</${escapedTag}>`, 'iu'))?.[1]?.trim() || '';
@@ -7629,7 +7618,7 @@ const getResponse = async (
     hideError();
 
     try {
-        if (request.mode === 'character' && isCharacterPhotoRequest(triggeringMessage)) {
+        if (request.mode === 'character' && request.characterPhotoRequest) {
             const result = await buildCharacterPhotoProposal(request, triggeringMessage);
             if (!isActiveChatRequest(request)) return;
             const botContent: Content = { text: result.text, photoProposal: result.proposal };
@@ -7671,7 +7660,7 @@ const getResponse = async (
     }
 };
 
-const sendMessage = async () => {
+const sendMessage = async ({ characterPhotoRequest = false }: { characterPhotoRequest?: boolean } = {}) => {
     if (USES_VENICE_PROXY_AUTH && !isUnlocked) {
         handleAuthRequired('\u8acb\u5148\u8f38\u5165\u5bc6\u78bc\u5f8c\u518d\u4f7f\u7528\u804a\u5929\u3002');
         return;
@@ -7742,6 +7731,7 @@ const sendMessage = async () => {
     const persona = currentPersona as Persona;
     memoryManager.addMessage(personaKey, 'user', userContent);
     const request = beginChatRequest(personaKey, persona, assistantMode ? 'assistant' : 'character');
+    request.characterPhotoRequest = !assistantMode && characterPhotoRequest;
     await getResponse(request, userMessage, assistantMode ? selectedAssistantModel : undefined);
 };
 
@@ -7837,7 +7827,7 @@ function renderAlbum() {
     albumGridContainer.innerHTML = '';
 
     if (albumPhotos.length === 0) {
-        albumGridContainer.innerHTML = `<p class="text-gray-400 col-span-full text-center py-8">私人相簿目前是空的。你可以在聊天中請 ${currentPersona.name} 拍照。</p>`;
+        albumGridContainer.innerHTML = `<p class="text-gray-400 col-span-full text-center py-8">私人相簿目前是空的。請從功能選單選擇「請角色拍照」，再向 ${currentPersona.name} 說明想收到的照片。</p>`;
         albumActions.classList.add('hidden');
         return;
     }
@@ -8567,14 +8557,11 @@ const generatePhotoFromPrompt = async () => {
         return;
     }
     photoPromptInput.setCustomValidity('');
-    const userMessage = isCharacterPhotoRequest(requestText)
-        ? requestText
-        : `請你構思並拍一張照片給我：${requestText}`;
     closePhotoPromptModal();
-    messageInput.value = userMessage;
+    messageInput.value = requestText;
     resetMessageInput();
     updateSendButtonState();
-    await sendMessage();
+    await sendMessage({ characterPhotoRequest: true });
 };
 
 // --- Event Listeners ---
@@ -8717,7 +8704,9 @@ const setupEventListeners = () => {
 
     backButton.addEventListener('click', navigateBackToSelectionView);
     window.addEventListener('popstate', handleBrowserPopState);
-    sendButton.addEventListener('click', sendMessage);
+    sendButton.addEventListener('click', () => {
+        void sendMessage();
+    });
     messageInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
