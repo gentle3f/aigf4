@@ -46,6 +46,14 @@ The browser never receives `VENICE_API_KEY` in proxy mode.
 - Generated images stay in the current browser session only and are not written to
   chat history, `localStorage`, or exported ZIP files.
 
+## Character photos
+
+- Default, imported, and random characters recognize direct photo/selfie requests in chat.
+- The character first proposes one context-aware image prompt; no image request is sent until the user approves it.
+- Every proposal can be approved, declined, or edited inline, with the estimated Venice cost shown before approval.
+- Existing character avatars are used as edit references when available so generated photos retain the same face.
+- Finished photos are stored in IndexedDB, appear in the character album, and are bundled under `photos/` during chat export/import without inflating localStorage JSON.
+
 ## Video studio
 
 - Image-to-video and text-to-video both default to Wan 2.7 Enhanced.

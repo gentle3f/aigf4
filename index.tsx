@@ -1,5 +1,15 @@
 
-import { MemoryManager, cleanAiResponse, Persona, Interest, POLICY_VIOLATION, DIARY_CHECKPOINT, ChatMessage } from "./managers.js";
+import {
+    CharacterPhotoProposal,
+    ChatMessage,
+    Content,
+    DIARY_CHECKPOINT,
+    Interest,
+    MemoryManager,
+    Persona,
+    POLICY_VIOLATION,
+    cleanAiResponse,
+} from "./managers.js";
 import { FileManager } from "./fileManager.js";
 import { coreInstruction, VENICE_ASSISTANT_PERSONA_KEY } from "./personas.tsx";
 import {
@@ -43,6 +53,11 @@ import {
     VeniceVideoModelSummary,
 } from "./veniceVideo.js";
 import { createRandomAdultFemalePersona } from "./randomPersona.js";
+import {
+    deleteCharacterPhotoAsset,
+    getCharacterPhotoBlob,
+    saveCharacterPhotoAsset,
+} from "./photoStore.js";
 
 
 declare var JSZip: any;
@@ -372,7 +387,13 @@ let attachedGift: { file: File, dataUrl: string } | null = null;
 let isDeletingPersona = false;
 let currentProposal: { location: string, duration: number } | null = null;
 let datingModule: any;
-let albumPhotos: { imageUrl: string, caption: string, historyIndex: number }[] = [];
+let albumPhotos: {
+    imageUrl?: string;
+    imageAssetId?: string;
+    caption: string;
+    prompt: string;
+    historyIndex: number;
+}[] = [];
 let selectedPhotoIndices: Set<number> = new Set();
 let isGodModeActive = false;
 let godModeHistory: ChatMessage[] = [];
@@ -405,6 +426,9 @@ let imageSource: ImageStudioSource | null = null;
 let imageResults: ImageStudioResult[] = [];
 let imageRequestController: AbortController | null = null;
 let isImageRequestRunning = false;
+let characterPhotoRequestController: AbortController | null = null;
+let activeCharacterPhotoProposalId: string | null = null;
+const characterPhotoObjectUrls = new Map<string, string>();
 let videoStudioMode: VeniceVideoMode = 'image-to-video';
 let videoModels: Record<VeniceVideoMode, VeniceVideoModelSummary[]> = {
     'image-to-video': [],
@@ -466,6 +490,7 @@ const VIDEO_TEXT_MODEL_STORAGE_KEY = 'veniceVideoTextModel';
 const VIDEO_ADULT_CONFIRM_STORAGE_KEY = 'veniceVideoAdultConfirmed';
 const VIDEO_PENDING_JOB_STORAGE_KEY = 'veniceVideoPendingJobV1';
 const RANDOM_PERSONA_VARIATION_HISTORY_KEY = 'aigf4RandomPersonaVariationsV2';
+const CHARACTER_PHOTO_PROMPT_MAX_LENGTH = 1500;
 const VIDEO_PROMPT_OPTIMIZER_TIMEOUT_MS = 45_000;
 const VIDEO_PROMPT_OPTIMIZER_ATTEMPT_TIMEOUT_MS = 15_000;
 const VIDEO_POLL_INTERVAL_MS = 5_000;
@@ -2125,13 +2150,18 @@ const saveMimicPersona = () => {
     startChat(key, null, 'push');
 };
 
-const deleteCustomPersona = (key: string) => {
+const deleteCustomPersona = async (key: string) => {
     if (isDeletingPersona) return;
     if (!key.startsWith('custom_')) return;
 
     isDeletingPersona = true;
 
     try {
+        const history = memoryManager.getChatHistory(key);
+        if (currentPersonaKey === key && characterPhotoRequestController) {
+            characterPhotoRequestController.abort();
+        }
+        await deleteCharacterPhotoAssetsForHistory(history);
         if (memoryManager.deleteCustomPersona(key)) {
             renderPersonaList();
         }
@@ -2217,7 +2247,7 @@ const renderPersonaList = () => {
 
             const persona = memoryManager.getPersona(key);
             if (persona && confirm(`確定要刪除 ${persona.name} 嗎？這個動作無法復原。`)) {
-                deleteCustomPersona(key);
+                void deleteCustomPersona(key);
             }
         });
     });
@@ -4508,7 +4538,7 @@ const updateChatModeControls = (key: string) => {
     assistantModelBar.classList.toggle('hidden', !assistantMode);
     messageInput.placeholder = assistantMode ? '問 Venice AI...' : '輸入訊息...';
 
-    [memoryBtn, personaSettingsBtn, changeAvatarBtn, albumBtn, newSceneBtn, downloadImagesBtn].forEach(element => {
+    [memoryBtn, personaSettingsBtn, changeAvatarBtn, albumBtn, takePhotoBtn, newSceneBtn, downloadImagesBtn].forEach(element => {
         element.classList.toggle('hidden', assistantMode);
     });
 
@@ -4602,6 +4632,30 @@ const renderPersonaSettingsAvatar = () => {
     );
 };
 
+const recoverInterruptedPhotoProposals = (personaKey: string, history: ChatMessage[]) => {
+    let changed = false;
+    const recovered = history.map(message => {
+        const proposal = message.content.photoProposal;
+        if (!proposal || proposal.status !== 'generating' || proposal.id === activeCharacterPhotoProposalId) {
+            return message;
+        }
+        changed = true;
+        return {
+            ...message,
+            content: {
+                ...message.content,
+                photoProposal: {
+                    ...proposal,
+                    status: 'failed' as const,
+                    error: '上次生成在頁面關閉時中斷，可以按「重試生成」繼續。',
+                },
+            },
+        };
+    });
+    if (changed) memoryManager.setChatHistory(personaKey, recovered);
+    return recovered;
+};
+
 const startChat = (key: string, restoredHistory: any[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
     cancelActiveChatRequest();
     const selectedPersona = memoryManager.getPersona(key);
@@ -4623,11 +4677,12 @@ const startChat = (key: string, restoredHistory: any[] | null = null, historyMod
     renderChatHeaderAvatar();
 
     chatContainer.innerHTML = '';
-    const chatHistory = restoredHistory || memoryManager.getChatHistory(key);
+    let chatHistory = restoredHistory || memoryManager.getChatHistory(key);
 
     if (restoredHistory) {
         memoryManager.setChatHistory(key, restoredHistory);
     }
+    chatHistory = recoverInterruptedPhotoProposals(key, chatHistory);
 
     chatHistory.forEach(message => {
         if (message.role === 'user') {
@@ -4801,7 +4856,194 @@ const renderAssistantMarkdown = (container: HTMLElement, text: string) => {
     flushCode();
 };
 
-const appendMessage = (content: { text?: string, imageUrl?: string }, sender: 'user' | 'bot' | 'system' | 'god-mode'): HTMLElement => {
+const getCharacterPhotoObjectUrl = async (assetId: string) => {
+    const cachedUrl = characterPhotoObjectUrls.get(assetId);
+    if (cachedUrl) return cachedUrl;
+
+    const blob = await getCharacterPhotoBlob(assetId);
+    if (!blob) return null;
+    const url = URL.createObjectURL(blob);
+    characterPhotoObjectUrls.set(assetId, url);
+    return url;
+};
+
+const getContentImageUrl = async (content: Content) => {
+    if (content.imageUrl) return content.imageUrl;
+    return content.imageAssetId ? getCharacterPhotoObjectUrl(content.imageAssetId) : null;
+};
+
+const deleteCharacterPhotoAssetsForHistory = async (history: ChatMessage[]) => {
+    const assetIds = Array.from(new Set(history
+        .map(message => message.content.imageAssetId)
+        .filter((assetId): assetId is string => Boolean(assetId))));
+    await Promise.all(assetIds.map(async assetId => {
+        const objectUrl = characterPhotoObjectUrls.get(assetId);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        characterPhotoObjectUrls.delete(assetId);
+        await deleteCharacterPhotoAsset(assetId);
+    }));
+};
+
+const findPhotoProposalMessage = (personaKey: string, proposalId: string) => {
+    const history = memoryManager.getChatHistory(personaKey);
+    const historyIndex = history.findIndex(message => message.content.photoProposal?.id === proposalId);
+    return historyIndex === -1 ? null : { history, historyIndex, message: history[historyIndex] };
+};
+
+const updatePhotoProposal = (
+    personaKey: string,
+    proposalId: string,
+    updates: Partial<CharacterPhotoProposal>,
+) => {
+    const found = findPhotoProposalMessage(personaKey, proposalId);
+    if (!found?.message.content.photoProposal) return null;
+    const proposal = { ...found.message.content.photoProposal, ...updates };
+    found.history[found.historyIndex] = {
+        ...found.message,
+        content: { ...found.message.content, photoProposal: proposal },
+    };
+    memoryManager.setChatHistory(personaKey, found.history);
+    return proposal;
+};
+
+const refreshPhotoProposalCard = (proposalId: string) => {
+    if (!currentPersonaKey) return;
+    const proposal = findPhotoProposalMessage(currentPersonaKey, proposalId)?.message.content.photoProposal;
+    if (!proposal) return;
+    chatContainer.querySelectorAll<HTMLElement>('[data-photo-proposal-id]').forEach(card => {
+        if (card.dataset.photoProposalId === proposalId) {
+            card.replaceWith(createPhotoProposalCard(proposal));
+        }
+    });
+};
+
+const createPhotoProposalAction = (label: string, className: string) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `character-photo-action ${className}`;
+    button.textContent = label;
+    return button;
+};
+
+const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
+    const card = document.createElement('section');
+    card.className = `character-photo-proposal is-${proposal.status}`;
+    card.dataset.photoProposalId = proposal.id;
+
+    const eyebrow = document.createElement('p');
+    eyebrow.className = 'character-photo-eyebrow';
+    eyebrow.textContent = '照片草稿 · 確認後才會生成';
+
+    const prompt = document.createElement('p');
+    prompt.className = 'character-photo-prompt';
+    prompt.textContent = proposal.prompt;
+
+    const meta = document.createElement('p');
+    meta.className = 'character-photo-meta';
+    const price = typeof proposal.estimatedPriceUsd === 'number'
+        ? `預計 US$${formatModelPrice(proposal.estimatedPriceUsd)}`
+        : '實際費用由 Venice 回傳';
+    meta.textContent = `${proposal.useAvatarReference ? '會參考角色頭像保持外貌' : '依角色外貌設定生成'} · ${proposal.aspectRatio} · ${price}`;
+
+    card.append(eyebrow, prompt, meta);
+
+    if (proposal.status === 'generating') {
+        const progress = document.createElement('div');
+        progress.className = 'character-photo-progress';
+        progress.innerHTML = '<span class="character-photo-spinner" aria-hidden="true"></span><span>角色正在拍照並傳送...</span>';
+        card.appendChild(progress);
+        const actions = document.createElement('div');
+        actions.className = 'character-photo-actions';
+        const stopButton = createPhotoProposalAction('停止生成', 'is-decline');
+        stopButton.addEventListener('click', () => {
+            if (activeCharacterPhotoProposalId === proposal.id) characterPhotoRequestController?.abort();
+        });
+        actions.appendChild(stopButton);
+        card.appendChild(actions);
+        return card;
+    }
+
+    if (proposal.status === 'generated') {
+        const status = document.createElement('p');
+        status.className = 'character-photo-result is-success';
+        status.textContent = '照片已生成並加入聊天與相簿。';
+        card.appendChild(status);
+        return card;
+    }
+
+    if (proposal.status === 'declined') {
+        const status = document.createElement('p');
+        status.className = 'character-photo-result';
+        status.textContent = '已取消，沒有生成圖片或產生圖片費用。';
+        card.appendChild(status);
+        return card;
+    }
+
+    if (proposal.status === 'failed') {
+        const status = document.createElement('p');
+        status.className = 'character-photo-result is-error';
+        status.textContent = proposal.error || '這次生成失敗，沒有新增照片。';
+        card.appendChild(status);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'character-photo-actions';
+    const approveButton = createPhotoProposalAction(
+        proposal.status === 'failed' ? '重試生成' : '是，生成照片',
+        'is-approve',
+    );
+    approveButton.disabled = Boolean(activeCharacterPhotoProposalId);
+    approveButton.addEventListener('click', () => void approveCharacterPhoto(proposal.id));
+
+    const declineButton = createPhotoProposalAction('不要', 'is-decline');
+    declineButton.disabled = Boolean(activeCharacterPhotoProposalId);
+    declineButton.addEventListener('click', () => declineCharacterPhoto(proposal.id));
+
+    const editButton = createPhotoProposalAction('修改 Prompt', 'is-edit');
+    editButton.disabled = Boolean(activeCharacterPhotoProposalId);
+    editButton.addEventListener('click', () => {
+        const editor = document.createElement('textarea');
+        editor.className = 'character-photo-prompt-editor';
+        editor.value = proposal.prompt;
+        editor.maxLength = CHARACTER_PHOTO_PROMPT_MAX_LENGTH;
+
+        const editorActions = document.createElement('div');
+        editorActions.className = 'character-photo-actions';
+        const saveButton = createPhotoProposalAction('儲存修改', 'is-approve');
+        const cancelButton = createPhotoProposalAction('取消修改', 'is-decline');
+        saveButton.addEventListener('click', () => {
+            const nextPrompt = editor.value.trim();
+            if (!nextPrompt) {
+                editor.setCustomValidity('Prompt 不能留空。');
+                editor.reportValidity();
+                return;
+            }
+            if (nextPrompt.length > CHARACTER_PHOTO_PROMPT_MAX_LENGTH) {
+                editor.setCustomValidity(`Prompt 不可超過 ${CHARACTER_PHOTO_PROMPT_MAX_LENGTH} 字元。`);
+                editor.reportValidity();
+                return;
+            }
+            if (!currentPersonaKey) return;
+            updatePhotoProposal(currentPersonaKey, proposal.id, {
+                prompt: nextPrompt,
+                status: 'pending',
+                error: undefined,
+            });
+            refreshPhotoProposalCard(proposal.id);
+        });
+        cancelButton.addEventListener('click', () => refreshPhotoProposalCard(proposal.id));
+        editorActions.append(saveButton, cancelButton);
+        prompt.replaceWith(editor);
+        actions.replaceWith(editorActions);
+        editor.focus();
+    });
+
+    actions.append(approveButton, declineButton, editButton);
+    card.appendChild(actions);
+    return card;
+};
+
+const appendMessage = (content: Content, sender: 'user' | 'bot' | 'system' | 'god-mode'): HTMLElement => {
     const isSystemMessage = sender === 'system';
     
     let messageWrapper: HTMLElement;
@@ -4851,11 +5093,22 @@ const appendMessage = (content: { text?: string, imageUrl?: string }, sender: 'u
                 bubble.appendChild(textElement);
             }
         }
-        if (content.imageUrl) {
+        if (sender === 'bot' && content.photoProposal) {
+            bubble.appendChild(createPhotoProposalCard(content.photoProposal));
+        }
+        if (content.imageUrl || content.imageAssetId) {
             const imageElement = document.createElement('img');
-            imageElement.src = content.imageUrl;
-            imageElement.className = 'chat-image mt-2 cursor-pointer';
-            imageElement.onclick = () => openPhotoViewer(content.imageUrl!, content.text || "Generated Image");
+            imageElement.className = 'chat-image mt-2 cursor-pointer is-loading';
+            imageElement.alt = content.text || '角色傳送的照片';
+            void getContentImageUrl(content).then(imageUrl => {
+                if (!imageUrl || !imageElement.isConnected) return;
+                imageElement.src = imageUrl;
+                imageElement.classList.remove('is-loading');
+                imageElement.onclick = () => openPhotoViewer(
+                    imageUrl,
+                    content.imagePrompt || content.text || '角色傳送的照片',
+                );
+            });
             bubble.appendChild(imageElement);
         }
 
@@ -6122,6 +6375,178 @@ const runConversationGeneration = async (
     throw lastError || new Error('Venice reply invalid.');
 };
 
+type CharacterPhotoProposalDraft = {
+    reply: string;
+    scenePrompt: string;
+    caption: string;
+    aspectRatio: CharacterPhotoProposal['aspectRatio'];
+};
+
+const isCharacterPhotoRequest = (text: string) => {
+    const normalized = text.trim();
+    if (!normalized) return false;
+    if (/(?:不要|唔好|別|毋須|don't|do not)\s*.{0,12}(?:拍|影|傳|send|take)/iu.test(normalized)) {
+        return false;
+    }
+    if (/\b(?:can|may|should|could)\s+i\s+(?:send|show|upload)\b.{0,40}\b(?:photo|picture|pic|selfie|image)\b/iu.test(normalized)) {
+        return false;
+    }
+    return /(?:可以|可唔可以|能不能|可否|請|麻煩|幫我|想你|我要你|你可|你能|你幫).{0,28}(?:拍|影|自拍|傳|send|寄).{0,18}(?:相|照片|相片|自拍|圖片)|^(?:拍|影|自拍|傳|send|寄).{0,22}(?:相|照片|相片|自拍|圖片)|(?:相|照片|相片|自拍).{0,18}(?:俾|給|傳|send).{0,8}(?:我|me)|\b(?:can|could|would|will)\s+(?:you|u)\b.{0,55}\b(?:take|send|show|share|snap|shoot)\b.{0,35}\b(?:photo|picture|pic|selfie|image|nude)\b|^(?:please\s+|pls\s+)?(?:take|send|show|share|snap|shoot)\b.{0,55}\b(?:photo|picture|pic|selfie|image|nude)\b|\bi\s+(?:want|would like)\b.{0,35}\b(?:photo|picture|pic|selfie|image)\b.{0,30}\b(?:of you|from you)\b/iu.test(normalized);
+};
+
+const extractPhotoProposalSection = (text: string, tag: string) => {
+    const escapedTag = escapeRegExp(tag);
+    return text.match(new RegExp(`<${escapedTag}>\\s*([\\s\\S]*?)\\s*</${escapedTag}>`, 'iu'))?.[1]?.trim() || '';
+};
+
+const parseCharacterPhotoProposalDraft = (text: string): CharacterPhotoProposalDraft | null => {
+    const reply = cleanVeniceChatReply(extractPhotoProposalSection(text, 'reply'));
+    const scenePrompt = extractPhotoProposalSection(text, 'prompt')
+        .replace(/^```(?:text)?\s*|\s*```$/giu, '')
+        .trim();
+    const caption = cleanVeniceChatReply(extractPhotoProposalSection(text, 'caption'));
+    const rawRatio = extractPhotoProposalSection(text, 'ratio');
+    const allowedRatios: CharacterPhotoProposal['aspectRatio'][] = ['1:1', '3:4', '4:5', '16:9', '9:16'];
+    const aspectRatio = allowedRatios.includes(rawRatio as CharacterPhotoProposal['aspectRatio'])
+        ? rawRatio as CharacterPhotoProposal['aspectRatio']
+        : '3:4';
+
+    if (!reply || !scenePrompt || !caption || scenePrompt.length < 20) return null;
+    return { reply, scenePrompt, caption, aspectRatio };
+};
+
+const trimPhotoPromptSection = (text: string, maxLength: number) => {
+    const normalized = text.replace(/\s{2,}/gu, ' ').trim();
+    if (normalized.length <= maxLength) return normalized;
+    const clipped = normalized.slice(0, Math.max(1, maxLength - 1));
+    const minimumBoundary = Math.floor(maxLength * 0.62);
+    const sentenceBoundary = Math.max(
+        clipped.lastIndexOf('. '),
+        clipped.lastIndexOf('! '),
+        clipped.lastIndexOf('? '),
+    );
+    const fallbackBoundary = Math.max(clipped.lastIndexOf(', '), clipped.lastIndexOf('; '), clipped.lastIndexOf(' '));
+    const boundary = sentenceBoundary >= minimumBoundary ? sentenceBoundary + 1 : fallbackBoundary;
+    return `${clipped.slice(0, boundary >= minimumBoundary ? boundary : clipped.length).trim().replace(/[,:;]$/u, '')}.`;
+};
+
+const buildCharacterPhotoPrompt = (
+    persona: Persona,
+    scenePrompt: string,
+    useAvatarReference: boolean,
+) => {
+    const identityInstruction = useAvatarReference
+        ? [
+            'Use the supplied reference portrait as the absolute source of truth for the same character identity and face.',
+            'Preserve her recognizable facial structure, age, ethnicity, hair identity, and distinctive features; the requested scene may change pose, expression, camera angle, location, and clothing.',
+            'If any written appearance detail conflicts with the reference portrait, follow the reference portrait.',
+        ].join(' ')
+        : `Character appearance: ${trimPhotoPromptSection(persona.avatarPrompt || persona.description || persona.prompt, 460)}`;
+    const subjectInstruction = `Create one new coherent camera photo of ${persona.name}, the same adult female character.`;
+    const qualityInstruction = 'Keep anatomy, hands, face, lighting, reflections, perspective, and background physically coherent. No collage, duplicate person, captions, interface, text, logo, or watermark.';
+    const fixedLength = identityInstruction.length + subjectInstruction.length + qualityInstruction.length + 40;
+    const scene = trimPhotoPromptSection(scenePrompt, Math.max(280, CHARACTER_PHOTO_PROMPT_MAX_LENGTH - fixedLength));
+    return [
+        identityInstruction,
+        subjectInstruction,
+        `Requested scene and composition: ${scene}`,
+        qualityInstruction,
+    ].join(' ').replace(/\s{2,}/gu, ' ').trim();
+};
+
+const getPreferredCharacterPhotoModel = (mode: VeniceImageMode) => {
+    const preferredId = mode === 'edit' ? VENICE_IMAGE_EDIT_MODEL : VENICE_IMAGE_GENERATE_MODEL;
+    return imageModels[mode].find(model => model.id === preferredId)
+        || imageModels[mode].find(model => model.id === selectedImageModels[mode])
+        || imageModels[mode].find(model => model.traits.includes('most_uncensored'))
+        || imageModels[mode][0];
+};
+
+const buildCharacterPhotoProposal = async (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+): Promise<{ text: string; proposal: CharacterPhotoProposal }> => {
+    const useAvatarReference = Boolean(
+        request.persona.avatarUrl
+        && !request.persona.avatarUrl.startsWith('generating_'),
+    );
+    const systemPrompt = [
+        buildChatSystemPrompt(request.personaKey, request.persona),
+        'The newest user message is a request for the character to take or send a photo.',
+        'Do not generate an image and do not claim the photo has already been taken or sent. Stay fully in character and propose exactly what the character intends to photograph, based on the newest request, current scene, relationship, clothing and physical continuity from recent conversation.',
+        'The proposal may be ordinary, romantic, fantasy, or explicitly adult according to the user request and established context. Preserve direct wording and intent; do not make an ordinary request sexual, and do not sanitize an explicit adult request.',
+        'The English image prompt must describe one still image, with subject count and identity, visible pose/action, expression, clothing or requested state, setting, lighting, camera framing, viewpoint, and relevant objects. Do not invent a new major event or a user action.',
+        'Choose one definite composition yourself. Do not offer multiple unresolved clothing, pose, expression, or scene options; the visible reply and English prompt must describe the same single choice.',
+        'The reply and later caption must use the character’s established Traditional Chinese regional voice. The reply must briefly describe that one chosen photo and naturally ask the user to approve it without mentioning AI, models, policy, generation, or internal prompts.',
+        'Return only these four XML blocks and no other text:',
+        '<reply>in-character approval question</reply>',
+        '<prompt>English still-image scene prompt, 45 to 120 words</prompt>',
+        '<caption>short in-character line to send together with the finished photo</caption>',
+        '<ratio>one of 1:1, 3:4, 4:5, 16:9, 9:16</ratio>',
+    ].join('\n\n');
+    const models = Array.from(new Set([
+        request.personaKey === 'cc' ? VENICE_CC_MODEL : VENICE_CHAT_MODEL,
+        VENICE_CHAT_QUALITY_FALLBACK_MODEL,
+        VENICE_CHAT_FALLBACK_MODEL,
+    ].filter(Boolean)));
+    let draft: CharacterPhotoProposalDraft | null = null;
+    let lastError: Error | null = null;
+
+    for (let modelIndex = 0; modelIndex < models.length && !draft; modelIndex += 1) {
+        const model = models[modelIndex];
+        applyChatRuntimeState(modelIndex === 0 ? 'generating' : 'retrying', '構思照片中...');
+        try {
+            const recentMessages = getRecentChatMessages(request.personaKey, latestUserMessage, false).slice(-24);
+            while (recentMessages[0]?.role === 'assistant') recentMessages.shift();
+            const result = await generateChatTextWithTimeout({
+                model,
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    ...recentMessages,
+                    { role: 'user', content: latestUserMessage },
+                ],
+                temperature: 0.76,
+                topP: 0.92,
+                repetitionPenalty: 1.06,
+                signal: request.controller.signal,
+            });
+            draft = parseCharacterPhotoProposalDraft(result.text);
+            if (!draft) throw new Error(`Invalid photo proposal from ${model}.`);
+        } catch (error) {
+            if (isAbortError(error)) throw error;
+            lastError = error instanceof Error ? error : new Error(String(error));
+        }
+    }
+
+    if (!draft) throw lastError || new Error('角色未能整理照片草稿。');
+    const mode: VeniceImageMode = useAvatarReference ? 'edit' : 'generate';
+    await loadImageModels(mode);
+    const imageModel = getPreferredCharacterPhotoModel(mode);
+    const prompt = buildCharacterPhotoPrompt(request.persona, draft.scenePrompt, useAvatarReference);
+    const reply = request.personaKey === 'cc'
+        ? normalizeCcCantoneseLeaks(draft.reply)
+        : normalizeTraditionalChineseLeaks(draft.reply);
+    const caption = request.personaKey === 'cc'
+        ? normalizeCcCantoneseLeaks(draft.caption)
+        : normalizeTraditionalChineseLeaks(draft.caption);
+
+    return {
+        text: reply,
+        proposal: {
+            id: crypto.randomUUID?.() || `photo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+            prompt,
+            caption,
+            aspectRatio: draft.aspectRatio,
+            status: 'pending',
+            createdAt: Date.now(),
+            useAvatarReference,
+            modelId: imageModel?.id,
+            modelName: imageModel?.name,
+            estimatedPriceUsd: imageModel?.priceUsd,
+        },
+    };
+};
+
 const runCharacterChatGeneration = async (request: ActiveChatRequest, latestUserMessage: string) => {
     const preferredModels = request.personaKey === 'cc'
         ? [
@@ -6250,6 +6675,137 @@ const getGodModeResponse = async (request: ActiveChatRequest) => {
     }
 };
 
+const prepareCharacterAvatarReference = async (persona: Persona) => {
+    if (!persona.avatarUrl || persona.avatarUrl.startsWith('generating_')) return null;
+    const response = await fetch(persona.avatarUrl);
+    if (!response.ok) throw new Error('無法讀取角色頭像。');
+    const sourceBlob = await response.blob();
+    const sourceUrl = URL.createObjectURL(sourceBlob);
+    const image = new Image();
+    image.src = sourceUrl;
+    try {
+        await image.decode();
+        const scale = Math.min(1, 1280 / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(256, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(256, Math.round(image.naturalHeight * scale));
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('瀏覽器無法準備角色頭像。');
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        let blob = await canvasToBlob(canvas, 0.88);
+        if (blob.size > 2_650_000) blob = await canvasToBlob(canvas, 0.68);
+        return blobToBase64(blob);
+    } finally {
+        URL.revokeObjectURL(sourceUrl);
+    }
+};
+
+const declineCharacterPhoto = (proposalId: string) => {
+    if (!currentPersonaKey || activeCharacterPhotoProposalId === proposalId) return;
+    updatePhotoProposal(currentPersonaKey, proposalId, {
+        status: 'declined',
+        error: undefined,
+    });
+    refreshPhotoProposalCard(proposalId);
+};
+
+const approveCharacterPhoto = async (proposalId: string) => {
+    if (!currentPersonaKey || activeCharacterPhotoProposalId) return;
+    const personaKey = currentPersonaKey;
+    const persona = memoryManager.getPersona(personaKey);
+    const found = findPhotoProposalMessage(personaKey, proposalId);
+    const proposal = found?.message.content.photoProposal;
+    if (!persona || !proposal || proposal.status === 'generated' || proposal.status === 'declined') return;
+
+    activeCharacterPhotoProposalId = proposalId;
+    characterPhotoRequestController = new AbortController();
+    updatePhotoProposal(personaKey, proposalId, { status: 'generating', error: undefined });
+    refreshPhotoProposalCard(proposalId);
+
+    try {
+        let sourceImageBase64: string | null = null;
+        if (proposal.useAvatarReference) {
+            sourceImageBase64 = await prepareCharacterAvatarReference(persona);
+            if (!sourceImageBase64) throw new Error('無法讀取角色頭像，請更換頭像後再試。');
+        }
+
+        const mode: VeniceImageMode = sourceImageBase64 ? 'edit' : 'generate';
+        await loadImageModels(mode);
+        const model = getPreferredCharacterPhotoModel(mode);
+        if (!model) throw new Error('目前沒有可用的 Venice 圖片模型。');
+
+        const supportedRatios = model.constraints.aspectRatios || [];
+        const aspectRatio = supportedRatios.includes(proposal.aspectRatio)
+            ? proposal.aspectRatio
+            : model.constraints.defaultAspectRatio || supportedRatios[0];
+        const resolution = model.constraints.defaultResolution || model.constraints.resolutions?.[0];
+        const pixelSize = PIXEL_IMAGE_DIMENSIONS[proposal.aspectRatio] || PIXEL_IMAGE_DIMENSIONS['3:4'];
+        const result = await requestVeniceImage({
+            mode,
+            model: model.id,
+            prompt: proposal.prompt,
+            negativePrompt: mode === 'generate'
+                ? 'unintended duplicated bodies, cloned face, malformed anatomy, deformed hands, distorted face, text, captions, interface, logo, watermark, blurry, low quality'
+                : undefined,
+            sourceImageBase64: sourceImageBase64 || undefined,
+            aspectRatio: mode === 'edit' || supportedRatios.length > 0 ? aspectRatio : undefined,
+            resolution,
+            width: mode === 'generate' && supportedRatios.length === 0 ? pixelSize.width : undefined,
+            height: mode === 'generate' && supportedRatios.length === 0 ? pixelSize.height : undefined,
+            variants: 1,
+            steps: mode === 'generate' ? model.constraints.steps?.default : undefined,
+            adultConfirmed: true,
+            signal: characterPhotoRequestController.signal,
+        });
+        const blob = result.blobs[0];
+        if (!blob) throw new Error('Venice 沒有傳回照片。');
+
+        const assetId = `character-photo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+        await saveCharacterPhotoAsset({
+            id: assetId,
+            personaKey,
+            blob,
+            prompt: proposal.prompt,
+            createdAt: Date.now(),
+        });
+        const price = resolution && typeof model.resolutionPrices[resolution] === 'number'
+            ? model.resolutionPrices[resolution]
+            : model.priceUsd;
+        updatePhotoProposal(personaKey, proposalId, {
+            status: 'generated',
+            modelId: model.id,
+            modelName: model.name,
+            estimatedPriceUsd: price,
+            error: undefined,
+        });
+
+        const photoContent: Content = {
+            text: proposal.caption,
+            imageAssetId: assetId,
+            imagePrompt: proposal.prompt,
+        };
+        memoryManager.addMessage(personaKey, 'model', photoContent);
+        if (currentPersonaKey === personaKey) {
+            refreshPhotoProposalCard(proposalId);
+            appendMessage(photoContent, 'bot');
+            updateAlbumState();
+        }
+    } catch (error) {
+        const message = isAbortError(error)
+            ? '照片生成已停止，可以按「重試生成」再試。'
+            : error instanceof Error ? error.message : '這次照片生成失敗。';
+        updatePhotoProposal(personaKey, proposalId, { status: 'failed', error: message });
+        if (currentPersonaKey === personaKey) {
+            refreshPhotoProposalCard(proposalId);
+            if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
+        }
+    } finally {
+        activeCharacterPhotoProposalId = null;
+        characterPhotoRequestController = null;
+        if (currentPersonaKey === personaKey) refreshPhotoProposalCard(proposalId);
+    }
+};
+
 const getResponse = async (
     request: ActiveChatRequest,
     triggeringMessage: string,
@@ -6258,6 +6814,16 @@ const getResponse = async (
     hideError();
 
     try {
+        if (request.mode === 'character' && isCharacterPhotoRequest(triggeringMessage)) {
+            const result = await buildCharacterPhotoProposal(request, triggeringMessage);
+            if (!isActiveChatRequest(request)) return;
+            const botContent: Content = { text: result.text, photoProposal: result.proposal };
+            memoryManager.addMessage(request.personaKey, 'model', botContent);
+            if (currentPersonaKey === request.personaKey) appendMessage(botContent, 'bot');
+            finishChatRequest(request);
+            return;
+        }
+
         const cleanedText = request.mode === 'assistant'
             ? await runAssistantChatGeneration(request, triggeringMessage, assistantModel || VENICE_ASSISTANT_MODEL)
             : await runCharacterChatGeneration(request, triggeringMessage);
@@ -6433,10 +6999,12 @@ function updateAlbumState() {
     const history = memoryManager.getChatHistory(currentPersonaKey);
     albumPhotos = history
         .map((msg, index) => ({ ...msg, historyIndex: index })) // Add original index
-        .filter(msg => msg.content.imageUrl)
+        .filter(msg => msg.content.imageUrl || msg.content.imageAssetId)
         .map(msg => ({
-            imageUrl: msg.content.imageUrl!,
+            imageUrl: msg.content.imageUrl,
+            imageAssetId: msg.content.imageAssetId,
             caption: msg.content.text || '',
+            prompt: msg.content.imagePrompt || msg.content.text || '',
             historyIndex: msg.historyIndex,
         }));
     
@@ -6449,11 +7017,11 @@ function updateAlbumState() {
 
 function renderAlbum() {
     if (!currentPersona) return;
-    albumModalTitle.textContent = `${currentPersona.name}?�相簿`;
+    albumModalTitle.textContent = `${currentPersona.name} 的相簿`;
     albumGridContainer.innerHTML = '';
 
     if (albumPhotos.length === 0) {
-        albumGridContainer.innerHTML = `<p class="text-gray-400 col-span-full text-center py-8">?�簿?�空?�。在?�天中�? ${currentPersona.name} ?�照來�??�照?�吧�?/p>`;
+        albumGridContainer.innerHTML = `<p class="text-gray-400 col-span-full text-center py-8">相簿目前是空的。你可以在聊天中請 ${currentPersona.name} 拍照。</p>`;
         albumActions.classList.add('hidden');
         return;
     }
@@ -6463,17 +7031,24 @@ function renderAlbum() {
     albumPhotos.forEach((photo, index) => {
         const thumb = document.createElement('div');
         thumb.className = 'album-thumbnail';
-        thumb.innerHTML = `
-            <img src="${photo.imageUrl}" alt="Photo ${index + 1}" class="w-full h-full object-cover">
-            <input type="checkbox" class="thumbnail-checkbox form-checkbox h-5 w-5 text-yellow-500 bg-gray-900/50 border-gray-500 focus:ring-yellow-400 rounded">
-        `;
+        const image = document.createElement('img');
+        image.alt = `${currentPersona.name} 的照片 ${index + 1}`;
+        image.className = 'w-full h-full object-cover is-loading';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'thumbnail-checkbox form-checkbox h-5 w-5 text-yellow-500 bg-gray-900/50 border-gray-500 focus:ring-yellow-400 rounded';
+        thumb.append(image, checkbox);
+        void getContentImageUrl(photo).then(imageUrl => {
+            if (!imageUrl || !image.isConnected) return;
+            image.src = imageUrl;
+            image.classList.remove('is-loading');
+        });
         
-        const checkbox = thumb.querySelector('.thumbnail-checkbox') as HTMLInputElement;
-
         thumb.addEventListener('click', (e) => {
-             if (e.target !== checkbox) {
-                openPhotoViewer(photo.imageUrl, photo.caption);
-            }
+            if (e.target === checkbox) return;
+            void getContentImageUrl(photo).then(imageUrl => {
+                if (imageUrl) openPhotoViewer(imageUrl, photo.prompt || photo.caption);
+            });
         });
         
         checkbox.addEventListener('change', () => {
@@ -6529,13 +7104,15 @@ async function downloadSelectedPhotos() {
     if (selectedPhotoIndices.size === 0) return;
 
     albumDownloadBtn.disabled = true;
-    albumDownloadBtn.textContent = '?��?�?..';
+    albumDownloadBtn.textContent = '打包中...';
     
     const zip = new JSZip();
     const downloadPromises = Array.from(selectedPhotoIndices).map(async (index) => {
         const photo = albumPhotos[index];
-        const response = await fetch(photo.imageUrl);
-        const blob = await response.blob();
+        const blob = photo.imageAssetId
+            ? await getCharacterPhotoBlob(photo.imageAssetId)
+            : await fetch(photo.imageUrl!).then(response => response.blob());
+        if (!blob) return;
         const extension = blob.type.split('/')[1] || 'png';
         zip.file(`photo_${index + 1}.${extension}`, blob);
     });
@@ -6549,7 +7126,7 @@ async function downloadSelectedPhotos() {
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        albumDownloadBtn.textContent = '下�??��??�目';
+        albumDownloadBtn.textContent = '下載選取項目';
         updateAlbumActionButtons();
     });
 }
@@ -6568,19 +7145,28 @@ function showMainAlbumButtons() {
 }
 
 
-function deleteSelectedPhotos() {
+async function deleteSelectedPhotos() {
     if (selectedPhotoIndices.size === 0 || !currentPersonaKey) return;
     
     // Get the history indices of the photos to be deleted
     const historyIndicesToDelete = new Set(
         Array.from(selectedPhotoIndices).map(photoIndex => albumPhotos[photoIndex].historyIndex)
     );
+    const assetIdsToDelete = Array.from(selectedPhotoIndices)
+        .map(photoIndex => albumPhotos[photoIndex].imageAssetId)
+        .filter((assetId): assetId is string => Boolean(assetId));
 
     // Filter the chat history, keeping only messages whose index is NOT in the deletion set
     const currentHistory = memoryManager.getChatHistory(currentPersonaKey);
     const newHistory = currentHistory.filter((_, index) => !historyIndicesToDelete.has(index));
     
     memoryManager.setChatHistory(currentPersonaKey, newHistory);
+    await Promise.all(assetIdsToDelete.map(async assetId => {
+        const objectUrl = characterPhotoObjectUrls.get(assetId);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        characterPhotoObjectUrls.delete(assetId);
+        await deleteCharacterPhotoAsset(assetId);
+    }));
     
     // Refresh the album view
     updateAlbumState();
@@ -6709,7 +7295,11 @@ const startNewScene = () => {
 };
 
 const openPhotoPromptModal = () => {
-    showDisabledFeatureNotice('聊天照片生成');
+    if (!currentPersonaKey || !currentPersona || isAssistantPersonaKey(currentPersonaKey) || isGodModeActive) return;
+    photoPromptInput.value = '';
+    photoPromptModal.classList.remove('hidden');
+    moreOptionsMenu.classList.add('hidden');
+    window.setTimeout(() => photoPromptInput.focus(), 0);
 };
 
 const closePhotoPromptModal = () => {
@@ -6717,7 +7307,21 @@ const closePhotoPromptModal = () => {
 };
 
 const generatePhotoFromPrompt = async () => {
-    showDisabledFeatureNotice('聊天照片生成');
+    const requestText = photoPromptInput.value.trim();
+    if (!requestText) {
+        photoPromptInput.setCustomValidity('請先描述想收到的照片。');
+        photoPromptInput.reportValidity();
+        return;
+    }
+    photoPromptInput.setCustomValidity('');
+    const userMessage = isCharacterPhotoRequest(requestText)
+        ? requestText
+        : `請你構思並拍一張照片給我：${requestText}`;
+    closePhotoPromptModal();
+    messageInput.value = userMessage;
+    resetMessageInput();
+    updateSendButtonState();
+    await sendMessage();
 };
 
 // --- Event Listeners ---
@@ -6855,6 +7459,7 @@ const setupEventListeners = () => {
             if (result.isObjectUrl) URL.revokeObjectURL(result.url);
         });
         if (videoSource) URL.revokeObjectURL(videoSource.previewUrl);
+        characterPhotoObjectUrls.forEach(url => URL.revokeObjectURL(url));
     });
 
     backButton.addEventListener('click', navigateBackToSelectionView);
@@ -6946,9 +7551,11 @@ const setupEventListeners = () => {
     giftUploadInput.addEventListener('change', handleGiftSelection);
     removeGiftBtn.addEventListener('click', removeGift);
 
-    clearChatBtn.addEventListener('click', () => {
+    clearChatBtn.addEventListener('click', async () => {
         if (currentPersonaKey && currentPersona) {
             if (confirm(`\u78ba\u5b9a\u8981\u6e05\u9664 ${currentPersona.name} \u7684\u5c0d\u8a71\u7d00\u9304\u55ce\uff1f`)) {
+                if (characterPhotoRequestController) characterPhotoRequestController.abort();
+                await deleteCharacterPhotoAssetsForHistory(memoryManager.getChatHistory(currentPersonaKey));
                 memoryManager.clearChatHistory(currentPersonaKey);
                 startChat(currentPersonaKey);
             }
@@ -6959,14 +7566,13 @@ const setupEventListeners = () => {
     suggestionButton.addEventListener('click', () => showDisabledFeatureNotice('建議功能'));
     newSceneBtn.addEventListener('click', startNewScene);
     takePhotoBtn.addEventListener('click', () => {
-        showDisabledFeatureNotice('聊天照片生成');
-        moreOptionsMenu.classList.add('hidden');
+        openPhotoPromptModal();
     });
 
     // Photo prompt modal listeners
     closePhotoPromptModalBtn.addEventListener('click', closePhotoPromptModal);
     cancelPhotoGeneration.addEventListener('click', closePhotoPromptModal);
-    generatePhotoBtn.addEventListener('click', () => showDisabledFeatureNotice('聊天照片生成'));
+    generatePhotoBtn.addEventListener('click', () => void generatePhotoFromPrompt());
 
     // Date proposal modal listeners
     acceptDateBtn.addEventListener('click', handleAcceptDate);

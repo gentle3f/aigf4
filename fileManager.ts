@@ -1,5 +1,6 @@
 // fileManager.ts
 import { MemoryManager, ChatMessage, Interest } from './managers.js';
+import { getCharacterPhotoBlob, saveCharacterPhotoAsset } from './photoStore.js';
 
 declare var JSZip: any;
 
@@ -50,6 +51,63 @@ export class FileManager {
         return { ...persona };
     }
 
+    private async addCharacterPhotosToZip(
+        zip: any,
+        chatHistories: { [key: string]: ChatMessage[] },
+    ) {
+        const folder = zip.folder('photos');
+        if (!folder) return;
+
+        const exportedIds = new Set<string>();
+        const tasks: Promise<void>[] = [];
+        Object.entries(chatHistories).forEach(([personaKey, history]) => {
+            history.forEach(message => {
+                const assetId = message.content.imageAssetId;
+                if (!assetId || exportedIds.has(assetId)) return;
+                exportedIds.add(assetId);
+                tasks.push((async () => {
+                    const blob = await getCharacterPhotoBlob(assetId);
+                    if (!blob) return;
+                    const extension = blob.type.split('/')[1] || 'webp';
+                    folder.file(`${personaKey}/${assetId}.${extension}`, blob);
+                })());
+            });
+        });
+        await Promise.all(tasks);
+    }
+
+    private async restoreCharacterPhotosFromZip(zip: any) {
+        const folder = zip.folder('photos');
+        if (!folder) return;
+
+        const promptByAssetId = new Map<string, string>();
+        Object.values(this.memoryManager.getAllChatHistories()).forEach(history => {
+            history.forEach(message => {
+                if (message.content.imageAssetId) {
+                    promptByAssetId.set(message.content.imageAssetId, message.content.imagePrompt || '');
+                }
+            });
+        });
+
+        const tasks: Promise<void>[] = [];
+        folder.forEach((relativePath: string, fileEntry: any) => {
+            if (fileEntry.dir) return;
+            const pathParts = relativePath.split('/').filter(Boolean);
+            if (pathParts.length < 2) return;
+            const personaKey = pathParts[0];
+            const fileName = pathParts[pathParts.length - 1];
+            const assetId = fileName.replace(/\.[^.]+$/u, '');
+            tasks.push(fileEntry.async('blob').then((blob: Blob) => saveCharacterPhotoAsset({
+                id: assetId,
+                personaKey,
+                blob,
+                prompt: promptByAssetId.get(assetId) || '',
+                createdAt: Date.now(),
+            })).then(() => undefined));
+        });
+        await Promise.all(tasks);
+    }
+
     async saveCurrentChat(personaKey: string, personaName: string) {
         const chatHistory = this.memoryManager.getChatHistory(personaKey);
         const persona = this.memoryManager.getPersona(personaKey);
@@ -79,6 +137,8 @@ export class FileManager {
              const extension = blob.type.split('/')[1] || 'png';
             zip.folder("avatars")?.file(`${personaKey}.${extension}`, blob);
         }
+
+        await this.addCharacterPhotosToZip(zip, { [personaKey]: chatHistory });
 
         zip.generateAsync({
             type: "blob",
@@ -144,6 +204,8 @@ export class FileManager {
                 await Promise.all(avatarPromises);
             }
 
+            await this.addCharacterPhotosToZip(zip, allChatHistories);
+
             const content = await zip.generateAsync({
                 type: "blob",
                 compression: "DEFLATE",
@@ -168,7 +230,7 @@ export class FileManager {
 
     async downloadImages(personaKey: string, personaName: string) {
         const chatHistory = this.memoryManager.getChatHistory(personaKey);
-        const imageMessages = chatHistory.filter(msg => msg.content.imageUrl);
+        const imageMessages = chatHistory.filter(msg => msg.content.imageUrl || msg.content.imageAssetId);
 
         if (imageMessages.length === 0) {
             alert("對話中沒有圖片可以下載！");
@@ -183,9 +245,10 @@ export class FileManager {
             const zip = new JSZip();
 
             await Promise.all(imageMessages.map(async (msg, index) => {
-                const imageUrl = msg.content.imageUrl!;
-                const response = await fetch(imageUrl);
-                const blob = await response.blob();
+                const blob = msg.content.imageAssetId
+                    ? await getCharacterPhotoBlob(msg.content.imageAssetId)
+                    : await fetch(msg.content.imageUrl!).then(response => response.blob());
+                if (!blob) return;
                 const extension = blob.type.split('/')[1] || 'png';
                 zip.file(`image_${index + 1}.${extension}`, blob);
             }));
@@ -254,6 +317,8 @@ export class FileManager {
                     });
                     await Promise.all(avatarPromises);
                 }
+
+                await this.restoreCharacterPhotosFromZip(zip);
                 
                 this.callbacks.onAllDataRestored();
                 return;
@@ -294,6 +359,8 @@ export class FileManager {
                     const base64 = await avatarFile.async("base64");
                     this.memoryManager.updatePersona(personaKey, { avatarUrl: `data:image/png;base64,${base64}` });
                 }
+
+                await this.restoreCharacterPhotosFromZip(zip);
 
                 this.callbacks.onSingleChatRestored(personaKey, history);
                 return;

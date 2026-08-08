@@ -117,9 +117,28 @@ export function cleanAiResponse(rawText: string | null | undefined, personaName?
 
 
 
+export type CharacterPhotoProposalStatus = 'pending' | 'generating' | 'generated' | 'declined' | 'failed';
+
+export interface CharacterPhotoProposal {
+    id: string;
+    prompt: string;
+    caption: string;
+    aspectRatio: '1:1' | '3:4' | '4:5' | '16:9' | '9:16';
+    status: CharacterPhotoProposalStatus;
+    createdAt: number;
+    useAvatarReference: boolean;
+    modelId?: string;
+    modelName?: string;
+    estimatedPriceUsd?: number;
+    error?: string;
+}
+
 export interface Content {
     text?: string;
     imageUrl?: string;
+    imageAssetId?: string;
+    imagePrompt?: string;
+    photoProposal?: CharacterPhotoProposal;
 }
 
 export interface ChatMessage {

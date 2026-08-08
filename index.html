@@ -136,7 +136,7 @@
                             <button id="date-btn" class="dropdown-item hidden">安排約會</button>
                             <button id="manual-generate-diary-btn" class="dropdown-item hidden">戀愛日記</button>
                             <button id="album-btn" class="dropdown-item">相簿</button>
-                            <button id="take-photo-btn" class="dropdown-item hidden">拍照</button>
+                            <button id="take-photo-btn" class="dropdown-item">請角色拍照</button>
                             <button id="new-scene-btn" class="dropdown-item">新場景</button>
                             <div class="border-t border-gray-600 my-1"></div>
                             <button id="download-images-btn" class="dropdown-item">下載圖片</button>
@@ -996,18 +996,18 @@
         <div class="bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-full max-w-xl mx-4">
             <div class="p-6">
                 <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-2xl font-bold text-white">生成照片</h2>
+                    <h2 class="text-2xl font-bold text-white">請角色拍照</h2>
                     <button id="close-photo-prompt-modal" class="text-gray-400 hover:text-gray-200">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                     </button>
                 </div>
                 <div class="space-y-4">
-                    <p class="text-sm text-gray-400">請輸入英文提示詞，描述你希望的動作或場景。提示詞將會與角色的基本外觀描述結合生成圖片。<br>例如: <code class="bg-gray-700 px-1 rounded">smiling and holding a puppy</code> 或 <code class="bg-gray-700 px-1 rounded">at the beach during sunset</code></p>
-                    <textarea id="photo-prompt-input" class="w-full h-32 px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400" placeholder="Enter English prompt..."></textarea>
+                    <p class="text-sm leading-6 text-gray-400">用平常聊天語氣告訴角色你想收到甚麼照片。角色會參考目前對話自行構思完整 Prompt，先讓你查看、修改及確認，確認前不會生成圖片。</p>
+                    <textarea id="photo-prompt-input" class="w-full h-32 px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400" placeholder="例如：影張你坐在窗邊食蘋果的自拍給我；服裝和表情由你決定。"></textarea>
                     <div class="flex justify-end space-x-3">
                         <button id="cancel-photo-generation" class="px-4 py-2 text-gray-300 border border-gray-600 rounded-md hover:bg-gray-700">取消</button>
                         <button id="generate-photo-btn" class="px-4 py-2 bg-yellow-400 text-gray-900 font-bold rounded-md hover:bg-yellow-500 flex items-center justify-center w-28">
-                            <span id="generate-photo-text">生成</span>
+                            <span id="generate-photo-text">交給角色構思</span>
                             <svg id="generate-photo-loading" class="animate-spin h-5 w-5 text-gray-800 hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
