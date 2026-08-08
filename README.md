@@ -39,7 +39,7 @@ The browser never receives `VENICE_API_KEY` in proxy mode.
 
 ## Image studio
 
-- Text-to-image defaults to `lustify-v8`.
+- Text-to-image defaults to `qwen-image-3` (Qwen Image 3, non-Pro).
 - Image-to-image defaults to `qwen-edit-uncensored`.
 - Available models, capabilities, privacy mode, and pricing load from Venice at runtime.
 - Source images are compressed in the browser before upload.
@@ -57,7 +57,7 @@ The browser never receives `VENICE_API_KEY` in proxy mode.
 - Persona settings and the new-character flow can mark a character as a public figure or well-known fictional character. The app searches authenticated Wikipedia data, asks the user to confirm or refine the match, and stores an editable canonical identity profile with its source.
 - Confirmed public identities always use text-to-image rather than uploading the avatar as an edit reference. Real people lead with their canonical public name and profession; fictional characters retain their franchise, original medium, and broad source visual language.
 - Wikipedia lead and page-media images can be reviewed with source/license links and optionally selected as the character avatar.
-- Chat history renders generated images as compact attachments and only loads the full image after it is opened; the album continues to show thumbnails.
+- Chat history renders generated images as compact attachments. The full-screen attachment viewer keeps the image, complete scrollable prompt, model, ratio, resolution, and regenerate controls inside the viewport; regenerated variants are saved as new photos without replacing the original.
 - Finished photos are stored in the browser-private IndexedDB and never enter Camera Roll automatically; the app requests persistent storage, while an explicit ZIP export is the only action that writes them to Downloads. This storage is origin-isolated rather than encrypted and is removed when the user clears site data.
 - Photos appear in the character private album and are bundled under `photos/` during chat export/import without inflating localStorage JSON.
 

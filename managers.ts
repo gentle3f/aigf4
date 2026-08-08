@@ -131,8 +131,19 @@ export interface CharacterPhotoProposal {
     identityMode?: 'avatar_reference' | 'persona_description' | 'public_identity';
     modelId?: string;
     modelName?: string;
+    resolution?: string;
     estimatedPriceUsd?: number;
     error?: string;
+}
+
+export interface ImageGenerationMetadata {
+    mode: 'generate' | 'edit';
+    modelId?: string;
+    modelName?: string;
+    aspectRatio?: string;
+    resolution?: string;
+    useAvatarReference?: boolean;
+    identityMode?: 'avatar_reference' | 'persona_description' | 'public_identity';
 }
 
 export interface Content {
@@ -140,6 +151,7 @@ export interface Content {
     imageUrl?: string;
     imageAssetId?: string;
     imagePrompt?: string;
+    imageGeneration?: ImageGenerationMetadata;
     photoProposal?: CharacterPhotoProposal;
 }
 

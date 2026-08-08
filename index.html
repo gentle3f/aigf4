@@ -758,13 +758,76 @@
     </div>
 
 
-    <!-- Photo Viewer Modal -->
-    <div id="photo-viewer-modal" class="hidden fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-[60] p-4">
-        <div class="relative max-w-4xl max-h-full">
-            <button id="close-photo-viewer" class="absolute -top-10 right-0 md:top-2 md:-right-10 text-white text-4xl font-bold hover:text-gray-300 z-10">&times;</button>
-            <img id="photo-viewer-image" src="" alt="Enlarged view" class="max-w-full max-h-[80vh] object-contain rounded-lg">
-            <p id="photo-viewer-caption" class="text-center text-gray-200 mt-3 p-2 bg-black/50 rounded-md"></p>
-        </div>
+    <!-- Photo Attachment Viewer -->
+    <div id="photo-viewer-modal" class="photo-viewer-modal hidden" role="dialog" aria-modal="true" aria-labelledby="photo-viewer-title">
+        <section class="photo-viewer-shell">
+            <header class="photo-viewer-header">
+                <div class="min-w-0">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <p class="photo-viewer-kicker">PRIVATE ATTACHMENT</p>
+                        <span id="photo-viewer-mode" class="photo-viewer-mode">文字生成</span>
+                    </div>
+                    <h2 id="photo-viewer-title" class="photo-viewer-title">圖片附件</h2>
+                    <p id="photo-viewer-meta" class="photo-viewer-meta">只儲存在這個瀏覽器</p>
+                </div>
+                <button id="close-photo-viewer" type="button" class="photo-viewer-close" aria-label="關閉圖片附件">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" d="M6 6l12 12M18 6 6 18" />
+                    </svg>
+                </button>
+            </header>
+
+            <div class="photo-viewer-body">
+                <div class="photo-viewer-media">
+                    <img id="photo-viewer-image" src="" alt="完整圖片附件">
+                </div>
+
+                <aside class="photo-viewer-editor">
+                    <div class="photo-viewer-editor-scroll">
+                        <div>
+                            <p class="photo-viewer-section-label">重新生成設定</p>
+                            <p class="photo-viewer-section-help">可先修改 Prompt 或模型；完成後會新增一張圖片，原圖仍會保留。</p>
+                        </div>
+
+                        <div>
+                            <div class="photo-viewer-field-heading">
+                                <label for="photo-viewer-prompt">Prompt</label>
+                                <span id="photo-viewer-prompt-count">0 / 10000</span>
+                            </div>
+                            <textarea id="photo-viewer-prompt" class="photo-viewer-field photo-viewer-prompt" spellcheck="false"></textarea>
+                        </div>
+
+                        <div>
+                            <label for="photo-viewer-model" class="photo-viewer-field-label">模型</label>
+                            <select id="photo-viewer-model" class="photo-viewer-field">
+                                <option value="">載入模型中...</option>
+                            </select>
+                            <p id="photo-viewer-model-meta" class="photo-viewer-model-meta">正在讀取可用模型...</p>
+                        </div>
+
+                        <div class="photo-viewer-settings-grid">
+                            <div>
+                                <label for="photo-viewer-aspect-ratio" class="photo-viewer-field-label">畫面比例</label>
+                                <select id="photo-viewer-aspect-ratio" class="photo-viewer-field"></select>
+                            </div>
+                            <div id="photo-viewer-resolution-wrap">
+                                <label for="photo-viewer-resolution" class="photo-viewer-field-label">解析度</label>
+                                <select id="photo-viewer-resolution" class="photo-viewer-field"></select>
+                            </div>
+                        </div>
+
+                        <p id="photo-viewer-status" class="photo-viewer-status" role="status" aria-live="polite">可修改設定後重新生成。</p>
+                    </div>
+
+                    <footer class="photo-viewer-actions">
+                        <button id="photo-viewer-regenerate" type="button" class="photo-viewer-regenerate">
+                            <span id="photo-viewer-regenerate-label">重新生成</span>
+                            <span id="photo-viewer-regenerate-spinner" class="hidden h-4 w-4 animate-spin rounded-full border-2 border-slate-950/25 border-t-slate-950" aria-hidden="true"></span>
+                        </button>
+                    </footer>
+                </aside>
+            </div>
+        </section>
     </div>
 
     <!-- Save Before Exit Modal -->

@@ -291,9 +291,22 @@ const deleteConfirmationSection = document.getElementById('delete-confirmation-s
 const confirmDeleteBtn = document.getElementById('confirm-delete-btn') as HTMLButtonElement;
 const cancelDeleteBtn = document.getElementById('cancel-delete-btn') as HTMLButtonElement;
 const photoViewerModal = document.getElementById('photo-viewer-modal')!;
-const closePhotoViewer = document.getElementById('close-photo-viewer')!;
+const closePhotoViewer = document.getElementById('close-photo-viewer') as HTMLButtonElement;
 const photoViewerImage = document.getElementById('photo-viewer-image') as HTMLImageElement;
-const photoViewerCaption = document.getElementById('photo-viewer-caption')!;
+const photoViewerMode = document.getElementById('photo-viewer-mode')!;
+const photoViewerTitle = document.getElementById('photo-viewer-title')!;
+const photoViewerMeta = document.getElementById('photo-viewer-meta')!;
+const photoViewerPrompt = document.getElementById('photo-viewer-prompt') as HTMLTextAreaElement;
+const photoViewerPromptCount = document.getElementById('photo-viewer-prompt-count')!;
+const photoViewerModel = document.getElementById('photo-viewer-model') as HTMLSelectElement;
+const photoViewerModelMeta = document.getElementById('photo-viewer-model-meta')!;
+const photoViewerAspectRatio = document.getElementById('photo-viewer-aspect-ratio') as HTMLSelectElement;
+const photoViewerResolutionWrap = document.getElementById('photo-viewer-resolution-wrap')!;
+const photoViewerResolution = document.getElementById('photo-viewer-resolution') as HTMLSelectElement;
+const photoViewerStatus = document.getElementById('photo-viewer-status')!;
+const photoViewerRegenerate = document.getElementById('photo-viewer-regenerate') as HTMLButtonElement;
+const photoViewerRegenerateLabel = document.getElementById('photo-viewer-regenerate-label')!;
+const photoViewerRegenerateSpinner = document.getElementById('photo-viewer-regenerate-spinner')!;
 
 // Memory Modal Elements
 const memoryBtn = document.getElementById('memory-btn')!;
@@ -402,6 +415,16 @@ const readPreferredVideoModel = (storageKey: string, preferredModel: string, leg
     return stored;
 };
 
+const readPreferredImageGenerateModel = () => {
+    const storageKey = 'veniceImageGenerateModel';
+    const stored = localStorage.getItem(storageKey);
+    if (!stored || stored === 'lustify-v8') {
+        localStorage.setItem(storageKey, VENICE_IMAGE_GENERATE_MODEL);
+        return VENICE_IMAGE_GENERATE_MODEL;
+    }
+    return stored;
+};
+
 
 // --- State ---
 let currentPersona: any = null;
@@ -419,6 +442,7 @@ let albumPhotos: {
     caption: string;
     prompt: string;
     historyIndex: number;
+    content: Content;
 }[] = [];
 let selectedPhotoIndices: Set<number> = new Set();
 let isGodModeActive = false;
@@ -454,13 +478,16 @@ let imageModelPromises: Record<VeniceImageMode, Promise<void> | null> = {
     edit: null,
 };
 let selectedImageModels: Record<VeniceImageMode, string> = {
-    generate: localStorage.getItem('veniceImageGenerateModel') || VENICE_IMAGE_GENERATE_MODEL,
+    generate: readPreferredImageGenerateModel(),
     edit: localStorage.getItem('veniceImageEditModel') || VENICE_IMAGE_EDIT_MODEL,
 };
 let imageSource: ImageStudioSource | null = null;
 let imageResults: ImageStudioResult[] = [];
 let imageRequestController: AbortController | null = null;
 let isImageRequestRunning = false;
+let activePhotoViewerContext: PhotoViewerContext | null = null;
+let isPhotoViewerRegenerating = false;
+let photoViewerRequestController: AbortController | null = null;
 let characterPhotoRequestController: AbortController | null = null;
 let activeCharacterPhotoProposalId: string | null = null;
 let switchingCharacterPhotoProposalId: string | null = null;
@@ -561,7 +588,29 @@ type ImageStudioResult = {
     url: string;
     prompt: string;
     model: string;
+    modelId: string;
+    mode: VeniceImageMode;
+    aspectRatio: string;
+    resolution?: string;
+    negativePrompt?: string;
+    sourceImageBase64?: string;
     createdAt: Date;
+};
+type PhotoViewerContext = {
+    source: 'chat' | 'album' | 'studio';
+    prompt: string;
+    caption: string;
+    mode: VeniceImageMode;
+    modelId?: string;
+    modelName?: string;
+    aspectRatio: string;
+    resolution?: string;
+    negativePrompt?: string;
+    personaKey?: string;
+    content?: Content;
+    useAvatarReference: boolean;
+    identityMode?: CharacterPhotoProposal['identityMode'];
+    sourceImageBase64?: string;
 };
 type VideoStudioSource = {
     blob: Blob;
@@ -3065,16 +3114,19 @@ const buildFallbackImageModels = (mode: VeniceImageMode): VeniceImageModelSummar
     return [
         {
             id: VENICE_IMAGE_GENERATE_MODEL,
-            name: 'Lustify v8',
+            name: 'Qwen Image 3',
             kind: 'generate',
-            privacy: 'private',
-            traits: ['most_uncensored'],
-            priceUsd: 0.01,
-            resolutionPrices: {},
+            privacy: 'anonymized',
+            traits: [],
+            resolutionPrices: { '1K': 0.036, '2K': 0.036 },
             constraints: {
-                promptCharacterLimit: 1500,
-                widthHeightDivisor: 8,
-                steps: { default: 30, max: 50 },
+                promptCharacterLimit: 10000,
+                aspectRatios: ['1:1', '3:2', '16:9', '21:9', '9:16', '2:3', '3:4', '4:5'],
+                defaultAspectRatio: '1:1',
+                resolutions: ['1K', '2K'],
+                defaultResolution: '1K',
+                widthHeightDivisor: 1,
+                steps: { default: 20, max: 50 },
             },
         },
         {
@@ -3098,9 +3150,13 @@ const getSelectedImageModel = () => {
     return imageModels[imageStudioMode].find(model => model.id === selectedImageModels[imageStudioMode]);
 };
 
-const getImageModelPrice = (model?: VeniceImageModelSummary) => {
+const getImageModelPrice = (model?: VeniceImageModelSummary, requestedResolution?: string) => {
     if (!model) return undefined;
-    const resolutionPrice = model.resolutionPrices[imageResolution.value];
+    const resolution = requestedResolution
+        || imageResolution.value
+        || model.constraints.defaultResolution
+        || Object.keys(model.resolutionPrices)[0];
+    const resolutionPrice = resolution ? model.resolutionPrices[resolution] : undefined;
     return typeof resolutionPrice === 'number' ? resolutionPrice : model.priceUsd;
 };
 
@@ -3205,7 +3261,8 @@ const renderImageModelOptions = () => {
         const rightUncensored = right.traits.includes('most_uncensored') || /uncensored|lustify/i.test(right.id);
         if (leftUncensored !== rightUncensored) return leftUncensored ? -1 : 1;
         if (left.privacy !== right.privacy) return left.privacy === 'private' ? -1 : 1;
-        return (left.priceUsd ?? Number.MAX_SAFE_INTEGER) - (right.priceUsd ?? Number.MAX_SAFE_INTEGER);
+        return (getImageModelPrice(left, left.constraints.defaultResolution) ?? Number.MAX_SAFE_INTEGER)
+            - (getImageModelPrice(right, right.constraints.defaultResolution) ?? Number.MAX_SAFE_INTEGER);
     });
 
     const preferredId = imageStudioMode === 'generate' ? VENICE_IMAGE_GENERATE_MODEL : VENICE_IMAGE_EDIT_MODEL;
@@ -3235,7 +3292,8 @@ const renderImageModelOptions = () => {
                     : model.traits.includes('highest_quality')
                         ? ' · 高畫質'
                         : '';
-            const price = typeof model.priceUsd === 'number' ? ` · $${formatModelPrice(model.priceUsd)}` : '';
+            const modelPrice = getImageModelPrice(model, model.constraints.defaultResolution);
+            const price = typeof modelPrice === 'number' ? ` · $${formatModelPrice(modelPrice)}` : '';
             option.textContent = `${model.name}${trait}${price}`;
             optgroup.appendChild(option);
         });
@@ -3424,7 +3482,19 @@ const renderImageResults = () => {
         image.src = result.url;
         image.alt = result.prompt;
         image.loading = 'lazy';
-        image.addEventListener('click', () => openPhotoViewer(result.url, result.prompt));
+        image.addEventListener('click', () => openPhotoViewer(result.url, {
+            source: 'studio',
+            prompt: result.prompt,
+            caption: 'Venice 圖片工作室作品',
+            mode: result.mode,
+            modelId: result.modelId,
+            modelName: result.model,
+            aspectRatio: result.aspectRatio,
+            resolution: result.resolution,
+            negativePrompt: result.negativePrompt,
+            useAvatarReference: false,
+            sourceImageBase64: result.sourceImageBase64,
+        }));
 
         const actions = document.createElement('div');
         actions.className = 'image-result-actions';
@@ -3532,6 +3602,12 @@ const runImageGeneration = async () => {
             url: URL.createObjectURL(blob),
             prompt,
             model: model.name,
+            modelId: model.id,
+            mode: imageStudioMode,
+            aspectRatio: imageAspectRatio.value,
+            resolution: model.constraints.resolutions?.length ? imageResolution.value : undefined,
+            negativePrompt: imageNegativePrompt.value.trim(),
+            sourceImageBase64: imageStudioMode === 'edit' ? imageSource?.base64 : undefined,
             createdAt: now,
         }));
         imageResults = [...newResults, ...imageResults];
@@ -5371,7 +5447,8 @@ const switchCharacterPhotoIdentityMode = async (
             identityMode: useAvatarReference ? 'avatar_reference' : 'persona_description',
             modelId: model.id,
             modelName: model.name,
-            estimatedPriceUsd: model.priceUsd,
+            resolution: model.constraints.defaultResolution || model.constraints.resolutions?.[0],
+            estimatedPriceUsd: getImageModelPrice(model, model.constraints.defaultResolution),
             status: 'pending',
             error: undefined,
         });
@@ -5567,6 +5644,43 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
     return card;
 };
 
+const buildPhotoViewerContextFromContent = (
+    content: Content,
+    source: 'chat' | 'album',
+    personaKey: string | null,
+): PhotoViewerContext => {
+    const matchingProposal = personaKey
+        ? [...memoryManager.getChatHistory(personaKey)].reverse().find(message => {
+            const proposal = message.content.photoProposal;
+            return Boolean(
+                proposal
+                && proposal.status === 'generated'
+                && proposal.prompt === (content.imagePrompt || ''),
+            );
+        })?.content.photoProposal
+        : undefined;
+    const generation = content.imageGeneration;
+    const useAvatarReference = generation?.useAvatarReference
+        ?? matchingProposal?.useAvatarReference
+        ?? /^Edit the supplied reference portrait/iu.test(content.imagePrompt || '');
+    const mode = generation?.mode || (useAvatarReference ? 'edit' : 'generate');
+
+    return {
+        source,
+        prompt: content.imagePrompt || content.text || `${currentPersona?.name || '角色'} 的照片`,
+        caption: content.text || `${currentPersona?.name || '角色'} 傳來的照片`,
+        mode,
+        modelId: generation?.modelId || matchingProposal?.modelId,
+        modelName: generation?.modelName || matchingProposal?.modelName,
+        aspectRatio: generation?.aspectRatio || matchingProposal?.aspectRatio || '3:4',
+        resolution: generation?.resolution || matchingProposal?.resolution,
+        personaKey: personaKey || undefined,
+        content,
+        useAvatarReference,
+        identityMode: generation?.identityMode || matchingProposal?.identityMode,
+    };
+};
+
 const createChatImageAttachment = (
     content: Content,
     sender: 'user' | 'bot' | 'system' | 'god-mode',
@@ -5609,7 +5723,7 @@ const createChatImageAttachment = (
             if (!imageUrl) throw new Error('Photo asset is unavailable.');
             openPhotoViewer(
                 imageUrl,
-                content.imagePrompt || content.text || `${currentPersona?.name || '角色'} 的照片`,
+                buildPhotoViewerContextFromContent(content, 'chat', currentPersonaKey),
             );
             detail.textContent = content.imageAssetId
                 ? '只存於私人相簿 · 點擊查看'
@@ -7204,7 +7318,8 @@ const buildCharacterPhotoProposal = async (
                 : useAvatarReference ? 'avatar_reference' : 'persona_description',
             modelId: imageModel?.id,
             modelName: imageModel?.name,
-            estimatedPriceUsd: imageModel?.priceUsd,
+            resolution: imageModel?.constraints.defaultResolution || imageModel?.constraints.resolutions?.[0],
+            estimatedPriceUsd: getImageModelPrice(imageModel, imageModel?.constraints.defaultResolution),
         },
     };
 };
@@ -7447,6 +7562,7 @@ const approveCharacterPhoto = async (proposalId: string) => {
             status: 'generated',
             modelId: model.id,
             modelName: model.name,
+            resolution,
             estimatedPriceUsd: price,
             error: undefined,
         });
@@ -7455,6 +7571,15 @@ const approveCharacterPhoto = async (proposalId: string) => {
             text: proposal.caption,
             imageAssetId: assetId,
             imagePrompt: proposal.prompt,
+            imageGeneration: {
+                mode,
+                modelId: model.id,
+                modelName: model.name,
+                aspectRatio: aspectRatio || proposal.aspectRatio,
+                resolution,
+                useAvatarReference: proposal.useAvatarReference,
+                identityMode: proposal.identityMode,
+            },
         };
         memoryManager.addMessage(personaKey, 'model', photoContent);
         if (currentPersonaKey === personaKey) {
@@ -7678,6 +7803,7 @@ function updateAlbumState() {
             caption: msg.content.text || '',
             prompt: msg.content.imagePrompt || msg.content.text || '',
             historyIndex: msg.historyIndex,
+            content: msg.content,
         }));
     
     albumDownloadBtn.disabled = true;
@@ -7719,7 +7845,12 @@ function renderAlbum() {
         thumb.addEventListener('click', (e) => {
             if (e.target === checkbox) return;
             void getContentImageUrl(photo).then(imageUrl => {
-                if (imageUrl) openPhotoViewer(imageUrl, photo.prompt || photo.caption);
+                if (imageUrl) {
+                    openPhotoViewer(
+                        imageUrl,
+                        buildPhotoViewerContextFromContent(photo.content, 'album', currentPersonaKey),
+                    );
+                }
             });
         });
         
@@ -7862,16 +7993,306 @@ function closeAlbumModal() {
 }
 
 
-function openPhotoViewer(imageUrl: string, caption: string) {
+const getPhotoViewerSelectedModel = () => {
+    if (!activePhotoViewerContext) return undefined;
+    return imageModels[activePhotoViewerContext.mode].find(model => model.id === photoViewerModel.value);
+};
+
+const setPhotoViewerStatus = (
+    message: string,
+    tone: 'idle' | 'busy' | 'success' | 'error' = 'idle',
+) => {
+    photoViewerStatus.textContent = message;
+    photoViewerStatus.classList.remove('is-busy', 'is-success', 'is-error');
+    if (tone !== 'idle') photoViewerStatus.classList.add(`is-${tone}`);
+};
+
+const updatePhotoViewerRegenerateButton = () => {
+    const model = getPhotoViewerSelectedModel();
+    const maxLength = model?.constraints.promptCharacterLimit || 10000;
+    const prompt = photoViewerPrompt.value.trim();
+    photoViewerPromptCount.textContent = `${photoViewerPrompt.value.length} / ${maxLength}`;
+    photoViewerRegenerate.disabled = Boolean(
+        isPhotoViewerRegenerating
+        || !activePhotoViewerContext
+        || !model
+        || !prompt
+        || prompt.length > maxLength,
+    );
+};
+
+const updatePhotoViewerModelControls = () => {
+    if (!activePhotoViewerContext) return;
+    const context = activePhotoViewerContext;
+    const model = getPhotoViewerSelectedModel();
+    if (!model) {
+        photoViewerModelMeta.textContent = '目前沒有相容的 Venice 圖片模型。';
+        updatePhotoViewerRegenerateButton();
+        return;
+    }
+
+    const ratios = model.constraints.aspectRatios?.length
+        ? model.constraints.aspectRatios
+        : Object.keys(PIXEL_IMAGE_DIMENSIONS);
+    const preferredRatio = ratios.includes(context.aspectRatio)
+        ? context.aspectRatio
+        : model.constraints.defaultAspectRatio || (ratios.includes('3:4') ? '3:4' : ratios[0]);
+    replaceSelectOptions(photoViewerAspectRatio, ratios, preferredRatio, { auto: '自動（跟隨原圖）' });
+
+    const resolutions = (model.constraints.resolutions || []).filter(resolution => resolution !== '4K');
+    photoViewerResolutionWrap.classList.toggle('hidden', resolutions.length === 0);
+    replaceSelectOptions(
+        photoViewerResolution,
+        resolutions,
+        context.resolution || model.constraints.defaultResolution || '1K',
+    );
+
+    const maxLength = model.constraints.promptCharacterLimit || 10000;
+    photoViewerPrompt.maxLength = maxLength;
+    const price = getImageModelPrice(model, photoViewerResolution.value);
+    const details = [
+        context.mode === 'edit' ? '頭像參考圖生圖' : '文字生圖',
+        formatImagePrivacy(model.privacy),
+        typeof price === 'number' ? `約 US$${formatModelPrice(price)}／張` : '',
+    ].filter(Boolean);
+    photoViewerModelMeta.textContent = details.join(' · ');
+    updatePhotoViewerRegenerateButton();
+};
+
+const renderPhotoViewerModelOptions = () => {
+    if (!activePhotoViewerContext) return;
+    const context = activePhotoViewerContext;
+    const preferredId = context.mode === 'generate' ? VENICE_IMAGE_GENERATE_MODEL : VENICE_IMAGE_EDIT_MODEL;
+    const requestedId = context.mode === 'generate' && context.modelId === 'lustify-v8'
+        ? VENICE_IMAGE_GENERATE_MODEL
+        : context.modelId;
+    const models = [...imageModels[context.mode]].sort((left, right) => {
+        if (left.id === preferredId) return -1;
+        if (right.id === preferredId) return 1;
+        return (getImageModelPrice(left, left.constraints.defaultResolution) ?? Number.MAX_SAFE_INTEGER)
+            - (getImageModelPrice(right, right.constraints.defaultResolution) ?? Number.MAX_SAFE_INTEGER);
+    });
+
+    photoViewerModel.innerHTML = '';
+    models.forEach(model => {
+        const option = document.createElement('option');
+        option.value = model.id;
+        const price = getImageModelPrice(model, model.constraints.defaultResolution);
+        option.textContent = `${model.name}${typeof price === 'number' ? ` · $${formatModelPrice(price)}` : ''}`;
+        photoViewerModel.appendChild(option);
+    });
+    photoViewerModel.value = models.some(model => model.id === requestedId)
+        ? requestedId || preferredId
+        : models.some(model => model.id === preferredId) ? preferredId : models[0]?.id || '';
+    photoViewerModel.disabled = isPhotoViewerRegenerating || models.length === 0;
+    updatePhotoViewerModelControls();
+};
+
+const setPhotoViewerBusy = (busy: boolean) => {
+    isPhotoViewerRegenerating = busy;
+    const hasModel = Boolean(getPhotoViewerSelectedModel());
+    photoViewerPrompt.disabled = busy;
+    photoViewerModel.disabled = busy || !activePhotoViewerContext || !imageModels[activePhotoViewerContext.mode].length;
+    photoViewerAspectRatio.disabled = busy || !hasModel;
+    photoViewerResolution.disabled = busy || !hasModel;
+    photoViewerRegenerateSpinner.classList.toggle('hidden', !busy);
+    photoViewerRegenerateLabel.textContent = busy ? '重新生成中...' : '重新生成';
+    updatePhotoViewerRegenerateButton();
+};
+
+function openPhotoViewer(imageUrl: string, context: PhotoViewerContext) {
+    photoViewerRequestController?.abort();
+    const normalizedContext = {
+        ...context,
+        modelId: context.mode === 'generate' && context.modelId === 'lustify-v8'
+            ? VENICE_IMAGE_GENERATE_MODEL
+            : context.modelId,
+    };
+    activePhotoViewerContext = normalizedContext;
     photoViewerImage.src = imageUrl;
-    photoViewerCaption.textContent = caption;
+    photoViewerPrompt.value = normalizedContext.prompt;
+    photoViewerAspectRatio.innerHTML = '';
+    photoViewerResolution.innerHTML = '';
+    photoViewerModel.innerHTML = '<option value="">載入模型中...</option>';
+    photoViewerMode.textContent = normalizedContext.mode === 'edit' ? '頭像參考圖生圖' : '文字生成';
+    const persona = normalizedContext.personaKey
+        ? memoryManager.getPersona(normalizedContext.personaKey)
+        : null;
+    photoViewerTitle.textContent = normalizedContext.source === 'studio'
+        ? '圖片工作室作品'
+        : `${persona?.name || currentPersona?.name || '角色'} 的照片`;
+    photoViewerMeta.textContent = [
+        normalizedContext.modelName,
+        normalizedContext.aspectRatio,
+        normalizedContext.resolution,
+        '原圖會保留',
+    ].filter(Boolean).join(' · ');
+    setPhotoViewerStatus('可修改 Prompt、模型與畫面設定後重新生成。');
+    setPhotoViewerBusy(false);
     photoViewerModal.classList.remove('hidden');
+    document.body.classList.add('photo-viewer-open');
+    window.setTimeout(() => closePhotoViewer.focus(), 0);
+
+    const openedContext = activePhotoViewerContext;
+    void loadImageModels(normalizedContext.mode).then(() => {
+        if (activePhotoViewerContext !== openedContext) return;
+        renderPhotoViewerModelOptions();
+    });
 }
 
+const runPhotoViewerRegeneration = async () => {
+    const context = activePhotoViewerContext;
+    const model = getPhotoViewerSelectedModel();
+    const prompt = photoViewerPrompt.value.trim();
+    if (!context || !model || !prompt || isPhotoViewerRegenerating) return;
+    if (prompt.length > (model.constraints.promptCharacterLimit || 10000)) {
+        setPhotoViewerStatus('Prompt 超過這個模型的長度上限，請先縮短內容。', 'error');
+        return;
+    }
+
+    const controller = new AbortController();
+    photoViewerRequestController = controller;
+    setPhotoViewerBusy(true);
+    setPhotoViewerStatus('正在重新生成；完成後會新增一張並保留原圖...', 'busy');
+    const startedAt = performance.now();
+
+    try {
+        let sourceImageBase64 = context.sourceImageBase64;
+        if (context.mode === 'edit' && !sourceImageBase64) {
+            const persona = context.personaKey ? memoryManager.getPersona(context.personaKey) : null;
+            if (!persona || !context.useAvatarReference) {
+                throw new Error('這張照片缺少原本的參考圖片，無法使用圖生圖模型重新生成。');
+            }
+            sourceImageBase64 = await prepareCharacterAvatarReference(persona) || undefined;
+            if (!sourceImageBase64) throw new Error('無法讀取角色頭像，請先更換頭像後再試。');
+        }
+
+        const supportedRatios = model.constraints.aspectRatios || [];
+        const selectedRatio = photoViewerAspectRatio.value || context.aspectRatio || '3:4';
+        const aspectRatio = supportedRatios.includes(selectedRatio)
+            ? selectedRatio
+            : model.constraints.defaultAspectRatio || supportedRatios[0];
+        const resolution = model.constraints.resolutions?.length
+            ? photoViewerResolution.value || model.constraints.defaultResolution || model.constraints.resolutions[0]
+            : undefined;
+        const pixelSize = PIXEL_IMAGE_DIMENSIONS[selectedRatio] || PIXEL_IMAGE_DIMENSIONS['3:4'];
+        const result = await requestVeniceImage({
+            mode: context.mode,
+            model: model.id,
+            prompt,
+            negativePrompt: context.mode === 'generate'
+                ? context.negativePrompt || 'unintended duplicated bodies, cloned face, malformed anatomy, deformed hands, distorted face, text, captions, interface, logo, watermark, blurry, low quality'
+                : undefined,
+            sourceImageBase64,
+            aspectRatio: context.mode === 'edit' || supportedRatios.length > 0 ? aspectRatio : undefined,
+            resolution,
+            width: context.mode === 'generate' && supportedRatios.length === 0 ? pixelSize.width : undefined,
+            height: context.mode === 'generate' && supportedRatios.length === 0 ? pixelSize.height : undefined,
+            variants: 1,
+            steps: context.mode === 'generate' ? model.constraints.steps?.default : undefined,
+            adultConfirmed: true,
+            signal: controller.signal,
+        });
+        const blob = result.blobs[0];
+        if (!blob) throw new Error('Venice 沒有傳回圖片。');
+        if (controller.signal.aborted) throw new DOMException('Image regeneration aborted.', 'AbortError');
+
+        let nextImageUrl = '';
+        let nextContext: PhotoViewerContext;
+        if (context.source === 'studio') {
+            const now = new Date();
+            const studioResult: ImageStudioResult = {
+                id: `${now.getTime()}-regenerated`,
+                blob,
+                url: URL.createObjectURL(blob),
+                prompt,
+                model: model.name,
+                modelId: model.id,
+                mode: context.mode,
+                aspectRatio: selectedRatio,
+                resolution,
+                negativePrompt: context.negativePrompt,
+                sourceImageBase64,
+                createdAt: now,
+            };
+            imageResults = [studioResult, ...imageResults];
+            renderImageResults();
+            nextImageUrl = studioResult.url;
+            nextContext = {
+                ...context,
+                prompt,
+                modelId: model.id,
+                modelName: model.name,
+                aspectRatio: selectedRatio,
+                resolution,
+                sourceImageBase64,
+            };
+        } else {
+            if (!context.personaKey) throw new Error('找不到這張照片所屬的角色。');
+            const assetId = `character-photo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+            await saveCharacterPhotoAsset({
+                id: assetId,
+                personaKey: context.personaKey,
+                blob,
+                prompt,
+                createdAt: Date.now(),
+            });
+            const photoContent: Content = {
+                text: context.caption,
+                imageAssetId: assetId,
+                imagePrompt: prompt,
+                imageGeneration: {
+                    mode: context.mode,
+                    modelId: model.id,
+                    modelName: model.name,
+                    aspectRatio: selectedRatio,
+                    resolution,
+                    useAvatarReference: context.useAvatarReference,
+                    identityMode: context.identityMode,
+                },
+            };
+            memoryManager.addMessage(context.personaKey, 'model', photoContent);
+            nextImageUrl = await getCharacterPhotoObjectUrl(assetId) || '';
+            nextContext = buildPhotoViewerContextFromContent(photoContent, context.source, context.personaKey);
+            if (currentPersonaKey === context.personaKey) {
+                appendMessage(photoContent, 'bot');
+                updateAlbumState();
+                if (!albumModal.classList.contains('hidden')) renderAlbum();
+            }
+        }
+
+        if (!nextImageUrl) throw new Error('新圖片已生成，但暫時無法開啟預覽。');
+        activePhotoViewerContext = nextContext;
+        photoViewerImage.src = nextImageUrl;
+        photoViewerMeta.textContent = [model.name, selectedRatio, resolution, '已另存新圖'].filter(Boolean).join(' · ');
+        const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
+        setPhotoViewerStatus(`重新生成完成 · ${elapsed} 秒；原圖仍然保留。`, 'success');
+    } catch (error) {
+        if (isAbortError(error)) {
+            if (!photoViewerModal.classList.contains('hidden')) {
+                setPhotoViewerStatus('已停止重新生成。', 'error');
+            }
+        } else {
+            const message = error instanceof Error ? error.message : '重新生成失敗。';
+            setPhotoViewerStatus(`重新生成失敗：${message}`, 'error');
+            if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
+        }
+    } finally {
+        if (photoViewerRequestController === controller) photoViewerRequestController = null;
+        setPhotoViewerBusy(false);
+    }
+};
+
 function closePhotoViewerModal() {
+    photoViewerRequestController?.abort();
+    photoViewerRequestController = null;
     photoViewerModal.classList.add('hidden');
-    photoViewerImage.src = '';
-    photoViewerCaption.textContent = '';
+    document.body.classList.remove('photo-viewer-open');
+    photoViewerImage.removeAttribute('src');
+    photoViewerPrompt.value = '';
+    photoViewerModel.innerHTML = '';
+    activePhotoViewerContext = null;
+    setPhotoViewerBusy(false);
 }
 
 function hideSuggestionContainer() {
@@ -8408,6 +8829,21 @@ const setupEventListeners = () => {
     cancelDeleteBtn.addEventListener('click', showMainAlbumButtons);
     confirmDeleteBtn.addEventListener('click', deleteSelectedPhotos);
     closePhotoViewer.addEventListener('click', closePhotoViewerModal);
+    photoViewerModal.addEventListener('click', event => {
+        if (event.target === photoViewerModal) closePhotoViewerModal();
+    });
+    photoViewerPrompt.addEventListener('input', updatePhotoViewerRegenerateButton);
+    photoViewerModel.addEventListener('change', updatePhotoViewerModelControls);
+    photoViewerAspectRatio.addEventListener('change', updatePhotoViewerRegenerateButton);
+    photoViewerResolution.addEventListener('change', updatePhotoViewerModelControls);
+    photoViewerRegenerate.addEventListener('click', () => {
+        void runPhotoViewerRegeneration();
+    });
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && !photoViewerModal.classList.contains('hidden')) {
+            closePhotoViewerModal();
+        }
+    });
 
     // More options menu toggle
     moreOptionsBtn.addEventListener('click', () => {
