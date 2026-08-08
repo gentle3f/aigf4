@@ -8,6 +8,7 @@ import {
     MemoryManager,
     Persona,
     POLICY_VIOLATION,
+    PublicIdentity,
     cleanAiResponse,
 } from "./managers.js";
 import { FileManager } from "./fileManager.js";
@@ -58,6 +59,12 @@ import {
     getCharacterPhotoBlob,
     saveCharacterPhotoAsset,
 } from "./photoStore.js";
+import {
+    loadPublicIdentityMedia,
+    PublicIdentityCandidate,
+    PublicIdentityMedia,
+    searchPublicIdentities,
+} from "./publicIdentity.js";
 
 
 declare var JSZip: any;
@@ -298,13 +305,20 @@ const saveMemoryEdit = document.getElementById('save-memory-edit')!;
 const personaSettingsModal = document.getElementById('persona-settings-modal')!;
 const closePersonaSettingsModal = document.getElementById('close-persona-settings-modal')!;
 const cancelPersonaSettingsBtn = document.getElementById('cancel-persona-settings')!;
-const savePersonaSettingsBtn = document.getElementById('save-persona-settings')!;
+const savePersonaSettingsBtn = document.getElementById('save-persona-settings') as HTMLButtonElement;
 const personaSettingsSubtitle = document.getElementById('persona-settings-subtitle')!;
 const personaDescriptionEditor = document.getElementById('persona-description-editor') as HTMLInputElement;
 const personaPromptEditor = document.getElementById('persona-prompt-editor') as HTMLTextAreaElement;
 const personaGreetingEditor = document.getElementById('persona-greeting-editor') as HTMLTextAreaElement;
 const personaSettingsAvatarPreview = document.getElementById('persona-settings-avatar-preview')!;
 const personaSettingsAvatarBtn = document.getElementById('persona-settings-avatar-btn') as HTMLButtonElement;
+const personaPublicIdentityCheckbox = document.getElementById('persona-public-identity-checkbox') as HTMLInputElement;
+const personaPublicIdentityPanel = document.getElementById('persona-public-identity-panel')!;
+const personaPublicIdentityStatus = document.getElementById('persona-public-identity-status')!;
+const personaPublicIdentitySummary = document.getElementById('persona-public-identity-summary') as HTMLTextAreaElement;
+const personaPublicIdentityVisual = document.getElementById('persona-public-identity-visual') as HTMLTextAreaElement;
+const personaPublicIdentitySource = document.getElementById('persona-public-identity-source') as HTMLAnchorElement;
+const recheckPublicIdentityBtn = document.getElementById('recheck-public-identity-btn') as HTMLButtonElement;
 const mimicImportBtn = document.getElementById('mimic-import-btn') as HTMLButtonElement;
 const mimicImportModal = document.getElementById('mimic-import-modal')!;
 const closeMimicImportModal = document.getElementById('close-mimic-import-modal')!;
@@ -321,6 +335,8 @@ const mimicModeTranscriptBtn = document.getElementById('mimic-mode-transcript-bt
 const mimicModeManualBtn = document.getElementById('mimic-mode-manual-btn') as HTMLButtonElement;
 const mimicRandomCompleteBtn = document.getElementById('mimic-random-complete-btn') as HTMLButtonElement;
 const mimicNameInput = document.getElementById('mimic-name-input') as HTMLInputElement;
+const mimicPublicIdentityCheckbox = document.getElementById('mimic-public-identity-checkbox') as HTMLInputElement;
+const mimicPublicIdentityHint = document.getElementById('mimic-public-identity-hint')!;
 const mimicTranscriptSection = document.getElementById('mimic-transcript-section')!;
 const mimicManualSection = document.getElementById('mimic-manual-section')!;
 const mimicManualRandomBtn = document.getElementById('mimic-manual-random-btn') as HTMLButtonElement;
@@ -347,6 +363,16 @@ const mimicDescriptionEditor = document.getElementById('mimic-description-editor
 const mimicPromptEditor = document.getElementById('mimic-prompt-editor') as HTMLTextAreaElement;
 const mimicGreetingEditor = document.getElementById('mimic-greeting-editor') as HTMLTextAreaElement;
 const mimicMemoryEditor = document.getElementById('mimic-memory-editor') as HTMLTextAreaElement;
+const publicIdentityModal = document.getElementById('public-identity-modal')!;
+const closePublicIdentityModalBtn = document.getElementById('close-public-identity-modal') as HTMLButtonElement;
+const publicIdentityQuery = document.getElementById('public-identity-query') as HTMLInputElement;
+const searchPublicIdentityBtn = document.getElementById('search-public-identity-btn') as HTMLButtonElement;
+const publicIdentityStatus = document.getElementById('public-identity-status')!;
+const publicIdentityCandidatesContainer = document.getElementById('public-identity-candidates')!;
+const publicIdentityMediaSection = document.getElementById('public-identity-media-section')!;
+const publicIdentityMediaContainer = document.getElementById('public-identity-media')!;
+const cancelPublicIdentityBtn = document.getElementById('cancel-public-identity') as HTMLButtonElement;
+const confirmPublicIdentityBtn = document.getElementById('confirm-public-identity') as HTMLButtonElement;
 
 
 // --- Managers ---
@@ -404,6 +430,15 @@ let mimicAvatarDataUrl: string | null = null;
 let mimicDraftPersona: MimicPersonaDraft | null = null;
 let isMimicAnalysisRunning = false;
 let mimicBuildMode: MimicBuildMode = 'transcript';
+let publicIdentityCandidates: PublicIdentityCandidate[] = [];
+let selectedPublicIdentityCandidate: PublicIdentityCandidate | null = null;
+let publicIdentityMedia: PublicIdentityMedia[] = [];
+let selectedPublicIdentityMedia: PublicIdentityMedia | null = null;
+let publicIdentityLookupController: AbortController | null = null;
+let publicIdentityResolver: ((value: PublicIdentityResolution | null) => void) | null = null;
+let isPublicIdentityBusy = false;
+let personaSettingsResolvedIdentity: PublicIdentity | null = null;
+let personaSettingsResolvedAvatarUrl: string | null = null;
 let activeChatRequest: ActiveChatRequest | null = null;
 let nextChatRequestId = 1;
 let assistantModels: VeniceModelSummary[] = [];
@@ -583,6 +618,11 @@ type ManualPersonaSeed = {
     personality: string;
     background: string;
     notes: string;
+};
+
+type PublicIdentityResolution = {
+    identity: PublicIdentity;
+    avatarUrl?: string;
 };
 
 type TranscriptReadResult = {
@@ -788,6 +828,7 @@ const setMimicBuildMode = (mode: MimicBuildMode) => {
 
 const fillRandomManualFields = () => {
     const persona = createFreshRandomPersona();
+    mimicPublicIdentityCheckbox.checked = false;
     mimicNameInput.value = persona.name;
     mimicOccupationInput.value = persona.occupation;
     mimicPersonalityInput.value = persona.personality;
@@ -904,6 +945,8 @@ const resetMimicImportState = () => {
     isMimicAnalysisRunning = false;
     mimicBuildMode = 'transcript';
     mimicNameInput.value = '';
+    mimicPublicIdentityCheckbox.checked = false;
+    mimicPublicIdentityHint.textContent = '儲存新角色前會先搜尋並讓你確認身份，也可為虛構角色選擇代表圖片。';
     mimicOccupationInput.value = '';
     mimicPersonalityInput.value = '';
     mimicBackgroundInput.value = '';
@@ -1740,6 +1783,343 @@ const runMimicModelCall = async (
     throw lastError || new Error('無法完成分身分析。');
 };
 
+const getPublicIdentityKindLabel = (kind: PublicIdentity['kind']) => {
+    if (kind === 'real_person') return '真人公眾人物';
+    if (kind === 'fictional_character') return '虛構角色';
+    return '知名身份';
+};
+
+const setPublicIdentityStatus = (text: string, tone: 'idle' | 'error' | 'success' = 'idle') => {
+    publicIdentityStatus.textContent = text;
+    publicIdentityStatus.classList.remove(
+        'border-cyan-500/20',
+        'bg-cyan-500/5',
+        'text-cyan-100',
+        'border-red-500/25',
+        'bg-red-500/10',
+        'text-red-200',
+        'border-emerald-500/25',
+        'bg-emerald-500/10',
+        'text-emerald-100',
+    );
+    if (tone === 'error') {
+        publicIdentityStatus.classList.add('border-red-500/25', 'bg-red-500/10', 'text-red-200');
+    } else if (tone === 'success') {
+        publicIdentityStatus.classList.add('border-emerald-500/25', 'bg-emerald-500/10', 'text-emerald-100');
+    } else {
+        publicIdentityStatus.classList.add('border-cyan-500/20', 'bg-cyan-500/5', 'text-cyan-100');
+    }
+};
+
+const setPublicIdentityBusy = (busy: boolean) => {
+    isPublicIdentityBusy = busy;
+    searchPublicIdentityBtn.disabled = busy;
+    publicIdentityQuery.disabled = busy;
+    confirmPublicIdentityBtn.disabled = busy || !selectedPublicIdentityCandidate;
+    publicIdentityCandidatesContainer.querySelectorAll('button').forEach(button => {
+        (button as HTMLButtonElement).disabled = busy;
+    });
+};
+
+const renderPublicIdentityCandidates = () => {
+    publicIdentityCandidatesContainer.innerHTML = '';
+    publicIdentityCandidates.forEach(candidate => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `public-identity-candidate${selectedPublicIdentityCandidate?.id === candidate.id ? ' is-selected' : ''}`;
+        button.disabled = isPublicIdentityBusy;
+
+        if (candidate.thumbnailUrl) {
+            const image = document.createElement('img');
+            image.className = 'public-identity-candidate-image';
+            image.src = candidate.thumbnailUrl;
+            image.alt = `${candidate.title} 代表圖片`;
+            image.loading = 'lazy';
+            image.referrerPolicy = 'no-referrer';
+            button.appendChild(image);
+        } else {
+            const placeholder = document.createElement('span');
+            placeholder.className = 'public-identity-candidate-placeholder';
+            placeholder.textContent = candidate.title.slice(0, 1).toUpperCase() || '?';
+            button.appendChild(placeholder);
+        }
+
+        const copy = document.createElement('span');
+        copy.className = 'public-identity-candidate-copy';
+        const title = document.createElement('strong');
+        title.textContent = candidate.title;
+        const description = document.createElement('span');
+        description.textContent = candidate.description || `${candidate.language.toUpperCase()} Wikipedia`;
+        const extract = document.createElement('p');
+        extract.textContent = candidate.extract || '請開啟來源頁面查看更多資料。';
+        copy.append(title, description, extract);
+        button.appendChild(copy);
+        button.addEventListener('click', () => {
+            void selectPublicIdentityCandidate(candidate);
+        });
+        publicIdentityCandidatesContainer.appendChild(button);
+    });
+};
+
+const renderPublicIdentityMedia = () => {
+    publicIdentityMediaContainer.innerHTML = '';
+    if (publicIdentityMedia.length === 0) {
+        publicIdentityMediaSection.classList.add('hidden');
+        return;
+    }
+
+    publicIdentityMediaSection.classList.remove('hidden');
+    const keepButton = document.createElement('button');
+    keepButton.type = 'button';
+    keepButton.className = `public-identity-media-choice is-keep${selectedPublicIdentityMedia ? '' : ' is-selected'}`;
+    keepButton.innerHTML = '<span><strong class="block text-cyan-100">保留目前頭像</strong><span class="mt-2 block text-xs text-gray-400">只保存身份與圖片 Prompt</span></span>';
+    keepButton.addEventListener('click', () => {
+        selectedPublicIdentityMedia = null;
+        renderPublicIdentityMedia();
+    });
+    publicIdentityMediaContainer.appendChild(keepButton);
+
+    publicIdentityMedia.forEach(media => {
+        const wrapper = document.createElement('div');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `public-identity-media-choice w-full${selectedPublicIdentityMedia?.thumbnailUrl === media.thumbnailUrl ? ' is-selected' : ''}`;
+        const image = document.createElement('img');
+        image.src = media.thumbnailUrl;
+        image.alt = media.title;
+        image.loading = 'lazy';
+        image.referrerPolicy = 'no-referrer';
+        const copy = document.createElement('span');
+        copy.className = 'public-identity-media-choice-copy';
+        copy.textContent = media.title.replace(/^File:/u, '');
+        button.append(image, copy);
+        button.addEventListener('click', () => {
+            selectedPublicIdentityMedia = media;
+            renderPublicIdentityMedia();
+        });
+        const source = document.createElement('a');
+        source.className = 'mt-1 block truncate px-1 text-[0.65rem] text-cyan-300 underline underline-offset-2';
+        source.href = media.sourceUrl;
+        source.target = '_blank';
+        source.rel = 'noopener noreferrer';
+        source.textContent = `來源 · ${media.license}`;
+        wrapper.append(button, source);
+        publicIdentityMediaContainer.appendChild(wrapper);
+    });
+};
+
+const selectPublicIdentityCandidate = async (candidate: PublicIdentityCandidate) => {
+    publicIdentityLookupController?.abort();
+    selectedPublicIdentityCandidate = candidate;
+    selectedPublicIdentityMedia = null;
+    publicIdentityMedia = [];
+    renderPublicIdentityCandidates();
+    renderPublicIdentityMedia();
+    setPublicIdentityStatus(`已選擇「${candidate.title}」，正在尋找可用的代表圖片...`);
+    setPublicIdentityBusy(true);
+
+    const controller = new AbortController();
+    publicIdentityLookupController = controller;
+    try {
+        const loadedMedia = await loadPublicIdentityMedia(candidate, controller.signal);
+        const leadMedia: PublicIdentityMedia[] = candidate.thumbnailUrl ? [{
+            title: `${candidate.title}（Wikipedia 代表圖片）`,
+            thumbnailUrl: candidate.thumbnailUrl,
+            originalUrl: candidate.originalImageUrl || candidate.thumbnailUrl,
+            sourceUrl: candidate.pageUrl,
+            license: '請查看來源頁面',
+        }] : [];
+        const seen = new Set<string>();
+        publicIdentityMedia = [...leadMedia, ...loadedMedia].filter(media => {
+            const key = media.thumbnailUrl.replace(/\?.*$/u, '');
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        }).slice(0, 7);
+        renderPublicIdentityMedia();
+        setPublicIdentityStatus(
+            `你要建立的是「${candidate.title}」嗎？確認後會整理身份與圖片畫風。`,
+            'success',
+        );
+    } catch (error) {
+        if (isAbortError(error)) return;
+        const message = error instanceof Error ? error.message : '代表圖片讀取失敗。';
+        if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
+        setPublicIdentityStatus(`已選擇「${candidate.title}」。代表圖片暫時讀取不到，但仍可確認身份。`, 'success');
+    } finally {
+        if (publicIdentityLookupController === controller) publicIdentityLookupController = null;
+        setPublicIdentityBusy(false);
+        renderPublicIdentityCandidates();
+    }
+};
+
+const searchForPublicIdentity = async (rawQuery: string) => {
+    const query = rawQuery.trim();
+    if (!query) {
+        setPublicIdentityStatus('請輸入名字，或補充作品、職業、國家再搜尋。', 'error');
+        return;
+    }
+
+    publicIdentityLookupController?.abort();
+    publicIdentityCandidates = [];
+    selectedPublicIdentityCandidate = null;
+    selectedPublicIdentityMedia = null;
+    publicIdentityMedia = [];
+    publicIdentityCandidatesContainer.innerHTML = '';
+    renderPublicIdentityMedia();
+    setPublicIdentityStatus(`正在 Wikipedia 搜尋「${query}」...`);
+    setPublicIdentityBusy(true);
+
+    const controller = new AbortController();
+    publicIdentityLookupController = controller;
+    try {
+        publicIdentityCandidates = await searchPublicIdentities(query, controller.signal);
+        if (publicIdentityCandidates.length === 0) {
+            setPublicIdentityStatus('找不到合適條目。請加入作品名、團體、國家或職業再搜尋。', 'error');
+            return;
+        }
+        selectedPublicIdentityCandidate = publicIdentityCandidates[0];
+        renderPublicIdentityCandidates();
+    } catch (error) {
+        if (isAbortError(error)) return;
+        const message = error instanceof Error ? error.message : '公開資料搜尋失敗。';
+        if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
+        setPublicIdentityStatus(`搜尋失敗：${message}`, 'error');
+        return;
+    } finally {
+        if (publicIdentityLookupController === controller) publicIdentityLookupController = null;
+        setPublicIdentityBusy(false);
+    }
+
+    if (selectedPublicIdentityCandidate) {
+        await selectPublicIdentityCandidate(selectedPublicIdentityCandidate);
+    }
+};
+
+const buildConfirmedPublicIdentity = async (
+    candidate: PublicIdentityCandidate,
+): Promise<PublicIdentity> => {
+    const candidateText = `${candidate.description} ${candidate.extract}`;
+    const fallbackKind: PublicIdentity['kind'] = /(?:fictional|character|video game|manga|anime|novel|comic)/iu.test(candidateText)
+        ? 'fictional_character'
+        : /(?:born|person|singer|actor|actress|model|athlete|politician|artist|performer|musician)/iu.test(candidateText)
+            ? 'real_person'
+            : 'other';
+    const response = await runMimicModelCall(
+        [
+            {
+                role: 'system',
+                content: [
+                    'You convert one user-confirmed Wikipedia result into factual identity metadata for character consistency and text-to-image prompting.',
+                    'Use only the supplied public encyclopedia text. Do not invent private facts, facial measurements, scenes, poses, clothes, or relationships.',
+                    'For a real person, make the English visual prompt lead with the best-known public name, legal name if supplied, nationality, and public profession so an image model identifies the exact person rather than a generic demographic.',
+                    'For a fictional character, name the franchise and original medium. Describe the canonical design and broad original visual language without naming or imitating a living artist. Keep it illustrated/game-like when the source is not live action.',
+                    'Write summary_zh in concise Traditional Chinese. Return only these XML tags:',
+                    '<kind>real_person|fictional_character|other</kind>',
+                    '<canonical_name>best-known canonical name</canonical_name>',
+                    '<summary_zh>one or two factual Traditional Chinese sentences</summary_zh>',
+                    '<visual_prompt_en>identity-only English image prompt</visual_prompt_en>',
+                    '<style_prompt_en>fictional source-medium style guidance, or empty for a real person</style_prompt_en>',
+                ].join('\n'),
+            },
+            {
+                role: 'user',
+                content: [
+                    `Wikipedia title: ${candidate.title}`,
+                    `Wikipedia language: ${candidate.language}`,
+                    `Wikidata description: ${candidate.description || 'not supplied'}`,
+                    `Article introduction: ${candidate.extract || 'not supplied'}`,
+                    `Source: ${candidate.pageUrl}`,
+                ].join('\n'),
+            },
+        ],
+        700,
+    );
+
+    const rawKind = extractXmlTag(response, 'kind');
+    const kind: PublicIdentity['kind'] = rawKind === 'fictional_character' || rawKind === 'other' || rawKind === 'real_person'
+        ? rawKind
+        : fallbackKind;
+    const canonicalName = extractXmlTag(response, 'canonical_name') || candidate.title;
+    const summary = extractXmlTag(response, 'summary_zh')
+        || `${candidate.title}：${candidate.description || candidate.extract}`.slice(0, 900);
+    const visualPrompt = extractXmlTag(response, 'visual_prompt_en') || (
+        kind === 'fictional_character'
+            ? `${candidate.title}, the canonical fictional character described as ${candidate.description}. Preserve the recognizable franchise identity and canonical character design.`
+            : `${candidate.title}, ${candidate.description}, the recognizable real public figure; preserve her exact well-known identity rather than generating a generic lookalike.`
+    );
+    const stylePrompt = extractXmlTag(response, 'style_prompt_en');
+
+    return {
+        canonicalName: canonicalName.slice(0, 180),
+        kind,
+        summary: summary.slice(0, 1200),
+        visualPrompt: visualPrompt.slice(0, 1400),
+        stylePrompt: stylePrompt.slice(0, 800) || undefined,
+        sourceTitle: candidate.title,
+        sourceUrl: candidate.pageUrl,
+        sourceLanguage: candidate.language,
+        referenceImageUrl: selectedPublicIdentityMedia?.thumbnailUrl,
+        referenceImageSourceUrl: selectedPublicIdentityMedia?.sourceUrl,
+        verifiedAt: Date.now(),
+    };
+};
+
+const closePublicIdentityResolution = (result: PublicIdentityResolution | null = null) => {
+    publicIdentityLookupController?.abort();
+    publicIdentityLookupController = null;
+    publicIdentityModal.classList.add('hidden');
+    const resolver = publicIdentityResolver;
+    publicIdentityResolver = null;
+    resolver?.(result);
+};
+
+const requestPublicIdentityResolution = (
+    initialQuery: string,
+): Promise<PublicIdentityResolution | null> => {
+    if (publicIdentityResolver) {
+        publicIdentityResolver(null);
+        publicIdentityResolver = null;
+    }
+    publicIdentityCandidates = [];
+    selectedPublicIdentityCandidate = null;
+    publicIdentityMedia = [];
+    selectedPublicIdentityMedia = null;
+    publicIdentityCandidatesContainer.innerHTML = '';
+    publicIdentityMediaContainer.innerHTML = '';
+    publicIdentityMediaSection.classList.add('hidden');
+    publicIdentityQuery.value = initialQuery.trim();
+    publicIdentityModal.classList.remove('hidden');
+    setPublicIdentityStatus('正在搜尋公開資料...');
+    confirmPublicIdentityBtn.disabled = true;
+
+    const result = new Promise<PublicIdentityResolution | null>(resolve => {
+        publicIdentityResolver = resolve;
+    });
+    void searchForPublicIdentity(initialQuery);
+    return result;
+};
+
+const confirmSelectedPublicIdentity = async () => {
+    if (!selectedPublicIdentityCandidate || isPublicIdentityBusy) return;
+    const candidate = selectedPublicIdentityCandidate;
+    setPublicIdentityBusy(true);
+    setPublicIdentityStatus(`正在整理「${candidate.title}」的標準身份與圖片描述...`);
+    try {
+        const identity = await buildConfirmedPublicIdentity(candidate);
+        closePublicIdentityResolution({
+            identity,
+            avatarUrl: selectedPublicIdentityMedia?.thumbnailUrl,
+        });
+    } catch (error) {
+        const message = error instanceof Error ? error.message : '身份資料整理失敗。';
+        if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
+        setPublicIdentityStatus(`整理失敗：${message}`, 'error');
+    } finally {
+        setPublicIdentityBusy(false);
+    }
+};
+
 const buildMimicChunkAnalysisPrompt = (targetName: string, extraNotes: string) => {
     const sections = [
         'You analyze conversation history to infer one real person\'s original personality before any customization.',
@@ -2110,7 +2490,7 @@ const runMimicTranscriptAnalysisV2 = async () => {
     setMimicAnalysisStatus('分析完成，你現在可以手動微調後再儲存。', 'success');
 };
 
-const saveMimicPersona = () => {
+const saveMimicPersona = async () => {
     if (!mimicDraftPersona) {
         throw new Error('請先完成分析，再儲存角色。');
     }
@@ -2128,14 +2508,37 @@ const saveMimicPersona = () => {
         throw new Error('角色簡介、人格 Prompt、開場問候都需要有內容。');
     }
 
+    let publicIdentityResolution: PublicIdentityResolution | null = null;
+    if (mimicPublicIdentityCheckbox.checked) {
+        mimicPublicIdentityHint.textContent = '正在搜尋公開身份，請在確認視窗選擇正確對象。';
+        const query = [
+            name,
+            mimicOccupationInput.value.trim(),
+            mimicBackgroundInput.value.trim(),
+        ].filter(Boolean).join(' ');
+        publicIdentityResolution = await requestPublicIdentityResolution(query);
+        if (!publicIdentityResolution) {
+            mimicPublicIdentityHint.textContent = '身份確認已取消；角色尚未儲存。';
+            return false;
+        }
+    }
+
     const key = memoryManager.saveCustomPersona({
         name,
         emoji: '🫧',
         description,
         prompt,
         greeting,
-        avatarPrompt: `romance portrait of ${name}`,
+        avatarPrompt: publicIdentityResolution
+            ? [
+                publicIdentityResolution.identity.visualPrompt,
+                publicIdentityResolution.identity.stylePrompt,
+                'single-character portrait',
+            ].filter(Boolean).join(' ')
+            : `romance portrait of ${name}`,
         gender: getSelectedMimicGender(),
+        publicIdentityEnabled: Boolean(publicIdentityResolution),
+        publicIdentity: publicIdentityResolution?.identity,
     });
 
     memoryManager.updatePersona(key, {
@@ -2143,12 +2546,15 @@ const saveMimicPersona = () => {
         prompt,
         greeting,
         memory,
-        avatarUrl: mimicAvatarDataUrl,
+        avatarUrl: publicIdentityResolution?.avatarUrl || mimicAvatarDataUrl,
+        publicIdentityEnabled: Boolean(publicIdentityResolution),
+        publicIdentity: publicIdentityResolution?.identity,
     });
 
     renderPersonaList();
     hideMimicImportModalView();
     startChat(key, null, 'push');
+    return true;
 };
 
 const deleteCustomPersona = async (key: string) => {
@@ -2414,12 +2820,16 @@ const runMimicAnalysisFromModal = async () => {
     }
 };
 
-const saveMimicPersonaFromModal = () => {
+const saveMimicPersonaFromModal = async () => {
+    if (isMimicAnalysisRunning) return;
+    setMimicBusyState(true);
     try {
-        saveMimicPersona();
+        await saveMimicPersona();
     } catch (error) {
         const message = error instanceof Error ? error.message : '儲存分身失敗，請再試一次。';
         setMimicAnalysisStatus(message, 'error');
+    } finally {
+        setMimicBusyState(false);
     }
 };
 
@@ -4926,6 +5336,10 @@ const createPhotoProposalAction = (label: string, className: string) => {
     return button;
 };
 
+const usesConfirmedPublicIdentity = (persona: Persona | null | undefined) => Boolean(
+    persona?.publicIdentityEnabled && persona.publicIdentity,
+);
+
 const switchCharacterPhotoIdentityMode = async (
     proposalId: string,
     useAvatarReference: boolean,
@@ -4935,6 +5349,10 @@ const switchCharacterPhotoIdentityMode = async (
     const persona = memoryManager.getPersona(personaKey);
     const proposal = findPhotoProposalMessage(personaKey, proposalId)?.message.content.photoProposal;
     if (!persona || !proposal?.scenePrompt) return;
+    if (usesConfirmedPublicIdentity(persona)) {
+        showError('已確認的公眾人物／知名角色固定使用公開身份文字生成。');
+        return;
+    }
     if (useAvatarReference && (!persona.avatarUrl || persona.avatarUrl.startsWith('generating_'))) {
         showError('這個角色目前沒有可用的頭像參考。');
         return;
@@ -4950,6 +5368,7 @@ const switchCharacterPhotoIdentityMode = async (
         updatePhotoProposal(personaKey, proposalId, {
             prompt: buildCharacterPhotoPrompt(persona, proposal.scenePrompt, useAvatarReference),
             useAvatarReference,
+            identityMode: useAvatarReference ? 'avatar_reference' : 'persona_description',
             modelId: model.id,
             modelName: model.name,
             estimatedPriceUsd: model.priceUsd,
@@ -4983,7 +5402,11 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
     const price = typeof proposal.estimatedPriceUsd === 'number'
         ? `預計 US$${formatModelPrice(proposal.estimatedPriceUsd)}`
         : '實際費用由 Venice 回傳';
-    meta.textContent = `${proposal.useAvatarReference ? '會參考角色頭像保持外貌' : '依角色外貌設定生成'} · ${proposal.aspectRatio} · ${price}`;
+    const usesPublicIdentity = proposal.identityMode === 'public_identity';
+    const identityMeta = usesPublicIdentity
+        ? '依已確認公開身份文字生成'
+        : proposal.useAvatarReference ? '會參考角色頭像保持外貌' : '依角色外貌設定生成';
+    meta.textContent = `${identityMeta} · ${proposal.aspectRatio} · ${price}`;
 
     if (proposal.modelName || proposal.modelId) {
         meta.textContent += ` · ${proposal.modelName || proposal.modelId}`;
@@ -5004,24 +5427,29 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
     } else {
         const identityMark = document.createElement('span');
         identityMark.className = 'character-photo-identity-mark';
-        identityMark.textContent = 'Aa';
+        identityMark.textContent = usesPublicIdentity ? 'ID' : 'Aa';
         identitySource.appendChild(identityMark);
     }
 
     const identityCopy = document.createElement('div');
     identityCopy.className = 'character-photo-identity-copy';
     const identityTitle = document.createElement('strong');
-    identityTitle.textContent = proposal.useAvatarReference ? '使用這張頭像鎖定身分' : '使用角色名稱與外貌設定';
+    identityTitle.textContent = usesPublicIdentity
+        ? `已確認公開身份：${currentPersona?.publicIdentity?.canonicalName || currentPersona?.name || '角色'}`
+        : proposal.useAvatarReference ? '使用這張頭像鎖定身分' : '使用角色名稱與外貌設定';
     const identityDetail = document.createElement('span');
-    identityDetail.textContent = proposal.useAvatarReference
-        ? '這張預覽圖會送到 edit 模型，不只作為畫面顯示。'
-        : `不會上傳頭像；適合像 ${currentPersona?.name || 'IU'} 這類文字生成辨識較準的人物。`;
+    identityDetail.textContent = usesPublicIdentity
+        ? '不會上傳頭像；Prompt 會固定加入已確認的標準名稱、身份及原作視覺設定。'
+        : proposal.useAvatarReference
+            ? '這張預覽圖會送到 edit 模型，不只作為畫面顯示。'
+            : `不會上傳頭像；適合像 ${currentPersona?.name || 'IU'} 這類文字生成辨識較準的人物。`;
     identityCopy.append(identityTitle, identityDetail);
     identitySource.appendChild(identityCopy);
 
     const canSwitchIdentity = Boolean(
         proposal.scenePrompt
         && hasUsableAvatar
+        && !usesPublicIdentity
         && proposal.status !== 'generating'
         && proposal.status !== 'generated'
         && proposal.status !== 'declined',
@@ -6007,9 +6435,16 @@ const getRecentGodModeMessages = (latestUserInstruction?: string): VeniceMessage
 
 const buildChatSystemPrompt = (personaKey: string, persona: Persona) => {
     const behaviorGuidance = buildPersonaBehaviorGuidance(personaKey, persona);
+    const publicIdentity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
     const sections = [
         `You are ${persona.name}, the active romance character in a continuous private conversation. You are not an AI assistant.`,
         persona.description?.trim() ? `Short identity:\n${persona.description.trim()}` : '',
+        publicIdentity ? [
+            `User-confirmed public identity (${getPublicIdentityKindLabel(publicIdentity.kind)}):`,
+            `Canonical name: ${publicIdentity.canonicalName}`,
+            `Public-source summary: ${publicIdentity.summary}`,
+            'Use this only to keep the named identity, nationality, profession, franchise, and public background consistent. Do not invent private real-world facts from the source.',
+        ].join('\n') : '',
         `Character identity and voice:\n${persona.prompt}`,
         persona.greeting?.trim()
             ? `Voice reference only (never repeat or continue this sample verbatim):\n${persona.greeting.trim()}`
@@ -6599,6 +7034,31 @@ const buildCharacterPhotoPrompt = (
     useAvatarReference: boolean,
 ) => {
     const qualityInstruction = 'Keep the face, anatomy, hands, lighting, reflections, perspective, and background coherent. No collage, duplicate subject, captions, interface, text, logo, or watermark.';
+    const publicIdentity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
+
+    if (publicIdentity) {
+        const identity = trimPhotoPromptSection([
+            `Canonical identity: ${publicIdentity.canonicalName}.`,
+            publicIdentity.visualPrompt,
+            publicIdentity.stylePrompt,
+            `Public identity context: ${publicIdentity.summary}`,
+        ].filter(Boolean).join(' '), 760);
+        const fixedLength = identity.length + qualityInstruction.length + 180;
+        const scene = trimPhotoPromptSection(
+            replaceGenericReferenceSubject(scenePrompt, publicIdentity.canonicalName),
+            Math.max(280, CHARACTER_PHOTO_PROMPT_MAX_LENGTH - fixedLength),
+        );
+        const mediumInstruction = publicIdentity.kind === 'fictional_character'
+            ? 'Preserve the canonical franchise design and original source-medium visual language. Do not convert the character into a generic live-action person or photorealistic model unless the requested scene explicitly asks for that reinterpretation.'
+            : 'The subject must be the exact recognizable named public figure, not a generic person, demographic substitute, inspired lookalike, or newly invented face.';
+        return [
+            `Create one new coherent still image featuring ${publicIdentity.canonicalName}.`,
+            `Verified identity specification: ${identity}`,
+            mediumInstruction,
+            `Requested scene and composition: ${scene}`,
+            qualityInstruction,
+        ].join(' ').replace(/\s{2,}/gu, ' ').trim();
+    }
 
     if (useAvatarReference) {
         const scene = trimPhotoPromptSection(replaceGenericReferenceSubject(scenePrompt, persona.name), 720);
@@ -6638,11 +7098,22 @@ const buildCharacterPhotoProposal = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
 ): Promise<{ text: string; proposal: CharacterPhotoProposal }> => {
+    const usesPublicIdentity = usesConfirmedPublicIdentity(request.persona);
     const useAvatarReference = Boolean(
-        request.persona.avatarUrl
+        !usesPublicIdentity
+        && request.persona.avatarUrl
         && !request.persona.avatarUrl.startsWith('generating_'),
     );
-    const imagePromptIdentityRules = useAvatarReference
+    const publicIdentity = request.persona.publicIdentity;
+    const imagePromptIdentityRules = usesPublicIdentity && publicIdentity
+        ? [
+            'No reference image will be supplied. The app will add a user-confirmed public identity block separately.',
+            `Inside <prompt>, begin exactly with "${publicIdentity.canonicalName}" and thereafter refer to the subject consistently. Describe the requested scene, pose, action, expression, clothing or requested state, setting, lighting, framing, viewpoint, and relevant objects.`,
+            publicIdentity.kind === 'fictional_character'
+                ? 'Keep the scene compatible with the character’s canonical franchise design and original source-medium visual language; do not turn the character into a generic photorealistic person.'
+                : 'Do not replace the named public figure with a generic nationality, ethnicity, age group, or lookalike description.',
+        ]
+        : useAvatarReference
         ? [
             'A reference portrait will be attached later and is the only source of visual identity.',
             `Inside <prompt>, begin exactly with "${request.persona.name}" and thereafter refer to the subject only as "she". Describe only the requested scene, pose, action, expression, clothing or requested state, setting, lighting, camera framing, viewpoint, and relevant objects.`,
@@ -6728,6 +7199,9 @@ const buildCharacterPhotoProposal = async (
             status: 'pending',
             createdAt: Date.now(),
             useAvatarReference,
+            identityMode: usesPublicIdentity
+                ? 'public_identity'
+                : useAvatarReference ? 'avatar_reference' : 'persona_description',
             modelId: imageModel?.id,
             modelName: imageModel?.name,
             estimatedPriceUsd: imageModel?.priceUsd,
@@ -7416,6 +7890,26 @@ const openMemoryEditor = () => {
     }
 };
 
+const renderPersonaPublicIdentitySettings = () => {
+    const enabled = Boolean(personaPublicIdentityCheckbox.checked);
+    const identity = personaSettingsResolvedIdentity;
+    personaPublicIdentityPanel.classList.toggle('hidden', !enabled);
+    personaPublicIdentitySummary.value = identity?.summary || '';
+    personaPublicIdentityVisual.value = identity
+        ? [identity.visualPrompt, identity.stylePrompt].filter(Boolean).join('\n\n')
+        : '';
+    personaPublicIdentityStatus.textContent = identity
+        ? `${getPublicIdentityKindLabel(identity.kind)} · 已確認 ${identity.canonicalName}`
+        : '尚未辨識；按儲存後開始搜尋。';
+    personaPublicIdentitySource.classList.toggle('hidden', !identity?.sourceUrl);
+    if (identity?.sourceUrl) {
+        personaPublicIdentitySource.href = identity.sourceUrl;
+        personaPublicIdentitySource.textContent = `查看來源：${identity.sourceTitle}`;
+    } else {
+        personaPublicIdentitySource.removeAttribute('href');
+    }
+};
+
 const openPersonaSettings = () => {
     if (!currentPersona) return;
 
@@ -7424,11 +7918,19 @@ const openPersonaSettings = () => {
     personaDescriptionEditor.value = currentPersona.description || '';
     personaPromptEditor.value = currentPersona.prompt || '';
     personaGreetingEditor.value = currentPersona.greeting || '';
+    personaSettingsResolvedIdentity = currentPersona.publicIdentity
+        ? { ...currentPersona.publicIdentity }
+        : null;
+    personaSettingsResolvedAvatarUrl = null;
+    personaPublicIdentityCheckbox.checked = Boolean(currentPersona.publicIdentityEnabled);
+    renderPersonaPublicIdentitySettings();
     personaSettingsModal.classList.remove('hidden');
 };
 
 const closePersonaSettings = () => {
     personaSettingsModal.classList.add('hidden');
+    personaSettingsResolvedIdentity = null;
+    personaSettingsResolvedAvatarUrl = null;
 };
 
 const closeMemoryEditor = () => {
@@ -7446,7 +7948,18 @@ const saveMemory = () => {
     }
 };
 
-const savePersonaSettings = () => {
+const resolvePublicIdentityForPersonaSettings = async () => {
+    if (!currentPersona) return false;
+    const query = [currentPersona.name, personaDescriptionEditor.value.trim()].filter(Boolean).join(' ');
+    const result = await requestPublicIdentityResolution(query);
+    if (!result) return false;
+    personaSettingsResolvedIdentity = result.identity;
+    personaSettingsResolvedAvatarUrl = result.avatarUrl || null;
+    renderPersonaPublicIdentitySettings();
+    return true;
+};
+
+const savePersonaSettings = async () => {
     if (!currentPersonaKey || !currentPersona) return;
 
     const description = personaDescriptionEditor.value.trim();
@@ -7458,31 +7971,76 @@ const savePersonaSettings = () => {
         return;
     }
 
-    const previousGreeting = currentPersona.greeting || '';
-    memoryManager.updatePersona(currentPersonaKey, {
-        description,
-        prompt,
-        greeting: greeting || previousGreeting,
-    });
+    const publicIdentityEnabled = personaPublicIdentityCheckbox.checked;
+    savePersonaSettingsBtn.disabled = true;
+    const originalButtonText = savePersonaSettingsBtn.textContent;
+    savePersonaSettingsBtn.textContent = publicIdentityEnabled && !personaSettingsResolvedIdentity
+        ? '正在辨識身份...'
+        : '正在儲存...';
 
-    currentPersona.description = description;
-    currentPersona.prompt = prompt;
-    currentPersona.greeting = greeting || previousGreeting;
+    try {
+        if (publicIdentityEnabled && !personaSettingsResolvedIdentity) {
+            const confirmed = await resolvePublicIdentityForPersonaSettings();
+            if (!confirmed) return;
+        }
 
-    const history = memoryManager.getChatHistory(currentPersonaKey);
-    if (
-        history.length === 1 &&
-        history[0].role === 'model' &&
-        history[0].content.text === previousGreeting &&
-        greeting
-    ) {
-        history[0].content.text = greeting;
-        memoryManager.setChatHistory(currentPersonaKey, history);
+        const publicIdentity = publicIdentityEnabled && personaSettingsResolvedIdentity
+            ? {
+                ...personaSettingsResolvedIdentity,
+                summary: personaPublicIdentitySummary.value.trim() || personaSettingsResolvedIdentity.summary,
+                visualPrompt: personaPublicIdentityVisual.value.trim() || personaSettingsResolvedIdentity.visualPrompt,
+                stylePrompt: undefined,
+            }
+            : currentPersona.publicIdentity;
+
+        const previousGreeting = currentPersona.greeting || '';
+        const updates: Partial<Persona> = {
+            description,
+            prompt,
+            greeting: greeting || previousGreeting,
+            publicIdentityEnabled,
+            publicIdentity,
+        };
+        if (publicIdentityEnabled && publicIdentity) {
+            updates.avatarPrompt = [
+                publicIdentity.visualPrompt,
+                publicIdentity.stylePrompt,
+                'single-character portrait',
+            ].filter(Boolean).join(' ');
+        }
+        if (publicIdentityEnabled && personaSettingsResolvedAvatarUrl) {
+            updates.avatarUrl = personaSettingsResolvedAvatarUrl;
+        }
+        memoryManager.updatePersona(currentPersonaKey, updates);
+
+        Object.assign(currentPersona, updates);
+        if (updates.avatarUrl) {
+            renderChatHeaderAvatar();
+            renderPersonaSettingsAvatar();
+        }
+
+        const history = memoryManager.getChatHistory(currentPersonaKey);
+        if (
+            history.length === 1 &&
+            history[0].role === 'model' &&
+            history[0].content.text === previousGreeting &&
+            greeting
+        ) {
+            history[0].content.text = greeting;
+            memoryManager.setChatHistory(currentPersonaKey, history);
+        }
+
+        renderPersonaList();
+        closePersonaSettings();
+        appendMessage({
+            text: publicIdentityEnabled
+                ? '[系統] 人格與公開身份設定已更新；角色照片會使用已確認身份進行文字生成。'
+                : '[系統] 人格設定已更新，後續回覆會依照新設定生成。',
+        }, 'system');
+    } finally {
+        savePersonaSettingsBtn.disabled = false;
+        savePersonaSettingsBtn.textContent = originalButtonText || '儲存人格';
     }
-
-    renderPersonaList();
-    closePersonaSettings();
-    appendMessage({ text: '[系統] 人格設定已更新，後續回覆會依照新設定生成。' }, 'system');
 };
 
 const startNewScene = () => {
@@ -7743,7 +8301,14 @@ const setupEventListeners = () => {
     runMimicAnalysisBtn.addEventListener('click', () => {
         void runMimicAnalysisFromModal();
     });
-    saveMimicPersonaBtn.addEventListener('click', saveMimicPersonaFromModal);
+    saveMimicPersonaBtn.addEventListener('click', () => {
+        void saveMimicPersonaFromModal();
+    });
+    mimicPublicIdentityCheckbox.addEventListener('change', () => {
+        mimicPublicIdentityHint.textContent = mimicPublicIdentityCheckbox.checked
+            ? '儲存時會先開啟身份確認；請選擇正確 Wikipedia 條目後才會建立角色。'
+            : '儲存新角色前會先搜尋並讓你確認身份，也可為虛構角色選擇代表圖片。';
+    });
     
     giftButton.addEventListener('click', () => showDisabledFeatureNotice('送禮功能'));
     giftUploadInput.addEventListener('change', handleGiftSelection);
@@ -7792,12 +8357,35 @@ const setupEventListeners = () => {
     personaSettingsAvatarBtn.addEventListener('click', () => {
         if (currentPersonaKey) requestPersonaAvatarUpload(currentPersonaKey);
     });
+    personaPublicIdentityCheckbox.addEventListener('change', renderPersonaPublicIdentitySettings);
+    recheckPublicIdentityBtn.addEventListener('click', () => {
+        if (!currentPersona || !personaPublicIdentityCheckbox.checked) return;
+        recheckPublicIdentityBtn.disabled = true;
+        void resolvePublicIdentityForPersonaSettings().finally(() => {
+            recheckPublicIdentityBtn.disabled = false;
+        });
+    });
+    closePublicIdentityModalBtn.addEventListener('click', () => closePublicIdentityResolution());
+    cancelPublicIdentityBtn.addEventListener('click', () => closePublicIdentityResolution());
+    searchPublicIdentityBtn.addEventListener('click', () => {
+        void searchForPublicIdentity(publicIdentityQuery.value);
+    });
+    publicIdentityQuery.addEventListener('keydown', event => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        void searchForPublicIdentity(publicIdentityQuery.value);
+    });
+    confirmPublicIdentityBtn.addEventListener('click', () => {
+        void confirmSelectedPublicIdentity();
+    });
     closeMemoryModal.addEventListener('click', closeMemoryEditor);
     cancelMemoryEdit.addEventListener('click', closeMemoryEditor);
     saveMemoryEdit.addEventListener('click', saveMemory);
     closePersonaSettingsModal.addEventListener('click', closePersonaSettings);
     cancelPersonaSettingsBtn.addEventListener('click', closePersonaSettings);
-    savePersonaSettingsBtn.addEventListener('click', savePersonaSettings);
+    savePersonaSettingsBtn.addEventListener('click', () => {
+        void savePersonaSettings();
+    });
 
     // Interests modal listeners
     interestsBtn.addEventListener('click', () => {

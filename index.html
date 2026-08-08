@@ -829,6 +829,30 @@
                         <p class="mt-2 text-xs leading-5 text-gray-400">所有內建及自訂角色都可以更換；圖片會先壓縮再儲存在這部裝置。</p>
                     </div>
                 </div>
+                <div class="rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-4 space-y-3">
+                    <label class="flex cursor-pointer items-start gap-3">
+                        <input id="persona-public-identity-checkbox" type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-500 bg-gray-700 text-cyan-400 focus:ring-cyan-400">
+                        <span>
+                            <strong class="block text-sm text-cyan-100">公眾人物／知名角色</strong>
+                            <span class="mt-1 block text-xs leading-5 text-gray-400">儲存前會先搜尋 Wikipedia 讓你確認真人、藝人、遊戲、漫畫或其他虛構角色，不會只靠同名猜測。</span>
+                        </span>
+                    </label>
+                    <div id="persona-public-identity-panel" class="hidden space-y-3 border-t border-cyan-500/20 pt-3">
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                            <p id="persona-public-identity-status" class="text-xs font-semibold text-cyan-200">尚未辨識；按儲存後開始搜尋。</p>
+                            <button id="recheck-public-identity-btn" type="button" class="rounded-lg border border-cyan-400/30 px-3 py-1.5 text-xs font-semibold text-cyan-100 hover:bg-cyan-400/10">重新辨識</button>
+                        </div>
+                        <div>
+                            <label class="mb-2 block text-sm font-medium text-gray-300">公開身份描述</label>
+                            <textarea id="persona-public-identity-summary" class="h-24 w-full rounded-md border border-gray-600 bg-gray-700 px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-400" placeholder="確認後會填入標準名稱、國籍、職業或作品身份；你仍可手動修改。"></textarea>
+                        </div>
+                        <div>
+                            <label class="mb-2 block text-sm font-medium text-gray-300">圖片辨識與原作畫風</label>
+                            <textarea id="persona-public-identity-visual" class="h-28 w-full rounded-md border border-gray-600 bg-gray-700 px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-400" placeholder="確認後會填入英文圖片身份 Prompt；虛構角色會保留原作媒介與視覺語言。"></textarea>
+                        </div>
+                        <a id="persona-public-identity-source" class="hidden text-xs text-cyan-300 underline underline-offset-2 hover:text-cyan-200" target="_blank" rel="noopener noreferrer">查看 Wikipedia 資料來源</a>
+                    </div>
+                </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-300 mb-2">角色簡述</label>
                     <input id="persona-description-editor" type="text" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400" placeholder="例如：害羞溫柔、容易臉紅、很在意你">
@@ -883,6 +907,13 @@
                             <label class="block text-sm font-medium text-gray-300 mb-2">對方名字</label>
                             <input id="mimic-name-input" type="text" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400" placeholder="例如：小雨、Yuki、允熙">
                         </div>
+                        <label class="flex cursor-pointer items-start gap-3 rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-4">
+                            <input id="mimic-public-identity-checkbox" type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-500 bg-gray-700 text-cyan-400 focus:ring-cyan-400">
+                            <span>
+                                <strong class="block text-sm text-cyan-100">這是公眾人物／知名角色</strong>
+                                <span id="mimic-public-identity-hint" class="mt-1 block text-xs leading-5 text-gray-400">儲存新角色前會先搜尋並讓你確認身份，也可為虛構角色選擇代表圖片。</span>
+                            </span>
+                        </label>
                         <p class="rounded-xl border border-rose-400/20 bg-rose-400/10 p-3 text-sm leading-6 text-rose-100">新增角色固定為成年女性；隨機模式亦只會產生明確成年角色。</p>
                         <div id="mimic-transcript-section">
                             <label class="block text-sm font-medium text-gray-300 mb-2">聊天紀錄</label>
@@ -991,6 +1022,44 @@
                 <button id="cancel-mimic-import" class="px-4 py-2 text-gray-300 border border-gray-600 rounded-md hover:bg-gray-700">取消</button>
                 <button id="run-mimic-analysis" class="px-4 py-2 bg-sky-500 text-white font-bold rounded-md hover:bg-sky-600">開始分析</button>
                 <button id="save-mimic-persona" class="px-4 py-2 bg-yellow-400 text-gray-900 font-bold rounded-md hover:bg-yellow-500">儲存為新角色</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Public Identity Confirmation Modal -->
+    <div id="public-identity-modal" class="hidden fixed inset-0 z-[75] flex items-center justify-center bg-black/75 p-3 sm:p-5">
+        <div class="flex max-h-[94vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-cyan-500/30 bg-gray-900 shadow-2xl">
+            <div class="flex items-start justify-between gap-4 border-b border-gray-700 p-5">
+                <div>
+                    <p class="text-xs font-bold uppercase tracking-[0.2em] text-cyan-300">Identity Check</p>
+                    <h2 class="mt-1 text-2xl font-bold text-white">確認公眾人物／知名角色</h2>
+                    <p class="mt-2 text-sm leading-6 text-gray-400">請選擇你真正指的對象。資料來自 Wikipedia，確認後會再整理成可編輯的圖片身份設定。</p>
+                </div>
+                <button id="close-public-identity-modal" type="button" class="text-gray-400 hover:text-white" aria-label="關閉身份確認">
+                    <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <div class="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+                <div class="rounded-xl border border-gray-700 bg-gray-800/70 p-4">
+                    <label for="public-identity-query" class="block text-sm font-medium text-gray-200">不是你想要的人？補充作品、團體、國家或職業再搜尋</label>
+                    <div class="mt-3 flex flex-col gap-2 sm:flex-row">
+                        <input id="public-identity-query" type="text" class="min-w-0 flex-1 rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-white outline-none focus:ring-2 focus:ring-cyan-400" placeholder="例如：IU Korean singer；Rinoa from Final Fantasy VIII">
+                        <button id="search-public-identity-btn" type="button" class="rounded-lg bg-cyan-500 px-4 py-2 font-semibold text-gray-950 hover:bg-cyan-400">重新搜尋</button>
+                    </div>
+                </div>
+                <p id="public-identity-status" class="rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-4 py-3 text-sm leading-6 text-cyan-100">正在搜尋公開資料...</p>
+                <div id="public-identity-candidates" class="grid gap-3 md:grid-cols-2"></div>
+                <section id="public-identity-media-section" class="hidden space-y-3">
+                    <div>
+                        <h3 class="font-semibold text-white">代表圖片（可選）</h3>
+                        <p class="mt-1 text-xs leading-5 text-gray-400">選擇圖片後會設為角色頭像；選「保留目前頭像」則只保存身份資料。圖片版權與來源可由各圖片卡查看。</p>
+                    </div>
+                    <div id="public-identity-media" class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4"></div>
+                </section>
+            </div>
+            <div class="flex flex-wrap justify-end gap-3 border-t border-gray-700 p-4">
+                <button id="cancel-public-identity" type="button" class="rounded-lg border border-gray-600 px-4 py-2 text-gray-300 hover:bg-gray-800">取消</button>
+                <button id="confirm-public-identity" type="button" disabled class="rounded-lg bg-yellow-400 px-5 py-2 font-bold text-gray-950 hover:bg-yellow-300 disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-500">這就是她，確認身份</button>
             </div>
         </div>
     </div>

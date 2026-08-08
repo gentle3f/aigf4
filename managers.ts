@@ -128,6 +128,7 @@ export interface CharacterPhotoProposal {
     status: CharacterPhotoProposalStatus;
     createdAt: number;
     useAvatarReference: boolean;
+    identityMode?: 'avatar_reference' | 'persona_description' | 'public_identity';
     modelId?: string;
     modelName?: string;
     estimatedPriceUsd?: number;
@@ -152,6 +153,22 @@ export interface DiaryEntry {
     content: string;
 }
 
+export type PublicIdentityKind = 'real_person' | 'fictional_character' | 'other';
+
+export interface PublicIdentity {
+    canonicalName: string;
+    kind: PublicIdentityKind;
+    summary: string;
+    visualPrompt: string;
+    stylePrompt?: string;
+    sourceTitle: string;
+    sourceUrl: string;
+    sourceLanguage: 'en' | 'zh';
+    referenceImageUrl?: string;
+    referenceImageSourceUrl?: string;
+    verifiedAt: number;
+}
+
 export interface Persona {
     name: string;
     emoji: string;
@@ -162,6 +179,8 @@ export interface Persona {
     avatarPrompt: string;
     avatarUrl: string | null;
     memory?: string;
+    publicIdentityEnabled?: boolean;
+    publicIdentity?: PublicIdentity;
 }
 
 export interface AllData {
@@ -215,7 +234,9 @@ export class MemoryManager {
                     currentPersona.greeting !== originalPersona.greeting ||
                     currentPersona.avatarPrompt !== originalPersona.avatarPrompt ||
                     currentPersona.avatarUrl !== originalPersona.avatarUrl ||
-                    currentPersona.memory !== originalPersona.memory
+                    currentPersona.memory !== originalPersona.memory ||
+                    Boolean(currentPersona.publicIdentityEnabled) !== Boolean(originalPersona.publicIdentityEnabled) ||
+                    JSON.stringify(currentPersona.publicIdentity || null) !== JSON.stringify(originalPersona.publicIdentity || null)
                 ) 
                 {
                     personasToSave[key] = currentPersona;
@@ -456,7 +477,9 @@ export class MemoryManager {
             avatarPrompt: personaData.avatarPrompt,
             gender: "female",
             avatarUrl: null,
-            memory: ""
+            memory: "",
+            publicIdentityEnabled: Boolean(personaData.publicIdentityEnabled),
+            publicIdentity: personaData.publicIdentity,
         };
         this.persistModifiedPersonas();
         return personaKey;
