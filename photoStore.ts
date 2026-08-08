@@ -11,6 +11,7 @@ export interface CharacterPhotoAsset {
 }
 
 let databasePromise: Promise<IDBDatabase> | null = null;
+let persistenceRequest: Promise<boolean> | null = null;
 
 const openPhotoDatabase = () => {
     if (databasePromise) return databasePromise;
@@ -48,8 +49,26 @@ const runPhotoStoreRequest = async <T>(
     });
 };
 
+export const requestPersistentPhotoStorage = () => {
+    if (persistenceRequest) return persistenceRequest;
+
+    persistenceRequest = (async () => {
+        if (!navigator.storage?.persist) return false;
+        try {
+            if (navigator.storage.persisted && await navigator.storage.persisted()) return true;
+            return await navigator.storage.persist();
+        } catch (error) {
+            console.warn('Persistent photo storage was not granted:', error);
+            return false;
+        }
+    })();
+
+    return persistenceRequest;
+};
+
 export const saveCharacterPhotoAsset = async (asset: CharacterPhotoAsset) => {
     await runPhotoStoreRequest('readwrite', store => store.put(asset));
+    void requestPersistentPhotoStorage();
     return asset.id;
 };
 

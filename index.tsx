@@ -5062,7 +5062,7 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
     if (proposal.status === 'generated') {
         const status = document.createElement('p');
         status.className = 'character-photo-result is-success';
-        status.textContent = '照片已生成並加入聊天與相簿。';
+        status.textContent = '照片已生成並存入聊天與私人相簿。';
         card.appendChild(status);
         return card;
     }
@@ -5139,6 +5139,66 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
     return card;
 };
 
+const createChatImageAttachment = (
+    content: Content,
+    sender: 'user' | 'bot' | 'system' | 'god-mode',
+) => {
+    const attachment = document.createElement('button');
+    attachment.type = 'button';
+    attachment.className = 'chat-image-attachment';
+
+    const icon = document.createElement('span');
+    icon.className = 'chat-image-attachment-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5v-9Z"/><path d="m6.5 16 3.25-3.5 2.5 2.5 1.75-2 3.5 3.5"/><circle cx="15.75" cy="8.75" r="1.25"/></svg>';
+
+    const copy = document.createElement('span');
+    copy.className = 'chat-image-attachment-copy';
+    const title = document.createElement('strong');
+    title.textContent = sender === 'bot' && currentPersona
+        ? `${currentPersona.name} 傳來的照片`
+        : '照片附件';
+    const detail = document.createElement('span');
+    detail.textContent = content.imageAssetId
+        ? '只存於私人相簿 · 點擊查看'
+        : '點擊查看完整圖片';
+    copy.append(title, detail);
+
+    const arrow = document.createElement('span');
+    arrow.className = 'chat-image-attachment-arrow';
+    arrow.setAttribute('aria-hidden', 'true');
+    arrow.textContent = '↗';
+
+    attachment.append(icon, copy, arrow);
+    attachment.setAttribute('aria-label', `${title.textContent}，點擊查看完整圖片`);
+    attachment.addEventListener('click', async () => {
+        if (attachment.disabled) return;
+        attachment.disabled = true;
+        attachment.classList.add('is-loading');
+        detail.textContent = '正在開啟照片...';
+        try {
+            const imageUrl = await getContentImageUrl(content);
+            if (!imageUrl) throw new Error('Photo asset is unavailable.');
+            openPhotoViewer(
+                imageUrl,
+                content.imagePrompt || content.text || `${currentPersona?.name || '角色'} 的照片`,
+            );
+            detail.textContent = content.imageAssetId
+                ? '只存於私人相簿 · 點擊查看'
+                : '點擊查看完整圖片';
+            attachment.classList.remove('is-error');
+        } catch (error) {
+            console.warn('Unable to open chat image attachment:', error);
+            detail.textContent = '照片暫時無法載入，點擊重試';
+            attachment.classList.add('is-error');
+        } finally {
+            attachment.disabled = false;
+            attachment.classList.remove('is-loading');
+        }
+    });
+    return attachment;
+};
+
 const appendMessage = (content: Content, sender: 'user' | 'bot' | 'system' | 'god-mode'): HTMLElement => {
     const isSystemMessage = sender === 'system';
     
@@ -5193,19 +5253,7 @@ const appendMessage = (content: Content, sender: 'user' | 'bot' | 'system' | 'go
             bubble.appendChild(createPhotoProposalCard(content.photoProposal));
         }
         if (content.imageUrl || content.imageAssetId) {
-            const imageElement = document.createElement('img');
-            imageElement.className = 'chat-image mt-2 cursor-pointer is-loading';
-            imageElement.alt = content.text || '角色傳送的照片';
-            void getContentImageUrl(content).then(imageUrl => {
-                if (!imageUrl || !imageElement.isConnected) return;
-                imageElement.src = imageUrl;
-                imageElement.classList.remove('is-loading');
-                imageElement.onclick = () => openPhotoViewer(
-                    imageUrl,
-                    content.imagePrompt || content.text || '角色傳送的照片',
-                );
-            });
-            bubble.appendChild(imageElement);
+            bubble.appendChild(createChatImageAttachment(content, sender));
         }
 
         messageWrapper.appendChild(bubble);
@@ -7167,11 +7215,11 @@ function updateAlbumState() {
 
 function renderAlbum() {
     if (!currentPersona) return;
-    albumModalTitle.textContent = `${currentPersona.name} 的相簿`;
+    albumModalTitle.textContent = `${currentPersona.name} 的私人相簿`;
     albumGridContainer.innerHTML = '';
 
     if (albumPhotos.length === 0) {
-        albumGridContainer.innerHTML = `<p class="text-gray-400 col-span-full text-center py-8">相簿目前是空的。你可以在聊天中請 ${currentPersona.name} 拍照。</p>`;
+        albumGridContainer.innerHTML = `<p class="text-gray-400 col-span-full text-center py-8">私人相簿目前是空的。你可以在聊天中請 ${currentPersona.name} 拍照。</p>`;
         albumActions.classList.add('hidden');
         return;
     }
@@ -7276,7 +7324,7 @@ async function downloadSelectedPhotos() {
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        albumDownloadBtn.textContent = '下載選取項目';
+        albumDownloadBtn.textContent = '匯出所選 ZIP';
         updateAlbumActionButtons();
     });
 }

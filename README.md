@@ -54,7 +54,9 @@ The browser never receives `VENICE_API_KEY` in proxy mode.
 - Existing character avatars are used as edit references when available so generated photos retain the same face.
 - Reference-mode prompts lock the subject to the exact uploaded face and omit inferred demographic or appearance descriptions that could create a generic lookalike.
 - Before approval, users can switch between avatar-reference editing and name/persona text generation; the displayed model, prompt, and estimated price update together.
-- Finished photos are stored in IndexedDB, appear in the character album, and are bundled under `photos/` during chat export/import without inflating localStorage JSON.
+- Chat history renders generated images as compact attachments and only loads the full image after it is opened; the album continues to show thumbnails.
+- Finished photos are stored in the browser-private IndexedDB and never enter Camera Roll automatically; the app requests persistent storage, while an explicit ZIP export is the only action that writes them to Downloads. This storage is origin-isolated rather than encrypted and is removed when the user clears site data.
+- Photos appear in the character private album and are bundled under `photos/` during chat export/import without inflating localStorage JSON.
 
 ## Video studio
 
