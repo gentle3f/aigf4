@@ -291,7 +291,11 @@ const deleteConfirmationSection = document.getElementById('delete-confirmation-s
 const confirmDeleteBtn = document.getElementById('confirm-delete-btn') as HTMLButtonElement;
 const cancelDeleteBtn = document.getElementById('cancel-delete-btn') as HTMLButtonElement;
 const photoViewerModal = document.getElementById('photo-viewer-modal')!;
+const photoViewerShell = photoViewerModal.querySelector('.photo-viewer-shell')!;
 const closePhotoViewer = document.getElementById('close-photo-viewer') as HTMLButtonElement;
+const togglePhotoViewerEditor = document.getElementById('toggle-photo-viewer-editor') as HTMLButtonElement;
+const photoViewerToggleLabel = document.getElementById('photo-viewer-toggle-label')!;
+const openPhotoFullscreen = document.getElementById('open-photo-fullscreen') as HTMLButtonElement;
 const photoViewerImage = document.getElementById('photo-viewer-image') as HTMLImageElement;
 const photoViewerMode = document.getElementById('photo-viewer-mode')!;
 const photoViewerTitle = document.getElementById('photo-viewer-title')!;
@@ -307,6 +311,14 @@ const photoViewerStatus = document.getElementById('photo-viewer-status')!;
 const photoViewerRegenerate = document.getElementById('photo-viewer-regenerate') as HTMLButtonElement;
 const photoViewerRegenerateLabel = document.getElementById('photo-viewer-regenerate-label')!;
 const photoViewerRegenerateSpinner = document.getElementById('photo-viewer-regenerate-spinner')!;
+const photoFullscreenModal = document.getElementById('photo-fullscreen-modal')!;
+const closePhotoFullscreen = document.getElementById('close-photo-fullscreen') as HTMLButtonElement;
+const photoFullscreenImage = document.getElementById('photo-fullscreen-image') as HTMLImageElement;
+const photoFullscreenStage = document.getElementById('photo-fullscreen-stage')!;
+const photoFullscreenZoomLevel = document.getElementById('photo-fullscreen-zoom-level')!;
+const photoFullscreenZoomOut = document.getElementById('photo-fullscreen-zoom-out') as HTMLButtonElement;
+const photoFullscreenZoomIn = document.getElementById('photo-fullscreen-zoom-in') as HTMLButtonElement;
+const photoFullscreenReset = document.getElementById('photo-fullscreen-reset') as HTMLButtonElement;
 
 // Memory Modal Elements
 const memoryBtn = document.getElementById('memory-btn')!;
@@ -488,6 +500,12 @@ let isImageRequestRunning = false;
 let activePhotoViewerContext: PhotoViewerContext | null = null;
 let isPhotoViewerRegenerating = false;
 let photoViewerRequestController: AbortController | null = null;
+let isPhotoViewerEditorCollapsed = false;
+let photoFullscreenScale = 1;
+let photoFullscreenPan = { x: 0, y: 0 };
+let photoFullscreenDrag: { pointerId: number; x: number; y: number; panX: number; panY: number } | null = null;
+let photoFullscreenPinch: { distance: number; scale: number } | null = null;
+const photoFullscreenPointers = new Map<number, { x: number; y: number }>();
 let characterPhotoRequestController: AbortController | null = null;
 let activeCharacterPhotoProposalId: string | null = null;
 let switchingCharacterPhotoProposalId: string | null = null;
@@ -7992,6 +8010,61 @@ function closeAlbumModal() {
     albumModal.classList.add('hidden');
 }
 
+const setPhotoViewerEditorCollapsed = (collapsed: boolean) => {
+    isPhotoViewerEditorCollapsed = collapsed;
+    photoViewerShell.classList.toggle('is-editor-collapsed', collapsed);
+    togglePhotoViewerEditor.setAttribute('aria-expanded', String(!collapsed));
+    togglePhotoViewerEditor.title = collapsed ? '展開重新生成設定' : '收起重新生成設定';
+    photoViewerToggleLabel.textContent = collapsed ? '重新生成' : '收起設定';
+};
+
+const clampPhotoFullscreenScale = (scale: number) => Math.min(4, Math.max(1, scale));
+
+const renderPhotoFullscreenTransform = () => {
+    photoFullscreenImage.style.transform = `translate(${photoFullscreenPan.x}px, ${photoFullscreenPan.y}px) scale(${photoFullscreenScale})`;
+    photoFullscreenZoomLevel.textContent = `${Math.round(photoFullscreenScale * 100)}%`;
+    photoFullscreenStage.classList.toggle('is-zoomed', photoFullscreenScale > 1);
+};
+
+const setPhotoFullscreenScale = (scale: number) => {
+    photoFullscreenScale = clampPhotoFullscreenScale(scale);
+    if (photoFullscreenScale === 1) photoFullscreenPan = { x: 0, y: 0 };
+    renderPhotoFullscreenTransform();
+};
+
+const resetPhotoFullscreenTransform = () => {
+    photoFullscreenScale = 1;
+    photoFullscreenPan = { x: 0, y: 0 };
+    photoFullscreenDrag = null;
+    photoFullscreenPinch = null;
+    photoFullscreenPointers.clear();
+    photoFullscreenStage.classList.remove('is-dragging');
+    renderPhotoFullscreenTransform();
+};
+
+const getPhotoFullscreenPointerDistance = () => {
+    const pointers = [...photoFullscreenPointers.values()];
+    if (pointers.length < 2) return 0;
+    return Math.hypot(pointers[0].x - pointers[1].x, pointers[0].y - pointers[1].y);
+};
+
+function openPhotoFullscreenModal() {
+    if (!photoViewerImage.src) return;
+    photoFullscreenImage.src = photoViewerImage.src;
+    photoFullscreenModal.classList.remove('hidden');
+    resetPhotoFullscreenTransform();
+    window.setTimeout(() => closePhotoFullscreen.focus(), 0);
+}
+
+function closePhotoFullscreenModal() {
+    photoFullscreenModal.classList.add('hidden');
+    photoFullscreenImage.removeAttribute('src');
+    resetPhotoFullscreenTransform();
+    if (!photoViewerModal.classList.contains('hidden')) {
+        window.setTimeout(() => openPhotoFullscreen.focus(), 0);
+    }
+}
+
 
 const getPhotoViewerSelectedModel = () => {
     if (!activePhotoViewerContext) return undefined;
@@ -8129,6 +8202,7 @@ function openPhotoViewer(imageUrl: string, context: PhotoViewerContext) {
     ].filter(Boolean).join(' · ');
     setPhotoViewerStatus('可修改 Prompt、模型與畫面設定後重新生成。');
     setPhotoViewerBusy(false);
+    setPhotoViewerEditorCollapsed(window.matchMedia('(max-width: 760px)').matches);
     photoViewerModal.classList.remove('hidden');
     document.body.classList.add('photo-viewer-open');
     window.setTimeout(() => closePhotoViewer.focus(), 0);
@@ -8264,6 +8338,7 @@ const runPhotoViewerRegeneration = async () => {
         if (!nextImageUrl) throw new Error('新圖片已生成，但暫時無法開啟預覽。');
         activePhotoViewerContext = nextContext;
         photoViewerImage.src = nextImageUrl;
+        if (!photoFullscreenModal.classList.contains('hidden')) photoFullscreenImage.src = nextImageUrl;
         photoViewerMeta.textContent = [model.name, selectedRatio, resolution, '已另存新圖'].filter(Boolean).join(' · ');
         const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
         setPhotoViewerStatus(`重新生成完成 · ${elapsed} 秒；原圖仍然保留。`, 'success');
@@ -8286,6 +8361,7 @@ const runPhotoViewerRegeneration = async () => {
 function closePhotoViewerModal() {
     photoViewerRequestController?.abort();
     photoViewerRequestController = null;
+    if (!photoFullscreenModal.classList.contains('hidden')) closePhotoFullscreenModal();
     photoViewerModal.classList.add('hidden');
     document.body.classList.remove('photo-viewer-open');
     photoViewerImage.removeAttribute('src');
@@ -8829,6 +8905,10 @@ const setupEventListeners = () => {
     cancelDeleteBtn.addEventListener('click', showMainAlbumButtons);
     confirmDeleteBtn.addEventListener('click', deleteSelectedPhotos);
     closePhotoViewer.addEventListener('click', closePhotoViewerModal);
+    togglePhotoViewerEditor.addEventListener('click', () => {
+        setPhotoViewerEditorCollapsed(!isPhotoViewerEditorCollapsed);
+    });
+    openPhotoFullscreen.addEventListener('click', openPhotoFullscreenModal);
     photoViewerModal.addEventListener('click', event => {
         if (event.target === photoViewerModal) closePhotoViewerModal();
     });
@@ -8839,8 +8919,82 @@ const setupEventListeners = () => {
     photoViewerRegenerate.addEventListener('click', () => {
         void runPhotoViewerRegeneration();
     });
+    closePhotoFullscreen.addEventListener('click', closePhotoFullscreenModal);
+    photoFullscreenModal.addEventListener('click', event => {
+        if (event.target === photoFullscreenModal) closePhotoFullscreenModal();
+    });
+    photoFullscreenZoomIn.addEventListener('click', () => setPhotoFullscreenScale(photoFullscreenScale + 0.25));
+    photoFullscreenZoomOut.addEventListener('click', () => setPhotoFullscreenScale(photoFullscreenScale - 0.25));
+    photoFullscreenReset.addEventListener('click', resetPhotoFullscreenTransform);
+    photoFullscreenStage.addEventListener('dblclick', () => {
+        setPhotoFullscreenScale(photoFullscreenScale > 1 ? 1 : 2);
+    });
+    photoFullscreenStage.addEventListener('wheel', event => {
+        event.preventDefault();
+        setPhotoFullscreenScale(photoFullscreenScale + (event.deltaY < 0 ? 0.18 : -0.18));
+    }, { passive: false });
+    photoFullscreenStage.addEventListener('pointerdown', event => {
+        photoFullscreenPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        photoFullscreenStage.setPointerCapture(event.pointerId);
+        if (photoFullscreenPointers.size === 1) {
+            photoFullscreenDrag = {
+                pointerId: event.pointerId,
+                x: event.clientX,
+                y: event.clientY,
+                panX: photoFullscreenPan.x,
+                panY: photoFullscreenPan.y,
+            };
+        } else if (photoFullscreenPointers.size === 2) {
+            photoFullscreenPinch = {
+                distance: getPhotoFullscreenPointerDistance(),
+                scale: photoFullscreenScale,
+            };
+            photoFullscreenDrag = null;
+        }
+    });
+    photoFullscreenStage.addEventListener('pointermove', event => {
+        if (!photoFullscreenPointers.has(event.pointerId)) return;
+        photoFullscreenPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        if (photoFullscreenPointers.size >= 2 && photoFullscreenPinch) {
+            const distance = getPhotoFullscreenPointerDistance();
+            if (photoFullscreenPinch.distance > 0) {
+                setPhotoFullscreenScale(photoFullscreenPinch.scale * (distance / photoFullscreenPinch.distance));
+            }
+            return;
+        }
+        if (!photoFullscreenDrag || photoFullscreenDrag.pointerId !== event.pointerId || photoFullscreenScale <= 1) return;
+        photoFullscreenPan = {
+            x: photoFullscreenDrag.panX + event.clientX - photoFullscreenDrag.x,
+            y: photoFullscreenDrag.panY + event.clientY - photoFullscreenDrag.y,
+        };
+        photoFullscreenStage.classList.add('is-dragging');
+        renderPhotoFullscreenTransform();
+    });
+    const finishPhotoFullscreenPointer = (event: PointerEvent) => {
+        photoFullscreenPointers.delete(event.pointerId);
+        if (photoFullscreenStage.hasPointerCapture(event.pointerId)) {
+            photoFullscreenStage.releasePointerCapture(event.pointerId);
+        }
+        photoFullscreenStage.classList.remove('is-dragging');
+        photoFullscreenPinch = null;
+        const remainingPointer = [...photoFullscreenPointers.entries()][0];
+        photoFullscreenDrag = remainingPointer
+            ? {
+                pointerId: remainingPointer[0],
+                x: remainingPointer[1].x,
+                y: remainingPointer[1].y,
+                panX: photoFullscreenPan.x,
+                panY: photoFullscreenPan.y,
+            }
+            : null;
+    };
+    photoFullscreenStage.addEventListener('pointerup', finishPhotoFullscreenPointer);
+    photoFullscreenStage.addEventListener('pointercancel', finishPhotoFullscreenPointer);
     document.addEventListener('keydown', event => {
-        if (event.key === 'Escape' && !photoViewerModal.classList.contains('hidden')) {
+        if (event.key !== 'Escape') return;
+        if (!photoFullscreenModal.classList.contains('hidden')) {
+            closePhotoFullscreenModal();
+        } else if (!photoViewerModal.classList.contains('hidden')) {
             closePhotoViewerModal();
         }
     });

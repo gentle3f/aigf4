@@ -770,19 +770,30 @@
                     <h2 id="photo-viewer-title" class="photo-viewer-title">圖片附件</h2>
                     <p id="photo-viewer-meta" class="photo-viewer-meta">只儲存在這個瀏覽器</p>
                 </div>
-                <button id="close-photo-viewer" type="button" class="photo-viewer-close" aria-label="關閉圖片附件">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                        <path stroke-linecap="round" d="M6 6l12 12M18 6 6 18" />
-                    </svg>
-                </button>
+                <div class="photo-viewer-header-actions">
+                    <button id="toggle-photo-viewer-editor" type="button" class="photo-viewer-toggle" aria-expanded="true" aria-controls="photo-viewer-editor">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M7 12h10M10 17h4" />
+                        </svg>
+                        <span id="photo-viewer-toggle-label">重新生成</span>
+                    </button>
+                    <button id="close-photo-viewer" type="button" class="photo-viewer-close" aria-label="關閉圖片附件">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" d="M6 6l12 12M18 6 6 18" />
+                        </svg>
+                    </button>
+                </div>
             </header>
 
             <div class="photo-viewer-body">
                 <div class="photo-viewer-media">
-                    <img id="photo-viewer-image" src="" alt="完整圖片附件">
+                    <button id="open-photo-fullscreen" type="button" class="photo-viewer-image-open" aria-label="以全螢幕開啟圖片並縮放">
+                        <img id="photo-viewer-image" src="" alt="完整圖片附件">
+                    </button>
+                    <p class="photo-viewer-zoom-hint">點圖片可全螢幕縮放</p>
                 </div>
 
-                <aside class="photo-viewer-editor">
+                <aside id="photo-viewer-editor" class="photo-viewer-editor">
                     <div class="photo-viewer-editor-scroll">
                         <div>
                             <p class="photo-viewer-section-label">重新生成設定</p>
@@ -828,6 +839,27 @@
                 </aside>
             </div>
         </section>
+    </div>
+
+    <!-- Full-screen attachment preview -->
+    <div id="photo-fullscreen-modal" class="photo-fullscreen-modal hidden" role="dialog" aria-modal="true" aria-label="全螢幕圖片檢視器">
+        <div class="photo-fullscreen-toolbar">
+            <p id="photo-fullscreen-zoom-level" class="photo-fullscreen-zoom-level">100%</p>
+            <div class="photo-fullscreen-actions">
+                <button id="photo-fullscreen-zoom-out" type="button" class="photo-fullscreen-control" aria-label="縮小圖片">−</button>
+                <button id="photo-fullscreen-reset" type="button" class="photo-fullscreen-control photo-fullscreen-reset" aria-label="重設圖片縮放">重設</button>
+                <button id="photo-fullscreen-zoom-in" type="button" class="photo-fullscreen-control" aria-label="放大圖片">+</button>
+                <button id="close-photo-fullscreen" type="button" class="photo-fullscreen-close" aria-label="關閉全螢幕圖片">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" d="M6 6l12 12M18 6 6 18" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+        <div id="photo-fullscreen-stage" class="photo-fullscreen-stage">
+            <img id="photo-fullscreen-image" src="" alt="全螢幕圖片附件">
+        </div>
+        <p class="photo-fullscreen-hint">雙擊或滑鼠滾輪可縮放；放大後可拖曳圖片</p>
     </div>
 
     <!-- Save Before Exit Modal -->
