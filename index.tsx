@@ -428,6 +428,7 @@ let imageRequestController: AbortController | null = null;
 let isImageRequestRunning = false;
 let characterPhotoRequestController: AbortController | null = null;
 let activeCharacterPhotoProposalId: string | null = null;
+let switchingCharacterPhotoProposalId: string | null = null;
 const characterPhotoObjectUrls = new Map<string, string>();
 let videoStudioMode: VeniceVideoMode = 'image-to-video';
 let videoModels: Record<VeniceVideoMode, VeniceVideoModelSummary[]> = {
@@ -4925,6 +4926,45 @@ const createPhotoProposalAction = (label: string, className: string) => {
     return button;
 };
 
+const switchCharacterPhotoIdentityMode = async (
+    proposalId: string,
+    useAvatarReference: boolean,
+) => {
+    if (!currentPersonaKey || switchingCharacterPhotoProposalId || activeCharacterPhotoProposalId) return;
+    const personaKey = currentPersonaKey;
+    const persona = memoryManager.getPersona(personaKey);
+    const proposal = findPhotoProposalMessage(personaKey, proposalId)?.message.content.photoProposal;
+    if (!persona || !proposal?.scenePrompt) return;
+    if (useAvatarReference && (!persona.avatarUrl || persona.avatarUrl.startsWith('generating_'))) {
+        showError('這個角色目前沒有可用的頭像參考。');
+        return;
+    }
+
+    switchingCharacterPhotoProposalId = proposalId;
+    refreshPhotoProposalCard(proposalId);
+    try {
+        const mode: VeniceImageMode = useAvatarReference ? 'edit' : 'generate';
+        await loadImageModels(mode);
+        const model = getPreferredCharacterPhotoModel(mode);
+        if (!model) throw new Error('目前沒有可用的 Venice 圖片模型。');
+        updatePhotoProposal(personaKey, proposalId, {
+            prompt: buildCharacterPhotoPrompt(persona, proposal.scenePrompt, useAvatarReference),
+            useAvatarReference,
+            modelId: model.id,
+            modelName: model.name,
+            estimatedPriceUsd: model.priceUsd,
+            status: 'pending',
+            error: undefined,
+        });
+        hideError();
+    } catch (error) {
+        showError(error instanceof Error ? error.message : '無法切換照片的外貌來源。');
+    } finally {
+        switchingCharacterPhotoProposalId = null;
+        if (currentPersonaKey === personaKey) refreshPhotoProposalCard(proposalId);
+    }
+};
+
 const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
     const card = document.createElement('section');
     card.className = `character-photo-proposal is-${proposal.status}`;
@@ -4945,7 +4985,63 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
         : '實際費用由 Venice 回傳';
     meta.textContent = `${proposal.useAvatarReference ? '會參考角色頭像保持外貌' : '依角色外貌設定生成'} · ${proposal.aspectRatio} · ${price}`;
 
-    card.append(eyebrow, prompt, meta);
+    if (proposal.modelName || proposal.modelId) {
+        meta.textContent += ` · ${proposal.modelName || proposal.modelId}`;
+    }
+
+    const identitySource = document.createElement('div');
+    identitySource.className = `character-photo-identity ${proposal.useAvatarReference ? 'uses-avatar' : 'uses-description'}`;
+    const hasUsableAvatar = Boolean(
+        currentPersona?.avatarUrl
+        && !currentPersona.avatarUrl.startsWith('generating_'),
+    );
+    if (proposal.useAvatarReference && hasUsableAvatar && currentPersona?.avatarUrl) {
+        const referenceImage = document.createElement('img');
+        referenceImage.src = currentPersona.avatarUrl;
+        referenceImage.alt = `${currentPersona.name} 的實際參考頭像`;
+        referenceImage.className = 'character-photo-reference-image';
+        identitySource.appendChild(referenceImage);
+    } else {
+        const identityMark = document.createElement('span');
+        identityMark.className = 'character-photo-identity-mark';
+        identityMark.textContent = 'Aa';
+        identitySource.appendChild(identityMark);
+    }
+
+    const identityCopy = document.createElement('div');
+    identityCopy.className = 'character-photo-identity-copy';
+    const identityTitle = document.createElement('strong');
+    identityTitle.textContent = proposal.useAvatarReference ? '使用這張頭像鎖定身分' : '使用角色名稱與外貌設定';
+    const identityDetail = document.createElement('span');
+    identityDetail.textContent = proposal.useAvatarReference
+        ? '這張預覽圖會送到 edit 模型，不只作為畫面顯示。'
+        : `不會上傳頭像；適合像 ${currentPersona?.name || 'IU'} 這類文字生成辨識較準的人物。`;
+    identityCopy.append(identityTitle, identityDetail);
+    identitySource.appendChild(identityCopy);
+
+    const canSwitchIdentity = Boolean(
+        proposal.scenePrompt
+        && hasUsableAvatar
+        && proposal.status !== 'generating'
+        && proposal.status !== 'generated'
+        && proposal.status !== 'declined',
+    );
+    if (canSwitchIdentity) {
+        const switchButton = document.createElement('button');
+        switchButton.type = 'button';
+        switchButton.className = 'character-photo-identity-switch';
+        switchButton.textContent = proposal.useAvatarReference ? '改用名稱生成' : '改用頭像參考';
+        switchButton.disabled = Boolean(
+            activeCharacterPhotoProposalId
+            || switchingCharacterPhotoProposalId === proposal.id,
+        );
+        switchButton.addEventListener('click', () => {
+            void switchCharacterPhotoIdentityMode(proposal.id, !proposal.useAvatarReference);
+        });
+        identitySource.appendChild(switchButton);
+    }
+
+    card.append(eyebrow, identitySource, prompt, meta);
 
     if (proposal.status === 'generating') {
         const progress = document.createElement('div');
@@ -4992,15 +5088,15 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
         proposal.status === 'failed' ? '重試生成' : '是，生成照片',
         'is-approve',
     );
-    approveButton.disabled = Boolean(activeCharacterPhotoProposalId);
+    approveButton.disabled = Boolean(activeCharacterPhotoProposalId || switchingCharacterPhotoProposalId);
     approveButton.addEventListener('click', () => void approveCharacterPhoto(proposal.id));
 
     const declineButton = createPhotoProposalAction('不要', 'is-decline');
-    declineButton.disabled = Boolean(activeCharacterPhotoProposalId);
+    declineButton.disabled = Boolean(activeCharacterPhotoProposalId || switchingCharacterPhotoProposalId);
     declineButton.addEventListener('click', () => declineCharacterPhoto(proposal.id));
 
     const editButton = createPhotoProposalAction('修改 Prompt', 'is-edit');
-    editButton.disabled = Boolean(activeCharacterPhotoProposalId);
+    editButton.disabled = Boolean(activeCharacterPhotoProposalId || switchingCharacterPhotoProposalId);
     editButton.addEventListener('click', () => {
         const editor = document.createElement('textarea');
         editor.className = 'character-photo-prompt-editor';
@@ -6430,25 +6526,53 @@ const trimPhotoPromptSection = (text: string, maxLength: number) => {
     return `${clipped.slice(0, boundary >= minimumBoundary ? boundary : clipped.length).trim().replace(/[,:;]$/u, '')}.`;
 };
 
+const replaceGenericReferenceSubject = (scenePrompt: string, personaName: string) => {
+    const normalized = scenePrompt.replace(/\s{2,}/gu, ' ').trim();
+    const descriptor = '(?:(?:photorealistic|realistic|beautiful|attractive|cute|gentle|soft|shy|confident|elegant|stylish|sexy|sensual|young|younger|adult|mature|middle-aged|elderly|east|south|southeast|asian|korean|chinese|taiwanese|japanese|hong-kong|hongkongese|caucasian|white|black|latina|slim|petite|tall|short|\\d{1,2}-year-old)\\s+)*';
+    const genericSubject = `(?:a|an|the)\\s+${descriptor}(?:woman|girl|lady|female|person|subject)`;
+    const escapedName = escapeRegExp(personaName);
+    const namedGeneric = new RegExp(`^${escapedName}\\s*,\\s*${genericSubject}\\s*,?\\s*`, 'iu');
+    if (namedGeneric.test(normalized)) {
+        return normalized.replace(namedGeneric, `${personaName} `).trim();
+    }
+
+    const directGeneric = new RegExp(`^${genericSubject}`, 'iu');
+    if (directGeneric.test(normalized)) {
+        return normalized.replace(directGeneric, personaName).trim();
+    }
+
+    const framedGeneric = new RegExp(`^(.{0,90}?\\b(?:of|showing|featuring)\\s+)${genericSubject}`, 'iu');
+    return normalized.replace(framedGeneric, `$1${personaName}`).trim();
+};
+
 const buildCharacterPhotoPrompt = (
     persona: Persona,
     scenePrompt: string,
     useAvatarReference: boolean,
 ) => {
-    const identityInstruction = useAvatarReference
-        ? [
-            'Use the supplied reference portrait as the absolute source of truth for the same character identity and face.',
-            'Preserve her recognizable facial structure, age, ethnicity, hair identity, and distinctive features; the requested scene may change pose, expression, camera angle, location, and clothing.',
-            'If any written appearance detail conflicts with the reference portrait, follow the reference portrait.',
-        ].join(' ')
-        : `Character appearance: ${trimPhotoPromptSection(persona.avatarPrompt || persona.description || persona.prompt, 460)}`;
-    const subjectInstruction = `Create one new coherent camera photo of ${persona.name}, the same adult female character.`;
-    const qualityInstruction = 'Keep anatomy, hands, face, lighting, reflections, perspective, and background physically coherent. No collage, duplicate person, captions, interface, text, logo, or watermark.';
-    const fixedLength = identityInstruction.length + subjectInstruction.length + qualityInstruction.length + 40;
+    const qualityInstruction = 'Keep the face, anatomy, hands, lighting, reflections, perspective, and background coherent. No collage, duplicate subject, captions, interface, text, logo, or watermark.';
+
+    if (useAvatarReference) {
+        const scene = trimPhotoPromptSection(replaceGenericReferenceSubject(scenePrompt, persona.name), 720);
+        return [
+            `Edit the supplied reference portrait into a new camera photo of ${persona.name}.`,
+            `Identity lock: ${persona.name} must remain the exact same recognizable individual shown in the input image, not a replacement, reinterpretation, generic person, or lookalike.`,
+            'Treat the input image as identity evidence, not merely a style reference. Preserve the exact facial geometry, eyes, nose, lips, skin details, hairline, and distinctive features.',
+            'Copy every unspecified physical detail from the reference image instead of inferring it from text.',
+            `Change only the requested scene, pose, expression, clothing, camera, and surroundings: ${scene}`,
+            qualityInstruction,
+        ].join(' ').replace(/\s{2,}/gu, ' ').trim();
+    }
+
+    const identity = trimPhotoPromptSection(
+        [persona.name, persona.avatarPrompt || persona.description || persona.prompt].filter(Boolean).join('. '),
+        460,
+    );
+    const fixedLength = identity.length + qualityInstruction.length + 100;
     const scene = trimPhotoPromptSection(scenePrompt, Math.max(280, CHARACTER_PHOTO_PROMPT_MAX_LENGTH - fixedLength));
     return [
-        identityInstruction,
-        subjectInstruction,
+        `Create one new coherent camera photo of ${persona.name}.`,
+        `Character identity and appearance: ${identity}`,
         `Requested scene and composition: ${scene}`,
         qualityInstruction,
     ].join(' ').replace(/\s{2,}/gu, ' ').trim();
@@ -6470,17 +6594,29 @@ const buildCharacterPhotoProposal = async (
         request.persona.avatarUrl
         && !request.persona.avatarUrl.startsWith('generating_'),
     );
+    const imagePromptIdentityRules = useAvatarReference
+        ? [
+            'A reference portrait will be attached later and is the only source of visual identity.',
+            `Inside <prompt>, begin exactly with "${request.persona.name}" and thereafter refer to the subject only as "she". Describe only the requested scene, pose, action, expression, clothing or requested state, setting, lighting, camera framing, viewpoint, and relevant objects.`,
+            'Do not infer or state her age, ethnicity, nationality, facial features, skin tone, eye appearance, hair identity, or body type unless the newest user message explicitly requests that exact visible change.',
+            'Never replace her identity with a generic demographic description. The app will add the identity-lock instruction separately.',
+        ]
+        : [
+            `No reference image will be supplied. Inside <prompt>, identify ${request.persona.name} by name and use the established character appearance where useful.`,
+            'Describe the subject count and identity, visible pose or action, expression, clothing or requested state, setting, lighting, camera framing, viewpoint, and relevant objects.',
+        ];
     const systemPrompt = [
         buildChatSystemPrompt(request.personaKey, request.persona),
         'The newest user message is a request for the character to take or send a photo.',
         'Do not generate an image and do not claim the photo has already been taken or sent. Stay fully in character and propose exactly what the character intends to photograph, based on the newest request, current scene, relationship, clothing and physical continuity from recent conversation.',
         'The proposal may be ordinary, romantic, fantasy, or explicitly adult according to the user request and established context. Preserve direct wording and intent; do not make an ordinary request sexual, and do not sanitize an explicit adult request.',
-        'The English image prompt must describe one still image, with subject count and identity, visible pose/action, expression, clothing or requested state, setting, lighting, camera framing, viewpoint, and relevant objects. Do not invent a new major event or a user action.',
+        ...imagePromptIdentityRules,
+        'The English image prompt must describe one still image. Do not invent a new major event or a user action.',
         'Choose one definite composition yourself. Do not offer multiple unresolved clothing, pose, expression, or scene options; the visible reply and English prompt must describe the same single choice.',
         'The reply and later caption must use the character’s established Traditional Chinese regional voice. The reply must briefly describe that one chosen photo and naturally ask the user to approve it without mentioning AI, models, policy, generation, or internal prompts.',
         'Return only these four XML blocks and no other text:',
         '<reply>in-character approval question</reply>',
-        '<prompt>English still-image scene prompt, 45 to 120 words</prompt>',
+        `<prompt>English still-image ${useAvatarReference ? 'edit instruction, 25 to 70 words' : 'scene prompt, 45 to 100 words'}</prompt>`,
         '<caption>short in-character line to send together with the finished photo</caption>',
         '<ratio>one of 1:1, 3:4, 4:5, 16:9, 9:16</ratio>',
     ].join('\n\n');
@@ -6522,7 +6658,10 @@ const buildCharacterPhotoProposal = async (
     const mode: VeniceImageMode = useAvatarReference ? 'edit' : 'generate';
     await loadImageModels(mode);
     const imageModel = getPreferredCharacterPhotoModel(mode);
-    const prompt = buildCharacterPhotoPrompt(request.persona, draft.scenePrompt, useAvatarReference);
+    const scenePrompt = useAvatarReference
+        ? replaceGenericReferenceSubject(draft.scenePrompt, request.persona.name)
+        : draft.scenePrompt;
+    const prompt = buildCharacterPhotoPrompt(request.persona, scenePrompt, useAvatarReference);
     const reply = request.personaKey === 'cc'
         ? normalizeCcCantoneseLeaks(draft.reply)
         : normalizeTraditionalChineseLeaks(draft.reply);
@@ -6535,6 +6674,7 @@ const buildCharacterPhotoProposal = async (
         proposal: {
             id: crypto.randomUUID?.() || `photo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
             prompt,
+            scenePrompt,
             caption,
             aspectRatio: draft.aspectRatio,
             status: 'pending',
@@ -6685,15 +6825,24 @@ const prepareCharacterAvatarReference = async (persona: Persona) => {
     image.src = sourceUrl;
     try {
         await image.decode();
-        const scale = Math.min(1, 1280 / Math.max(image.naturalWidth, image.naturalHeight));
+        const originalPixels = image.naturalWidth * image.naturalHeight;
+        const downscale = Math.min(1, 1536 / Math.max(image.naturalWidth, image.naturalHeight));
+        const minimumPixelScale = originalPixels > 0
+            ? Math.sqrt(65_536 / originalPixels)
+            : 1;
+        const scale = Math.max(downscale, minimumPixelScale);
         const canvas = document.createElement('canvas');
-        canvas.width = Math.max(256, Math.round(image.naturalWidth * scale));
-        canvas.height = Math.max(256, Math.round(image.naturalHeight * scale));
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
         const context = canvas.getContext('2d');
         if (!context) throw new Error('瀏覽器無法準備角色頭像。');
+        context.imageSmoothingEnabled = true;
+        context.imageSmoothingQuality = 'high';
         context.drawImage(image, 0, 0, canvas.width, canvas.height);
-        let blob = await canvasToBlob(canvas, 0.88);
-        if (blob.size > 2_650_000) blob = await canvasToBlob(canvas, 0.68);
+        let blob = await canvasToBlob(canvas, 0.95);
+        if (blob.size > 2_650_000) blob = await canvasToBlob(canvas, 0.84);
+        if (blob.size > 2_650_000) blob = await canvasToBlob(canvas, 0.7);
+        if (blob.size > 2_650_000) throw new Error('角色頭像檔案太大，請更換較小的頭像後再試。');
         return blobToBase64(blob);
     } finally {
         URL.revokeObjectURL(sourceUrl);
@@ -6731,7 +6880,8 @@ const approveCharacterPhoto = async (proposalId: string) => {
 
         const mode: VeniceImageMode = sourceImageBase64 ? 'edit' : 'generate';
         await loadImageModels(mode);
-        const model = getPreferredCharacterPhotoModel(mode);
+        const model = imageModels[mode].find(item => item.id === proposal.modelId)
+            || getPreferredCharacterPhotoModel(mode);
         if (!model) throw new Error('目前沒有可用的 Venice 圖片模型。');
 
         const supportedRatios = model.constraints.aspectRatios || [];

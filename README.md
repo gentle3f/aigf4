@@ -52,6 +52,8 @@ The browser never receives `VENICE_API_KEY` in proxy mode.
 - The character first proposes one context-aware image prompt; no image request is sent until the user approves it.
 - Every proposal can be approved, declined, or edited inline, with the estimated Venice cost shown before approval.
 - Existing character avatars are used as edit references when available so generated photos retain the same face.
+- Reference-mode prompts lock the subject to the exact uploaded face and omit inferred demographic or appearance descriptions that could create a generic lookalike.
+- Before approval, users can switch between avatar-reference editing and name/persona text generation; the displayed model, prompt, and estimated price update together.
 - Finished photos are stored in IndexedDB, appear in the character album, and are bundled under `photos/` during chat export/import without inflating localStorage JSON.
 
 ## Video studio
