@@ -132,6 +132,7 @@ export interface CharacterPhotoProposal {
     modelId?: string;
     modelName?: string;
     resolution?: string;
+    seed?: number;
     estimatedPriceUsd?: number;
     error?: string;
     senderMemberId?: string;
@@ -180,6 +181,7 @@ export interface NpcPromotionProposal {
     gender: 'male' | 'female';
     description: string;
     publicFigureQuery?: string;
+    requestText?: string;
     status: 'pending' | 'added' | 'dismissed';
     memberId?: string;
     createdAt: number;
@@ -191,6 +193,7 @@ export interface ImageGenerationMetadata {
     modelName?: string;
     aspectRatio?: string;
     resolution?: string;
+    seed?: number;
     useAvatarReference?: boolean;
     identityMode?: 'avatar_reference' | 'persona_description' | 'public_identity';
 }

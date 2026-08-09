@@ -93,6 +93,7 @@ export const buildGroupSystemPrompt = (room: ChatRoom) => {
         [
             'OUTPUT:',
             '- Return only the requested JSON object.',
+            '- The exact top-level keys are segments, scene, and npc_candidate. Do not rename segments to messages or speaker_id to sender_id.',
             '- narration segments use type=narration and no speaker_id.',
             '- dialogue segments use type=dialogue and an exact PRESENT member ID.',
             '- Keep the scene update concise and factual. Preserve location and reality layer unless the newest turn changes them.',
@@ -168,14 +169,129 @@ const memberName = (room: ChatRoom, memberId: string | undefined) => (
     room.members.find(member => member.id === memberId)?.persona.name || memberId || ''
 );
 
+const resolveMemberId = (room: ChatRoom, rawSpeaker: unknown) => {
+    if (typeof rawSpeaker !== 'string') return '';
+    const normalized = rawSpeaker
+        .trim()
+        .replace(/^[@#\[]|\]$/gu, '')
+        .toLocaleLowerCase();
+    if (!normalized) return '';
+
+    const member = room.members.find(item => {
+        const identityName = item.persona.publicIdentity?.canonicalName?.trim().toLocaleLowerCase();
+        return item.id.toLocaleLowerCase() === normalized
+            || item.persona.name.trim().toLocaleLowerCase() === normalized
+            || identityName === normalized;
+    });
+    return member?.id || '';
+};
+
+const parseJsonObject = (rawText: string): Record<string, unknown> | null => {
+    const stripped = stripJsonFence(rawText);
+    try {
+        const value = JSON.parse(stripped) as unknown;
+        return value && typeof value === 'object' && !Array.isArray(value)
+            ? value as Record<string, unknown>
+            : null;
+    } catch {
+        const start = stripped.indexOf('{');
+        const end = stripped.lastIndexOf('}');
+        if (start < 0 || end <= start) return null;
+        try {
+            const value = JSON.parse(stripped.slice(start, end + 1)) as unknown;
+            return value && typeof value === 'object' && !Array.isArray(value)
+                ? value as Record<string, unknown>
+                : null;
+        } catch {
+            return null;
+        }
+    }
+};
+
+const parsePlainGroupSegments = (
+    rawText: string,
+    room: ChatRoom,
+    fallbackMemberId?: string,
+): ChatSegment[] => {
+    const presentIds = new Set(room.scene.presentMemberIds);
+    const segments: ChatSegment[] = [];
+    const labelPattern = /^\s*(?:\[([^\]]+)\]|([^：:\n]{1,48}))\s*[：:]\s*(.+)$/u;
+
+    rawText.split(/\n+/u).forEach(rawLine => {
+        const line = rawLine.trim();
+        if (!line) return;
+        const label = line.match(labelPattern);
+        if (label) {
+            const speakerId = resolveMemberId(room, label[1] || label[2]);
+            const text = compact(label[3]?.replace(/^[「『“"]|[」』”"]$/gu, ''), 2200);
+            if (speakerId && presentIds.has(speakerId) && text) {
+                segments.push({
+                    type: 'dialogue',
+                    speakerId,
+                    speakerName: memberName(room, speakerId),
+                    text,
+                });
+                return;
+            }
+        }
+
+        if (/^[（(].+[）)]$/u.test(line)) {
+            segments.push({ type: 'narration', text: compact(line.replace(/^[（(]|[）)]$/gu, ''), 2200) });
+        }
+    });
+
+    if (segments.some(segment => segment.type === 'dialogue')) return segments;
+    const resolvedFallback = resolveMemberId(room, fallbackMemberId)
+        || room.scene.presentMemberIds.find(id => id === room.leadMemberId)
+        || room.scene.presentMemberIds[0];
+    const text = compact(cleanFallbackText(rawText), 2200);
+    if (!resolvedFallback || !presentIds.has(resolvedFallback) || !text) return [];
+    return [{
+        type: 'dialogue',
+        speakerId: resolvedFallback,
+        speakerName: memberName(room, resolvedFallback),
+        text,
+    }];
+};
+
+const cleanFallbackText = (value: string) => {
+    const text = stripJsonFence(value)
+        .replace(/^\s*(?:assistant|response|reply)\s*[：:]\s*/iu, '')
+        .trim();
+    return /^(?:\{|\[)/u.test(text) ? '' : text;
+};
+
 const composeText = (segments: ChatSegment[]) => segments.map(segment => {
     if (segment.type === 'narration') return `（${segment.text.replace(/^[（(]|[）)]$/gu, '')}）`;
     return `${segment.speakerName || segment.speakerId}：「${segment.text.replace(/^[「“"]|[」”"]$/gu, '')}」`;
 }).join('\n\n');
 
-export const parseGroupGeneration = (rawText: string, room: ChatRoom): GroupGenerationResult => {
-    const parsed = JSON.parse(stripJsonFence(rawText)) as {
-        segments?: Array<{ type?: string; speaker_id?: string | null; text?: string }>;
+export const parseGroupGeneration = (
+    rawText: string,
+    room: ChatRoom,
+    fallbackMemberId?: string,
+): GroupGenerationResult => {
+    const parsed = parseJsonObject(rawText) as ({
+        segments?: Array<{
+            type?: string;
+            speaker_id?: string | null;
+            sender_id?: string | null;
+            speaker?: string | null;
+            name?: string | null;
+            text?: string;
+            content?: string;
+            message?: string;
+        }>;
+        messages?: Array<{
+            type?: string;
+            speaker_id?: string | null;
+            sender_id?: string | null;
+            speaker?: string | null;
+            name?: string | null;
+            text?: string;
+            content?: string;
+            message?: string;
+        }>;
         scene?: {
             location?: string;
             reality_layer?: string;
@@ -189,17 +305,19 @@ export const parseGroupGeneration = (rawText: string, room: ChatRoom): GroupGene
             description?: string;
             public_figure_query?: string | null;
         } | null;
-    };
+    } | null);
     const knownIds = new Set(room.members.map(member => member.id));
     const presentIds = new Set(room.scene.presentMemberIds);
-    const segments = (parsed.segments || []).reduce<ChatSegment[]>((result, segment) => {
-        const text = compact(segment.text, 2200);
+    const rawSegments = parsed?.segments || parsed?.messages || [];
+    const segments = rawSegments.reduce<ChatSegment[]>((result, segment) => {
+        const text = compact(segment.text || segment.content || segment.message, 2200);
         if (!text) return result;
-        if (segment.type === 'narration') {
+        const rawSpeaker = segment.speaker_id ?? segment.sender_id ?? segment.speaker ?? segment.name;
+        if (segment.type === 'narration' || rawSpeaker === null) {
             result.push({ type: 'narration', text });
             return result;
         }
-        const speakerId = segment.speaker_id || '';
+        const speakerId = resolveMemberId(room, rawSpeaker);
         if (!knownIds.has(speakerId) || !presentIds.has(speakerId)) return result;
         result.push({
             type: 'dialogue',
@@ -209,24 +327,27 @@ export const parseGroupGeneration = (rawText: string, room: ChatRoom): GroupGene
         });
         return result;
     }, []);
-    if (segments.length === 0 || !segments.some(segment => segment.type === 'dialogue')) {
+    if (!segments.some(segment => segment.type === 'dialogue') && !parsed) {
+        segments.splice(0, segments.length, ...parsePlainGroupSegments(rawText, room, fallbackMemberId));
+    }
+    if (!segments.some(segment => segment.type === 'dialogue')) {
         throw new Error('Group reply did not contain valid member dialogue.');
     }
 
-    const requestedIds = (parsed.scene?.present_member_ids || room.scene.presentMemberIds)
+    const requestedIds = (parsed?.scene?.present_member_ids || room.scene.presentMemberIds)
         .filter(id => knownIds.has(id))
         .slice(0, 4);
     const scene: RoomSceneState = {
         ...room.scene,
-        location: compact(parsed.scene?.location, 240) || room.scene.location,
-        realityLayer: ['physical', 'texting', 'imagined'].includes(parsed.scene?.reality_layer || '')
-            ? parsed.scene!.reality_layer as RoomSceneState['realityLayer']
+        location: compact(parsed?.scene?.location, 240) || room.scene.location,
+        realityLayer: ['physical', 'texting', 'imagined'].includes(parsed?.scene?.reality_layer || '')
+            ? parsed!.scene!.reality_layer as RoomSceneState['realityLayer']
             : room.scene.realityLayer,
         presentMemberIds: requestedIds.length > 0 ? requestedIds : room.scene.presentMemberIds,
-        summary: compact(parsed.scene?.summary, 1200) || room.scene.summary,
-        unresolved: (parsed.scene?.unresolved || room.scene.unresolved).map(item => compact(item, 240)).filter(Boolean).slice(0, 6),
+        summary: compact(parsed?.scene?.summary, 1200) || room.scene.summary,
+        unresolved: (parsed?.scene?.unresolved || room.scene.unresolved).map(item => compact(item, 240)).filter(Boolean).slice(0, 6),
     };
-    const npc = parsed.npc_candidate;
+    const npc = parsed?.npc_candidate;
 
     return {
         text: composeText(segments),

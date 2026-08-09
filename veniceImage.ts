@@ -91,7 +91,7 @@ export const VENICE_IMAGE_MODELS_API_BASE =
 export const VENICE_IMAGE_GENERATE_MODEL =
   import.meta.env.VITE_VENICE_IMAGE_GENERATE_MODEL || 'qwen-image-3';
 export const VENICE_IMAGE_EDIT_MODEL =
-  import.meta.env.VITE_VENICE_IMAGE_EDIT_MODEL || 'qwen-edit-uncensored';
+  import.meta.env.VITE_VENICE_IMAGE_EDIT_MODEL || 'qwen-image-3-edit';
 
 const DIRECT_VENICE_BASE = 'https://api.venice.ai/api/v1';
 const VENICE_API_KEY = import.meta.env.DEV

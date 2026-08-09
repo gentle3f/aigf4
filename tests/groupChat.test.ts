@@ -81,6 +81,32 @@ test('group parser preserves separate speakers and scene state', () => {
     assert.equal(parsed.npcCandidate?.gender, 'female');
 });
 
+test('group parser accepts Venice legacy messages and sender_id fields', () => {
+    const parsed = parseGroupGeneration(JSON.stringify({
+        messages: [
+            { sender_id: 'iu', text: '我喺度，頭先只係諗緊點答你。' },
+            { sender_id: 'jennie', text: '我都有聽住呀。' },
+        ],
+    }), createRoom());
+
+    assert.deepEqual(parsed.segments.map(segment => segment.speakerId), ['iu', 'jennie']);
+    assert.match(parsed.text, /IU：「/u);
+    assert.equal(parsed.scene.location, 'living room');
+});
+
+test('group parser accepts labelled transcript fallback and resolves display names', () => {
+    const parsed = parseGroupGeneration([
+        '（Jennie 把杯子放到茶几上。）',
+        'Jennie：「我先答你，今晚我想食辣嘢。」',
+        'IU：「咁我陪你揀。」',
+    ].join('\n'), createRoom());
+
+    assert.deepEqual(
+        parsed.segments.filter(segment => segment.type === 'dialogue').map(segment => segment.speakerId),
+        ['jennie', 'iu'],
+    );
+});
+
 test('group parser rejects dialogue spoken only by an absent member', () => {
     assert.throws(() => parseGroupGeneration(JSON.stringify({
         segments: [{ type: 'dialogue', speaker_id: 'irene', text: 'I should not know this.' }],

@@ -216,8 +216,8 @@
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 8h3l1.5-2h7L17 8h3v11H4V8Z"></path><circle cx="12" cy="13" r="3.5"></circle></svg>
                     </button>
                     <button id="send-button" aria-label="傳送訊息">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
-                          <path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.949a.75.75 0 00.95.534h6.105a.75.75 0 000-1.5H4.994L3.105 2.29zM15.25 15.5a.75.75 0 00.95-.534l1.414-4.949a.75.75 0 00-.95-.826L3.105 12.21a.75.75 0 00.534.95h6.105a.75.75 0 000 1.5h6.506z" />
+                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                          <path d="M3.48 2.84a1.08 1.08 0 0 0-1.45 1.28l2.18 6.74 9.08 1.14-9.08 1.14-2.18 6.74a1.08 1.08 0 0 0 1.45 1.28l18-8.15a1.1 1.1 0 0 0 0-2.02l-18-8.15Z" />
                         </svg>
                     </button>
                 </div>
@@ -315,8 +315,15 @@
                                 </select>
                             </div>
                             <div id="image-seed-wrap">
-                                <label for="image-seed" class="image-field-label">Seed</label>
-                                <input id="image-seed" type="number" min="-999999999" max="999999999" class="image-field mt-2 w-full" placeholder="隨機">
+                                <div class="flex items-center justify-between gap-2">
+                                    <label for="image-seed" class="image-field-label">Seed</label>
+                                    <label class="image-seed-lock"><input id="image-seed-lock" type="checkbox"><span>鎖定</span></label>
+                                </div>
+                                <div class="image-seed-row mt-2">
+                                    <input id="image-seed" type="number" min="-999999999" max="999999999" class="image-field w-full" placeholder="按生成時自動建立">
+                                    <button id="image-seed-random" type="button" class="image-seed-random" title="換一個 Seed" aria-label="換一個 Seed">↻</button>
+                                </div>
+                                <p class="image-seed-help">未鎖定時每次會自動換 Seed；鎖定後可重現同一組構圖。</p>
                             </div>
                         </div>
 
@@ -843,6 +850,14 @@
                             </div>
                         </div>
 
+                        <div id="photo-viewer-seed-wrap" class="hidden">
+                            <div class="photo-viewer-field-heading">
+                                <label for="photo-viewer-seed">Seed</label>
+                                <label class="image-seed-lock"><input id="photo-viewer-seed-lock" type="checkbox"><span>鎖定</span></label>
+                            </div>
+                            <input id="photo-viewer-seed" type="number" min="-999999999" max="999999999" class="photo-viewer-field" placeholder="重新生成時自動建立">
+                        </div>
+
                         <p id="photo-viewer-status" class="photo-viewer-status" role="status" aria-live="polite">可修改設定後重新生成。</p>
                     </div>
 
@@ -1144,7 +1159,8 @@
                 <button id="close-avatar-source-modal" class="wa-icon-button" type="button" aria-label="關閉"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m6 6 12 12M18 6 6 18"></path></svg></button>
                 <div><p class="wa-sheet-kicker">PROFILE PHOTO</p><h2 id="avatar-source-title">更換角色頭像</h2></div>
             </header>
-            <div class="avatar-source-options">
+            <div id="avatar-source-members" class="avatar-source-members hidden" aria-label="選擇群組成員"></div>
+            <div id="avatar-source-options" class="avatar-source-options">
                 <button id="avatar-source-local" type="button" class="avatar-source-option">
                     <span class="avatar-source-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5"></path></svg></span>
                     <span><strong>從裝置匯入</strong><small>選擇手機或電腦中的圖片，會自動裁成方形並壓縮。</small></span>

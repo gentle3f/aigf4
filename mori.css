@@ -14,6 +14,39 @@
     box-sizing: border-box;
 }
 
+button {
+    -webkit-tap-highlight-color: rgba(0, 168, 132, 0.16);
+    transform-origin: center;
+}
+
+button:not(:disabled) {
+    transition: transform 90ms cubic-bezier(0.2, 0, 0, 1), filter 90ms ease, box-shadow 90ms ease !important;
+    touch-action: manipulation;
+}
+
+button:not(:disabled):active {
+    transform: translateY(1px) scale(0.965) !important;
+    filter: brightness(0.9) saturate(1.08) !important;
+    box-shadow: inset 0 2px 5px rgba(11, 20, 26, 0.2) !important;
+}
+
+button.conversation-row:not(:disabled):active,
+button.image-source-dropzone:not(:disabled):active,
+button.video-source-dropzone:not(:disabled):active {
+    transform: translateY(1px) scale(0.992) !important;
+}
+
+button:focus-visible {
+    outline: 2px solid rgba(0, 168, 132, 0.7) !important;
+    outline-offset: 2px !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    button:not(:disabled) {
+        transition: none !important;
+    }
+}
+
 html,
 body {
     width: 100%;
@@ -220,7 +253,18 @@ body.app-body {
 }
 
 .chat-topbar {
-    padding: 7px 20px 7px 12px !important;
+    padding: 7px 26px 7px 12px !important;
+}
+
+.chat-topbar > div:first-child {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.chat-topbar > div:last-child {
+    flex: 0 0 auto;
+    margin-left: 4px;
+    margin-right: 6px;
 }
 
 .chat-topbar #back-button {
@@ -291,9 +335,13 @@ body.app-body {
 
 #more-options-menu {
     top: 45px !important;
-    right: 6px !important;
+    right: 0 !important;
     width: 230px !important;
-    overflow: hidden !important;
+    max-height: min(72dvh, calc(100dvh - 82px)) !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
     border: 0 !important;
     border-radius: 5px !important;
     color: var(--mori-ink) !important;
@@ -490,27 +538,28 @@ body.app-body {
 
 #message-input {
     width: 100% !important;
-    height: 42px !important;
-    min-height: 42px !important;
-    max-height: 42px !important;
-    margin: 0 5px !important;
-    padding: 10px 13px !important;
+    height: 56px !important;
+    min-height: 56px !important;
+    max-height: 56px !important;
+    margin: 0 4px !important;
+    padding: 15px 15px !important;
     overflow-y: auto !important;
     border: 0 !important;
     border-radius: 9px !important;
     outline: 0 !important;
     color: var(--mori-ink) !important;
     background: white !important;
-    line-height: 22px !important;
+    font-size: 1rem !important;
+    line-height: 24px !important;
     resize: none !important;
 }
 
 .composer-icon-button,
 #send-button {
     display: inline-flex !important;
-    width: 42px !important;
-    height: 42px !important;
-    flex: 0 0 42px !important;
+    width: 44px !important;
+    height: 56px !important;
+    flex: 0 0 44px !important;
     align-items: center !important;
     justify-content: center !important;
     border-radius: 999px !important;
@@ -519,8 +568,19 @@ body.app-body {
 }
 
 #send-button {
+    width: 52px !important;
+    height: 52px !important;
+    flex-basis: 52px !important;
+    align-self: center !important;
     color: white !important;
     background: var(--mori-green) !important;
+    box-shadow: 0 1px 2px rgba(11, 20, 26, 0.18) !important;
+}
+
+#send-button svg {
+    width: 24px !important;
+    height: 24px !important;
+    transform: translateX(1px);
 }
 
 #send-button:disabled {
@@ -797,6 +857,70 @@ body.app-body {
     padding: 16px;
 }
 
+.avatar-source-options.hidden {
+    display: none !important;
+}
+
+.avatar-source-members {
+    display: grid;
+    gap: 8px;
+    padding: 14px 16px 18px;
+    overflow-y: auto;
+}
+
+.avatar-source-members.hidden {
+    display: none !important;
+}
+
+.avatar-source-member {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--mori-line);
+    border-radius: 11px;
+    color: var(--mori-ink);
+    background: white;
+    text-align: left;
+}
+
+.avatar-source-member:hover,
+.avatar-source-member:focus-visible {
+    border-color: #83c5b7;
+    background: #f2fbf8;
+    outline: none;
+}
+
+.avatar-source-member-avatar {
+    display: grid;
+    width: 46px;
+    height: 46px;
+    flex: 0 0 46px;
+    place-items: center;
+    overflow: hidden;
+    border-radius: 999px;
+    color: white;
+    background: var(--mori-green-deep);
+}
+
+.avatar-source-member-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.avatar-source-member > span:last-child {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.avatar-source-member small {
+    color: var(--mori-muted);
+    font-size: 0.72rem;
+}
+
 .avatar-source-option {
     display: flex;
     align-items: center;
@@ -844,6 +968,63 @@ body.app-body {
     width: 21px;
     height: 21px;
     stroke-width: 1.8;
+}
+
+.image-seed-row {
+    display: flex;
+    align-items: stretch;
+    gap: 7px;
+}
+
+#image-seed,
+#photo-viewer-seed {
+    appearance: textfield;
+    font-variant-numeric: tabular-nums;
+}
+
+#image-seed::-webkit-inner-spin-button,
+#image-seed::-webkit-outer-spin-button,
+#photo-viewer-seed::-webkit-inner-spin-button,
+#photo-viewer-seed::-webkit-outer-spin-button {
+    margin: 0;
+    appearance: none;
+}
+
+.image-seed-lock {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: #cbd5e1;
+    font-size: 0.72rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.image-seed-lock input {
+    accent-color: #fb7185;
+}
+
+.image-seed-random {
+    display: grid;
+    width: 43px;
+    flex: 0 0 43px;
+    place-items: center;
+    border: 1px solid rgba(148, 163, 184, 0.45);
+    border-radius: 10px;
+    color: #e2e8f0;
+    background: rgba(30, 41, 59, 0.78);
+    font-size: 1.1rem;
+}
+
+.image-seed-help {
+    margin-top: 5px;
+    color: #94a3b8;
+    font-size: 0.68rem;
+    line-height: 1.4;
+}
+
+.photo-viewer-editor .image-seed-lock {
+    color: #475569;
 }
 
 .wa-sheet-wide {
@@ -1110,12 +1291,18 @@ body.app-body {
     .composer-icon-button,
     #send-button {
         width: 38px !important;
-        height: 42px !important;
+        height: 56px !important;
         flex-basis: 38px !important;
     }
 
+    #send-button {
+        width: 50px !important;
+        height: 50px !important;
+        flex-basis: 50px !important;
+    }
+
     #message-input {
-        margin: 0 2px !important;
+        margin: 0 3px !important;
     }
 
     .wa-modal-backdrop {

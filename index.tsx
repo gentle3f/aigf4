@@ -90,6 +90,15 @@ import {
     parseGroupGeneration,
     resolveRoomMemberPersona,
 } from "./groupChat.js";
+import {
+    buildNpcContinuityRequirement,
+    collectEstablishedNpcNames,
+    extractDirectNpcNames,
+    inferIntroducedNpcNames,
+    inferNpcPromotionNames,
+    inferNpcSpeakersForTurn,
+    replyHasNpcSpeech,
+} from "./npcDialogue.js";
 
 
 declare var JSZip: any;
@@ -197,6 +206,8 @@ const imageVariantWrap = document.getElementById('image-variant-wrap')!;
 const imageVariants = document.getElementById('image-variants') as HTMLSelectElement;
 const imageSeedWrap = document.getElementById('image-seed-wrap')!;
 const imageSeed = document.getElementById('image-seed') as HTMLInputElement;
+const imageSeedLock = document.getElementById('image-seed-lock') as HTMLInputElement;
+const imageSeedRandom = document.getElementById('image-seed-random') as HTMLButtonElement;
 const imageAdultConfirm = document.getElementById('image-adult-confirm') as HTMLInputElement;
 const imageStudioError = document.getElementById('image-studio-error')!;
 const imageGenerateButton = document.getElementById('image-generate-button') as HTMLButtonElement;
@@ -357,6 +368,9 @@ const photoViewerModelMeta = document.getElementById('photo-viewer-model-meta')!
 const photoViewerAspectRatio = document.getElementById('photo-viewer-aspect-ratio') as HTMLSelectElement;
 const photoViewerResolutionWrap = document.getElementById('photo-viewer-resolution-wrap')!;
 const photoViewerResolution = document.getElementById('photo-viewer-resolution') as HTMLSelectElement;
+const photoViewerSeedWrap = document.getElementById('photo-viewer-seed-wrap')!;
+const photoViewerSeed = document.getElementById('photo-viewer-seed') as HTMLInputElement;
+const photoViewerSeedLock = document.getElementById('photo-viewer-seed-lock') as HTMLInputElement;
 const photoViewerStatus = document.getElementById('photo-viewer-status')!;
 const photoViewerRegenerate = document.getElementById('photo-viewer-regenerate') as HTMLButtonElement;
 const photoViewerRegenerateLabel = document.getElementById('photo-viewer-regenerate-label')!;
@@ -450,6 +464,8 @@ const cancelPublicIdentityBtn = document.getElementById('cancel-public-identity'
 const confirmPublicIdentityBtn = document.getElementById('confirm-public-identity') as HTMLButtonElement;
 const avatarSourceModal = document.getElementById('avatar-source-modal')!;
 const avatarSourceTitle = document.getElementById('avatar-source-title')!;
+const avatarSourceMembers = document.getElementById('avatar-source-members')!;
+const avatarSourceOptions = document.getElementById('avatar-source-options')!;
 const closeAvatarSourceModalBtn = document.getElementById('close-avatar-source-modal') as HTMLButtonElement;
 const avatarSourceLocalBtn = document.getElementById('avatar-source-local') as HTMLButtonElement;
 const avatarSourceSearchBtn = document.getElementById('avatar-source-search') as HTMLButtonElement;
@@ -521,6 +537,16 @@ const readPreferredImageGenerateModel = () => {
     return stored;
 };
 
+const readPreferredImageEditModel = () => {
+    const storageKey = 'veniceImageEditModel';
+    const stored = localStorage.getItem(storageKey);
+    if (!stored || stored === 'qwen-edit-uncensored') {
+        localStorage.setItem(storageKey, VENICE_IMAGE_EDIT_MODEL);
+        return VENICE_IMAGE_EDIT_MODEL;
+    }
+    return stored;
+};
+
 
 // --- State ---
 let currentPersona: any = null;
@@ -582,7 +608,7 @@ let imageModelPromises: Record<VeniceImageMode, Promise<void> | null> = {
 };
 let selectedImageModels: Record<VeniceImageMode, string> = {
     generate: readPreferredImageGenerateModel(),
-    edit: localStorage.getItem('veniceImageEditModel') || VENICE_IMAGE_EDIT_MODEL,
+    edit: readPreferredImageEditModel(),
 };
 let imageSource: ImageStudioSource | null = null;
 let imageResults: ImageStudioResult[] = [];
@@ -671,6 +697,8 @@ const ASSISTANT_MODEL_STORAGE_KEY = 'veniceAssistantModel';
 const IMAGE_GENERATE_MODEL_STORAGE_KEY = 'veniceImageGenerateModel';
 const IMAGE_EDIT_MODEL_STORAGE_KEY = 'veniceImageEditModel';
 const IMAGE_ADULT_CONFIRM_STORAGE_KEY = 'veniceImageAdultConfirmed';
+const IMAGE_SEED_STORAGE_KEY = 'veniceImageSeed';
+const IMAGE_SEED_LOCK_STORAGE_KEY = 'veniceImageSeedLocked';
 const VIDEO_IMAGE_MODEL_STORAGE_KEY = 'veniceVideoImageModel';
 const VIDEO_TEXT_MODEL_STORAGE_KEY = 'veniceVideoTextModel';
 const VIDEO_ADULT_CONFIRM_STORAGE_KEY = 'veniceVideoAdultConfirmed';
@@ -725,6 +753,7 @@ type ImageStudioResult = {
     resolution?: string;
     negativePrompt?: string;
     sourceImageBase64?: string;
+    seed?: number;
     createdAt: Date;
 };
 type PhotoViewerContext = {
@@ -742,6 +771,7 @@ type PhotoViewerContext = {
     useAvatarReference: boolean;
     identityMode?: CharacterPhotoProposal['identityMode'];
     sourceImageBase64?: string;
+    seed?: number;
 };
 type VideoStudioSource = {
     blob: Blob;
@@ -2992,6 +3022,8 @@ const requestPersonaAvatarUpload = (key: string) => {
     if (!persona || key === VENICE_ASSISTANT_PERSONA_KEY) return;
     avatarSourceTarget = { personaKey: key };
     avatarSourceTitle.textContent = `更換 ${persona.name} 的頭像`;
+    avatarSourceMembers.classList.add('hidden');
+    avatarSourceOptions.classList.remove('hidden');
     avatarSourceModal.classList.remove('hidden');
 };
 
@@ -3000,12 +3032,58 @@ const requestRoomMemberAvatarUpload = (roomId: string, memberId: string) => {
     if (!member) return;
     avatarSourceTarget = { roomId, memberId };
     avatarSourceTitle.textContent = `更換 ${member.persona.name} 的頭像`;
+    avatarSourceMembers.classList.add('hidden');
+    avatarSourceOptions.classList.remove('hidden');
+    avatarSourceModal.classList.remove('hidden');
+};
+
+const requestRoomAvatarUpload = (roomId: string) => {
+    const room = roomManager.getRoom(roomId);
+    if (!room) return;
+    avatarSourceTarget = null;
+    avatarSourceTitle.textContent = '選擇要更換頭像的成員';
+    avatarSourceOptions.classList.add('hidden');
+    avatarSourceMembers.innerHTML = '';
+    room.members.forEach(member => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'avatar-source-member';
+
+        const avatar = document.createElement('span');
+        avatar.className = 'avatar-source-member-avatar';
+        const sourcePersona = member.persona.avatarUrl
+            ? member.persona
+            : member.sourcePersonaKey
+                ? memoryManager.getPersona(member.sourcePersonaKey) || member.persona
+                : member.persona;
+        if (sourcePersona.avatarUrl && !sourcePersona.avatarUrl.startsWith('generating_')) {
+            const image = document.createElement('img');
+            image.src = sourcePersona.avatarUrl;
+            image.alt = member.persona.name;
+            avatar.appendChild(image);
+        } else {
+            avatar.textContent = sourcePersona.emoji || '●';
+        }
+
+        const copy = document.createElement('span');
+        const name = document.createElement('strong');
+        name.textContent = member.persona.name;
+        const detail = document.createElement('small');
+        detail.textContent = '按此選擇本機圖片或搜尋網上公開圖片';
+        copy.append(name, detail);
+        button.append(avatar, copy);
+        button.addEventListener('click', () => requestRoomMemberAvatarUpload(room.id, member.id));
+        avatarSourceMembers.appendChild(button);
+    });
+    avatarSourceMembers.classList.remove('hidden');
     avatarSourceModal.classList.remove('hidden');
 };
 
 const closeAvatarSourceModal = () => {
     avatarSourceModal.classList.add('hidden');
     avatarSourceTarget = null;
+    avatarSourceMembers.classList.add('hidden');
+    avatarSourceOptions.classList.remove('hidden');
 };
 
 const chooseLocalAvatarSource = () => {
@@ -3478,16 +3556,18 @@ const buildFallbackImageModels = (mode: VeniceImageMode): VeniceImageModelSummar
     if (mode === 'edit') {
         return [{
             id: VENICE_IMAGE_EDIT_MODEL,
-            name: 'Qwen Edit Uncensored',
+            name: 'Qwen Image 3 Edit',
             kind: 'edit',
             privacy: 'private',
             traits: [],
-            priceUsd: 0.04,
+            priceUsd: 0.036,
             resolutionPrices: {},
             constraints: {
-                promptCharacterLimit: 1500,
+                promptCharacterLimit: 10000,
                 aspectRatios: ['auto', '1:1', '3:2', '16:9', '9:16', '2:3', '3:4', '4:5'],
                 defaultAspectRatio: 'auto',
+                resolutions: ['1K', '2K'],
+                defaultResolution: '1K',
             },
         }];
     }
@@ -3717,6 +3797,39 @@ const loadImageModels = async (mode: VeniceImageMode = imageStudioMode, force = 
     return imageModelPromises[mode];
 };
 
+const normalizeImageSeed = (value: string | number | undefined) => {
+    if (typeof value === 'string' && !value.trim()) return undefined;
+    const number = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(number)) return undefined;
+    return Math.round(Math.min(999_999_999, Math.max(-999_999_999, number)));
+};
+
+const createRandomImageSeed = () => {
+    const values = new Uint32Array(1);
+    crypto.getRandomValues(values);
+    return Number(values[0] % 1_999_999_999) - 999_999_999;
+};
+
+const setSeedInputValue = (input: HTMLInputElement, seed: number) => {
+    input.value = String(seed);
+    return seed;
+};
+
+const resolveImageSeedForRequest = (input: HTMLInputElement, locked: boolean) => {
+    let seed = normalizeImageSeed(input.value);
+    if (!locked || seed === undefined) {
+        seed = setSeedInputValue(input, createRandomImageSeed());
+    }
+    localStorage.setItem(IMAGE_SEED_STORAGE_KEY, String(seed));
+    return seed;
+};
+
+const initializeImageSeedControls = () => {
+    imageSeedLock.checked = localStorage.getItem(IMAGE_SEED_LOCK_STORAGE_KEY) === 'true';
+    const stored = normalizeImageSeed(localStorage.getItem(IMAGE_SEED_STORAGE_KEY) || undefined);
+    setSeedInputValue(imageSeed, stored ?? createRandomImageSeed());
+};
+
 const setImageStudioMode = (mode: VeniceImageMode) => {
     if (isImageRequestRunning || imageStudioMode === mode) {
         if (!imageModels[mode].length) void loadImageModels(mode);
@@ -3845,6 +3958,8 @@ const setImageStudioBusy = (busy: boolean) => {
     imageResolution.disabled = busy;
     imageVariants.disabled = busy;
     imageSeed.disabled = busy;
+    imageSeedLock.disabled = busy;
+    imageSeedRandom.disabled = busy;
     imageAdultConfirm.disabled = busy;
     updateImageGenerateButton();
 };
@@ -3875,6 +3990,7 @@ const renderImageResults = () => {
             negativePrompt: result.negativePrompt,
             useAvatarReference: false,
             sourceImageBase64: result.sourceImageBase64,
+            seed: result.seed,
         }));
 
         const actions = document.createElement('div');
@@ -3907,7 +4023,11 @@ const renderImageResults = () => {
 
         const meta = document.createElement('p');
         meta.className = 'image-result-meta';
-        meta.textContent = `${result.model} · ${result.createdAt.toLocaleTimeString('zh-Hant', { hour: '2-digit', minute: '2-digit' })}`;
+        meta.textContent = [
+            result.model,
+            typeof result.seed === 'number' ? `Seed ${result.seed}` : '',
+            result.createdAt.toLocaleTimeString('zh-Hant', { hour: '2-digit', minute: '2-digit' }),
+        ].filter(Boolean).join(' · ');
 
         actions.append(downloadButton, editButton);
         card.append(image, actions, meta);
@@ -3958,7 +4078,9 @@ const runImageGeneration = async () => {
     try {
         const hasAspectRatioApi = Boolean(model.constraints.aspectRatios?.length);
         const pixelSize = PIXEL_IMAGE_DIMENSIONS[imageAspectRatio.value] || PIXEL_IMAGE_DIMENSIONS['1:1'];
-        const seedValue = imageSeed.value.trim() ? Number(imageSeed.value) : undefined;
+        const seedValue = imageStudioMode === 'generate'
+            ? resolveImageSeedForRequest(imageSeed, imageSeedLock.checked)
+            : undefined;
         const result = await requestVeniceImage({
             mode: imageStudioMode,
             model: model.id,
@@ -3989,12 +4111,17 @@ const runImageGeneration = async () => {
             resolution: model.constraints.resolutions?.length ? imageResolution.value : undefined,
             negativePrompt: imageNegativePrompt.value.trim(),
             sourceImageBase64: imageStudioMode === 'edit' ? imageSource?.base64 : undefined,
+            seed: seedValue,
             createdAt: now,
         }));
         imageResults = [...newResults, ...imageResults];
         renderImageResults();
         const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
-        imageStudioStatus.textContent = `完成 ${newResults.length} 張 · ${elapsed} 秒`;
+        imageStudioStatus.textContent = [
+            `完成 ${newResults.length} 張`,
+            typeof seedValue === 'number' ? `Seed ${seedValue}` : '',
+            `${elapsed} 秒`,
+        ].filter(Boolean).join(' · ');
     } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') {
             imageStudioStatus.textContent = '已停止生成';
@@ -5585,6 +5712,10 @@ const appendIuMemorySummary = (room: ChatRoom) => {
 
 const appendLinkedLegacyHistory = (room: ChatRoom) => {
     const sourceKey = room.legacySourcePersonaKey;
+    const sourceName = sourceKey
+        ? memoryManager.getPersona(sourceKey)?.name || room.members.find(member => member.sourcePersonaKey === sourceKey)?.persona.name
+        : undefined;
+    const sourceLabel = sourceName || '原本角色';
     const sourceHistory = sourceKey
         ? memoryManager.peekChatHistory(sourceKey).filter(message => message.role === 'user' || message.role === 'model')
         : [];
@@ -5601,7 +5732,7 @@ const appendLinkedLegacyHistory = (room: ChatRoom) => {
     const banner = document.createElement('section');
     banner.className = 'legacy-history-banner';
     const title = document.createElement('strong');
-    title.textContent = `已連結舊 IU 房間的 ${sourceHistory.length.toLocaleString('zh-HK')} 則紀錄`;
+    title.textContent = `已連結原本 ${sourceLabel} 單人房的 ${sourceHistory.length.toLocaleString('zh-HK')} 則紀錄`;
     const description = document.createElement('p');
     description.textContent = hiddenCount > 0
         ? `目前先顯示最近 ${visibleHistory.length.toLocaleString('zh-HK')} 則，避免手機一次載入過慢。這些訊息只供查看，舊房間本身沒有被移動或改寫。`
@@ -5621,7 +5752,7 @@ const appendLinkedLegacyHistory = (room: ChatRoom) => {
         banner.appendChild(showAllButton);
     }
     chatContainer.appendChild(banner);
-    appendHistoryDivider('舊 IU 聊天備份 · 唯讀');
+    appendHistoryDivider(`原本 ${sourceLabel} 單人聊天 · 唯讀備份`);
     visibleHistory.forEach(message => {
         const sender = message.role === 'user' ? 'user' : 'bot';
         appendMessage({
@@ -6049,6 +6180,9 @@ const switchCharacterPhotoIdentityMode = async (
             modelId: model.id,
             modelName: model.name,
             resolution: model.constraints.defaultResolution || model.constraints.resolutions?.[0],
+            seed: mode === 'generate'
+                ? resolveImageSeedForRequest(imageSeed, imageSeedLock.checked)
+                : undefined,
             estimatedPriceUsd: getImageModelPrice(model, model.constraints.defaultResolution),
             status: 'pending',
             error: undefined,
@@ -6089,6 +6223,9 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
 
     if (proposal.modelName || proposal.modelId) {
         meta.textContent += ` · ${proposal.modelName || proposal.modelId}`;
+    }
+    if (typeof proposal.seed === 'number') {
+        meta.textContent += ` · Seed ${proposal.seed}`;
     }
 
     const identitySource = document.createElement('div');
@@ -6281,6 +6418,7 @@ const buildPhotoViewerContextFromContent = (
         content,
         useAvatarReference,
         identityMode: generation?.identityMode || matchingProposal?.identityMode,
+        seed: generation?.seed ?? matchingProposal?.seed,
     };
 };
 
@@ -6629,59 +6767,56 @@ const updateNpcProposal = (
     return found.message.content.npcProposal;
 };
 
-const addNpcProposalToRoom = async (
+const normalizedParticipantName = (value: string) => value.trim().toLocaleLowerCase();
+
+const findStoredPersonaForNpc = (name: string, excludedKey?: string) => (
+    Object.entries(memoryManager.getAllPersonas()).find(([key, persona]) => {
+        if (key === excludedKey || key === VENICE_ASSISTANT_PERSONA_KEY) return false;
+        const target = normalizedParticipantName(name);
+        return normalizedParticipantName(persona.name) === target
+            || normalizedParticipantName(persona.publicIdentity?.canonicalName || '') === target;
+    })
+);
+
+const buildNpcMemberPersona = (
     proposal: NonNullable<Content['npcProposal']>,
-    resolvePublicIdentity: boolean,
-) => {
-    if (!currentRoom || !currentConversationKey || activeChatRequest) return;
-    const roomId = currentRoom.id;
-    const conversationKey = currentConversationKey;
-    if (currentRoom.members.length >= ROOM_MEMBER_LIMIT) {
-        alert(`這個聊天室已有 ${ROOM_MEMBER_LIMIT} 位固定角色，請先到聊天室資料移除一位。`);
-        return;
-    }
-    const duplicate = currentRoom.members.find(member => (
-        member.persona.name.trim().toLocaleLowerCase() === proposal.name.trim().toLocaleLowerCase()
-    ));
-    if (duplicate) {
-        updateNpcProposal(conversationKey, proposal.id, {
-            status: 'added',
-            memberId: duplicate.id,
-        });
-        if (currentConversationKey === conversationKey) startChat(conversationKey, null, 'skip');
-        return;
-    }
+    storedPersona: Persona | undefined,
+    identityResolution: PublicIdentityResolution | null,
+): Persona => {
+    const identity = identityResolution?.identity || storedPersona?.publicIdentity;
+    const continuityAnchor = [
+        `${proposal.name} 是這個聊天室中固定、獨立的角色。${proposal.description}`,
+        '保持自己的第一人稱、語氣、動機、關係位置與已知記憶，不可被其他成員的人格同化。',
+        '把加入前已經發生的對話當成真實連續經歷；先回應最新一句話，再用自然對話、動作和環境細節推進，不重複同一反應，也不代替使用者說話。',
+        identity ? `已確認身份：${identity.canonicalName}。公開資料只固定國籍、職業、作品及外觀識別；聊天室內關係屬虛構連續世界。` : '',
+    ].filter(Boolean).join('\n');
 
-    const identityResolution = resolvePublicIdentity
-        ? await requestPublicIdentityResolution(proposal.publicFigureQuery || proposal.name)
-        : null;
-    if (resolvePublicIdentity && !identityResolution) return;
-    const latestRoom = roomManager.getRoom(roomId);
-    if (!latestRoom || latestRoom.members.length >= ROOM_MEMBER_LIMIT) return;
-
-    const memberId = `member_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const identity = identityResolution?.identity;
-    const persona: Persona = {
-        name: proposal.name,
-        emoji: proposal.gender === 'male' ? '◆' : '🌼',
-        gender: proposal.gender,
-        description: proposal.description,
-        prompt: [
-            `${proposal.name} 是這個聊天室中固定、獨立的角色。${proposal.description}`,
-            '保持自己的第一人稱、語氣、動機、關係位置與已知記憶，不可被其他成員的人格同化。',
-            '先回應最新一句話，再以自然對話、動作和環境細節推進；不要重複同一反應，也不要代替使用者說話。',
-            identity ? `已確認公眾身份：${identity.canonicalName}。公開資料只固定國籍、職業、作品及外觀識別；聊天室內關係屬虛構連續世界。` : '',
-        ].filter(Boolean).join('\n'),
-        greeting: `（${proposal.name} 第一次以固定成員身份留在聊天室，先看了看其他人，再自然地接回剛才的話題。）`,
-        avatarPrompt: identity?.visualPrompt || proposal.description,
-        avatarUrl: identityResolution?.avatarUrl || null,
-        memory: '',
+    return {
+        name: storedPersona?.name || proposal.name,
+        emoji: storedPersona?.emoji || (proposal.gender === 'male' ? '◆' : '🌼'),
+        gender: storedPersona?.gender || proposal.gender,
+        description: storedPersona?.description || proposal.description,
+        prompt: [storedPersona?.prompt, continuityAnchor].filter(Boolean).join('\n\n'),
+        greeting: storedPersona?.greeting
+            || `（${proposal.name} 第一次以固定成員身份留在聊天室，先看了看其他人，再自然地接回剛才的話題。）`,
+        avatarPrompt: identity?.visualPrompt || storedPersona?.avatarPrompt || proposal.description,
+        avatarUrl: identityResolution?.avatarUrl || storedPersona?.avatarUrl || null,
+        memory: storedPersona?.memory || '',
         publicIdentityEnabled: Boolean(identity),
         publicIdentity: identity,
     };
+};
+
+const createNpcRoomMember = (
+    proposal: NonNullable<Content['npcProposal']>,
+    persona: Persona,
+    sourcePersonaKey?: string,
+): RoomMember => {
     const joinedAt = Date.now();
-    const member: RoomMember = {
+    const memberId = `member_${joinedAt}_${Math.random().toString(36).slice(2, 8)}`;
+    return {
         id: memberId,
+        sourcePersonaKey,
         persona,
         joinedAt,
         soul: [{
@@ -6696,21 +6831,100 @@ const addNpcProposalToRoom = async (
         }],
         memories: [],
     };
-    roomManager.addMember(roomId, member);
-    updateNpcProposal(conversationKey, proposal.id, { status: 'added', memberId });
-    if (currentConversationKey === conversationKey) {
-        refreshCurrentRoom();
-        startChat(roomId, null, 'skip');
-    } else {
-        renderPersonaList();
+};
+
+const addNpcProposalToRoom = async (
+    proposal: NonNullable<Content['npcProposal']>,
+    resolvePublicIdentity: boolean,
+) => {
+    if (!currentConversationKey || !currentPersona || activeChatRequest) return;
+    const conversationKey = currentConversationKey;
+    const convertingFromSingle = !currentRoom;
+    const sourcePersonaKey = convertingFromSingle ? currentPersonaKey || conversationKey : undefined;
+    const sourcePersona = currentPersona;
+    const activeTargetRoom = currentRoom
+        ? roomManager.getRoom(currentRoom.id) || currentRoom
+        : roomManager.getRooms().find(room => room.legacySourcePersonaKey === conversationKey);
+    if (activeTargetRoom && activeTargetRoom.members.length >= ROOM_MEMBER_LIMIT) {
+        alert(`這個聊天室已有 ${ROOM_MEMBER_LIMIT} 位固定角色，請先到聊天室資料移除一位。`);
+        return;
     }
+    const duplicate = activeTargetRoom?.members.find(member => (
+        member.persona.name.trim().toLocaleLowerCase() === proposal.name.trim().toLocaleLowerCase()
+        || member.persona.publicIdentity?.canonicalName?.trim().toLocaleLowerCase() === proposal.name.trim().toLocaleLowerCase()
+    ));
+    if (duplicate) {
+        updateNpcProposal(conversationKey, proposal.id, {
+            status: 'added',
+            memberId: duplicate.id,
+        });
+        if (activeTargetRoom && currentConversationKey === conversationKey) {
+            startChat(activeTargetRoom.id, null, 'replace');
+        }
+        return;
+    }
+
+    const identityResolution = resolvePublicIdentity
+        ? await requestPublicIdentityResolution(proposal.publicFigureQuery || proposal.name)
+        : null;
+    if (resolvePublicIdentity && !identityResolution) return;
+    if (currentConversationKey !== conversationKey) return;
+
+    const storedPersonaEntry = findStoredPersonaForNpc(proposal.name, sourcePersonaKey);
+    const persona = buildNpcMemberPersona(proposal, storedPersonaEntry?.[1], identityResolution);
+
+    if (activeTargetRoom) {
+        const latestRoom = roomManager.getRoom(activeTargetRoom.id);
+        if (!latestRoom || latestRoom.members.length >= ROOM_MEMBER_LIMIT) return;
+        const member = createNpcRoomMember(proposal, persona, storedPersonaEntry?.[0]);
+        roomManager.addMember(latestRoom.id, member);
+        updateNpcProposal(conversationKey, proposal.id, { status: 'added', memberId: member.id });
+        startChat(latestRoom.id, null, convertingFromSingle ? 'replace' : 'skip');
+        if (convertingFromSingle && proposal.requestText) {
+            await continuePendingConversationTurn(proposal.requestText);
+        }
+        return;
+    }
+
+    if (!sourcePersonaKey) return;
+    const createdRoom = roomManager.createRoom(
+        `${sourcePersona.name}、${persona.name}`,
+        [
+            { sourcePersonaKey, persona: sourcePersona },
+            { sourcePersonaKey: storedPersonaEntry?.[0], persona },
+        ],
+    );
+    const addedMember = createdRoom.members[1];
+    roomManager.updateRoom(createdRoom.id, room => {
+        room.legacySourcePersonaKey = conversationKey;
+        room.description = `${sourcePersona.name} 與 ${persona.name} 的固定群組`;
+        room.scene.location = '由原本單人聊天延續的群組聊天室';
+        room.scene.realityLayer = 'texting';
+        room.scene.summary = `${persona.name} 已獲使用者確認，正式加入原本由 ${sourcePersona.name} 主持的連續對話。加入前的互動仍然有效。`;
+        const member = room.members.find(item => item.id === addedMember.id);
+        if (member) member.soul = createNpcRoomMember(proposal, persona, storedPersonaEntry?.[0]).soul.map(entry => ({
+            ...entry,
+            participants: [member.id],
+        }));
+    });
+    updateNpcProposal(conversationKey, proposal.id, { status: 'added', memberId: addedMember.id });
+    memoryManager.addMessage(createdRoom.id, 'system', {
+        text: `${persona.name} 已加入；原本單人聊天已安全升級為群組，舊紀錄保持不變。`,
+    });
+    renderPersonaList();
+    startChat(createdRoom.id, null, 'replace');
+    if (proposal.requestText) await continuePendingConversationTurn(proposal.requestText);
 };
 
 const createNpcProposalCard = (proposal: NonNullable<Content['npcProposal']>) => {
     const card = document.createElement('section');
     card.className = 'system-action-card npc-proposal-card';
     const title = document.createElement('strong');
-    title.textContent = proposal.status === 'pending' ? `要把 ${proposal.name} 加入固定成員嗎？` : '新角色處理結果';
+    title.textContent = proposal.status === 'pending'
+        ? currentRoom
+            ? `要把 ${proposal.name} 加入固定成員嗎？`
+            : `要把 ${proposal.name} 加入，並把這段聊天升級為群組嗎？`
+        : '新角色處理結果';
     const description = document.createElement('p');
     description.textContent = proposal.description;
     card.append(title, description);
@@ -6733,7 +6947,7 @@ const createNpcProposalCard = (proposal: NonNullable<Content['npcProposal']>) =>
     const add = document.createElement('button');
     add.type = 'button';
     add.className = 'is-primary';
-    add.textContent = '加入固定成員';
+    add.textContent = currentRoom ? '加入固定成員' : '確認並升級群組';
     add.addEventListener('click', () => void addNpcProposalToRoom(proposal, false));
     const identify = document.createElement('button');
     identify.type = 'button';
@@ -6742,11 +6956,12 @@ const createNpcProposalCard = (proposal: NonNullable<Content['npcProposal']>) =>
     const dismiss = document.createElement('button');
     dismiss.type = 'button';
     dismiss.textContent = '只作臨時人物';
-    dismiss.addEventListener('click', () => {
+    dismiss.addEventListener('click', async () => {
         if (!currentConversationKey) return;
         const conversationKey = currentConversationKey;
         updateNpcProposal(conversationKey, proposal.id, { status: 'dismissed' });
         startChat(conversationKey, null, 'skip');
+        if (proposal.requestText) await continuePendingConversationTurn(proposal.requestText);
     });
     actions.append(add, identify, dismiss);
     card.appendChild(actions);
@@ -7558,22 +7773,7 @@ const userExplicitlyRequestsContinuation = (text: string) => {
 };
 
 const extractDirectlyAddressedNpcNames = (text: string, personaName: string) => {
-    const candidates: string[] = [];
-    const patterns = [
-        /(?:\b(?:hi|hello|hey)\b|你好|嗨|哈囉|喂)[,，!！~～\s]+([A-Z][A-Za-z'-]{1,24}|[\p{Script=Han}]{2,4})/giu,
-        /(?:叫做|名叫)\s*[「『"']?([A-Z][A-Za-z'-]{1,24}|[\p{Script=Han}]{2,4})/giu,
-    ];
-    patterns.forEach(pattern => {
-        for (const match of text.matchAll(pattern)) candidates.push(match[1]);
-    });
-
-    const ignoredNames = new Set([
-        personaName.toLocaleLowerCase(),
-        '大家', '同學', '朋友', '同事', '老師', '醫生', '你好', '哈囉', 'hello', 'there',
-    ]);
-    return Array.from(new Set(candidates
-        .map(name => name.trim().replace(/[，。！？!?,:：；;]+$/u, ''))
-        .filter(name => name.length >= 2 && !ignoredNames.has(name.toLocaleLowerCase()))));
+    return extractDirectNpcNames(text, personaName);
 };
 
 const buildNpcSpeechRequirement = (npcNames: string[]) => {
@@ -7617,15 +7817,7 @@ const buildImmediateTurnOwnershipRequirement = (
 };
 
 const replyContainsAttributedNpcSpeech = (reply: string, npcNames: string[]) => {
-    return npcNames.every(name => {
-        const escapedName = escapeRegExp(name);
-        const directLabel = new RegExp(`${escapedName}\\s*[:：]\\s*[「『“\"]`, 'iu');
-        const narratedSpeech = new RegExp(
-            `${escapedName}[^。！？!?\\n]{0,14}(?:說|問|答|回答|回應|笑道|低聲道)[^。！？!?\\n]{0,8}[：:]?\\s*[「『“\"]`,
-            'iu',
-        );
-        return directLabel.test(reply) || narratedSpeech.test(reply);
-    });
+    return replyHasNpcSpeech(reply, npcNames);
 };
 
 const replyBreaksSpeakerOwnership = (reply: string) => {
@@ -7718,8 +7910,14 @@ const getRecentChatMessages = (
         return [];
     }
 
-    const completeHistory = memoryManager
-        .getChatHistory(conversationKey)
+    const linkedLegacyHistory = room?.legacySourcePersonaKey
+        && room.legacySourcePersonaKey !== conversationKey
+        ? memoryManager.peekChatHistory(room.legacySourcePersonaKey).slice(-48)
+        : [];
+    const completeHistory = [
+        ...linkedLegacyHistory,
+        ...memoryManager.getChatHistory(conversationKey),
+    ]
         .filter(
             message =>
                 message.role === 'user'
@@ -8213,14 +8411,29 @@ const runConversationGeneration = async (
         ? buildAssistantSystemPrompt()
         : buildChatSystemPrompt(request.personaKey, request.persona);
     const recentAssistantReplies = getRecentAssistantRepliesForPersona(request.conversationKey, assistantMode);
+    const establishedNpcNames = assistantMode
+        ? []
+        : collectEstablishedNpcNames(
+            memoryManager.getChatHistory(request.conversationKey),
+            request.persona.name,
+            latestUserMessage,
+        );
     const addressedNpcNames = assistantMode
         ? []
-        : extractDirectlyAddressedNpcNames(latestUserMessage, request.persona.name);
+        : inferNpcSpeakersForTurn(latestUserMessage, request.persona.name, establishedNpcNames);
     const npcSpeechRequirement = buildNpcSpeechRequirement(addressedNpcNames);
+    const npcContinuityRequirement = assistantMode
+        ? ''
+        : buildNpcContinuityRequirement(establishedNpcNames);
     const turnOwnershipRequirement = assistantMode
         ? ''
         : buildImmediateTurnOwnershipRequirement(request.persona.name, latestUserMessage);
-    const systemPrompt = [baseSystemPrompt, turnOwnershipRequirement, npcSpeechRequirement]
+    const systemPrompt = [
+        baseSystemPrompt,
+        turnOwnershipRequirement,
+        npcContinuityRequirement,
+        npcSpeechRequirement,
+    ]
         .filter(Boolean)
         .join('\n\n');
 
@@ -8245,6 +8458,7 @@ const runConversationGeneration = async (
                                 ? 'Stay direct and useful.'
                                 : 'Rebuild the participant ledger before answering. Keep the character voice, respond to any newly introduced NPC, include meaningful dialogue, and develop the current scene without replaying an old beat or ending with the same kind of question.',
                             turnOwnershipRequirement,
+                            npcContinuityRequirement,
                             npcSpeechRequirement,
                             failedCandidate ? `Rejected attempt (do not copy):\n${failedCandidate.slice(0, 800)}` : '',
                         ].filter(Boolean).join('\n'),
@@ -8471,8 +8685,11 @@ const buildCharacterPhotoPrompt = (
         return [
             `Edit the supplied reference portrait into a new camera photo of ${persona.name}.`,
             `Identity lock: ${persona.name} must remain the exact same recognizable individual shown in the input image, not a replacement, reinterpretation, generic person, or lookalike.`,
-            'Treat the input image as identity evidence, not merely a style reference. Preserve the exact facial geometry, eyes, nose, lips, skin details, hairline, and distinctive features.',
+            'Facial identity preservation is the highest priority, above pose, styling, clothing, background, or prompt aesthetics. If any requested change conflicts with likeness, preserve likeness.',
+            'Treat the input image as identity evidence, not merely a style reference. Preserve the exact facial proportions and geometry, face shape, eyes and spacing, brows, nose, lips, jawline, skin details, hairline, and every distinctive feature.',
+            'Do not beautify into a different face, average the subject into a generic East Asian appearance, alter apparent age, or borrow facial traits from the requested setting.',
             'Copy every unspecified physical detail from the reference image instead of inferring it from text.',
+            'Keep the face sufficiently visible, sharp, naturally lit, and unobstructed so the same identity remains immediately recognizable.',
             `Change only the requested scene, pose, expression, clothing, camera, and surroundings: ${scene}`,
             qualityInstruction,
         ].join(' ').replace(/\s{2,}/gu, ' ').trim();
@@ -8638,6 +8855,9 @@ const buildCharacterPhotoProposal = async (
     const caption = request.personaKey === 'cc'
         ? normalizeCcCantoneseLeaks(draft.caption)
         : normalizeTraditionalChineseLeaks(draft.caption);
+    const seed = mode === 'generate'
+        ? resolveImageSeedForRequest(imageSeed, imageSeedLock.checked)
+        : undefined;
 
     return {
         text: reply,
@@ -8658,6 +8878,7 @@ const buildCharacterPhotoProposal = async (
             modelId: imageModel?.id,
             modelName: imageModel?.name,
             resolution: imageModel?.constraints.defaultResolution || imageModel?.constraints.resolutions?.[0],
+            seed,
             estimatedPriceUsd: getImageModelPrice(imageModel, imageModel?.constraints.defaultResolution),
         },
     };
@@ -8673,6 +8894,17 @@ const runRoomConversationGeneration = async (
     let lastError: Error | null = null;
     let rejectedReply = '';
     const recentReplies = getRecentAssistantRepliesForPersona(request.conversationKey, false, 8);
+    const normalizedTurn = latestUserMessage.toLocaleLowerCase();
+    const directlyNamedMember = request.room.members.find(member => {
+        if (!request.room?.scene.presentMemberIds.includes(member.id)) return false;
+        const names = [member.persona.name, member.persona.publicIdentity?.canonicalName]
+            .filter((name): name is string => Boolean(name?.trim()));
+        return names.some(name => normalizedTurn.includes(name.trim().toLocaleLowerCase()));
+    });
+    const fallbackMemberId = directlyNamedMember?.id
+        || (request.room.scene.presentMemberIds.includes(request.roomMemberId || '') ? request.roomMemberId : undefined)
+        || (request.room.scene.presentMemberIds.includes(request.room.leadMemberId) ? request.room.leadMemberId : undefined)
+        || request.room.scene.presentMemberIds[0];
 
     for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
         const model = models[modelIndex];
@@ -8714,7 +8946,7 @@ const runRoomConversationGeneration = async (
                     stop: [],
                     signal: request.controller.signal,
                 });
-                const parsed = parseGroupGeneration(result.text, request.room);
+                const parsed = parseGroupGeneration(result.text, request.room, fallbackMemberId);
                 const repeats = recentReplies.some(previous => (
                     repliesAreTooSimilar(previous, parsed.text)
                     || replyReusesOpeningOrNarrativeBeat(previous, parsed.text)
@@ -8740,6 +8972,57 @@ const runRoomConversationGeneration = async (
                 lastError = error instanceof Error ? error : new Error(String(error));
                 if (lastError.message === CHAT_MODEL_TIMEOUT_ERROR) break;
             }
+        }
+    }
+
+    // Some Venice models report schema support but occasionally return a different
+    // JSON shape. A final labelled-transcript request keeps the room usable even
+    // when structured output changes upstream.
+    for (const model of models.slice(0, 2)) {
+        applyChatRuntimeState('retrying', '重新思考中...');
+        try {
+            const messages: VeniceMessage[] = [
+                {
+                    role: 'system',
+                    content: [
+                        buildGroupSystemPrompt(request.room),
+                        'STRUCTURED OUTPUT FALLBACK: Do not return JSON for this attempt.',
+                        'Write only the live group reply. Format every spoken line as Display Name：「dialogue」 and every narration line inside full-width parentheses.',
+                        'At least one PRESENT fixed member must speak, and the member addressed in the newest user message must answer.',
+                    ].join('\n\n'),
+                },
+                ...getRecentChatMessages(
+                    request.conversationKey,
+                    latestUserMessage,
+                    false,
+                    request.persona,
+                    request.room,
+                ),
+                { role: 'user', content: getLatestUserVeniceContent(request, latestUserMessage) },
+            ];
+            const result = await generateChatTextWithTimeout({
+                model,
+                messages,
+                temperature: 0.76,
+                topP: 0.92,
+                repetitionPenalty: 1.1,
+                stop: [],
+                signal: request.controller.signal,
+            });
+            const parsed = parseGroupGeneration(result.text, request.room, fallbackMemberId);
+            const repeats = recentReplies.some(previous => (
+                repliesAreTooSimilar(previous, parsed.text)
+                || replyReusesOpeningOrNarrativeBeat(previous, parsed.text)
+                || replyReusesCompletedClause(previous, parsed.text)
+            ));
+            if (repeats && !userExplicitlyRequestsContinuation(latestUserMessage)) {
+                rejectedReply = parsed.text;
+                throw new Error(`Repeated fallback group reply from ${model}.`);
+            }
+            return parsed;
+        } catch (error) {
+            if (isAbortError(error)) throw error;
+            lastError = error instanceof Error ? error : new Error(String(error));
         }
     }
 
@@ -8955,6 +9238,9 @@ const approveCharacterPhoto = async (proposalId: string) => {
         const model = imageModels[mode].find(item => item.id === proposal.modelId)
             || getPreferredCharacterPhotoModel(mode);
         if (!model) throw new Error('目前沒有可用的 Venice 圖片模型。');
+        const generationSeed = mode === 'generate'
+            ? proposal.seed ?? resolveImageSeedForRequest(imageSeed, imageSeedLock.checked)
+            : undefined;
 
         const supportedRatios = model.constraints.aspectRatios || [];
         const aspectRatio = supportedRatios.includes(proposal.aspectRatio)
@@ -8976,6 +9262,7 @@ const approveCharacterPhoto = async (proposalId: string) => {
             height: mode === 'generate' && supportedRatios.length === 0 ? pixelSize.height : undefined,
             variants: 1,
             steps: mode === 'generate' ? model.constraints.steps?.default : undefined,
+            seed: generationSeed,
             adultConfirmed: true,
             signal: characterPhotoRequestController.signal,
         });
@@ -8998,6 +9285,7 @@ const approveCharacterPhoto = async (proposalId: string) => {
             modelId: model.id,
             modelName: model.name,
             resolution,
+            seed: generationSeed,
             estimatedPriceUsd: price,
             error: undefined,
         });
@@ -9012,6 +9300,7 @@ const approveCharacterPhoto = async (proposalId: string) => {
                 modelName: model.name,
                 aspectRatio: aspectRatio || proposal.aspectRatio,
                 resolution,
+                seed: generationSeed,
                 useAvatarReference: proposal.useAvatarReference,
                 identityMode: proposal.identityMode,
             },
@@ -9104,6 +9393,19 @@ const getResponse = async (
                         createdAt: Date.now(),
                     },
                 };
+                memoryManager.addMessage(request.conversationKey, 'system', proposalContent);
+                if (currentConversationKey === request.conversationKey) appendMessage(proposalContent, 'system');
+            }
+        }
+        if (typeof generated === 'string' && !request.room && request.mode === 'character') {
+            const proposal = createSingleChatNpcPromotionProposal(
+                request.conversationKey,
+                request.persona,
+                triggeringMessage,
+                'introduction',
+            );
+            if (proposal) {
+                const proposalContent: Content = { npcProposal: proposal };
                 memoryManager.addMessage(request.conversationKey, 'system', proposalContent);
                 if (currentConversationKey === request.conversationKey) appendMessage(proposalContent, 'system');
             }
@@ -9312,6 +9614,77 @@ const buildPermanentMemorySummary = (conversationKey: string, text: string) => {
     return previousUser || text;
 };
 
+const inferNpcPromotionGender = (text: string): Persona['gender'] => {
+    if (/(?:男生|男人|男性|男仔|哥哥|先生|boy|man|male|\bhe\b|\bhim\b)/iu.test(text)) return 'male';
+    return 'female';
+};
+
+const buildNpcPromotionDescription = (
+    conversationKey: string,
+    name: string,
+    requestText: string,
+    storedPersona?: Persona,
+) => {
+    if (storedPersona) {
+        return `沿用現有角色「${storedPersona.name}」的完整人格、頭像與記憶，並承接她在目前對話中已經發生的互動。`;
+    }
+    const normalizedName = name.toLocaleLowerCase();
+    const evidence = memoryManager.peekChatHistory(conversationKey)
+        .slice(-36)
+        .flatMap(message => (message.content.text || '').split(/\n+/gu))
+        .map(line => line.trim())
+        .filter(line => (
+            line !== requestText.trim()
+            && line.toLocaleLowerCase().includes(normalizedName)
+        ))
+        .slice(-4)
+        .map(line => line.slice(0, 150));
+    return [
+        `${name} 是由使用者在目前單人聊天中正式邀請加入的新成員。`,
+        evidence.length > 0
+            ? `加入前的語氣與關係線索：${evidence.join(' / ')}`
+            : '目前未有足夠的固定人格資料；加入後應從現有場景自然建立鮮明、連續而獨立的說話方式。',
+    ].join(' ');
+};
+
+const createSingleChatNpcPromotionProposal = (
+    conversationKey: string,
+    persona: Persona,
+    text: string,
+    source: 'promotion' | 'introduction' = 'promotion',
+): NonNullable<Content['npcProposal']> | null => {
+    if (currentRoom) return null;
+    const history = memoryManager.peekChatHistory(conversationKey);
+    const establishedNames = collectEstablishedNpcNames(history, persona.name, text);
+    const name = source === 'promotion'
+        ? inferNpcPromotionNames(text, persona.name, establishedNames)[0]
+        : inferIntroducedNpcNames(text, persona.name)[0];
+    if (!name) return null;
+    const normalizedName = normalizedParticipantName(name);
+    const linkedRoom = roomManager.getRooms().find(room => room.legacySourcePersonaKey === conversationKey);
+    const alreadyFixed = linkedRoom?.members.some(member => (
+        normalizedParticipantName(member.persona.name) === normalizedName
+        || normalizedParticipantName(member.persona.publicIdentity?.canonicalName || '') === normalizedName
+    ));
+    if (alreadyFixed) return null;
+    const alreadyPending = history.some(message => (
+        message.content.npcProposal?.status === 'pending'
+        && normalizedParticipantName(message.content.npcProposal.name) === normalizedName
+    ));
+    if (alreadyPending) return null;
+
+    const storedPersonaEntry = findStoredPersonaForNpc(name, conversationKey);
+    return {
+        id: crypto.randomUUID?.() || `npc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: storedPersonaEntry?.[1].name || name,
+        gender: storedPersonaEntry?.[1].gender || inferNpcPromotionGender(text),
+        description: buildNpcPromotionDescription(conversationKey, name, text, storedPersonaEntry?.[1]),
+        requestText: source === 'promotion' ? text : undefined,
+        status: 'pending',
+        createdAt: Date.now(),
+    };
+};
+
 const sendMessage = async ({
     characterPhotoRequest = false,
     photoSenderMemberId,
@@ -9444,6 +9817,21 @@ const sendMessage = async ({
         appendMessage(systemContent, 'system');
         renderPersonaList();
         return;
+    }
+    if (
+        !assistantMode
+        && !currentRoom
+        && !characterPhotoRequest
+        && attachmentBundle.attachments.length === 0
+    ) {
+        const npcPromotion = createSingleChatNpcPromotionProposal(conversationKey, persona, userMessage);
+        if (npcPromotion) {
+            const systemContent: Content = { npcProposal: npcPromotion };
+            memoryManager.addMessage(conversationKey, 'system', systemContent);
+            appendMessage(systemContent, 'system');
+            renderPersonaList();
+            return;
+        }
     }
     const request = beginChatRequest(
         personaKey,
@@ -9824,6 +10212,7 @@ const updatePhotoViewerRegenerateButton = () => {
 const updatePhotoViewerModelControls = () => {
     if (!activePhotoViewerContext) return;
     const context = activePhotoViewerContext;
+    photoViewerSeedWrap.classList.toggle('hidden', context.mode !== 'generate');
     const model = getPhotoViewerSelectedModel();
     if (!model) {
         photoViewerModelMeta.textContent = '目前沒有相容的 Venice 圖片模型。';
@@ -9895,6 +10284,8 @@ const setPhotoViewerBusy = (busy: boolean) => {
     photoViewerModel.disabled = busy || !activePhotoViewerContext || !imageModels[activePhotoViewerContext.mode].length;
     photoViewerAspectRatio.disabled = busy || !hasModel;
     photoViewerResolution.disabled = busy || !hasModel;
+    photoViewerSeed.disabled = busy || activePhotoViewerContext?.mode !== 'generate';
+    photoViewerSeedLock.disabled = busy || activePhotoViewerContext?.mode !== 'generate';
     photoViewerRegenerateSpinner.classList.toggle('hidden', !busy);
     photoViewerRegenerateLabel.textContent = busy ? '重新生成中...' : '重新生成';
     updatePhotoViewerRegenerateButton();
@@ -9911,6 +10302,12 @@ function openPhotoViewer(imageUrl: string, context: PhotoViewerContext) {
     activePhotoViewerContext = normalizedContext;
     photoViewerImage.src = imageUrl;
     photoViewerPrompt.value = normalizedContext.prompt;
+    photoViewerSeedLock.checked = localStorage.getItem(IMAGE_SEED_LOCK_STORAGE_KEY) === 'true';
+    const viewerSeed = normalizeImageSeed(normalizedContext.seed)
+        ?? normalizeImageSeed(localStorage.getItem(IMAGE_SEED_STORAGE_KEY) || undefined)
+        ?? createRandomImageSeed();
+    setSeedInputValue(photoViewerSeed, viewerSeed);
+    photoViewerSeedWrap.classList.toggle('hidden', normalizedContext.mode !== 'generate');
     photoViewerAspectRatio.innerHTML = '';
     photoViewerResolution.innerHTML = '';
     photoViewerModel.innerHTML = '<option value="">載入模型中...</option>';
@@ -9925,6 +10322,7 @@ function openPhotoViewer(imageUrl: string, context: PhotoViewerContext) {
         normalizedContext.modelName,
         normalizedContext.aspectRatio,
         normalizedContext.resolution,
+        typeof normalizedContext.seed === 'number' ? `Seed ${normalizedContext.seed}` : '',
         '原圖會保留',
     ].filter(Boolean).join(' · ');
     setPhotoViewerStatus('可修改 Prompt、模型與畫面設定後重新生成。');
@@ -9977,6 +10375,9 @@ const runPhotoViewerRegeneration = async () => {
             ? photoViewerResolution.value || model.constraints.defaultResolution || model.constraints.resolutions[0]
             : undefined;
         const pixelSize = PIXEL_IMAGE_DIMENSIONS[selectedRatio] || PIXEL_IMAGE_DIMENSIONS['3:4'];
+        const generationSeed = context.mode === 'generate'
+            ? resolveImageSeedForRequest(photoViewerSeed, photoViewerSeedLock.checked)
+            : undefined;
         const result = await requestVeniceImage({
             mode: context.mode,
             model: model.id,
@@ -9991,6 +10392,7 @@ const runPhotoViewerRegeneration = async () => {
             height: context.mode === 'generate' && supportedRatios.length === 0 ? pixelSize.height : undefined,
             variants: 1,
             steps: context.mode === 'generate' ? model.constraints.steps?.default : undefined,
+            seed: generationSeed,
             adultConfirmed: true,
             signal: controller.signal,
         });
@@ -10014,6 +10416,7 @@ const runPhotoViewerRegeneration = async () => {
                 resolution,
                 negativePrompt: context.negativePrompt,
                 sourceImageBase64,
+                seed: generationSeed,
                 createdAt: now,
             };
             imageResults = [studioResult, ...imageResults];
@@ -10027,6 +10430,7 @@ const runPhotoViewerRegeneration = async () => {
                 aspectRatio: selectedRatio,
                 resolution,
                 sourceImageBase64,
+                seed: generationSeed,
             };
         } else {
             if (!context.personaKey) throw new Error('找不到這張照片所屬的角色。');
@@ -10048,6 +10452,7 @@ const runPhotoViewerRegeneration = async () => {
                     modelName: model.name,
                     aspectRatio: selectedRatio,
                     resolution,
+                    seed: generationSeed,
                     useAvatarReference: context.useAvatarReference,
                     identityMode: context.identityMode,
                 },
@@ -10066,7 +10471,13 @@ const runPhotoViewerRegeneration = async () => {
         activePhotoViewerContext = nextContext;
         photoViewerImage.src = nextImageUrl;
         if (!photoFullscreenModal.classList.contains('hidden')) photoFullscreenImage.src = nextImageUrl;
-        photoViewerMeta.textContent = [model.name, selectedRatio, resolution, '已另存新圖'].filter(Boolean).join(' · ');
+        photoViewerMeta.textContent = [
+            model.name,
+            selectedRatio,
+            resolution,
+            typeof generationSeed === 'number' ? `Seed ${generationSeed}` : '',
+            '已另存新圖',
+        ].filter(Boolean).join(' · ');
         const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
         setPhotoViewerStatus(`重新生成完成 · ${elapsed} 秒；原圖仍然保留。`, 'success');
     } catch (error) {
@@ -10813,6 +11224,23 @@ const setupEventListeners = () => {
     imageAspectRatio.addEventListener('change', updateImageCostEstimate);
     imageResolution.addEventListener('change', updateImageCostEstimate);
     imageVariants.addEventListener('change', updateImageCostEstimate);
+    imageSeedLock.addEventListener('change', () => {
+        localStorage.setItem(IMAGE_SEED_LOCK_STORAGE_KEY, String(imageSeedLock.checked));
+        if (imageSeedLock.checked) {
+            const seed = normalizeImageSeed(imageSeed.value) ?? setSeedInputValue(imageSeed, createRandomImageSeed());
+            localStorage.setItem(IMAGE_SEED_STORAGE_KEY, String(seed));
+        }
+    });
+    imageSeedRandom.addEventListener('click', () => {
+        const seed = setSeedInputValue(imageSeed, createRandomImageSeed());
+        localStorage.setItem(IMAGE_SEED_STORAGE_KEY, String(seed));
+    });
+    imageSeed.addEventListener('change', () => {
+        const seed = normalizeImageSeed(imageSeed.value);
+        if (seed === undefined) return;
+        setSeedInputValue(imageSeed, seed);
+        localStorage.setItem(IMAGE_SEED_STORAGE_KEY, String(seed));
+    });
     imageAdultConfirm.addEventListener('change', () => {
         sessionStorage.setItem(IMAGE_ADULT_CONFIRM_STORAGE_KEY, String(imageAdultConfirm.checked));
         updateImageGenerateButton();
@@ -11061,7 +11489,7 @@ const setupEventListeners = () => {
         moreOptionsMenu.classList.add('hidden');
     });
     changeAvatarBtn.addEventListener('click', () => {
-        if (currentRoom && activeRoomMemberId) requestRoomMemberAvatarUpload(currentRoom.id, activeRoomMemberId);
+        if (currentRoom) requestRoomAvatarUpload(currentRoom.id);
         else if (currentPersonaKey) requestPersonaAvatarUpload(currentPersonaKey);
         moreOptionsMenu.classList.add('hidden');
     });
@@ -11152,6 +11580,23 @@ const setupEventListeners = () => {
     photoViewerModel.addEventListener('change', updatePhotoViewerModelControls);
     photoViewerAspectRatio.addEventListener('change', updatePhotoViewerRegenerateButton);
     photoViewerResolution.addEventListener('change', updatePhotoViewerModelControls);
+    photoViewerSeedLock.addEventListener('change', () => {
+        localStorage.setItem(IMAGE_SEED_LOCK_STORAGE_KEY, String(photoViewerSeedLock.checked));
+        imageSeedLock.checked = photoViewerSeedLock.checked;
+        if (photoViewerSeedLock.checked) {
+            const seed = normalizeImageSeed(photoViewerSeed.value)
+                ?? setSeedInputValue(photoViewerSeed, createRandomImageSeed());
+            localStorage.setItem(IMAGE_SEED_STORAGE_KEY, String(seed));
+            setSeedInputValue(imageSeed, seed);
+        }
+    });
+    photoViewerSeed.addEventListener('change', () => {
+        const seed = normalizeImageSeed(photoViewerSeed.value);
+        if (seed === undefined) return;
+        setSeedInputValue(photoViewerSeed, seed);
+        localStorage.setItem(IMAGE_SEED_STORAGE_KEY, String(seed));
+        if (photoViewerSeedLock.checked) setSeedInputValue(imageSeed, seed);
+    });
     photoViewerRegenerate.addEventListener('click', () => {
         void runPhotoViewerRegeneration();
     });
@@ -11279,6 +11724,7 @@ const setupEventListeners = () => {
 // --- Initialization ---
 const init = async () => {
     syncBrowserViewState(HOME_HISTORY_STATE, 'replace');
+    initializeImageSeedControls();
     renderPersonaList();
     setupEventListeners();
     setAuthSubmitting(false);
