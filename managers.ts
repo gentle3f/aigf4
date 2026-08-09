@@ -465,11 +465,12 @@ export class MemoryManager {
         }
     }
 
-    private persistModifiedPersonas() {
+    private persistModifiedPersonas(throwOnError = false) {
         try {
             localStorage.setItem('customPersonas', JSON.stringify(this.getModifiedAndCustomPersonas()));
         } catch (error) {
             console.error('Failed to save custom personas:', error);
+            if (throwOnError) throw error;
         }
     }
 
@@ -487,31 +488,48 @@ export class MemoryManager {
         }
     }
 
-    private persistChatHistories() {
+    private persistChatHistories(throwOnError = false) {
         try {
             localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(this.chatHistories));
         } catch (error) {
             console.error('Failed to save chat histories:', error);
+            if (throwOnError) throw error;
         }
     }
     
     loadAllData(data: AllData) {
-        if (data.customPersonas) {
-            Object.assign(this.personas, data.customPersonas);
+        const snapshot = {
+            personas: JSON.parse(JSON.stringify(this.personas)) as { [key: string]: Persona },
+            chatHistories: JSON.parse(JSON.stringify(this.chatHistories)) as { [key: string]: ChatMessage[] },
+            diaries: JSON.parse(JSON.stringify(this.diaries)) as { [key: string]: DiaryEntry[] },
+            interests: JSON.parse(JSON.stringify(this.interests)) as { [key: string]: Interest[] },
+        };
+        try {
+            if (data.customPersonas) {
+                Object.assign(this.personas, data.customPersonas);
+            }
+            if (data.chatHistories) {
+                Object.assign(this.chatHistories, data.chatHistories);
+            }
+            if (data.diaries) {
+                Object.assign(this.diaries, data.diaries);
+            }
+            if (data.interests) {
+                Object.assign(this.interests, data.interests);
+            }
+            this.promoteLegacyCcSeed();
+            this.upgradeBundledCcPersona(true);
+            this.persistModifiedPersonas(true);
+            this.persistChatHistories(true);
+        } catch (error) {
+            this.personas = snapshot.personas;
+            this.chatHistories = snapshot.chatHistories;
+            this.diaries = snapshot.diaries;
+            this.interests = snapshot.interests;
+            this.persistModifiedPersonas();
+            this.persistChatHistories();
+            throw new Error('瀏覽器儲存空間不足或資料無法完整寫入；本次匯入已取消，原有資料保持不變。');
         }
-        if (data.chatHistories) {
-            Object.assign(this.chatHistories, data.chatHistories);
-        }
-        if (data.diaries) {
-            Object.assign(this.diaries, data.diaries);
-        }
-        if (data.interests) {
-            Object.assign(this.interests, data.interests);
-        }
-        this.promoteLegacyCcSeed();
-        this.upgradeBundledCcPersona(true);
-        this.persistModifiedPersonas();
-        this.persistChatHistories();
     }
 
     // --- Persona Methods ---
