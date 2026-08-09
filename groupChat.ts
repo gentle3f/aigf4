@@ -127,7 +127,8 @@ export const buildGroupSystemPrompt = (room: ChatRoom) => {
             '- First understand and answer the newest user turn. Never continue an older command after the user has moved on.',
             '- Keep each voice strongly distinct. Personality affects pacing, resistance, humour, word choice, action and vulnerability, not just adjectives.',
             '- Romance should grow through attention, trust, playful tension and concrete care. Do not make everyone instantly obedient, generically sweet, cruel, therapeutic or emotionally dependent.',
-            '- Normally include meaningful dialogue plus fresh action, expression, physical distance, sensory environment or a brief third-person reaction. Use enough detail to make the moment satisfying, but do not pad or repeat.',
+            '- Normally write 5 to 10 alternating narration/dialogue lines for a substantial turn. A character may speak more than once before and after an action, and present members may answer, interrupt, tease or react to one another.',
+            '- Include meaningful dialogue plus fresh action, expression, physical distance, sensory environment or a brief third-person reaction. Use enough detail to make the moment satisfying, but do not pad or repeat.',
             '- Let relevant present members speak and act. Do not force every member to speak on every turn, and do not create a detached novel chapter.',
             '- If the user asks present members to leave, update present_member_ids. If the user enters imagination, story or roleplay inside the room, set reality_layer to imagined; return to the prior physical/texting layer when the user ends it.',
             '- Treat completed scenes as memories, not scripts. Never repeat the previous opening, pose, reassurance, question or emotional beat.',
@@ -135,12 +136,12 @@ export const buildGroupSystemPrompt = (room: ChatRoom) => {
         ].join('\n'),
         [
             'OUTPUT:',
-            '- Return only the requested JSON object.',
-            '- The exact top-level keys are segments, scene, and npc_candidate. Do not rename segments to messages or speaker_id to sender_id.',
-            '- narration segments use type=narration and no speaker_id.',
-            '- dialogue segments use type=dialogue and an exact PRESENT member ID.',
-            '- Keep the scene update concise and factual. Preserve location and reality layer unless the newest turn changes them.',
-            '- npc_candidate is only for a newly introduced recurring named person who is not already a fixed member; otherwise return null.',
+            '- Do not return a JSON response object. Use the simple envelope below so the live dialogue remains reliable.',
+            '- Inside <chat>, write narration as （text） and every spoken line as exact Display Name：「dialogue」. A display name may appear several times in one reply.',
+            '- After </chat>, put one compact JSON object inside <scene> with keys location, reality_layer, present_member_ids, summary, unresolved.',
+            '- Then put null inside <npc_candidate>, unless the newest turn introduced a genuinely new recurring named person; in that case use one compact JSON object with name, gender, description, public_figure_query.',
+            '- Preserve location, reality layer and present members unless the newest turn actually changes them.',
+            '- Return only: <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate>.',
         ].join('\n'),
     ].filter(Boolean).join('\n\n');
 };
@@ -207,6 +208,11 @@ const stripJsonFence = (value: string) => value
     .replace(/^\s*```(?:json)?\s*/iu, '')
     .replace(/\s*```\s*$/u, '')
     .trim();
+
+const extractTaggedBlock = (value: string, tag: string) => {
+    const escaped = tag.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    return value.match(new RegExp(`<${escaped}>\\s*([\\s\\S]*?)\\s*</${escaped}>`, 'iu'))?.[1]?.trim() || '';
+};
 
 const memberName = (room: ChatRoom, memberId: string | undefined) => (
     room.members.find(member => member.id === memberId)?.persona.name || memberId || ''
@@ -314,7 +320,7 @@ export const parseGroupGeneration = (
     room: ChatRoom,
     fallbackMemberId?: string,
 ): GroupGenerationResult => {
-    const parsed = parseJsonObject(rawText) as ({
+    const parsedCandidate = parseJsonObject(rawText) as ({
         segments?: Array<{
             type?: string;
             speaker_id?: string | null;
@@ -349,6 +355,29 @@ export const parseGroupGeneration = (
             public_figure_query?: string | null;
         } | null;
     } | null);
+    const parsed = parsedCandidate && (
+        Array.isArray(parsedCandidate.segments)
+        || Array.isArray(parsedCandidate.messages)
+        || Boolean(parsedCandidate.scene)
+        || Object.prototype.hasOwnProperty.call(parsedCandidate, 'npc_candidate')
+    ) ? parsedCandidate : null;
+    const taggedChat = extractTaggedBlock(rawText, 'chat');
+    const taggedScene = parseJsonObject(extractTaggedBlock(rawText, 'scene')) as ({
+        location?: string;
+        reality_layer?: string;
+        present_member_ids?: string[];
+        summary?: string;
+        unresolved?: string[];
+    } | null);
+    const taggedNpcText = extractTaggedBlock(rawText, 'npc_candidate');
+    const taggedNpc = /^(?:null|none)$/iu.test(taggedNpcText)
+        ? null
+        : parseJsonObject(taggedNpcText) as ({
+            name?: string;
+            gender?: 'female' | 'male';
+            description?: string;
+            public_figure_query?: string | null;
+        } | null);
     const knownIds = new Set(room.members.map(member => member.id));
     const presentIds = new Set(room.scene.presentMemberIds);
     const rawSegments = Array.isArray(parsed?.segments)
@@ -373,33 +402,38 @@ export const parseGroupGeneration = (
         });
         return result;
     }, []);
-    if (!segments.some(segment => segment.type === 'dialogue') && !parsed) {
-        segments.splice(0, segments.length, ...parsePlainGroupSegments(rawText, room, fallbackMemberId));
+    if (!segments.some(segment => segment.type === 'dialogue')) {
+        segments.splice(
+            0,
+            segments.length,
+            ...parsePlainGroupSegments(taggedChat || rawText, room, fallbackMemberId),
+        );
     }
     if (!segments.some(segment => segment.type === 'dialogue')) {
         throw new Error('Group reply did not contain valid member dialogue.');
     }
 
-    const requestedMemberIds = Array.isArray(parsed?.scene?.present_member_ids)
-        ? parsed.scene.present_member_ids
+    const sceneData = parsed?.scene || taggedScene;
+    const requestedMemberIds = Array.isArray(sceneData?.present_member_ids)
+        ? sceneData.present_member_ids
         : room.scene.presentMemberIds;
     const requestedIds = requestedMemberIds
         .filter(id => knownIds.has(id))
         .slice(0, 4);
-    const unresolved = Array.isArray(parsed?.scene?.unresolved)
-        ? parsed.scene.unresolved
+    const unresolved = Array.isArray(sceneData?.unresolved)
+        ? sceneData.unresolved
         : Array.isArray(room.scene.unresolved) ? room.scene.unresolved : [];
     const scene: RoomSceneState = {
         ...room.scene,
-        location: compact(parsed?.scene?.location, 240) || room.scene.location,
-        realityLayer: ['physical', 'texting', 'imagined'].includes(parsed?.scene?.reality_layer || '')
-            ? parsed!.scene!.reality_layer as RoomSceneState['realityLayer']
+        location: compact(sceneData?.location, 240) || room.scene.location,
+        realityLayer: ['physical', 'texting', 'imagined'].includes(sceneData?.reality_layer || '')
+            ? sceneData!.reality_layer as RoomSceneState['realityLayer']
             : room.scene.realityLayer,
         presentMemberIds: requestedIds.length > 0 ? requestedIds : room.scene.presentMemberIds,
-        summary: compact(parsed?.scene?.summary, 1200) || room.scene.summary,
+        summary: compact(sceneData?.summary, 1200) || room.scene.summary,
         unresolved: unresolved.map(item => compact(item, 240)).filter(Boolean).slice(0, 6),
     };
-    const npc = parsed?.npc_candidate;
+    const npc = parsed?.npc_candidate || taggedNpc;
 
     return {
         text: composeText(segments),

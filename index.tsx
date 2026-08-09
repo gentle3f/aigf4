@@ -86,7 +86,6 @@ import {
 import {
     buildGroupSystemPrompt,
     contentToGroupHistoryText,
-    GROUP_RESPONSE_FORMAT,
     GroupGenerationResult,
     parseGroupGeneration,
     resolveRoomMemberPersona,
@@ -102,6 +101,12 @@ import {
     inferNpcSpeakersForTurn,
     replyHasNpcSpeech,
 } from "./npcDialogue.js";
+import {
+    cleanGeneratedPhotoPrompt,
+    FAVORITE_PHOTO_PROMPT_MAX_LENGTH,
+    normalizeFavoritePhotoPrompt,
+    selectPhotoPromptVersion,
+} from "./photoPromptPreference.js";
 
 
 declare var JSZip: any;
@@ -402,6 +407,8 @@ const personaSettingsSubtitle = document.getElementById('persona-settings-subtit
 const personaDescriptionEditor = document.getElementById('persona-description-editor') as HTMLInputElement;
 const personaPromptEditor = document.getElementById('persona-prompt-editor') as HTMLTextAreaElement;
 const personaGreetingEditor = document.getElementById('persona-greeting-editor') as HTMLTextAreaElement;
+const personaFavoritePhotoPromptField = document.getElementById('persona-favorite-photo-prompt-field')!;
+const personaFavoritePhotoPrompt = document.getElementById('persona-favorite-photo-prompt') as HTMLTextAreaElement;
 const personaSettingsAvatarPreview = document.getElementById('persona-settings-avatar-preview')!;
 const personaSettingsAvatarBtn = document.getElementById('persona-settings-avatar-btn') as HTMLButtonElement;
 const personaPublicIdentityCheckbox = document.getElementById('persona-public-identity-checkbox') as HTMLInputElement;
@@ -478,6 +485,7 @@ const roomInfoTitle = document.getElementById('room-info-title')!;
 const roomInfoSummary = document.getElementById('room-info-summary')!;
 const roomMemberList = document.getElementById('room-member-list')!;
 const roomSceneEditor = document.getElementById('room-scene-editor')!;
+const roomPhotoPromptEditor = document.getElementById('room-photo-prompt-editor')!;
 const addRoomMemberBtn = document.getElementById('add-room-member-btn') as HTMLButtonElement;
 const openRoomMemoryBtn = document.getElementById('open-room-memory-btn') as HTMLButtonElement;
 const exportRoomBtn = document.getElementById('export-room-btn') as HTMLButtonElement;
@@ -6176,8 +6184,20 @@ const switchCharacterPhotoIdentityMode = async (
         await loadImageModels(mode);
         const model = getPreferredCharacterPhotoModel(mode);
         if (!model) throw new Error('目前沒有可用的 Venice 圖片模型。');
+        const basePrompt = buildCharacterPhotoPrompt(persona, proposal.scenePrompt, useAvatarReference);
+        const favoritePromptVersion = proposal.favoriteScenePrompt
+            ? buildCharacterPhotoPrompt(persona, proposal.favoriteScenePrompt, useAvatarReference)
+            : undefined;
+        const favoritePromptApplied = Boolean(
+            proposal.favoritePrompt
+            && favoritePromptVersion
+            && proposal.favoritePromptApplied !== false,
+        );
         updatePhotoProposal(conversationKey, proposalId, {
-            prompt: buildCharacterPhotoPrompt(persona, proposal.scenePrompt, useAvatarReference),
+            prompt: selectPhotoPromptVersion(basePrompt, favoritePromptVersion, favoritePromptApplied),
+            basePrompt,
+            favoritePromptVersion,
+            favoritePromptApplied,
             useAvatarReference,
             identityMode: useAvatarReference ? 'avatar_reference' : 'persona_description',
             modelId: model.id,
@@ -6289,7 +6309,46 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
         identitySource.appendChild(switchButton);
     }
 
-    card.append(eyebrow, identitySource, prompt, meta);
+    card.append(eyebrow, identitySource, prompt);
+
+    const canToggleFavoritePrompt = Boolean(
+        proposal.favoritePrompt
+        && proposal.basePrompt
+        && proposal.favoritePromptVersion
+        && (proposal.status === 'pending' || proposal.status === 'failed'),
+    );
+    if (canToggleFavoritePrompt) {
+        const favoriteToggle = document.createElement('label');
+        favoriteToggle.className = 'character-photo-favorite-toggle';
+        const favoriteCheckbox = document.createElement('input');
+        favoriteCheckbox.type = 'checkbox';
+        favoriteCheckbox.checked = proposal.favoritePromptApplied !== false;
+        const favoriteCopy = document.createElement('span');
+        const favoriteTitle = document.createElement('strong');
+        favoriteTitle.textContent = favoriteCheckbox.checked ? '已套用常用 Prompt' : '未套用常用 Prompt';
+        const favoriteText = document.createElement('span');
+        favoriteText.textContent = proposal.favoritePrompt || '';
+        favoriteCopy.append(favoriteTitle, favoriteText);
+        favoriteToggle.append(favoriteCheckbox, favoriteCopy);
+        favoriteCheckbox.addEventListener('change', () => {
+            if (!currentConversationKey || !proposal.basePrompt) return;
+            const favoritePromptApplied = favoriteCheckbox.checked;
+            updatePhotoProposal(currentConversationKey, proposal.id, {
+                prompt: selectPhotoPromptVersion(
+                    proposal.basePrompt,
+                    proposal.favoritePromptVersion,
+                    favoritePromptApplied,
+                ),
+                favoritePromptApplied,
+                status: 'pending',
+                error: undefined,
+            });
+            refreshPhotoProposalCard(proposal.id);
+        });
+        card.appendChild(favoriteToggle);
+    }
+
+    card.appendChild(meta);
 
     if (proposal.status === 'generating') {
         const progress = document.createElement('div');
@@ -6367,9 +6426,16 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
                 editor.reportValidity();
                 return;
             }
-            if (!currentPersonaKey) return;
-            updatePhotoProposal(currentPersonaKey, proposal.id, {
+            if (!currentConversationKey) return;
+            const favoritePromptApplied = proposal.favoritePromptApplied !== false;
+            const variantUpdates = proposal.favoritePrompt
+                ? favoritePromptApplied
+                    ? { favoritePromptVersion: nextPrompt }
+                    : { basePrompt: nextPrompt }
+                : { basePrompt: nextPrompt };
+            updatePhotoProposal(currentConversationKey, proposal.id, {
                 prompt: nextPrompt,
+                ...variantUpdates,
                 status: 'pending',
                 error: undefined,
             });
@@ -7041,45 +7107,31 @@ const appendMessage = (
     } else if (sender === 'bot' && currentRoom && content.segments?.length) {
         messageWrapper = document.createElement('div');
         messageWrapper.className = 'group-chat-turn';
+        const storyBubble = document.createElement('div');
+        storyBubble.className = 'chat-bubble bot-bubble group-story-bubble';
         content.segments.forEach(segment => {
             if (segment.type === 'narration') {
                 const narration = document.createElement('div');
-                narration.className = 'group-narration';
+                narration.className = 'group-story-line group-story-narration';
                 narration.textContent = segment.text;
-                messageWrapper.appendChild(narration);
+                storyBubble.appendChild(narration);
                 return;
             }
 
             const member = currentRoom?.members.find(item => item.id === segment.speakerId);
             if (!member) return;
-            const sourcePersona = member.persona.avatarUrl
-                ? member.persona
-                : member.sourcePersonaKey
-                    ? memoryManager.getPersona(member.sourcePersonaKey) || member.persona
-                    : member.persona;
-            const row = document.createElement('div');
-            row.className = 'group-dialogue-row';
-            const avatar = document.createElement('span');
-            avatar.className = 'group-dialogue-avatar';
-            if (sourcePersona.avatarUrl && !sourcePersona.avatarUrl.startsWith('generating_')) {
-                const image = document.createElement('img');
-                image.src = sourcePersona.avatarUrl;
-                image.alt = sourcePersona.name;
-                avatar.appendChild(image);
-            } else {
-                avatar.textContent = sourcePersona.emoji || '●';
-            }
-            const bubble = document.createElement('div');
-            bubble.className = 'chat-bubble bot-bubble group-dialogue-bubble';
+            const line = document.createElement('div');
+            line.className = 'group-story-line group-story-dialogue';
             const speaker = document.createElement('span');
             speaker.className = 'group-speaker-name';
             speaker.textContent = member.persona.name;
-            const text = document.createElement('p');
+            const text = document.createElement('span');
+            text.className = 'group-story-dialogue-text';
             text.textContent = segment.text;
-            bubble.append(speaker, text);
-            row.append(avatar, bubble);
-            messageWrapper.appendChild(row);
+            line.append(speaker, text);
+            storyBubble.appendChild(line);
         });
+        messageWrapper.appendChild(storyBubble);
     } else if (isSystemMessage) {
         messageWrapper = document.createElement('div');
         messageWrapper.className = 'system-chat-message';
@@ -8595,6 +8647,7 @@ const runConversationGeneration = async (
 type CharacterPhotoProposalDraft = {
     reply: string;
     scenePrompt: string;
+    favoriteScenePrompt?: string;
     caption: string;
     aspectRatio: CharacterPhotoProposal['aspectRatio'];
 };
@@ -8606,9 +8659,12 @@ const extractPhotoProposalSection = (text: string, tag: string) => {
 
 const parseCharacterPhotoProposalDraft = (text: string): CharacterPhotoProposalDraft | null => {
     const reply = cleanVeniceChatReply(extractPhotoProposalSection(text, 'reply'));
-    const scenePrompt = extractPhotoProposalSection(text, 'prompt')
+    const scenePrompt = cleanGeneratedPhotoPrompt(extractPhotoProposalSection(text, 'prompt')
         .replace(/^```(?:text)?\s*|\s*```$/giu, '')
-        .trim();
+        .trim());
+    const favoriteScenePrompt = cleanGeneratedPhotoPrompt(extractPhotoProposalSection(text, 'favorite_prompt')
+        .replace(/^```(?:text)?\s*|\s*```$/giu, '')
+        .trim());
     const caption = cleanVeniceChatReply(extractPhotoProposalSection(text, 'caption'));
     const rawRatio = extractPhotoProposalSection(text, 'ratio');
     const allowedRatios: CharacterPhotoProposal['aspectRatio'][] = ['1:1', '3:4', '4:5', '16:9', '9:16'];
@@ -8617,7 +8673,13 @@ const parseCharacterPhotoProposalDraft = (text: string): CharacterPhotoProposalD
         : '3:4';
 
     if (!reply || !scenePrompt || !caption || scenePrompt.length < 20) return null;
-    return { reply, scenePrompt, caption, aspectRatio };
+    return {
+        reply,
+        scenePrompt,
+        favoriteScenePrompt: favoriteScenePrompt || undefined,
+        caption,
+        aspectRatio,
+    };
 };
 
 const trimPhotoPromptSection = (text: string, maxLength: number) => {
@@ -8727,6 +8789,9 @@ const buildCharacterPhotoProposal = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
 ): Promise<{ text: string; proposal: CharacterPhotoProposal }> => {
+    const favoritePrompt = normalizeFavoritePhotoPrompt(
+        request.room ? request.room.favoritePhotoPrompt : request.persona.favoritePhotoPrompt,
+    );
     const subjectMembers = request.room
         ? request.room.members.filter(member => request.photoSubjectMemberIds?.includes(member.id))
         : [];
@@ -8783,15 +8848,33 @@ const buildCharacterPhotoProposal = async (
             'Do not make an absent or unselected room member visible in the image.',
         ].join('\n') : '',
         'The newest user message is a request for the character to take or send a photo.',
-        'Do not generate an image and do not claim the photo has already been taken or sent. Stay fully in character and propose exactly what the character intends to photograph, based on the newest request, current scene, relationship, clothing and physical continuity from recent conversation.',
+        'Do not generate an image and do not claim the photo has already been taken or sent. Stay fully in character and propose exactly what the character intends to photograph.',
+        [
+            'CURRENT-MOMENT CONTINUITY LOCK:',
+            '- Reconstruct the exact current moment from the latest completed conversation: who is present, each person\'s clothing and colors, location, time, lighting, body position, held objects, ongoing action, and physical relationships.',
+            '- That established visible continuity is authoritative. Never change a white shirt to black, add or remove a held object, move to another location, swap people, or contradict the current action unless the newest user photo request explicitly asks for that exact change.',
+            '- Resolve pronouns against the fixed character identities. Do not confuse the user, photographer, visible subjects, or third persons.',
+            '- Produce one internally coherent image instruction. Never include mutually exclusive colors, clothes, poses, actions, objects, camera views, or both a positive and negative version of the same detail.',
+        ].join('\n'),
         'The proposal may be ordinary, romantic, fantasy, or explicitly adult according to the user request and established context. Preserve direct wording and intent; do not make an ordinary request sexual, and do not sanitize an explicit adult request.',
+        favoritePrompt ? [
+            `SAVED FAVORITE PHOTO INSTRUCTION: ${favoritePrompt}`,
+            '- <prompt> must be the clean baseline based only on the newest request and current-moment continuity; do not apply the saved favorite instruction there.',
+            '- <favorite_prompt> must be a second complete image prompt that integrates every compatible part of the saved favorite instruction into the same current moment.',
+            '- Current visible continuity and the newest explicit request outrank the saved favorite instruction. Silently adapt or omit only the conflicting favorite detail instead of writing both alternatives.',
+            '- The two prompts must each stand alone. Do not mention merging, conflicts, defaults, options, checkboxes, omitted details, or these rules inside either prompt.',
+            '- Never describe a discarded alternative negatively. If all favorite details conflict, make <favorite_prompt> identical to <prompt>. The final image prompt must contain only the one positive visual truth the image model should draw.',
+        ].join('\n') : '',
         ...imagePromptIdentityRules,
         'The English image prompt must describe one still image. Do not invent a new major event or a user action.',
         'Choose one definite composition yourself. Do not offer multiple unresolved clothing, pose, expression, or scene options; the visible reply and English prompt must describe the same single choice.',
         'The reply and later caption must use the character’s established Traditional Chinese regional voice. The reply must briefly describe that one chosen photo and naturally ask the user to approve it without mentioning AI, models, policy, generation, or internal prompts.',
-        'Return only these four XML blocks and no other text:',
+        'Return only the following XML blocks and no other text:',
         '<reply>in-character approval question</reply>',
         `<prompt>English still-image ${useAvatarReference ? 'edit instruction, 25 to 70 words' : 'scene prompt, 45 to 100 words'}</prompt>`,
+        favoritePrompt
+            ? `<favorite_prompt>second complete English still-image ${useAvatarReference ? 'edit instruction' : 'scene prompt'} with the compatible saved favorite instruction already reconciled</favorite_prompt>`
+            : '',
         '<caption>short in-character line to send together with the finished photo</caption>',
         '<ratio>one of 1:1, 3:4, 4:5, 16:9, 9:16</ratio>',
     ].join('\n\n');
@@ -8827,8 +8910,11 @@ const buildCharacterPhotoProposal = async (
                 repetitionPenalty: 1.06,
                 signal: request.controller.signal,
             });
-            draft = parseCharacterPhotoProposalDraft(result.text);
-            if (!draft) throw new Error(`Invalid photo proposal from ${model}.`);
+            const candidate = parseCharacterPhotoProposalDraft(result.text);
+            if (!candidate || (favoritePrompt && !candidate.favoriteScenePrompt)) {
+                throw new Error(`Invalid photo proposal from ${model}.`);
+            }
+            draft = candidate;
         } catch (error) {
             if (isAbortError(error)) throw error;
             lastError = error instanceof Error ? error : new Error(String(error));
@@ -8839,22 +8925,35 @@ const buildCharacterPhotoProposal = async (
     const mode: VeniceImageMode = useAvatarReference ? 'edit' : 'generate';
     await loadImageModels(mode);
     const imageModel = getPreferredCharacterPhotoModel(mode);
-    const scenePrompt = useAvatarReference
-        ? replaceGenericReferenceSubject(draft.scenePrompt, request.persona.name)
-        : draft.scenePrompt;
-    const prompt = isMultiSubject
-        ? trimPhotoPromptSection([
-            `Exactly ${subjectPersonas.length} distinct people in one image:`,
-            ...subjectPersonas.map(persona => {
-                const identity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
-                return identity
-                    ? `${identity.canonicalName} (${identity.visualPrompt})`
-                    : `${persona.name} (${persona.avatarPrompt || persona.description})`;
-            }),
-            `Requested scene and composition: ${scenePrompt}`,
-            'Preserve every named identity separately. No duplicate people, merged faces, generic substitutions, extra subjects, text, captions, logos, or watermarks.',
-        ].join(' '), CHARACTER_PHOTO_PROMPT_MAX_LENGTH)
-        : buildCharacterPhotoPrompt(request.persona, scenePrompt, useAvatarReference);
+    const normalizeScenePrompt = (value: string) => useAvatarReference
+        ? replaceGenericReferenceSubject(value, request.persona.name)
+        : value;
+    const buildCompletePrompt = (value: string) => {
+        const normalizedScene = normalizeScenePrompt(value);
+        return isMultiSubject
+            ? trimPhotoPromptSection([
+                `Exactly ${subjectPersonas.length} distinct people in one image:`,
+                ...subjectPersonas.map(persona => {
+                    const identity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
+                    return identity
+                        ? `${identity.canonicalName} (${identity.visualPrompt})`
+                        : `${persona.name} (${persona.avatarPrompt || persona.description})`;
+                }),
+                `Requested scene and composition: ${normalizedScene}`,
+                'Preserve every named identity separately. No duplicate people, merged faces, generic substitutions, extra subjects, text, captions, logos, or watermarks.',
+            ].join(' '), CHARACTER_PHOTO_PROMPT_MAX_LENGTH)
+            : buildCharacterPhotoPrompt(request.persona, normalizedScene, useAvatarReference);
+    };
+    const scenePrompt = normalizeScenePrompt(draft.scenePrompt);
+    const favoriteScenePrompt = draft.favoriteScenePrompt
+        ? normalizeScenePrompt(draft.favoriteScenePrompt)
+        : undefined;
+    const basePrompt = buildCompletePrompt(scenePrompt);
+    const favoritePromptVersion = favoritePrompt && favoriteScenePrompt
+        ? buildCompletePrompt(favoriteScenePrompt)
+        : undefined;
+    const favoritePromptApplied = Boolean(favoritePrompt && favoritePromptVersion);
+    const prompt = selectPhotoPromptVersion(basePrompt, favoritePromptVersion, favoritePromptApplied);
     const reply = request.personaKey === 'cc'
         ? normalizeCcCantoneseLeaks(draft.reply)
         : normalizeTraditionalChineseLeaks(draft.reply);
@@ -8870,7 +8969,12 @@ const buildCharacterPhotoProposal = async (
         proposal: {
             id: crypto.randomUUID?.() || `photo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
             prompt,
+            basePrompt,
+            favoritePrompt: favoritePrompt || undefined,
+            favoritePromptVersion,
+            favoritePromptApplied,
             scenePrompt,
+            favoriteScenePrompt,
             caption,
             aspectRatio: draft.aspectRatio,
             status: 'pending',
@@ -8945,7 +9049,6 @@ const runRoomConversationGeneration = async (
                 const result = await generateChatTextWithTimeout({
                     model,
                     messages,
-                    responseFormat: GROUP_RESPONSE_FORMAT,
                     temperature: 0.78,
                     topP: 0.92,
                     repetitionPenalty: 1.1,
@@ -8953,11 +9056,7 @@ const runRoomConversationGeneration = async (
                     signal: request.controller.signal,
                 });
                 const parsed = parseGroupGeneration(result.text, request.room, fallbackMemberId);
-                const repeats = recentReplies.some(previous => (
-                    repliesAreTooSimilar(previous, parsed.text)
-                    || replyReusesOpeningOrNarrativeBeat(previous, parsed.text)
-                    || replyReusesCompletedClause(previous, parsed.text)
-                ));
+                const repeats = recentReplies.some(previous => repliesAreTooSimilar(previous, parsed.text));
                 if (repeats && !userExplicitlyRequestsContinuation(latestUserMessage)) {
                     rejectedReply = parsed.text;
                     throw new Error(`Repeated group reply from ${model}.`);
@@ -8976,59 +9075,14 @@ const runRoomConversationGeneration = async (
             } catch (error) {
                 if (isAbortError(error)) throw error;
                 lastError = error instanceof Error ? error : new Error(String(error));
+                console.warn('[aigf4 group attempt rejected]', {
+                    requestId: request.id,
+                    model,
+                    attempt: attempt + 1,
+                    reason: lastError.message,
+                });
                 if (lastError.message === CHAT_MODEL_TIMEOUT_ERROR) break;
             }
-        }
-    }
-
-    // Some Venice models report schema support but occasionally return a different
-    // JSON shape. A final labelled-transcript request keeps the room usable even
-    // when structured output changes upstream.
-    for (const model of models.slice(0, 2)) {
-        applyChatRuntimeState('retrying', '重新思考中...');
-        try {
-            const messages: VeniceMessage[] = [
-                {
-                    role: 'system',
-                    content: [
-                        buildGroupSystemPrompt(request.room),
-                        'STRUCTURED OUTPUT FALLBACK: Do not return JSON for this attempt.',
-                        'Write only the live group reply. Format every spoken line as Display Name：「dialogue」 and every narration line inside full-width parentheses.',
-                        'At least one PRESENT fixed member must speak, and the member addressed in the newest user message must answer.',
-                    ].join('\n\n'),
-                },
-                ...getRecentChatMessages(
-                    request.conversationKey,
-                    latestUserMessage,
-                    false,
-                    request.persona,
-                    request.room,
-                ),
-                { role: 'user', content: getLatestUserVeniceContent(request, latestUserMessage) },
-            ];
-            const result = await generateChatTextWithTimeout({
-                model,
-                messages,
-                temperature: 0.76,
-                topP: 0.92,
-                repetitionPenalty: 1.1,
-                stop: [],
-                signal: request.controller.signal,
-            });
-            const parsed = parseGroupGeneration(result.text, request.room, fallbackMemberId);
-            const repeats = recentReplies.some(previous => (
-                repliesAreTooSimilar(previous, parsed.text)
-                || replyReusesOpeningOrNarrativeBeat(previous, parsed.text)
-                || replyReusesCompletedClause(previous, parsed.text)
-            ));
-            if (repeats && !userExplicitlyRequestsContinuation(latestUserMessage)) {
-                rejectedReply = parsed.text;
-                throw new Error(`Repeated fallback group reply from ${model}.`);
-            }
-            return parsed;
-        } catch (error) {
-            if (isAbortError(error)) throw error;
-            lastError = error instanceof Error ? error : new Error(String(error));
         }
     }
 
@@ -10754,6 +10808,29 @@ const renderRoomInfo = () => {
         window.setTimeout(() => { saveScene.textContent = '儲存場景狀態'; }, 1200);
     });
     roomSceneEditor.append(locationLabel, realityLabel, summaryLabel, saveScene);
+
+    roomPhotoPromptEditor.innerHTML = '';
+    const favoritePromptInput = document.createElement('textarea');
+    favoritePromptInput.rows = 4;
+    favoritePromptInput.maxLength = FAVORITE_PHOTO_PROMPT_MAX_LENGTH;
+    favoritePromptInput.value = room.favoritePhotoPrompt || '';
+    favoritePromptInput.placeholder = '例如：自然手機攝影、柔和窗光、保留真實皮膚質感，不要文字或浮水印。';
+    const favoritePromptHint = document.createElement('p');
+    favoritePromptHint.textContent = '角色會先把這段設定與當下衣著、位置、動作及最新拍照要求整合成不矛盾的版本；每次照片草稿仍可取消勾選。';
+    const saveFavoritePrompt = document.createElement('button');
+    saveFavoritePrompt.type = 'button';
+    saveFavoritePrompt.className = 'wa-secondary-button';
+    saveFavoritePrompt.textContent = '儲存常用拍照 Prompt';
+    saveFavoritePrompt.addEventListener('click', () => {
+        roomManager.updateRoom(room.id, editableRoom => {
+            editableRoom.favoritePhotoPrompt = normalizeFavoritePhotoPrompt(favoritePromptInput.value);
+        });
+        refreshCurrentRoom();
+        favoritePromptInput.value = currentRoom?.favoritePhotoPrompt || '';
+        saveFavoritePrompt.textContent = '已儲存';
+        window.setTimeout(() => { saveFavoritePrompt.textContent = '儲存常用拍照 Prompt'; }, 1200);
+    });
+    roomPhotoPromptEditor.append(favoritePromptInput, favoritePromptHint, saveFavoritePrompt);
 };
 
 const openRoomInfo = () => {
@@ -11003,6 +11080,8 @@ const openPersonaSettings = () => {
     personaDescriptionEditor.value = currentPersona.description || '';
     personaPromptEditor.value = currentPersona.prompt || '';
     personaGreetingEditor.value = currentPersona.greeting || '';
+    personaFavoritePhotoPromptField.classList.toggle('hidden', Boolean(personaSettingsRoomTarget));
+    personaFavoritePhotoPrompt.value = currentPersona.favoritePhotoPrompt || '';
     personaSettingsResolvedIdentity = currentPersona.publicIdentity
         ? { ...currentPersona.publicIdentity }
         : null;
@@ -11080,6 +11159,7 @@ const savePersonaSettings = async () => {
             : currentPersona.publicIdentity;
 
         const previousGreeting = currentPersona.greeting || '';
+        const roomTarget = personaSettingsRoomTarget;
         const updates: Partial<Persona> = {
             description,
             prompt,
@@ -11087,6 +11167,9 @@ const savePersonaSettings = async () => {
             publicIdentityEnabled,
             publicIdentity,
         };
+        if (!roomTarget) {
+            updates.favoritePhotoPrompt = normalizeFavoritePhotoPrompt(personaFavoritePhotoPrompt.value);
+        }
         if (publicIdentityEnabled && publicIdentity) {
             updates.avatarPrompt = [
                 publicIdentity.visualPrompt,
@@ -11097,7 +11180,6 @@ const savePersonaSettings = async () => {
         if (publicIdentityEnabled && personaSettingsResolvedAvatarUrl) {
             updates.avatarUrl = personaSettingsResolvedAvatarUrl;
         }
-        const roomTarget = personaSettingsRoomTarget;
         if (roomTarget) {
             roomManager.updateMember(roomTarget.roomId, roomTarget.memberId, { persona: updates });
             if (currentRoom?.id === roomTarget.roomId) currentRoom = roomManager.getRoom(roomTarget.roomId) || currentRoom;

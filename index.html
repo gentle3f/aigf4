@@ -991,6 +991,11 @@
                     <label class="block text-sm font-medium text-gray-300 mb-2">開場語 / 語氣樣本</label>
                     <textarea id="persona-greeting-editor" class="w-full h-28 px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400" placeholder="輸入角色平常會怎麼說話..."></textarea>
                 </div>
+                <div id="persona-favorite-photo-prompt-field">
+                    <label class="block text-sm font-medium text-gray-300 mb-2">常用拍照 Prompt</label>
+                    <textarea id="persona-favorite-photo-prompt" maxlength="600" class="w-full h-28 px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400" placeholder="例如：自然手機攝影、保留真實皮膚質感、柔和窗光，不要文字或浮水印。"></textarea>
+                    <p class="mt-2 text-xs leading-5 text-gray-400">只套用於這個一對一聊天室。角色構思照片時會先與當下衣著、位置、動作及你的最新要求整合，避免互相矛盾；每次確認前仍可取消套用。</p>
+                </div>
                 <p class="text-sm text-gray-400">這裡改的內容會直接影響目前角色之後的聊天語氣。`God Mode` 是讓 AI 幫你調；這裡則是你自己直接改。</p>
             </div>
             <div class="p-4 border-t border-gray-700 flex justify-end gap-3">
@@ -1259,6 +1264,7 @@
                 <div id="room-info-summary" class="room-info-summary"></div>
                 <section><div class="wa-section-heading"><h3>成員</h3><button id="add-room-member-btn" type="button">新增</button></div><div id="room-member-list" class="room-member-list"></div></section>
                 <section><div class="wa-section-heading"><h3>目前場景</h3></div><div id="room-scene-editor" class="room-scene-editor"></div></section>
+                <section><div class="wa-section-heading"><h3>常用拍照 Prompt</h3></div><div id="room-photo-prompt-editor" class="room-photo-prompt-editor"></div></section>
                 <section><div class="wa-section-heading"><h3>資料</h3></div><button id="open-room-memory-btn" class="wa-settings-row">靈魂與重要記憶<span>›</span></button><button id="export-room-btn" class="wa-settings-row">匯出聊天室及 Markdown<span>›</span></button></section>
             </div>
         </section>

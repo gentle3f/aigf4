@@ -55,6 +55,31 @@ test('group prompt keeps immutable member and presence ledgers', () => {
     assert.match(prompt, /MEMBER ID: irene/);
     assert.match(prompt, /Presence now: ABSENT/);
     assert.match(prompt, /never one of the listed characters/i);
+    assert.match(prompt, /A character may speak more than once/i);
+    assert.match(prompt, /Do not return a JSON response object/i);
+});
+
+test('group parser accepts the reliable transcript envelope and scene metadata', () => {
+    const parsed = parseGroupGeneration([
+        '<chat>',
+        '（門鎖輕響，早餐的香氣跟著飄進客廳。）',
+        'IU：「我醒了……你真的買回來了？」',
+        'Jennie：「我也醒啦，先讓我看看有甚麼。」',
+        '（Jennie 拉著 IU 一起走近，兩人交換了一個笑。）',
+        'IU：「我們一起吃，別又搶他的那份。」',
+        '</chat>',
+        '<scene>{"location":"客廳","reality_layer":"physical","present_member_ids":["iu","jennie"],"summary":"使用者帶早餐回來，IU 與 Jennie 一起迎接。","unresolved":[]}</scene>',
+        '<npc_candidate>null</npc_candidate>',
+    ].join('\n'), createRoom());
+
+    assert.equal(parsed.segments.length, 5);
+    assert.deepEqual(
+        parsed.segments.filter(segment => segment.type === 'dialogue').map(segment => segment.speakerId),
+        ['iu', 'jennie', 'iu'],
+    );
+    assert.equal(parsed.scene.location, '客廳');
+    assert.equal(parsed.scene.summary, '使用者帶早餐回來，IU 與 Jennie 一起迎接。');
+    assert.equal(parsed.npcCandidate, undefined);
 });
 
 test('group parser preserves separate speakers and scene state', () => {
@@ -189,6 +214,28 @@ test('room snapshots do not depend on structuredClone and remain independent', (
 
     assert.equal(room.scene.location, 'living room');
     assert.equal(room.members[0].persona.name, 'IU');
+});
+
+test('room favorite photo prompt survives a manager reload', () => {
+    const storage = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: {
+            getItem: (key: string) => storage.get(key) || null,
+            setItem: (key: string, value: string) => storage.set(key, value),
+        },
+    });
+    const firstManager = new RoomManager();
+    const room = firstManager.createRoom('Photo room', [
+        { persona: member('one', 'One').persona },
+        { persona: member('two', 'Two').persona },
+    ]);
+    firstManager.updateRoom(room.id, editable => {
+        editable.favoritePhotoPrompt = 'soft window light, candid phone photo';
+    });
+
+    const restored = new RoomManager().getRoom(room.id);
+    assert.equal(restored?.favoritePhotoPrompt, 'soft window light, candid phone photo');
 });
 
 test('curated IU group exists even before a legacy IU chat is imported', () => {

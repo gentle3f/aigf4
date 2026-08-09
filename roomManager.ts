@@ -59,6 +59,7 @@ export interface ChatRoom {
     scene: RoomSceneState;
     sharedSoul: RoomMemoryEntry[];
     sharedMemories: RoomMemoryEntry[];
+    favoritePhotoPrompt?: string;
     createdAt: number;
     updatedAt: number;
     lastSummarizedUserMessageCount: number;
@@ -406,6 +407,7 @@ export class RoomManager {
             },
             sharedSoul: [],
             sharedMemories: [],
+            favoritePhotoPrompt: '',
             createdAt: now,
             updatedAt: now,
             lastSummarizedUserMessageCount: 0,
@@ -600,6 +602,7 @@ export class RoomManager {
             },
             sharedSoul: sharedSoul(),
             sharedMemories: sharedMemories(),
+            favoritePhotoPrompt: '',
             createdAt: now,
             updatedAt: now,
             lastSummarizedUserMessageCount: 0,

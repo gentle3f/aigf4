@@ -122,7 +122,12 @@ export type CharacterPhotoProposalStatus = 'pending' | 'generating' | 'generated
 export interface CharacterPhotoProposal {
     id: string;
     prompt: string;
+    basePrompt?: string;
+    favoritePrompt?: string;
+    favoritePromptVersion?: string;
+    favoritePromptApplied?: boolean;
     scenePrompt?: string;
+    favoriteScenePrompt?: string;
     caption: string;
     aspectRatio: '1:1' | '3:4' | '4:5' | '16:9' | '9:16';
     status: CharacterPhotoProposalStatus;
@@ -252,6 +257,7 @@ export interface Persona {
     avatarPrompt: string;
     avatarUrl: string | null;
     memory?: string;
+    favoritePhotoPrompt?: string;
     publicIdentityEnabled?: boolean;
     publicIdentity?: PublicIdentity;
 }
