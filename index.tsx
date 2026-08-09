@@ -74,6 +74,7 @@ import {
     RoomMember,
     RoomMemoryEntry,
     RoomSceneState,
+    IU_GROUP_ROOM_ID,
     ROOM_MEMBER_LIMIT,
     ROOM_PRESENT_MEMBER_LIMIT,
 } from "./roomManager.js";
@@ -447,6 +448,11 @@ const publicIdentityMediaSection = document.getElementById('public-identity-medi
 const publicIdentityMediaContainer = document.getElementById('public-identity-media')!;
 const cancelPublicIdentityBtn = document.getElementById('cancel-public-identity') as HTMLButtonElement;
 const confirmPublicIdentityBtn = document.getElementById('confirm-public-identity') as HTMLButtonElement;
+const avatarSourceModal = document.getElementById('avatar-source-modal')!;
+const avatarSourceTitle = document.getElementById('avatar-source-title')!;
+const closeAvatarSourceModalBtn = document.getElementById('close-avatar-source-modal') as HTMLButtonElement;
+const avatarSourceLocalBtn = document.getElementById('avatar-source-local') as HTMLButtonElement;
+const avatarSourceSearchBtn = document.getElementById('avatar-source-search') as HTMLButtonElement;
 const roomInfoModal = document.getElementById('room-info-modal')!;
 const closeRoomInfoBtn = document.getElementById('close-room-info') as HTMLButtonElement;
 const roomInfoTitle = document.getElementById('room-info-title')!;
@@ -482,10 +488,16 @@ const fileManager = new FileManager(memoryManager, {
     onSingleChatRestored: (key, history) => {
         startChat(key, history);
     },
-    onAllDataRestored: () => {
+    onAllDataRestored: summary => {
         roomManager.ensureIuGroupRoom(memoryManager);
         renderPersonaList();
-        alert('\\u5c0d\\u8a71\\u3001\\u982d\\u50cf\\u8207\\u8a18\\u61b6\\u8cc7\\u6599\\u5df2\\u6210\\u529f\\u532f\\u5165\\u3002');
+        const conflictNote = summary.renamedConflicts
+            ? `\n${summary.renamedConflicts} 項同鍵但不同的資料已另存為「匯入備份」，沒有覆蓋原本內容。`
+            : '';
+        const duplicateNote = summary.skippedDuplicates
+            ? `\n${summary.skippedDuplicates} 項重複資料已略過，避免產生副本。`
+            : '';
+        alert(`安全匯入完成，共加入 ${summary.importedMessages.toLocaleString('zh-HK')} 則訊息。${conflictNote}${duplicateNote}`);
         showSelectionView();
     }
 }, roomManager);
@@ -518,6 +530,8 @@ let currentRoom: ChatRoom | null = null;
 let activeRoomMemberId: string | null = null;
 let currentPersonaKeyForUpload: string | null = null;
 let avatarUploadRoomTarget: { roomId: string; memberId: string } | null = null;
+let avatarSourceTarget: { personaKey: string } | { roomId: string; memberId: string } | null = null;
+let expandedLegacyHistoryConversationKey: string | null = null;
 let currentPersonaKeyForPromptEdit: string | null = null;
 let generatedPersonaData: any = null;
 let attachedGift: { file: File, dataUrl: string } | null = null;
@@ -2976,17 +2990,99 @@ const renderPersonaList = () => {
 const requestPersonaAvatarUpload = (key: string) => {
     const persona = memoryManager.getPersona(key);
     if (!persona || key === VENICE_ASSISTANT_PERSONA_KEY) return;
-    avatarUploadRoomTarget = null;
-    currentPersonaKeyForUpload = key;
-    avatarUploadInput.click();
+    avatarSourceTarget = { personaKey: key };
+    avatarSourceTitle.textContent = `更換 ${persona.name} 的頭像`;
+    avatarSourceModal.classList.remove('hidden');
 };
 
 const requestRoomMemberAvatarUpload = (roomId: string, memberId: string) => {
     const member = roomManager.getMember(roomId, memberId);
     if (!member) return;
-    currentPersonaKeyForUpload = null;
-    avatarUploadRoomTarget = { roomId, memberId };
+    avatarSourceTarget = { roomId, memberId };
+    avatarSourceTitle.textContent = `更換 ${member.persona.name} 的頭像`;
+    avatarSourceModal.classList.remove('hidden');
+};
+
+const closeAvatarSourceModal = () => {
+    avatarSourceModal.classList.add('hidden');
+    avatarSourceTarget = null;
+};
+
+const chooseLocalAvatarSource = () => {
+    const target = avatarSourceTarget;
+    if (!target) return;
+    avatarSourceModal.classList.add('hidden');
+    if ('personaKey' in target) {
+        avatarUploadRoomTarget = null;
+        currentPersonaKeyForUpload = target.personaKey;
+    } else {
+        currentPersonaKeyForUpload = null;
+        avatarUploadRoomTarget = { roomId: target.roomId, memberId: target.memberId };
+    }
+    avatarSourceTarget = null;
     avatarUploadInput.click();
+};
+
+const refreshAvatarUi = () => {
+    if (currentRoom) currentRoom = roomManager.getRoom(currentRoom.id) || currentRoom;
+    if (currentRoom && activeRoomMemberId) {
+        selectActiveRoomMember(activeRoomMemberId);
+    } else if (currentPersonaKey) {
+        currentPersona = memoryManager.getPersona(currentPersonaKey) || currentPersona;
+    }
+    renderPersonaList();
+    renderChatHeaderAvatar();
+    renderPersonaSettingsAvatar();
+    if (!roomInfoModal.classList.contains('hidden')) renderRoomInfo();
+};
+
+const chooseSearchedAvatarSource = async () => {
+    const target = avatarSourceTarget;
+    if (!target) return;
+    const restoreRoomInfo = !roomInfoModal.classList.contains('hidden');
+    avatarSourceModal.classList.add('hidden');
+    if (restoreRoomInfo) roomInfoModal.classList.add('hidden');
+    avatarSourceTarget = null;
+
+    const persona = 'personaKey' in target
+        ? memoryManager.getPersona(target.personaKey)
+        : roomManager.getMember(target.roomId, target.memberId)?.persona;
+    if (!persona) {
+        if (restoreRoomInfo) roomInfoModal.classList.remove('hidden');
+        return;
+    }
+    const query = persona.publicIdentity
+        ? [persona.publicIdentity.canonicalName, persona.publicIdentity.sourceTitle].filter(Boolean).join(' ')
+        : [persona.name, persona.description].filter(Boolean).join(' ');
+    const result = await requestPublicIdentityResolution(query);
+    if (!result) {
+        if (restoreRoomInfo) {
+            renderRoomInfo();
+            roomInfoModal.classList.remove('hidden');
+        }
+        return;
+    }
+
+    const personaUpdate: Partial<Persona> = {
+        publicIdentityEnabled: true,
+        publicIdentity: result.identity,
+        avatarPrompt: result.identity.visualPrompt,
+    };
+    if (result.avatarUrl) personaUpdate.avatarUrl = result.avatarUrl;
+
+    if ('personaKey' in target) {
+        memoryManager.updatePersona(target.personaKey, personaUpdate);
+    } else {
+        roomManager.updateMember(target.roomId, target.memberId, { persona: personaUpdate });
+    }
+    refreshAvatarUi();
+    if (restoreRoomInfo) {
+        renderRoomInfo();
+        roomInfoModal.classList.remove('hidden');
+    }
+    if (!result.avatarUrl) {
+        alert('身份資料已更新，但你在搜尋畫面選擇了「保留目前頭像」，所以圖片沒有改動。');
+    }
 };
 
 const readBlobAsDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
@@ -3086,12 +3182,10 @@ const handleAvatarUpload = async (event: Event) => {
             } else if (targetKey) {
                 memoryManager.updatePersona(targetKey, { avatarUrl: dataUrl });
             }
-            renderPersonaList();
             if (targetKey && targetKey === currentPersonaKey) {
                 currentPersona = memoryManager.getPersona(targetKey) || currentPersona;
             }
-            renderChatHeaderAvatar();
-            renderPersonaSettingsAvatar();
+            refreshAvatarUi();
         }
     } catch (error) {
         alert(error instanceof Error ? error.message : '頭像更新失敗。');
@@ -5462,6 +5556,86 @@ const recoverInterruptedPhotoProposals = (personaKey: string, history: ChatMessa
     return recovered;
 };
 
+const LEGACY_HISTORY_PREVIEW_LIMIT = 240;
+
+const appendHistoryDivider = (label: string) => {
+    const divider = document.createElement('div');
+    divider.className = 'history-period-divider';
+    divider.textContent = label;
+    chatContainer.appendChild(divider);
+};
+
+const appendIuMemorySummary = (room: ChatRoom) => {
+    const banner = document.createElement('section');
+    banner.className = 'legacy-history-banner is-summary';
+    const title = document.createElement('strong');
+    title.textContent = '舊 IU 對話已整理成長期回憶';
+    const description = document.createElement('p');
+    description.textContent = '這個裝置暫時找不到舊 IU 的逐字紀錄。三人的 soul.md 與 memory.md 已保留重要經歷；匯入舊 ZIP 後，完整舊對話會以唯讀方式自動接到這裡。';
+    const memories = document.createElement('p');
+    memories.className = 'legacy-history-memory-list';
+    memories.textContent = room.sharedMemories.slice(0, 6).map(entry => entry.title).join(' · ');
+    const importButton = document.createElement('button');
+    importButton.type = 'button';
+    importButton.textContent = '安全匯入舊 IU ZIP';
+    importButton.addEventListener('click', () => zipUploadInput.click());
+    banner.append(title, description, memories, importButton);
+    chatContainer.appendChild(banner);
+};
+
+const appendLinkedLegacyHistory = (room: ChatRoom) => {
+    const sourceKey = room.legacySourcePersonaKey;
+    const sourceHistory = sourceKey
+        ? memoryManager.peekChatHistory(sourceKey).filter(message => message.role === 'user' || message.role === 'model')
+        : [];
+    if (!sourceHistory.length) {
+        if (room.id === IU_GROUP_ROOM_ID) appendIuMemorySummary(room);
+        return;
+    }
+
+    const expanded = expandedLegacyHistoryConversationKey === room.id;
+    const visibleHistory = expanded
+        ? sourceHistory
+        : sourceHistory.slice(-LEGACY_HISTORY_PREVIEW_LIMIT);
+    const hiddenCount = sourceHistory.length - visibleHistory.length;
+    const banner = document.createElement('section');
+    banner.className = 'legacy-history-banner';
+    const title = document.createElement('strong');
+    title.textContent = `已連結舊 IU 房間的 ${sourceHistory.length.toLocaleString('zh-HK')} 則紀錄`;
+    const description = document.createElement('p');
+    description.textContent = hiddenCount > 0
+        ? `目前先顯示最近 ${visibleHistory.length.toLocaleString('zh-HK')} 則，避免手機一次載入過慢。這些訊息只供查看，舊房間本身沒有被移動或改寫。`
+        : '完整舊紀錄正在顯示；這些訊息只供查看，舊房間本身沒有被移動或改寫。';
+    banner.append(title, description);
+    if (hiddenCount > 0) {
+        const showAllButton = document.createElement('button');
+        showAllButton.type = 'button';
+        showAllButton.textContent = `顯示全部（再載入 ${hiddenCount.toLocaleString('zh-HK')} 則）`;
+        showAllButton.addEventListener('click', () => {
+            expandedLegacyHistoryConversationKey = room.id;
+            startChat(room.id, null, 'skip');
+            window.requestAnimationFrame(() => {
+                chatContainer.scrollTop = 0;
+            });
+        });
+        banner.appendChild(showAllButton);
+    }
+    chatContainer.appendChild(banner);
+    appendHistoryDivider('舊 IU 聊天備份 · 唯讀');
+    visibleHistory.forEach(message => {
+        const sender = message.role === 'user' ? 'user' : 'bot';
+        appendMessage({
+            ...message.content,
+            legacy: true,
+            photoProposal: undefined,
+            memoryProposal: undefined,
+            photoIntent: undefined,
+            npcProposal: undefined,
+        }, sender, message);
+    });
+    appendHistoryDivider('新群組由這裡開始');
+};
+
 const startLegacyChat = (key: string, restoredHistory: any[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
     cancelActiveChatRequest();
     const selectedPersona = memoryManager.getPersona(key);
@@ -5574,6 +5748,7 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
     let chatHistory = restoredHistory || memoryManager.getChatHistory(key);
     if (restoredHistory) memoryManager.setChatHistory(key, restoredHistory);
     chatHistory = recoverInterruptedPhotoProposals(key, chatHistory);
+    if (room) appendLinkedLegacyHistory(room);
     chatHistory.forEach(message => {
         const sender = message.role === 'user' ? 'user' : message.role === 'model' ? 'bot' : 'system';
         const content = message.role === 'system' && message.content.text?.trim() === SCENE_END_MARKER
@@ -6753,6 +6928,7 @@ const appendMessage = (
         }
     }
 
+    if (content.legacy) messageWrapper.classList.add('legacy-chat-message');
     chatContainer.appendChild(messageWrapper);
 
     window.requestAnimationFrame(() => {
@@ -10783,6 +10959,14 @@ const setupEventListeners = () => {
 
 
     avatarUploadInput.addEventListener('change', handleAvatarUpload);
+    closeAvatarSourceModalBtn.addEventListener('click', closeAvatarSourceModal);
+    avatarSourceModal.addEventListener('click', event => {
+        if (event.target === avatarSourceModal) closeAvatarSourceModal();
+    });
+    avatarSourceLocalBtn.addEventListener('click', chooseLocalAvatarSource);
+    avatarSourceSearchBtn.addEventListener('click', () => {
+        void chooseSearchedAvatarSource();
+    });
     closePromptModal.addEventListener('click', closeAvatarPromptEditor);
     cancelPromptEdit.addEventListener('click', closeAvatarPromptEditor);
     savePromptEdit.addEventListener('click', saveAvatarPrompt);

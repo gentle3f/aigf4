@@ -1,8 +1,8 @@
 import { ChatMessage, MemoryManager, Persona, PublicIdentity } from './managers.js';
 
 const ROOM_STORAGE_KEY = 'aigf4RoomsV2';
-const IU_GROUP_ROOM_ID = 'room_iu_jennie_irene_v1';
-const IU_GROUP_MIGRATION_VERSION = 1;
+export const IU_GROUP_ROOM_ID = 'room_iu_jennie_irene_v1';
+const IU_GROUP_MIGRATION_VERSION = 2;
 
 export const ROOM_MEMBER_LIMIT = 8;
 export const ROOM_PRESENT_MEMBER_LIMIT = 4;
@@ -518,17 +518,36 @@ export class RoomManager {
 
     ensureIuGroupRoom(memoryManager: MemoryManager) {
         const personas = memoryManager.getAllPersonas();
-        const iuEntry = Object.entries(personas).find(([, persona]) => {
-            const name = persona.name.trim().toLowerCase();
-            const canonical = persona.publicIdentity?.canonicalName?.trim().toLowerCase();
-            return name === 'iu' || canonical === 'iu';
-        });
+        const iuEntry = Object.entries(personas)
+            .filter(([, persona]) => {
+                const name = persona.name.trim().toLowerCase();
+                const canonical = persona.publicIdentity?.canonicalName?.trim().toLowerCase();
+                return name === 'iu' || canonical === 'iu';
+            })
+            .sort((left, right) => (
+                memoryManager.peekChatHistory(right[0]).length
+                - memoryManager.peekChatHistory(left[0]).length
+            ))[0];
         const existing = this.rooms[IU_GROUP_ROOM_ID];
-        if (existing?.migrationVersion === IU_GROUP_MIGRATION_VERSION) {
-            if (iuEntry && !existing.legacySourcePersonaKey) {
-                existing.legacySourcePersonaKey = iuEntry[0];
-                const iuMember = existing.members.find(member => member.id === 'iu');
-                if (iuMember) iuMember.sourcePersonaKey = iuEntry[0];
+        if (existing) {
+            let changed = false;
+            if (iuEntry) {
+                const currentSourceCount = existing.legacySourcePersonaKey
+                    ? memoryManager.peekChatHistory(existing.legacySourcePersonaKey).length
+                    : 0;
+                const candidateSourceCount = memoryManager.peekChatHistory(iuEntry[0]).length;
+                if (!existing.legacySourcePersonaKey || candidateSourceCount > currentSourceCount) {
+                    existing.legacySourcePersonaKey = iuEntry[0];
+                    const iuMember = existing.members.find(member => member.id === 'iu');
+                    if (iuMember) iuMember.sourcePersonaKey = iuEntry[0];
+                    changed = true;
+                }
+            }
+            if (existing.migrationVersion !== IU_GROUP_MIGRATION_VERSION) {
+                existing.migrationVersion = IU_GROUP_MIGRATION_VERSION;
+                changed = true;
+            }
+            if (changed) {
                 this.persist();
             }
             return existing;

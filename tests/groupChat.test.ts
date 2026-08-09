@@ -107,6 +107,7 @@ test('curated IU group exists even before a legacy IU chat is imported', () => {
     const chatHistories = new Map<string, unknown[]>();
     const memoryManager = {
         getAllPersonas: () => ({}),
+        peekChatHistory: (key: string) => chatHistories.get(key) || [],
         hasChatHistory: (key: string) => (chatHistories.get(key)?.length || 0) > 0,
         setChatHistory: (key: string, history: unknown[]) => chatHistories.set(key, history),
     };
@@ -117,5 +118,48 @@ test('curated IU group exists even before a legacy IU chat is imported', () => {
     assert.ok(room);
     assert.equal(room.members.map(item => item.persona.name).join(','), 'IU,Jennie,Irene');
     assert.equal(room.legacySourcePersonaKey, undefined);
+    assert.equal(chatHistories.get(room.id)?.length, 1);
+});
+
+test('curated IU group links the richest legacy room without copying or changing it', () => {
+    const storage = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: {
+            getItem: (key: string) => storage.get(key) || null,
+            setItem: (key: string, value: string) => storage.set(key, value),
+        },
+    });
+    const shortHistory = [{ role: 'model', content: { text: 'short' } }];
+    const longHistory = Array.from({ length: 1000 }, (_, index) => ({
+        role: index % 2 ? 'user' : 'model',
+        content: { text: `message ${index}` },
+    }));
+    const chatHistories = new Map<string, unknown[]>([
+        ['custom_iu_short', shortHistory],
+        ['custom_iu_archive', longHistory],
+    ]);
+    const persona = {
+        name: 'IU',
+        emoji: '*',
+        gender: 'female',
+        description: 'IU',
+        prompt: '',
+        greeting: 'hello',
+        avatarPrompt: '',
+        avatarUrl: null,
+    };
+    const memoryManager = {
+        getAllPersonas: () => ({ custom_iu_short: persona, custom_iu_archive: persona }),
+        peekChatHistory: (key: string) => chatHistories.get(key) || [],
+        hasChatHistory: (key: string) => (chatHistories.get(key)?.length || 0) > 0,
+        setChatHistory: (key: string, history: unknown[]) => chatHistories.set(key, history),
+    };
+
+    const roomManager = new RoomManager();
+    const room = roomManager.ensureIuGroupRoom(memoryManager as never);
+
+    assert.equal(room.legacySourcePersonaKey, 'custom_iu_archive');
+    assert.equal(chatHistories.get('custom_iu_archive'), longHistory);
     assert.equal(chatHistories.get(room.id)?.length, 1);
 });

@@ -503,10 +503,10 @@ export class MemoryManager {
             Object.assign(this.chatHistories, data.chatHistories);
         }
         if (data.diaries) {
-            this.diaries = data.diaries;
+            Object.assign(this.diaries, data.diaries);
         }
         if (data.interests) {
-            this.interests = data.interests;
+            Object.assign(this.interests, data.interests);
         }
         this.promoteLegacyCcSeed();
         this.upgradeBundledCcPersona(true);

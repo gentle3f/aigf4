@@ -1137,6 +1137,26 @@
         </div>
     </div>
 
+    <!-- Avatar source chooser -->
+    <div id="avatar-source-modal" class="hidden wa-modal-backdrop">
+        <section class="wa-sheet avatar-source-sheet" role="dialog" aria-modal="true" aria-labelledby="avatar-source-title">
+            <header class="wa-sheet-header">
+                <button id="close-avatar-source-modal" class="wa-icon-button" type="button" aria-label="關閉"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m6 6 12 12M18 6 6 18"></path></svg></button>
+                <div><p class="wa-sheet-kicker">PROFILE PHOTO</p><h2 id="avatar-source-title">更換角色頭像</h2></div>
+            </header>
+            <div class="avatar-source-options">
+                <button id="avatar-source-local" type="button" class="avatar-source-option">
+                    <span class="avatar-source-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5"></path></svg></span>
+                    <span><strong>從裝置匯入</strong><small>選擇手機或電腦中的圖片，會自動裁成方形並壓縮。</small></span>
+                </button>
+                <button id="avatar-source-search" type="button" class="avatar-source-option">
+                    <span class="avatar-source-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg></span>
+                    <span><strong>搜尋網上公開圖片</strong><small>搜尋 Wikipedia／Wikimedia，確認正確人物後選擇代表圖片。</small></span>
+                </button>
+            </div>
+        </section>
+    </div>
+
     <!-- Public Identity Confirmation Modal -->
     <div id="public-identity-modal" class="hidden fixed inset-0 z-[75] flex items-center justify-center bg-black/75 p-3 sm:p-5">
         <div class="flex max-h-[94vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-cyan-500/30 bg-gray-900 shadow-2xl">

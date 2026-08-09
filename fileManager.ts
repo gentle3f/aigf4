@@ -8,7 +8,20 @@ declare var JSZip: any;
 
 interface FileManagerCallbacks {
     onSingleChatRestored: (key: string, history: ChatMessage[]) => void;
-    onAllDataRestored: () => void;
+    onAllDataRestored: (summary: ImportSummary) => void;
+}
+
+export interface ImportSummary {
+    importedMessages: number;
+    renamedConflicts: number;
+    skippedDuplicates: number;
+}
+
+interface PreparedImport {
+    data: any;
+    keyMap: Map<string, string>;
+    skippedSourceKeys: Set<string>;
+    summary: ImportSummary;
 }
 
 interface UIElements {
@@ -39,6 +52,148 @@ export class FileManager {
         this.callbacks = {
             onSingleChatRestored: uiAndCallbacks.onSingleChatRestored,
             onAllDataRestored: uiAndCallbacks.onAllDataRestored,
+        };
+    }
+
+    private prepareMergeSafeImport(rawData: any): PreparedImport {
+        const importedPersonas = rawData?.customPersonas && typeof rawData.customPersonas === 'object'
+            ? rawData.customPersonas as Record<string, any>
+            : {};
+        const importedHistories = rawData?.chatHistories && typeof rawData.chatHistories === 'object'
+            ? rawData.chatHistories as Record<string, ChatMessage[]>
+            : {};
+        const importedDiaries = rawData?.diaries && typeof rawData.diaries === 'object'
+            ? rawData.diaries as Record<string, any>
+            : {};
+        const importedInterests = rawData?.interests && typeof rawData.interests === 'object'
+            ? rawData.interests as Record<string, any>
+            : {};
+        const importedRooms = Array.isArray(rawData?.rooms?.rooms) ? rawData.rooms.rooms as any[] : [];
+        const roomIds = new Set(importedRooms.map(room => String(room?.id || '')).filter(Boolean));
+        const sourceKeys = new Set([
+            ...Object.keys(importedPersonas),
+            ...Object.keys(importedHistories),
+            ...Object.keys(importedDiaries),
+            ...Object.keys(importedInterests),
+            ...roomIds,
+        ]);
+        const currentPersonas = this.memoryManager.getModifiedAndCustomPersonas();
+        const currentHistories = this.memoryManager.getAllChatHistories();
+        const currentDiaries = this.memoryManager.getAllDiaryEntries();
+        const currentInterests = this.memoryManager.getAllInterests();
+        const usedKeys = new Set([
+            ...Object.keys(this.memoryManager.getAllPersonas()),
+            ...Object.keys(currentHistories),
+            ...(this.roomManager?.getRooms().map(room => room.id) || []),
+        ]);
+        const keyMap = new Map<string, string>();
+        const skippedSourceKeys = new Set<string>();
+        let renamedConflicts = 0;
+        let skippedDuplicates = 0;
+        const timestamp = Date.now();
+
+        const comparablePersona = (persona: any) => persona
+            ? JSON.stringify({ ...persona, avatarUrl: null })
+            : '';
+        const isSameOrPrefixHistory = (incoming: ChatMessage[] | undefined, current: ChatMessage[] | undefined) => {
+            if (!Array.isArray(incoming) || !Array.isArray(current) || incoming.length > current.length) return false;
+            return incoming.every((message, index) => JSON.stringify(message) === JSON.stringify(current[index]));
+        };
+        const sameValue = (incoming: unknown, current: unknown) => (
+            incoming === undefined || JSON.stringify(incoming) === JSON.stringify(current)
+        );
+        const createUniqueKey = (sourceKey: string, isRoom: boolean) => {
+            const safeKey = sourceKey.replace(/[^a-zA-Z0-9_-]+/gu, '_').slice(0, 48) || 'data';
+            const prefix = isRoom ? 'room_import' : 'custom_import';
+            let suffix = 1;
+            let candidate = `${prefix}_${safeKey}_${timestamp}`;
+            while (usedKeys.has(candidate)) candidate = `${prefix}_${safeKey}_${timestamp}_${suffix++}`;
+            usedKeys.add(candidate);
+            return candidate;
+        };
+
+        sourceKeys.forEach(sourceKey => {
+            const isRoom = roomIds.has(sourceKey);
+            const hasCurrentPayload = Boolean(
+                currentPersonas[sourceKey]
+                || currentHistories[sourceKey]
+                || currentDiaries[sourceKey]
+                || currentInterests[sourceKey]
+                || this.roomManager?.getRoom(sourceKey)
+            );
+            if (!hasCurrentPayload) {
+                keyMap.set(sourceKey, sourceKey);
+                usedKeys.add(sourceKey);
+                return;
+            }
+
+            const isDuplicate = !isRoom
+                && isSameOrPrefixHistory(importedHistories[sourceKey], currentHistories[sourceKey])
+                && (!importedPersonas[sourceKey]
+                    || comparablePersona(importedPersonas[sourceKey]) === comparablePersona(this.memoryManager.getPersona(sourceKey)))
+                && sameValue(importedDiaries[sourceKey], currentDiaries[sourceKey])
+                && sameValue(importedInterests[sourceKey], currentInterests[sourceKey]);
+            if (isDuplicate) {
+                keyMap.set(sourceKey, sourceKey);
+                skippedSourceKeys.add(sourceKey);
+                skippedDuplicates += 1;
+                return;
+            }
+
+            keyMap.set(sourceKey, createUniqueKey(sourceKey, isRoom));
+            renamedConflicts += 1;
+        });
+
+        const remapRecord = (record: Record<string, any>) => Object.fromEntries(
+            Object.entries(record)
+                .filter(([sourceKey]) => !skippedSourceKeys.has(sourceKey))
+                .map(([sourceKey, value]) => [keyMap.get(sourceKey) || sourceKey, value]),
+        );
+        const mappedPersonas = remapRecord(importedPersonas);
+        keyMap.forEach((targetKey, sourceKey) => {
+            if (targetKey === sourceKey || skippedSourceKeys.has(sourceKey) || mappedPersonas[targetKey]) return;
+            const sourcePersona = this.memoryManager.getPersona(sourceKey);
+            if (sourcePersona && !roomIds.has(sourceKey)) mappedPersonas[targetKey] = { ...sourcePersona, avatarUrl: null };
+        });
+        const mappedRooms = rawData?.rooms && Array.isArray(rawData.rooms.rooms)
+            ? {
+                ...rawData.rooms,
+                rooms: importedRooms
+                    .filter(room => room?.id && !skippedSourceKeys.has(room.id))
+                    .map(room => ({
+                        ...room,
+                        id: keyMap.get(room.id) || room.id,
+                        title: (keyMap.get(room.id) || room.id) === room.id ? room.title : `${room.title}（匯入備份）`,
+                        legacySourcePersonaKey: room.legacySourcePersonaKey
+                            ? keyMap.get(room.legacySourcePersonaKey) || room.legacySourcePersonaKey
+                            : undefined,
+                        members: Array.isArray(room.members)
+                            ? room.members.map((member: any) => ({
+                                ...member,
+                                sourcePersonaKey: member.sourcePersonaKey
+                                    ? keyMap.get(member.sourcePersonaKey) || member.sourcePersonaKey
+                                    : undefined,
+                            }))
+                            : [],
+                    })),
+            }
+            : rawData?.rooms;
+        const mappedHistories = remapRecord(importedHistories);
+        const importedMessages = Object.values(mappedHistories)
+            .reduce((total: number, history: any) => total + (Array.isArray(history) ? history.length : 0), 0);
+
+        return {
+            data: {
+                ...rawData,
+                customPersonas: mappedPersonas,
+                chatHistories: mappedHistories,
+                diaries: remapRecord(importedDiaries),
+                interests: remapRecord(importedInterests),
+                rooms: mappedRooms,
+            },
+            keyMap,
+            skippedSourceKeys,
+            summary: { importedMessages, renamedConflicts, skippedDuplicates },
         };
     }
 
@@ -95,7 +250,11 @@ export class FileManager {
         })));
     }
 
-    private async restoreRoomAvatarsFromZip(zip: any) {
+    private async restoreRoomAvatarsFromZip(
+        zip: any,
+        keyMap: Map<string, string> = new Map(),
+        skippedSourceKeys: Set<string> = new Set(),
+    ) {
         if (!this.roomManager) return;
         const folder = zip.folder('room-avatars');
         if (!folder) return;
@@ -105,7 +264,9 @@ export class FileManager {
             if (fileEntry.dir) return;
             const parts = relativePath.split('/').filter(Boolean);
             if (parts.length < 2) return;
-            const roomId = parts[0];
+            const sourceRoomId = parts[0];
+            if (skippedSourceKeys.has(sourceRoomId)) return;
+            const roomId = keyMap.get(sourceRoomId) || sourceRoomId;
             const fileName = parts.at(-1)!;
             const memberId = fileName.replace(/\.[^.]+$/u, '');
             const extension = fileName.split('.').at(-1)?.toLowerCase();
@@ -152,7 +313,10 @@ export class FileManager {
         await Promise.all(tasks);
     }
 
-    private async restoreCharacterPhotosFromZip(zip: any) {
+    private async restoreCharacterPhotosFromZip(
+        zip: any,
+        keyMap: Map<string, string> = new Map(),
+    ) {
         const folder = zip.folder('photos');
         if (!folder) return;
 
@@ -170,7 +334,7 @@ export class FileManager {
             if (fileEntry.dir) return;
             const pathParts = relativePath.split('/').filter(Boolean);
             if (pathParts.length < 2) return;
-            const personaKey = pathParts[0];
+            const personaKey = keyMap.get(pathParts[0]) || pathParts[0];
             const fileName = pathParts[pathParts.length - 1];
             const assetId = fileName.replace(/\.[^.]+$/u, '');
             tasks.push(fileEntry.async('blob').then((blob: Blob) => saveCharacterPhotoAsset({
@@ -211,7 +375,10 @@ export class FileManager {
         await Promise.all(tasks);
     }
 
-    private async restoreChatAttachmentsFromZip(zip: any) {
+    private async restoreChatAttachmentsFromZip(
+        zip: any,
+        keyMap: Map<string, string> = new Map(),
+    ) {
         const folder = zip.folder('attachments');
         if (!folder) return;
         const attachmentMeta = new Map<string, { name: string; mimeType: string; conversationKey: string }>();
@@ -229,7 +396,7 @@ export class FileManager {
             if (fileEntry.dir) return;
             const parts = relativePath.split('/').filter(Boolean);
             if (parts.length < 2) return;
-            const conversationKey = parts[0];
+            const conversationKey = keyMap.get(parts[0]) || parts[0];
             const assetId = parts.at(-1)!.replace(/\.[^.]+$/u, '');
             const meta = attachmentMeta.get(assetId);
             tasks.push(fileEntry.async('blob').then((blob: Blob) => saveChatAttachment({
@@ -431,26 +598,32 @@ export class FileManager {
         if (!file) return;
 
         try {
+            const shouldContinue = window.confirm(
+                '將以安全合併方式匯入：不會刪除現有聊天室；若同一角色已有不同內容，匯入資料會另存為備份副本。要繼續嗎？',
+            );
+            if (!shouldContinue) return;
             const zip = await JSZip.loadAsync(file);
             
             // Prefer the new "all data" format
             const allDataFile = zip.file("all_data.json");
             if (allDataFile) {
                 const allDataString = await allDataFile.async("string");
-                const allData = JSON.parse(allDataString);
+                const rawAllData = JSON.parse(allDataString);
 
                 // Quick migration for old 'stories' format to 'diaries'
-                if (allData.stories && !allData.diaries) {
-                    allData.diaries = {};
-                    for (const key in allData.stories) {
-                        allData.diaries[key] = allData.stories[key].map((content: string, index: number) => ({
+                if (rawAllData.stories && !rawAllData.diaries) {
+                    rawAllData.diaries = {};
+                    for (const key in rawAllData.stories) {
+                        rawAllData.diaries[key] = rawAllData.stories[key].map((content: string, index: number) => ({
                             title: `導入的章節 ${index + 1}`,
                             content: content,
                         }));
                     }
-                    delete allData.stories;
+                    delete rawAllData.stories;
                 }
-                
+
+                const prepared = this.prepareMergeSafeImport(rawAllData);
+                const allData = prepared.data;
                 this.memoryManager.loadAllData(allData);
                 this.roomManager?.importData(allData.rooms);
 
@@ -458,7 +631,9 @@ export class FileManager {
                 if (avatarFolder) {
                     const avatarPromises: Promise<void>[] = [];
                     avatarFolder.forEach((relativePath, fileEntry) => {
-                        const key = relativePath.split('.')[0];
+                        const sourceKey = relativePath.split('.')[0];
+                        if (prepared.skippedSourceKeys.has(sourceKey)) return;
+                        const key = prepared.keyMap.get(sourceKey) || sourceKey;
                         if (this.memoryManager.getPersona(key) && !fileEntry.dir) {
                             const promise = fileEntry.async("base64").then(base64 => {
                                 const mimeType = fileEntry.name.endsWith('png') ? 'image/png' : 'image/jpeg';
@@ -470,11 +645,11 @@ export class FileManager {
                     await Promise.all(avatarPromises);
                 }
 
-                await this.restoreRoomAvatarsFromZip(zip);
-                await this.restoreCharacterPhotosFromZip(zip);
-                await this.restoreChatAttachmentsFromZip(zip);
+                await this.restoreRoomAvatarsFromZip(zip, prepared.keyMap, prepared.skippedSourceKeys);
+                await this.restoreCharacterPhotosFromZip(zip, prepared.keyMap);
+                await this.restoreChatAttachmentsFromZip(zip, prepared.keyMap);
                 
-                this.callbacks.onAllDataRestored();
+                this.callbacks.onAllDataRestored(prepared.summary);
                 return;
             }
 
@@ -503,22 +678,26 @@ export class FileManager {
                  }
 
 
-                this.memoryManager.loadAllData(dataToLoad);
+                const prepared = this.prepareMergeSafeImport(dataToLoad);
+                const mappedPersonaKey = prepared.keyMap.get(personaKey) || personaKey;
+                const mappedHistory = prepared.data.chatHistories[mappedPersonaKey]
+                    || this.memoryManager.peekChatHistory(mappedPersonaKey);
+                this.memoryManager.loadAllData(prepared.data);
 
-                if (!personaKey || !this.memoryManager.getPersona(personaKey)) throw new Error("無效的角色鍵值或角色資料遺失");
+                if (!mappedPersonaKey || !this.memoryManager.getPersona(mappedPersonaKey)) throw new Error("無效的角色鍵值或角色資料遺失");
                 if (!Array.isArray(history)) throw new Error("對話歷史格式錯誤");
 
                 const avatarFile = zip.file("avatar.png");
-                if (avatarFile) {
+                if (avatarFile && !prepared.skippedSourceKeys.has(personaKey)) {
                     const base64 = await avatarFile.async("base64");
-                    this.memoryManager.updatePersona(personaKey, { avatarUrl: `data:image/png;base64,${base64}` });
+                    this.memoryManager.updatePersona(mappedPersonaKey, { avatarUrl: `data:image/png;base64,${base64}` });
                 }
 
-                await this.restoreRoomAvatarsFromZip(zip);
-                await this.restoreCharacterPhotosFromZip(zip);
-                await this.restoreChatAttachmentsFromZip(zip);
+                await this.restoreRoomAvatarsFromZip(zip, prepared.keyMap, prepared.skippedSourceKeys);
+                await this.restoreCharacterPhotosFromZip(zip, prepared.keyMap);
+                await this.restoreChatAttachmentsFromZip(zip, prepared.keyMap);
 
-                this.callbacks.onSingleChatRestored(personaKey, history);
+                this.callbacks.onSingleChatRestored(mappedPersonaKey, mappedHistory);
                 return;
             }
 
