@@ -1,5 +1,6 @@
 // managers.ts
 import { personas as initialPersonas, ccV3Persona } from "./personas.tsx";
+import { deletePersonaAvatar, loadPersonaAvatars, savePersonaAvatar } from './avatarStore.js';
 
 // --- Constants ---
 export const DIARY_CHECKPOINT = '[DIARY_CHECKPOINT]';
@@ -11,6 +12,7 @@ const BUILT_IN_CC_KEY = 'cc';
 const LEGACY_CC_SEED_KEY = 'custom_seed_cc';
 const BUILT_IN_CC_VERSION = 'cc_v3_1';
 const BUILT_IN_CC_VERSION_KEY = 'builtInCcPersonaVersion';
+const PRIVATE_AVATAR_MARKER_PREFIX = 'private-avatar:';
 const PERSONA_SUPPLEMENT_MARKER = '\n\n人格補充：';
 const SCENE_END_MARKER = '[SCENE END]';
 const LEGACY_CC_DESCRIPTION = '港式語感、嘴硬會收、私下其實很暖的曖昧系女生';
@@ -284,9 +286,13 @@ export class MemoryManager {
     private diaries: { [key: string]: DiaryEntry[] } = {};
     private interests: { [personaKey: string]: Interest[] } = {};
     private customPersonaCounter: number = 0;
+    private privateAvatarKeys = new Set<string>();
 
     constructor() {
-        this.personas = { ...initialPersonas };
+        // Persona objects must not share references with the immutable defaults.
+        // Otherwise editing a built-in persona also edits the comparison baseline,
+        // making the change look unmodified and disappear after a reload.
+        this.personas = structuredClone(initialPersonas);
         this.loadModifiedPersonas();
         this.loadChatHistories();
         this.promoteLegacyCcSeed();
@@ -297,6 +303,11 @@ export class MemoryManager {
     getModifiedAndCustomPersonas(): { [key: string]: Persona } {
         const personasToSave: { [key: string]: Persona } = {};
         for (const key in this.personas) {
+            if (this.privateAvatarKeys.has(key)) {
+                personasToSave[key] = this.personas[key];
+                continue;
+            }
+
             // It's a custom persona, save it.
             if (key.startsWith('custom_')) {
                 personasToSave[key] = this.personas[key];
@@ -332,6 +343,12 @@ export class MemoryManager {
             const saved = localStorage.getItem('customPersonas');
             if (saved) {
                 const modifiedPersonas = JSON.parse(saved);
+                Object.entries(modifiedPersonas as Record<string, Persona>).forEach(([key, persona]) => {
+                    if (persona?.avatarUrl === `${PRIVATE_AVATAR_MARKER_PREFIX}${key}`) {
+                        this.privateAvatarKeys.add(key);
+                        persona.avatarUrl = initialPersonas[key]?.avatarUrl ?? null;
+                    }
+                });
                 Object.assign(this.personas, modifiedPersonas);
 
                 const customKeys = Object.keys(modifiedPersonas).filter(key => key.startsWith('custom_'));
@@ -476,7 +493,15 @@ export class MemoryManager {
 
     private persistModifiedPersonas(throwOnError = false) {
         try {
-            localStorage.setItem('customPersonas', JSON.stringify(this.getModifiedAndCustomPersonas()));
+            const persistablePersonas = Object.fromEntries(
+                Object.entries(this.getModifiedAndCustomPersonas()).map(([key, persona]) => [
+                    key,
+                    this.privateAvatarKeys.has(key)
+                        ? { ...persona, avatarUrl: `${PRIVATE_AVATAR_MARKER_PREFIX}${key}` }
+                        : persona,
+                ]),
+            );
+            localStorage.setItem('customPersonas', JSON.stringify(persistablePersonas));
         } catch (error) {
             console.error('Failed to save custom personas:', error);
             if (throwOnError) throw error;
@@ -561,6 +586,37 @@ export class MemoryManager {
         return this.personas[key];
     }
 
+    async restorePrivateAvatars() {
+        const avatars = await loadPersonaAvatars();
+        let restored = 0;
+        Object.entries(avatars).forEach(([key, avatarUrl]) => {
+            if (!this.personas[key]) return;
+            this.privateAvatarKeys.add(key);
+            this.personas[key].avatarUrl = avatarUrl;
+            restored++;
+        });
+        return restored;
+    }
+
+    async setPersonaAvatar(key: string, avatarUrl: string | null) {
+        if (!this.personas[key]) return;
+
+        if (avatarUrl?.startsWith('data:image/')) {
+            await savePersonaAvatar(key, avatarUrl);
+            this.privateAvatarKeys.add(key);
+        } else {
+            this.privateAvatarKeys.delete(key);
+            await deletePersonaAvatar(key).catch(error => {
+                console.warn('Failed to remove private avatar:', error);
+            });
+        }
+
+        this.personas[key].avatarUrl = avatarUrl;
+        // The image is already durable in IndexedDB. Keep the UI successful even
+        // if legacy chat data has filled the much smaller localStorage quota.
+        this.persistModifiedPersonas();
+    }
+
     saveCustomPersona(personaData: any): string {
         this.customPersonaCounter++;
         const personaKey = `custom_${this.customPersonaCounter}_${Date.now()}`;
@@ -584,6 +640,12 @@ export class MemoryManager {
 
     updatePersona(key: string, data: Partial<Persona>) {
         if (this.personas[key]) {
+            if ('avatarUrl' in data && !data.avatarUrl?.startsWith('data:image/')) {
+                this.privateAvatarKeys.delete(key);
+                void deletePersonaAvatar(key).catch(error => {
+                    console.warn('Failed to remove private avatar:', error);
+                });
+            }
             Object.assign(this.personas[key], data);
             this.persistModifiedPersonas();
         }
@@ -598,6 +660,10 @@ export class MemoryManager {
 
     deleteCustomPersona(key: string): boolean {
         if (key.startsWith('custom_') && this.personas[key]) {
+            this.privateAvatarKeys.delete(key);
+            void deletePersonaAvatar(key).catch(error => {
+                console.warn('Failed to remove private avatar:', error);
+            });
             delete this.personas[key];
             delete this.chatHistories[key];
             delete this.diaries[key];

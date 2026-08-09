@@ -3269,7 +3269,7 @@ const handleAvatarUpload = async (event: Event) => {
                     }
                 }
             } else if (targetKey) {
-                memoryManager.updatePersona(targetKey, { avatarUrl: dataUrl });
+                await memoryManager.setPersonaAvatar(targetKey, dataUrl);
             }
             if (targetKey && targetKey === currentPersonaKey) {
                 currentPersona = memoryManager.getPersona(targetKey) || currentPersona;
@@ -11897,6 +11897,11 @@ const setupEventListeners = () => {
 const init = async () => {
     syncBrowserViewState(HOME_HISTORY_STATE, 'replace');
     initializeImageSeedControls();
+    try {
+        await memoryManager.restorePrivateAvatars();
+    } catch (error) {
+        console.error('Failed to restore private avatars:', error);
+    }
     renderPersonaList();
     setupEventListeners();
     setAuthSubmitting(false);
