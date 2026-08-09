@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     buildGroupSystemPrompt,
+    getGroupDisplaySegments,
     parseGroupGeneration,
     selectLegacyGroupHistory,
     trimTrailingUnansweredUserMessages,
 } from '../groupChat.js';
-import { ChatMessage } from '../managers.js';
+import { ChatMessage, Content } from '../managers.js';
 import { ChatRoom, cloneRoomSnapshot, RoomManager, RoomMember } from '../roomManager.js';
 
 const member = (id: string, name: string): RoomMember => ({
@@ -154,6 +155,39 @@ test('group parser accepts labelled transcript fallback and resolves display nam
         parsed.segments.filter(segment => segment.type === 'dialogue').map(segment => segment.speakerId),
         ['jennie', 'iu'],
     );
+});
+
+test('group parser separates bracketed speaker labels embedded in one model line', () => {
+    const room = createRoom();
+    room.scene.presentMemberIds = ['iu', 'jennie', 'irene'];
+    const parsed = parseGroupGeneration([
+        '<chat>[IU]：（IU 靠近窗邊。）我先說。[Irene]（Irene 抬起眼。）輪到我。[Jennie]：最後是我。[旁白] 三個人重新看向使用者。</chat>',
+        '<scene>{"location":"living room","reality_layer":"physical","present_member_ids":["iu","jennie","irene"],"summary":"All three replied.","unresolved":[]}</scene>',
+        '<npc_candidate>null</npc_candidate>',
+    ].join(''), room);
+
+    assert.deepEqual(
+        parsed.segments.map(segment => segment.type === 'narration' ? '旁白' : segment.speakerName),
+        ['IU', 'Irene', 'Jennie', '旁白'],
+    );
+    assert.equal(parsed.segments.some(segment => segment.text.includes('[Irene]')), false);
+});
+
+test('stored group turns are repaired for display without rewriting chat history', () => {
+    const room = createRoom();
+    room.scene.presentMemberIds = ['iu', 'jennie', 'irene'];
+    const content: Content = {
+        text: 'legacy malformed group turn',
+        segments: [{
+            type: 'dialogue',
+            speakerId: 'iu',
+            speakerName: 'IU',
+            text: '我先回應。[Irene] 我接著回答。[Jennie] 我最後補充。',
+        }],
+    };
+
+    const repaired = getGroupDisplaySegments(content, room);
+    assert.deepEqual(repaired.map(segment => segment.speakerName), ['IU', 'Irene', 'Jennie']);
 });
 
 test('group parser rejects dialogue spoken only by an absent member', () => {

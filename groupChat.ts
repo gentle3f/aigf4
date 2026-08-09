@@ -137,7 +137,8 @@ export const buildGroupSystemPrompt = (room: ChatRoom) => {
         [
             'OUTPUT:',
             '- Do not return a JSON response object. Use the simple envelope below so the live dialogue remains reliable.',
-            '- Inside <chat>, write narration as （text） and every spoken line as exact Display Name：「dialogue」. A display name may appear several times in one reply.',
+            '- Inside <chat>, put every narration or speaker turn on its own new line. Write narration as （text） and every spoken line as exact Display Name：「dialogue」. A display name may appear several times in one reply.',
+            '- Never place [Name], a second speaker label, or another character’s dialogue inside the current speaker line. End that line and start a new labelled line whenever the speaker changes.',
             '- After </chat>, put one compact JSON object inside <scene> with keys location, reality_layer, present_member_ids, summary, unresolved.',
             '- Then put null inside <npc_candidate>, unless the newest turn introduced a genuinely new recurring named person; in that case use one compact JSON object with name, gender, description, public_figure_query.',
             '- Preserve location, reality layer and present members unless the newest turn actually changes them.',
@@ -235,6 +236,123 @@ const resolveMemberId = (room: ChatRoom, rawSpeaker: unknown) => {
     return member?.id || '';
 };
 
+const escapePattern = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+
+const cleanGroupSegmentText = (value: unknown) => compact(value, 2200)
+    .replace(/^[：:\s]+/u, '')
+    .replace(/^[「『“"]+\s*/u, '')
+    .replace(/\s*[」』”"]+$/u, '')
+    .trim();
+
+const cleanNarrationText = (value: unknown) => {
+    const text = cleanGroupSegmentText(value);
+    return /^[（(][\s\S]*[）)]$/u.test(text)
+        ? text.slice(1, -1).trim()
+        : text;
+};
+
+const splitKnownSpeakerLabels = (
+    rawText: string,
+    room: ChatRoom,
+    fallbackMemberId?: string,
+    fallbackType: ChatSegment['type'] = 'dialogue',
+    enforcePresence = false,
+): ChatSegment[] | null => {
+    const labels = Array.from(new Set(room.members.flatMap(member => [
+        member.id,
+        member.persona.name,
+        member.persona.publicIdentity?.canonicalName,
+    ]).filter((value): value is string => Boolean(value?.trim()))))
+        .sort((left, right) => right.length - left.length)
+        .map(escapePattern);
+    if (!labels.length) return null;
+
+    const alternatives = labels.join('|');
+    const labelPattern = new RegExp(
+        `(^|[\\s。！？!?；;）)」』])(?:\\[\\s*(${alternatives}|旁白|narration)\\s*\\]\\s*[：:]?|(${alternatives}|旁白|narration)\\s*[：:])\\s*`,
+        'giu',
+    );
+    const matches = Array.from(rawText.matchAll(labelPattern)).map(match => ({
+        start: (match.index || 0) + (match[1]?.length || 0),
+        end: (match.index || 0) + match[0].length,
+        label: (match[2] || match[3] || '').trim(),
+    }));
+    if (!matches.length) return null;
+
+    const allowedMemberIds = enforcePresence
+        ? new Set(room.scene.presentMemberIds)
+        : new Set(room.members.map(member => member.id));
+    const result: ChatSegment[] = [];
+    const append = (label: string | null, value: string, type: ChatSegment['type']) => {
+        const isNarration = type === 'narration' || /^(?:旁白|narration)$/iu.test(label || '');
+        const text = isNarration ? cleanNarrationText(value) : cleanGroupSegmentText(value);
+        if (!text) return;
+        if (isNarration) {
+            result.push({ type: 'narration', text });
+            return;
+        }
+
+        const speakerId = resolveMemberId(room, label || fallbackMemberId);
+        if (!speakerId || !allowedMemberIds.has(speakerId)) return;
+        result.push({
+            type: 'dialogue',
+            speakerId,
+            speakerName: memberName(room, speakerId),
+            text,
+        });
+    };
+
+    const prefix = rawText.slice(0, matches[0].start);
+    if (prefix.trim()) {
+        const prefixIsNarration = fallbackType === 'narration' || /^[（(][\s\S]*[）)]\s*$/u.test(prefix.trim());
+        append(null, prefix, prefixIsNarration ? 'narration' : 'dialogue');
+    }
+
+    matches.forEach((match, index) => {
+        const end = matches[index + 1]?.start ?? rawText.length;
+        const type = /^(?:旁白|narration)$/iu.test(match.label) ? 'narration' : 'dialogue';
+        append(match.label, rawText.slice(match.end, end), type);
+    });
+    return result;
+};
+
+export const normalizeGroupSegments = (
+    segments: ChatSegment[],
+    room: ChatRoom,
+    enforcePresence = false,
+): ChatSegment[] => {
+    const allowedMemberIds = enforcePresence
+        ? new Set(room.scene.presentMemberIds)
+        : new Set(room.members.map(member => member.id));
+
+    return segments.flatMap(segment => {
+        const fallbackMemberId = segment.type === 'dialogue'
+            ? resolveMemberId(room, segment.speakerId || segment.speakerName)
+            : undefined;
+        const split = splitKnownSpeakerLabels(
+            segment.text,
+            room,
+            fallbackMemberId,
+            segment.type,
+            enforcePresence,
+        );
+        if (split) return split;
+
+        if (segment.type === 'narration') {
+            const text = cleanNarrationText(segment.text);
+            return text ? [{ type: 'narration' as const, text }] : [];
+        }
+        if (!fallbackMemberId || !allowedMemberIds.has(fallbackMemberId)) return [];
+        const text = cleanGroupSegmentText(segment.text);
+        return text ? [{
+            type: 'dialogue' as const,
+            speakerId: fallbackMemberId,
+            speakerName: memberName(room, fallbackMemberId),
+            text,
+        }] : [];
+    });
+};
+
 const parseJsonObject = (rawText: string): Record<string, unknown> | null => {
     const stripped = stripJsonFence(rawText);
     try {
@@ -289,7 +407,21 @@ const parsePlainGroupSegments = (
         }
     });
 
-    if (segments.some(segment => segment.type === 'dialogue')) return segments;
+    if (segments.some(segment => segment.type === 'dialogue')) {
+        return normalizeGroupSegments(segments, room, true);
+    }
+
+    const labelledSegments = splitKnownSpeakerLabels(
+        rawText,
+        room,
+        fallbackMemberId,
+        'dialogue',
+        true,
+    );
+    if (labelledSegments?.some(segment => segment.type === 'dialogue')) {
+        return labelledSegments;
+    }
+
     const resolvedFallback = resolveMemberId(room, fallbackMemberId)
         || room.scene.presentMemberIds.find(id => id === room.leadMemberId)
         || room.scene.presentMemberIds[0];
@@ -308,6 +440,32 @@ const cleanFallbackText = (value: string) => {
         .replace(/^\s*(?:assistant|response|reply)\s*[：:]\s*/iu, '')
         .trim();
     return /^(?:\{|\[)/u.test(text) ? '' : text;
+};
+
+export const getGroupDisplaySegments = (
+    content: Content,
+    room: ChatRoom,
+    fallbackMemberId?: string,
+): ChatSegment[] => {
+    if (content.segments?.length) {
+        return normalizeGroupSegments(content.segments, room);
+    }
+
+    const rawText = content.text?.trim() || '';
+    if (!rawText) return [];
+    const labelledSegments = splitKnownSpeakerLabels(rawText, room, fallbackMemberId);
+    if (labelledSegments?.length) return labelledSegments;
+
+    const speakerId = resolveMemberId(room, fallbackMemberId)
+        || room.members.find(member => member.id === room.leadMemberId)?.id
+        || room.members[0]?.id;
+    const text = cleanGroupSegmentText(cleanFallbackText(rawText));
+    return speakerId && text ? [{
+        type: 'dialogue',
+        speakerId,
+        speakerName: memberName(room, speakerId),
+        text,
+    }] : [];
 };
 
 const composeText = (segments: ChatSegment[]) => segments.map(segment => {
@@ -383,7 +541,7 @@ export const parseGroupGeneration = (
     const rawSegments = Array.isArray(parsed?.segments)
         ? parsed.segments
         : Array.isArray(parsed?.messages) ? parsed.messages : [];
-    const segments = rawSegments.reduce<ChatSegment[]>((result, segment) => {
+    const segments = normalizeGroupSegments(rawSegments.reduce<ChatSegment[]>((result, segment) => {
         if (!segment || typeof segment !== 'object') return result;
         const text = compact(segment.text || segment.content || segment.message, 2200);
         if (!text) return result;
@@ -401,7 +559,7 @@ export const parseGroupGeneration = (
             text,
         });
         return result;
-    }, []);
+    }, []), room, true);
     if (!segments.some(segment => segment.type === 'dialogue')) {
         segments.splice(
             0,
@@ -450,7 +608,7 @@ export const parseGroupGeneration = (
 
 export const contentToGroupHistoryText = (content: Content, room: ChatRoom) => {
     if (!content.segments?.length) return content.text?.trim() || '';
-    return content.segments.map(segment => {
+    return normalizeGroupSegments(content.segments, room).map(segment => {
         if (segment.type === 'narration') return `[旁白] ${segment.text}`;
         return `[${segment.speakerName || memberName(room, segment.speakerId)}] ${segment.text}`;
     }).join('\n');

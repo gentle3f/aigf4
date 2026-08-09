@@ -86,6 +86,7 @@ import {
 import {
     buildGroupSystemPrompt,
     contentToGroupHistoryText,
+    getGroupDisplaySegments,
     GroupGenerationResult,
     parseGroupGeneration,
     resolveRoomMemberPersona,
@@ -2944,7 +2945,10 @@ const renderPersonaList = () => {
         button.dataset.key = options.key;
 
         const avatar = document.createElement('span');
-        avatar.className = `conversation-avatar${options.room ? ' group-avatar-grid' : ''}${options.pinned ? ' assistant-tool-avatar' : ''}`;
+        const roomAvatarClass = options.room
+            ? ` group-avatar-grid group-avatar-count-${Math.min(options.room.members.length, 4)}`
+            : '';
+        avatar.className = `conversation-avatar${roomAvatarClass}${options.pinned ? ' assistant-tool-avatar' : ''}`;
         if (options.room) {
             options.room.members.slice(0, 4).forEach(member => {
                 const cell = document.createElement('span');
@@ -5632,7 +5636,7 @@ const renderChatHeaderAvatar = () => {
     if (currentRoom) {
         chatHeaderAvatarContainer.innerHTML = '';
         const grid = document.createElement('div');
-        grid.className = 'group-avatar-grid h-12 w-12 overflow-hidden rounded-full';
+        grid.className = `group-avatar-grid group-avatar-count-${Math.min(currentRoom.members.length, 4)} h-12 w-12 overflow-hidden rounded-full`;
         currentRoom.members.slice(0, 4).forEach(member => {
             const sourcePersona = member.persona.avatarUrl
                 ? member.persona
@@ -7089,6 +7093,9 @@ const appendMessage = (
     messageMeta?: Pick<ChatMessage, 'speakerId' | 'createdAt' | 'id'>,
 ): HTMLElement => {
     const isSystemMessage = sender === 'system';
+    const groupDisplaySegments = sender === 'bot' && currentRoom
+        ? getGroupDisplaySegments(content, currentRoom, messageMeta?.speakerId)
+        : [];
     
     let messageWrapper: HTMLElement;
 
@@ -7104,28 +7111,30 @@ const appendMessage = (
         messageWrapper = document.createElement('div');
         messageWrapper.className = 'system-action-message';
         messageWrapper.appendChild(createNpcProposalCard(content.npcProposal));
-    } else if (sender === 'bot' && currentRoom && content.segments?.length) {
+    } else if (sender === 'bot' && currentRoom && groupDisplaySegments.length) {
         messageWrapper = document.createElement('div');
         messageWrapper.className = 'group-chat-turn';
         const storyBubble = document.createElement('div');
         storyBubble.className = 'chat-bubble bot-bubble group-story-bubble';
-        content.segments.forEach(segment => {
+        groupDisplaySegments.forEach(segment => {
+            const line = document.createElement('div');
+            line.className = `group-story-line ${segment.type === 'narration' ? 'group-story-narration' : 'group-story-dialogue'}`;
+            const speaker = document.createElement('span');
+            speaker.className = `group-speaker-name${segment.type === 'narration' ? ' group-narrator-name' : ''}`;
+            const text = document.createElement('span');
+
             if (segment.type === 'narration') {
-                const narration = document.createElement('div');
-                narration.className = 'group-story-line group-story-narration';
-                narration.textContent = segment.text;
-                storyBubble.appendChild(narration);
+                speaker.textContent = '[旁白]';
+                text.className = 'group-story-narration-text';
+                text.textContent = segment.text;
+                line.append(speaker, text);
+                storyBubble.appendChild(line);
                 return;
             }
 
             const member = currentRoom?.members.find(item => item.id === segment.speakerId);
             if (!member) return;
-            const line = document.createElement('div');
-            line.className = 'group-story-line group-story-dialogue';
-            const speaker = document.createElement('span');
-            speaker.className = 'group-speaker-name';
-            speaker.textContent = member.persona.name;
-            const text = document.createElement('span');
+            speaker.textContent = `[${member.persona.name}]`;
             text.className = 'group-story-dialogue-text';
             text.textContent = segment.text;
             line.append(speaker, text);
