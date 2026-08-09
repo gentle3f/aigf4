@@ -1,6 +1,8 @@
 // fileManager.ts
 import { MemoryManager, ChatMessage, Interest } from './managers.js';
 import { getCharacterPhotoBlob, saveCharacterPhotoAsset } from './photoStore.js';
+import { RoomManager } from './roomManager.js';
+import { getChatAttachmentBlob, saveChatAttachment } from './chatMediaStore.js';
 
 declare var JSZip: any;
 
@@ -21,9 +23,15 @@ export class FileManager {
     private memoryManager: MemoryManager;
     private callbacks: FileManagerCallbacks;
     private ui: UIElements;
+    private roomManager?: RoomManager;
 
-    constructor(memoryManager: MemoryManager, uiAndCallbacks: UIElements & FileManagerCallbacks) {
+    constructor(
+        memoryManager: MemoryManager,
+        uiAndCallbacks: UIElements & FileManagerCallbacks,
+        roomManager?: RoomManager,
+    ) {
         this.memoryManager = memoryManager;
+        this.roomManager = roomManager;
         this.ui = {
             downloadAllChatsBtn: uiAndCallbacks.downloadAllChatsBtn,
             downloadImagesBtn: uiAndCallbacks.downloadImagesBtn
@@ -31,6 +39,23 @@ export class FileManager {
         this.callbacks = {
             onSingleChatRestored: uiAndCallbacks.onSingleChatRestored,
             onAllDataRestored: uiAndCallbacks.onAllDataRestored,
+        };
+    }
+
+    private createExportSafeRooms(roomId?: string) {
+        if (!this.roomManager) return undefined;
+        const exported = this.roomManager.exportData();
+        return {
+            ...exported,
+            rooms: exported.rooms
+                .filter(room => !roomId || room.id === roomId)
+                .map(room => ({
+                    ...room,
+                    members: room.members.map(member => ({
+                        ...member,
+                        persona: this.createExportSafePersona(member.persona),
+                    })),
+                })),
         };
     }
 
@@ -49,6 +74,57 @@ export class FileManager {
         }
 
         return { ...persona };
+    }
+
+    private async addRoomAvatarsToZip(zip: any, roomId?: string) {
+        if (!this.roomManager) return;
+        const folder = zip.folder('room-avatars');
+        if (!folder) return;
+        const rooms = this.roomManager.exportData().rooms.filter(room => !roomId || room.id === roomId);
+
+        await Promise.all(rooms.flatMap(room => room.members.map(async member => {
+            const sourcePersona = member.sourcePersonaKey
+                ? this.memoryManager.getPersona(member.sourcePersonaKey)
+                : null;
+            const avatarUrl = member.persona.avatarUrl || sourcePersona?.avatarUrl;
+            if (!avatarUrl?.startsWith('data:image')) return;
+            const response = await fetch(avatarUrl);
+            const blob = await response.blob();
+            const extension = blob.type.split('/')[1] || 'png';
+            folder.file(`${room.id}/${member.id}.${extension}`, blob);
+        })));
+    }
+
+    private async restoreRoomAvatarsFromZip(zip: any) {
+        if (!this.roomManager) return;
+        const folder = zip.folder('room-avatars');
+        if (!folder) return;
+        const tasks: Promise<void>[] = [];
+
+        folder.forEach((relativePath: string, fileEntry: any) => {
+            if (fileEntry.dir) return;
+            const parts = relativePath.split('/').filter(Boolean);
+            if (parts.length < 2) return;
+            const roomId = parts[0];
+            const fileName = parts.at(-1)!;
+            const memberId = fileName.replace(/\.[^.]+$/u, '');
+            const extension = fileName.split('.').at(-1)?.toLowerCase();
+            const fallbackMimeType = ({
+                png: 'image/png',
+                webp: 'image/webp',
+                gif: 'image/gif',
+                avif: 'image/avif',
+                jpg: 'image/jpeg',
+                jpeg: 'image/jpeg',
+            } as Record<string, string>)[extension || ''] || 'image/jpeg';
+            tasks.push(fileEntry.async('base64').then((base64: string) => {
+                if (!this.roomManager?.getMember(roomId, memberId)) return;
+                this.roomManager.updateMember(roomId, memberId, {
+                    persona: { avatarUrl: `data:${fallbackMimeType};base64,${base64}` },
+                });
+            }));
+        });
+        await Promise.all(tasks);
     }
 
     private async addCharacterPhotosToZip(
@@ -108,13 +184,78 @@ export class FileManager {
         await Promise.all(tasks);
     }
 
+    private async addChatAttachmentsToZip(
+        zip: any,
+        chatHistories: { [key: string]: ChatMessage[] },
+    ) {
+        const folder = zip.folder('attachments');
+        if (!folder) return;
+        const exportedIds = new Set<string>();
+        const tasks: Promise<void>[] = [];
+        Object.entries(chatHistories).forEach(([conversationKey, history]) => {
+            history.forEach(message => {
+                message.content.attachments?.forEach(attachment => {
+                    if (exportedIds.has(attachment.assetId)) return;
+                    exportedIds.add(attachment.assetId);
+                    tasks.push((async () => {
+                        const blob = await getChatAttachmentBlob(attachment.assetId);
+                        if (!blob) return;
+                        const extension = attachment.name.includes('.')
+                            ? attachment.name.split('.').pop()
+                            : blob.type.split('/')[1] || 'bin';
+                        folder.file(`${conversationKey}/${attachment.assetId}.${extension}`, blob);
+                    })());
+                });
+            });
+        });
+        await Promise.all(tasks);
+    }
+
+    private async restoreChatAttachmentsFromZip(zip: any) {
+        const folder = zip.folder('attachments');
+        if (!folder) return;
+        const attachmentMeta = new Map<string, { name: string; mimeType: string; conversationKey: string }>();
+        Object.entries(this.memoryManager.getAllChatHistories()).forEach(([conversationKey, history]) => {
+            history.forEach(message => message.content.attachments?.forEach(attachment => {
+                attachmentMeta.set(attachment.assetId, {
+                    name: attachment.name,
+                    mimeType: attachment.mimeType,
+                    conversationKey,
+                });
+            }));
+        });
+        const tasks: Promise<void>[] = [];
+        folder.forEach((relativePath: string, fileEntry: any) => {
+            if (fileEntry.dir) return;
+            const parts = relativePath.split('/').filter(Boolean);
+            if (parts.length < 2) return;
+            const conversationKey = parts[0];
+            const assetId = parts.at(-1)!.replace(/\.[^.]+$/u, '');
+            const meta = attachmentMeta.get(assetId);
+            tasks.push(fileEntry.async('blob').then((blob: Blob) => saveChatAttachment({
+                id: assetId,
+                conversationKey: meta?.conversationKey || conversationKey,
+                blob,
+                name: meta?.name || fileEntry.name.split('/').at(-1) || assetId,
+                mimeType: meta?.mimeType || blob.type || 'application/octet-stream',
+                createdAt: Date.now(),
+            })).then(() => undefined));
+        });
+        await Promise.all(tasks);
+    }
+
+    private addMemoryMarkdownToZip(zip: any, roomId?: string) {
+        this.roomManager?.buildMarkdownFiles(roomId).forEach(file => zip.file(file.path, file.content));
+    }
+
     async saveCurrentChat(personaKey: string, personaName: string) {
         const chatHistory = this.memoryManager.getChatHistory(personaKey);
         const persona = this.memoryManager.getPersona(personaKey);
+        const room = this.roomManager?.getRoom(personaKey);
         const diaries = this.memoryManager.getDiaryEntries(personaKey);
         const interests = this.memoryManager.getInterests(personaKey);
         
-        if (!persona || chatHistory.length === 0) {
+        if ((!persona && !room) || chatHistory.length === 0) {
             alert("沒有對話可以儲存！");
             return;
         }
@@ -124,13 +265,14 @@ export class FileManager {
             chatHistories: { [personaKey]: chatHistory },
             diaries: { [personaKey]: diaries },
             interests: { [personaKey]: interests },
-            customPersonas: { [personaKey]: this.createExportSafePersona(persona) }, // Always save the current persona state
+            customPersonas: persona ? { [personaKey]: this.createExportSafePersona(persona) } : {},
+            rooms: room ? this.createExportSafeRooms(room.id) : undefined,
         };
 
         // Using all_data.json to be consistent with the new format
         zip.file("all_data.json", JSON.stringify(saveData, null, 2));
 
-        const avatarUrl = persona.avatarUrl;
+        const avatarUrl = persona?.avatarUrl;
         if (avatarUrl && avatarUrl.startsWith('data:image')) {
             const response = await fetch(avatarUrl);
             const blob = await response.blob();
@@ -138,7 +280,11 @@ export class FileManager {
             zip.folder("avatars")?.file(`${personaKey}.${extension}`, blob);
         }
 
+        await this.addRoomAvatarsToZip(zip, room?.id);
+
         await this.addCharacterPhotosToZip(zip, { [personaKey]: chatHistory });
+        await this.addChatAttachmentsToZip(zip, { [personaKey]: chatHistory });
+        this.addMemoryMarkdownToZip(zip, room?.id);
 
         zip.generateAsync({
             type: "blob",
@@ -181,6 +327,7 @@ export class FileManager {
                 customPersonas: exportSafePersonas,
                 diaries: allDiaries,
                 interests: allInterests,
+                rooms: this.createExportSafeRooms(),
             };
 
             zip.file("all_data.json", JSON.stringify(saveData, null, 2));
@@ -204,7 +351,11 @@ export class FileManager {
                 await Promise.all(avatarPromises);
             }
 
+            await this.addRoomAvatarsToZip(zip);
+
             await this.addCharacterPhotosToZip(zip, allChatHistories);
+            await this.addChatAttachmentsToZip(zip, allChatHistories);
+            this.addMemoryMarkdownToZip(zip);
 
             const content = await zip.generateAsync({
                 type: "blob",
@@ -301,6 +452,7 @@ export class FileManager {
                 }
                 
                 this.memoryManager.loadAllData(allData);
+                this.roomManager?.importData(allData.rooms);
 
                 const avatarFolder = zip.folder("avatars");
                 if (avatarFolder) {
@@ -318,7 +470,9 @@ export class FileManager {
                     await Promise.all(avatarPromises);
                 }
 
+                await this.restoreRoomAvatarsFromZip(zip);
                 await this.restoreCharacterPhotosFromZip(zip);
+                await this.restoreChatAttachmentsFromZip(zip);
                 
                 this.callbacks.onAllDataRestored();
                 return;
@@ -360,7 +514,9 @@ export class FileManager {
                     this.memoryManager.updatePersona(personaKey, { avatarUrl: `data:image/png;base64,${base64}` });
                 }
 
+                await this.restoreRoomAvatarsFromZip(zip);
                 await this.restoreCharacterPhotosFromZip(zip);
+                await this.restoreChatAttachmentsFromZip(zip);
 
                 this.callbacks.onSingleChatRestored(personaKey, history);
                 return;

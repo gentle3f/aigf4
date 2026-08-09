@@ -1,7 +1,9 @@
 
 import {
     CharacterPhotoProposal,
+    ChatAttachment,
     ChatMessage,
+    ChatSegment,
     Content,
     DIARY_CHECKPOINT,
     Interest,
@@ -32,6 +34,7 @@ import {
     VENICE_GOD_MODEL,
     VENICE_VIDEO_PROMPT_MODEL,
     VeniceMessage,
+    VeniceMessageContentPart,
     VeniceModelSummary,
 } from "./venice.js";
 import {
@@ -65,6 +68,27 @@ import {
     PublicIdentityMedia,
     searchPublicIdentities,
 } from "./publicIdentity.js";
+import {
+    ChatRoom,
+    RoomManager,
+    RoomMember,
+    RoomMemoryEntry,
+    RoomSceneState,
+    ROOM_MEMBER_LIMIT,
+    ROOM_PRESENT_MEMBER_LIMIT,
+} from "./roomManager.js";
+import {
+    getChatAttachmentBlob,
+    saveChatAttachment,
+} from "./chatMediaStore.js";
+import {
+    buildGroupSystemPrompt,
+    contentToGroupHistoryText,
+    GROUP_RESPONSE_FORMAT,
+    GroupGenerationResult,
+    parseGroupGeneration,
+    resolveRoomMemberPersona,
+} from "./groupChat.js";
 
 
 declare var JSZip: any;
@@ -83,6 +107,14 @@ const personaSelectionView = document.getElementById('persona-selection-view')!;
 const chatView = document.getElementById('chat-view')!;
 const aiAssistantList = document.getElementById('ai-assistant-list')!;
 const femalePersonaList = document.getElementById('female-persona-list')!;
+const conversationSearchInput = document.getElementById('conversation-search-input') as HTMLInputElement;
+const homeSearchToggle = document.getElementById('home-search-toggle') as HTMLButtonElement;
+const homeMenuToggle = document.getElementById('home-menu-toggle') as HTMLButtonElement;
+const homeMenu = document.getElementById('home-menu')!;
+const homeExportAll = document.getElementById('home-export-all') as HTMLButtonElement;
+const newChatFab = document.getElementById('new-chat-fab') as HTMLButtonElement;
+const newChatMenu = document.getElementById('new-chat-menu')!;
+const createGroupRoomBtn = document.getElementById('create-group-room-btn') as HTMLButtonElement;
 const backButton = document.getElementById('back-button')!;
 const chatHeaderName = document.getElementById('chat-header-name')!;
 const chatHeaderAvatarContainer = document.getElementById('chat-header-avatar-container')!;
@@ -112,6 +144,14 @@ const suggestionButton = document.getElementById('suggestion-button') as HTMLBut
 const suggestionContainer = document.getElementById('suggestion-container')!;
 const newSceneBtn = document.getElementById('new-scene-btn') as HTMLButtonElement;
 const takePhotoBtn = document.getElementById('take-photo-btn') as HTMLButtonElement;
+const roomInfoBtn = document.getElementById('room-info-btn') as HTMLButtonElement;
+const chatSearchBtn = document.getElementById('chat-search-btn') as HTMLButtonElement;
+const chatSearchBar = document.getElementById('chat-search-bar')!;
+const chatSearchInput = document.getElementById('chat-search-input') as HTMLInputElement;
+const chatSearchCount = document.getElementById('chat-search-count')!;
+const chatSearchClose = document.getElementById('chat-search-close') as HTMLButtonElement;
+const chatSearchPrev = document.getElementById('chat-search-prev') as HTMLButtonElement;
+const chatSearchNext = document.getElementById('chat-search-next') as HTMLButtonElement;
 const appShell = document.getElementById('app-shell')!;
 const authGate = document.getElementById('auth-gate')!;
 const authForm = document.getElementById('auth-form') as HTMLFormElement;
@@ -120,6 +160,12 @@ const authError = document.getElementById('auth-error')!;
 const authSubmitButton = document.getElementById('auth-submit-button') as HTMLButtonElement;
 const authSubmitLabel = document.getElementById('auth-submit-label')!;
 const authSubmitLoading = document.getElementById('auth-submit-loading')!;
+const emojiButton = document.getElementById('emoji-button') as HTMLButtonElement;
+const emojiPicker = document.getElementById('emoji-picker')!;
+const attachmentButton = document.getElementById('attachment-button') as HTMLButtonElement;
+const chatAttachmentInput = document.getElementById('chat-attachment-input') as HTMLInputElement;
+const chatAttachmentPreview = document.getElementById('chat-attachment-preview')!;
+const composerCameraButton = document.getElementById('composer-camera-button') as HTMLButtonElement;
 const assistantModelBar = document.getElementById('assistant-model-bar')!;
 const assistantModelSelect = document.getElementById('assistant-model-select') as HTMLSelectElement;
 const assistantModelMeta = document.getElementById('assistant-model-meta')!;
@@ -248,6 +294,9 @@ const photoPromptModal = document.getElementById('photo-prompt-modal')!;
 // FIX: Renamed variable to avoid duplicate identifier conflict with the `closePhotoPromptModal` function.
 const closePhotoPromptModalBtn = document.getElementById('close-photo-prompt-modal')!;
 const photoPromptInput = document.getElementById('photo-prompt-input') as HTMLTextAreaElement;
+const photoRoomMemberControls = document.getElementById('photo-room-member-controls')!;
+const photoSenderSelect = document.getElementById('photo-sender-select') as HTMLSelectElement;
+const photoSubjectsContainer = document.getElementById('photo-subjects-container')!;
 const cancelPhotoGeneration = document.getElementById('cancel-photo-generation')!;
 const generatePhotoBtn = document.getElementById('generate-photo-btn') as HTMLButtonElement;
 const generatePhotoText = document.getElementById('generate-photo-text')!;
@@ -398,12 +447,34 @@ const publicIdentityMediaSection = document.getElementById('public-identity-medi
 const publicIdentityMediaContainer = document.getElementById('public-identity-media')!;
 const cancelPublicIdentityBtn = document.getElementById('cancel-public-identity') as HTMLButtonElement;
 const confirmPublicIdentityBtn = document.getElementById('confirm-public-identity') as HTMLButtonElement;
+const roomInfoModal = document.getElementById('room-info-modal')!;
+const closeRoomInfoBtn = document.getElementById('close-room-info') as HTMLButtonElement;
+const roomInfoTitle = document.getElementById('room-info-title')!;
+const roomInfoSummary = document.getElementById('room-info-summary')!;
+const roomMemberList = document.getElementById('room-member-list')!;
+const roomSceneEditor = document.getElementById('room-scene-editor')!;
+const addRoomMemberBtn = document.getElementById('add-room-member-btn') as HTMLButtonElement;
+const openRoomMemoryBtn = document.getElementById('open-room-memory-btn') as HTMLButtonElement;
+const exportRoomBtn = document.getElementById('export-room-btn') as HTMLButtonElement;
+const roomMemoryModal = document.getElementById('room-memory-modal')!;
+const closeRoomMemoryBtn = document.getElementById('close-room-memory') as HTMLButtonElement;
+const memoryMemberTabs = document.getElementById('memory-member-tabs')!;
+const memorySoulTab = document.getElementById('memory-soul-tab') as HTMLButtonElement;
+const memoryEventTab = document.getElementById('memory-event-tab') as HTMLButtonElement;
+const roomMemoryList = document.getElementById('room-memory-list')!;
+const createGroupModal = document.getElementById('create-group-modal')!;
+const closeCreateGroupBtn = document.getElementById('close-create-group') as HTMLButtonElement;
+const createGroupName = document.getElementById('create-group-name') as HTMLInputElement;
+const createGroupMemberList = document.getElementById('create-group-member-list')!;
+const confirmCreateGroupBtn = document.getElementById('confirm-create-group') as HTMLButtonElement;
 
 
 // --- Managers ---
 let diaryModule: any;
 
 const memoryManager = new MemoryManager();
+const roomManager = new RoomManager();
+roomManager.ensureIuGroupRoom(memoryManager);
 
 const fileManager = new FileManager(memoryManager, {
     downloadAllChatsBtn,
@@ -412,11 +483,12 @@ const fileManager = new FileManager(memoryManager, {
         startChat(key, history);
     },
     onAllDataRestored: () => {
+        roomManager.ensureIuGroupRoom(memoryManager);
         renderPersonaList();
         alert('\\u5c0d\\u8a71\\u3001\\u982d\\u50cf\\u8207\\u8a18\\u61b6\\u8cc7\\u6599\\u5df2\\u6210\\u529f\\u532f\\u5165\\u3002');
         showSelectionView();
     }
-});
+}, roomManager);
 
 const readPreferredVideoModel = (storageKey: string, preferredModel: string, legacyDefault: string) => {
     const stored = localStorage.getItem(storageKey);
@@ -441,7 +513,11 @@ const readPreferredImageGenerateModel = () => {
 // --- State ---
 let currentPersona: any = null;
 let currentPersonaKey: string | null = null;
+let currentConversationKey: string | null = null;
+let currentRoom: ChatRoom | null = null;
+let activeRoomMemberId: string | null = null;
 let currentPersonaKeyForUpload: string | null = null;
+let avatarUploadRoomTarget: { roomId: string; memberId: string } | null = null;
 let currentPersonaKeyForPromptEdit: string | null = null;
 let generatedPersonaData: any = null;
 let attachedGift: { file: File, dataUrl: string } | null = null;
@@ -456,6 +532,7 @@ let albumPhotos: {
     historyIndex: number;
     content: Content;
 }[] = [];
+let albumAttachments: ChatAttachment[] = [];
 let selectedPhotoIndices: Set<number> = new Set();
 let isGodModeActive = false;
 let godModeHistory: ChatMessage[] = [];
@@ -509,6 +586,14 @@ const photoFullscreenPointers = new Map<number, { x: number; y: number }>();
 let characterPhotoRequestController: AbortController | null = null;
 let activeCharacterPhotoProposalId: string | null = null;
 let switchingCharacterPhotoProposalId: string | null = null;
+let pendingChatAttachments: Array<{ attachment: ChatAttachment; file: File; previewUrl?: string }> = [];
+const chatAttachmentObjectUrls = new Map<string, string>();
+let selectedMemoryMemberId: string | null = null;
+let selectedMemoryType: 'soul' | 'memory' = 'soul';
+let personaSettingsRoomTarget: { roomId: string; memberId: string } | null = null;
+let groupModalTargetRoomId: string | null = null;
+let pendingPhotoSenderMemberId: string | null = null;
+let pendingPhotoSubjectMemberIds: string[] = [];
 const characterPhotoObjectUrls = new Map<string, string>();
 let videoStudioMode: VeniceVideoMode = 'image-to-video';
 let videoModels: Record<VeniceVideoMode, VeniceVideoModelSummary[]> = {
@@ -545,17 +630,23 @@ let isVideoRequestRunning = false;
 let pendingVideoJob: PersistedVideoJob | null = null;
 let videoLastProgressIndex = -1;
 let isRandomRecruiting = false;
+const roomSummaryInFlight = new Set<string>();
+let chatSearchMatches: HTMLElement[] = [];
+let chatSearchMatchIndex = -1;
 
 const USES_VENICE_PROXY_AUTH = VENICE_API_BASE.startsWith('/');
 
 const DISABLED_FEATURE_MESSAGE = '此功能在目前版本暫時停用。';
 const GOD_MODE_ENTER_COMMAND = 'GOD MODE';
 const GOD_MODE_EXIT_COMMAND = 'BYE GOD MODE';
-const CHAT_HISTORY_MESSAGE_LIMIT = 80;
-const CHAT_HISTORY_CHAR_BUDGET = 48000;
+const CHAT_HISTORY_MESSAGE_LIMIT = 120;
+const CHAT_HISTORY_CHAR_BUDGET = 100000;
 const ASSISTANT_HISTORY_MESSAGE_LIMIT = 60;
 const ASSISTANT_HISTORY_CHAR_BUDGET = 36000;
 const GOD_MODE_HISTORY_LIMIT = 10;
+const ROOM_MEMORY_SUMMARY_TURN_INTERVAL = 24;
+const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 2_500_000;
+const MAX_CHAT_IMAGE_EDGE = 1600;
 const CHAT_MAX_AUTO_CONTINUES = 2;
 const CHAT_MODEL_ATTEMPT_TIMEOUT_MS = 45_000;
 const CHAT_MODEL_TIMEOUT_ERROR = 'CHAT_MODEL_TIMEOUT';
@@ -579,7 +670,7 @@ const VIDEO_POLL_TIMEOUT_MS = 15 * 60_000;
 
 type AppHistoryState =
     | { view: 'home' }
-    | { view: 'chat'; personaKey: string }
+    | { view: 'chat'; conversationKey: string; personaKey?: string }
     | { view: 'image' }
     | { view: 'video' };
 type MimicBuildMode = 'transcript' | 'manual';
@@ -587,7 +678,14 @@ type ChatMode = 'character' | 'assistant' | 'god';
 type ActiveChatRequest = {
     id: number;
     personaKey: string;
+    conversationKey: string;
     persona: Persona;
+    room?: ChatRoom;
+    roomMemberId?: string;
+    photoSenderMemberId?: string;
+    photoSubjectMemberIds?: string[];
+    attachments?: ChatAttachment[];
+    attachmentParts?: VeniceMessageContentPart[];
     mode: ChatMode;
     characterPhotoRequest?: boolean;
     controller: AbortController;
@@ -2658,7 +2756,7 @@ const getSystemErrorResponse = (persona: any) => {
     return "?�…�??�腦袋�??��??�空?�…�??��?給�?一點�??�…�?馬�?就好?��?";
 };
 
-const renderPersonaList = () => {
+const renderLegacyPersonaList = () => {
     aiAssistantList.innerHTML = '';
     femalePersonaList.innerHTML = '';
     const personas = memoryManager.getAllPersonas();
@@ -2728,10 +2826,166 @@ const renderPersonaList = () => {
     });
 };
 
+const renderPersonaList = () => {
+    aiAssistantList.innerHTML = '';
+    femalePersonaList.innerHTML = '';
+    const personas = memoryManager.getAllPersonas();
+    const query = conversationSearchInput.value.trim().toLocaleLowerCase();
+    const rooms = roomManager.getRooms();
+    const legacyKeys = new Set(rooms.map(room => room.legacySourcePersonaKey).filter(Boolean));
+
+    const latestMessage = (key: string) => memoryManager.peekChatHistory(key).at(-1);
+    const latestTimestamp = (key: string, fallback = 0) => latestMessage(key)?.createdAt || fallback;
+    const formatTime = (timestamp: number) => {
+        if (!timestamp) return '';
+        const date = new Date(timestamp);
+        const now = new Date();
+        if (date.toDateString() === now.toDateString()) {
+            return new Intl.DateTimeFormat('zh-HK', { hour: '2-digit', minute: '2-digit' }).format(date);
+        }
+        const yesterday = new Date(now);
+        yesterday.setDate(now.getDate() - 1);
+        if (date.toDateString() === yesterday.toDateString()) return '昨天';
+        return new Intl.DateTimeFormat('zh-HK', { month: 'numeric', day: 'numeric' }).format(date);
+    };
+    const previewText = (key: string, fallback: string) => {
+        const message = latestMessage(key);
+        if (!message) return fallback;
+        if (message.content.photoIntent?.status === 'pending') return '待確認：是否請角色準備照片';
+        if (message.content.memoryProposal?.status === 'pending') return '待確認：儲存為永久記憶';
+        if (message.content.npcProposal?.status === 'pending') return `待確認：是否固定加入 ${message.content.npcProposal.name}`;
+        if (message.content.imageAssetId || message.content.imageUrl) return `照片 · ${message.content.text || ''}`;
+        if (message.content.attachments?.length) return `附件 · ${message.content.text || message.content.attachments[0].name}`;
+        return (message.content.text || fallback).replace(/\s+/gu, ' ').trim();
+    };
+    const appendAvatar = (container: HTMLElement, persona: Persona) => {
+        if (persona.avatarUrl && !persona.avatarUrl.startsWith('generating_')) {
+            const image = document.createElement('img');
+            image.src = persona.avatarUrl;
+            image.alt = persona.name;
+            container.appendChild(image);
+        } else {
+            container.textContent = persona.emoji || '●';
+        }
+    };
+    const resolveMemberAvatar = (member: RoomMember) => {
+        if (member.persona.avatarUrl) return member.persona;
+        return member.sourcePersonaKey
+            ? memoryManager.getPersona(member.sourcePersonaKey) || member.persona
+            : member.persona;
+    };
+    const createRow = (options: {
+        key: string;
+        title: string;
+        preview: string;
+        timestamp: number;
+        persona?: Persona;
+        room?: ChatRoom;
+        pinned?: boolean;
+    }) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `conversation-row${currentConversationKey === options.key ? ' is-active' : ''}`;
+        button.dataset.key = options.key;
+
+        const avatar = document.createElement('span');
+        avatar.className = `conversation-avatar${options.room ? ' group-avatar-grid' : ''}${options.pinned ? ' assistant-tool-avatar' : ''}`;
+        if (options.room) {
+            options.room.members.slice(0, 4).forEach(member => {
+                const cell = document.createElement('span');
+                appendAvatar(cell, resolveMemberAvatar(member));
+                avatar.appendChild(cell);
+            });
+        } else if (options.persona) {
+            appendAvatar(avatar, options.persona);
+        }
+
+        const copy = document.createElement('span');
+        copy.className = 'conversation-copy';
+        const line = document.createElement('span');
+        line.className = 'conversation-line';
+        const title = document.createElement('strong');
+        title.textContent = options.title;
+        const time = document.createElement('time');
+        time.dateTime = options.timestamp ? new Date(options.timestamp).toISOString() : '';
+        time.textContent = options.pinned ? '固定' : formatTime(options.timestamp);
+        line.append(title, time);
+        const preview = document.createElement('span');
+        preview.className = 'conversation-preview';
+        preview.textContent = options.preview;
+        copy.append(line, preview);
+        button.append(avatar, copy);
+        button.addEventListener('click', () => startChat(options.key));
+        return button;
+    };
+
+    const assistant = personas[VENICE_ASSISTANT_PERSONA_KEY];
+    if (assistant) {
+        aiAssistantList.appendChild(createRow({
+            key: VENICE_ASSISTANT_PERSONA_KEY,
+            title: 'Venice AI',
+            preview: previewText(VENICE_ASSISTANT_PERSONA_KEY, '可選模型的私人 AI 助手'),
+            timestamp: latestTimestamp(VENICE_ASSISTANT_PERSONA_KEY),
+            persona: assistant,
+            pinned: true,
+        }));
+    }
+
+    const conversations: Array<{
+        key: string;
+        title: string;
+        preview: string;
+        timestamp: number;
+        persona?: Persona;
+        room?: ChatRoom;
+    }> = rooms.map(room => ({
+        key: room.id,
+        title: room.title,
+        preview: previewText(room.id, room.description),
+        timestamp: latestTimestamp(room.id, room.updatedAt),
+        room,
+    }));
+
+    Object.entries(personas).forEach(([key, persona]) => {
+        if (key === VENICE_ASSISTANT_PERSONA_KEY || persona.gender !== 'female') return;
+        const isLegacyBackup = legacyKeys.has(key);
+        conversations.push({
+            key,
+            title: isLegacyBackup ? `${persona.name}（舊聊天）` : persona.name,
+            preview: isLegacyBackup
+                ? `原始備份 · ${previewText(key, persona.description)}`
+                : previewText(key, persona.description),
+            timestamp: latestTimestamp(key),
+            persona,
+        });
+    });
+
+    conversations
+        .filter(item => !query || `${item.title} ${item.preview}`.toLocaleLowerCase().includes(query))
+        .sort((left, right) => right.timestamp - left.timestamp || left.title.localeCompare(right.title, 'zh-Hant'))
+        .forEach(item => femalePersonaList.appendChild(createRow(item)));
+
+    if (!femalePersonaList.childElementCount) {
+        const empty = document.createElement('p');
+        empty.className = 'conversation-empty-state';
+        empty.textContent = query ? '找不到相符的對話。' : '按右下角按鈕開始新對話。';
+        femalePersonaList.appendChild(empty);
+    }
+};
+
 const requestPersonaAvatarUpload = (key: string) => {
     const persona = memoryManager.getPersona(key);
     if (!persona || key === VENICE_ASSISTANT_PERSONA_KEY) return;
+    avatarUploadRoomTarget = null;
     currentPersonaKeyForUpload = key;
+    avatarUploadInput.click();
+};
+
+const requestRoomMemberAvatarUpload = (roomId: string, memberId: string) => {
+    const member = roomManager.getMember(roomId, memberId);
+    if (!member) return;
+    currentPersonaKeyForUpload = null;
+    avatarUploadRoomTarget = { roomId, memberId };
     avatarUploadInput.click();
 };
 
@@ -2815,21 +3069,35 @@ const saveAvatarPrompt = () => {
 const handleAvatarUpload = async (event: Event) => {
     const file = (event.target as HTMLInputElement).files?.[0];
     const targetKey = currentPersonaKeyForUpload;
+    const roomTarget = avatarUploadRoomTarget;
     try {
-        if (file && targetKey) {
+        if (file && (targetKey || roomTarget)) {
             const dataUrl = await createOptimizedAvatarDataUrl(file);
-            memoryManager.updatePersona(targetKey, { avatarUrl: dataUrl });
-            renderPersonaList();
-            if (targetKey === currentPersonaKey) {
-                currentPersona = memoryManager.getPersona(targetKey) || currentPersona;
-                renderChatHeaderAvatar();
-                renderPersonaSettingsAvatar();
+            if (roomTarget) {
+                roomManager.updateMember(roomTarget.roomId, roomTarget.memberId, {
+                    persona: { avatarUrl: dataUrl },
+                });
+                if (currentRoom?.id === roomTarget.roomId) {
+                    currentRoom = roomManager.getRoom(roomTarget.roomId) || currentRoom;
+                    if (activeRoomMemberId === roomTarget.memberId && currentPersona) {
+                        currentPersona.avatarUrl = dataUrl;
+                    }
+                }
+            } else if (targetKey) {
+                memoryManager.updatePersona(targetKey, { avatarUrl: dataUrl });
             }
+            renderPersonaList();
+            if (targetKey && targetKey === currentPersonaKey) {
+                currentPersona = memoryManager.getPersona(targetKey) || currentPersona;
+            }
+            renderChatHeaderAvatar();
+            renderPersonaSettingsAvatar();
         }
     } catch (error) {
         alert(error instanceof Error ? error.message : '頭像更新失敗。');
     } finally {
         currentPersonaKeyForUpload = null;
+        avatarUploadRoomTarget = null;
         (event.target as HTMLInputElement).value = '';
     }
 };
@@ -5053,7 +5321,12 @@ const updateChatModeControls = (key: string) => {
     }
 };
 
-const beginChatRequest = (personaKey: string, persona: Persona, mode: ChatMode): ActiveChatRequest => {
+const beginChatRequest = (
+    personaKey: string,
+    persona: Persona,
+    mode: ChatMode,
+    conversationKey = currentConversationKey || personaKey,
+): ActiveChatRequest => {
     if (activeChatRequest) {
         throw new Error('CHAT_REQUEST_IN_PROGRESS');
     }
@@ -5061,7 +5334,10 @@ const beginChatRequest = (personaKey: string, persona: Persona, mode: ChatMode):
     const request: ActiveChatRequest = {
         id: nextChatRequestId,
         personaKey,
+        conversationKey,
         persona: { ...persona },
+        room: currentRoom ? structuredClone(currentRoom) : undefined,
+        roomMemberId: currentRoom ? activeRoomMemberId || currentRoom.leadMemberId : undefined,
         mode,
         controller: new AbortController(),
         startedAt: performance.now(),
@@ -5121,6 +5397,30 @@ const renderPersonaAvatar = (
 };
 
 const renderChatHeaderAvatar = () => {
+    if (currentRoom) {
+        chatHeaderAvatarContainer.innerHTML = '';
+        const grid = document.createElement('div');
+        grid.className = 'group-avatar-grid h-12 w-12 overflow-hidden rounded-full';
+        currentRoom.members.slice(0, 4).forEach(member => {
+            const sourcePersona = member.persona.avatarUrl
+                ? member.persona
+                : member.sourcePersonaKey
+                    ? memoryManager.getPersona(member.sourcePersonaKey) || member.persona
+                    : member.persona;
+            const cell = document.createElement('span');
+            if (sourcePersona.avatarUrl && !sourcePersona.avatarUrl.startsWith('generating_')) {
+                const image = document.createElement('img');
+                image.src = sourcePersona.avatarUrl;
+                image.alt = sourcePersona.name;
+                cell.appendChild(image);
+            } else {
+                cell.textContent = sourcePersona.emoji || '●';
+            }
+            grid.appendChild(cell);
+        });
+        chatHeaderAvatarContainer.appendChild(grid);
+        return;
+    }
     renderPersonaAvatar(
         chatHeaderAvatarContainer,
         currentPersona,
@@ -5162,7 +5462,7 @@ const recoverInterruptedPhotoProposals = (personaKey: string, history: ChatMessa
     return recovered;
 };
 
-const startChat = (key: string, restoredHistory: any[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
+const startLegacyChat = (key: string, restoredHistory: any[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
     cancelActiveChatRequest();
     const selectedPersona = memoryManager.getPersona(key);
     if (!selectedPersona || (key !== VENICE_ASSISTANT_PERSONA_KEY && selectedPersona.gender !== 'female')) {
@@ -5223,11 +5523,99 @@ const startChat = (key: string, restoredHistory: any[] | null = null, historyMod
     
     // Scroll to the bottom after rendering history
     chatContainer.scrollTop = chatContainer.scrollHeight;
-    syncBrowserViewState({ view: 'chat', personaKey: key }, historyMode);
+    syncBrowserViewState({ view: 'chat', conversationKey: key, personaKey: key }, historyMode);
+};
+
+const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
+    cancelActiveChatRequest();
+    closeChatSearch();
+    const room = roomManager.getRoom(key) || null;
+    const selectedPersona = memoryManager.getPersona(key);
+
+    if (!room && (!selectedPersona || (key !== VENICE_ASSISTANT_PERSONA_KEY && selectedPersona.gender !== 'female'))) {
+        currentConversationKey = null;
+        currentPersonaKey = null;
+        currentPersona = null;
+        currentRoom = null;
+        showSelectionView('replace');
+        return;
+    }
+
+    currentConversationKey = key;
+    currentRoom = room;
+    if (room) {
+        const lead = room.members.find(member => member.id === room.leadMemberId) || room.members[0];
+        activeRoomMemberId = lead?.id || null;
+        const roomPersona = resolveRoomMemberPersona(room, activeRoomMemberId);
+        if (!lead || !roomPersona) {
+            showSelectionView('replace');
+            return;
+        }
+        const sourcePersona = lead.sourcePersonaKey ? memoryManager.getPersona(lead.sourcePersonaKey) : undefined;
+        currentPersona = {
+            ...roomPersona,
+            avatarUrl: roomPersona.avatarUrl || sourcePersona?.avatarUrl || null,
+        };
+        currentPersonaKey = lead.sourcePersonaKey || `${room.id}:${lead.id}`;
+        chatHeaderName.textContent = room.title;
+    } else {
+        activeRoomMemberId = null;
+        currentPersonaKey = key;
+        currentPersona = selectedPersona!;
+        chatHeaderName.textContent = currentPersona.name;
+    }
+
+    isGodModeActive = false;
+    godModeHistory = [];
+    updateChatModeControls(currentPersonaKey);
+    renderChatHeaderAvatar();
+
+    chatContainer.innerHTML = '';
+    let chatHistory = restoredHistory || memoryManager.getChatHistory(key);
+    if (restoredHistory) memoryManager.setChatHistory(key, restoredHistory);
+    chatHistory = recoverInterruptedPhotoProposals(key, chatHistory);
+    chatHistory.forEach(message => {
+        const sender = message.role === 'user' ? 'user' : message.role === 'model' ? 'bot' : 'system';
+        const content = message.role === 'system' && message.content.text?.trim() === SCENE_END_MARKER
+            ? { ...message.content, text: SCENE_START_LABEL }
+            : message.content;
+        appendMessage(content, sender, message);
+    });
+
+    appShell.classList.add('chat-open');
+    personaSelectionView.classList.remove('hidden');
+    imageStudioView.classList.add('hidden');
+    imageStudioView.classList.remove('flex');
+    videoStudioView.classList.add('hidden');
+    videoStudioView.classList.remove('flex');
+    chatView.classList.remove('hidden');
+    chatView.classList.add('flex');
+    saveExitModal.classList.add('hidden');
+    messageInput.value = '';
+    pendingChatAttachments.forEach(item => item.previewUrl && URL.revokeObjectURL(item.previewUrl));
+    pendingChatAttachments = [];
+    chatAttachmentPreview.innerHTML = '';
+    chatAttachmentPreview.classList.add('hidden');
+    resetMessageInput();
+    hideError();
+    applyChatRuntimeState('idle');
+    updateSendButtonState();
+    updateAlbumState();
+    renderPersonaList();
+    window.requestAnimationFrame(() => {
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+        if (window.matchMedia('(min-width: 769px)').matches) messageInput.focus();
+    });
+    syncBrowserViewState({
+        view: 'chat',
+        conversationKey: key,
+        personaKey: currentPersonaKey || undefined,
+    }, historyMode);
 };
 
 const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
     cancelActiveChatRequest();
+    closeChatSearch();
     cancelImageRequest();
     cancelVideoPromptOptimization();
     personaSelectionView.classList.remove('hidden');
@@ -5238,13 +5626,18 @@ const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
     videoStudioView.classList.add('hidden');
     videoStudioView.classList.remove('flex');
     saveExitModal.classList.add('hidden');
+    appShell.classList.remove('chat-open');
     currentPersona = null;
     currentPersonaKey = null;
+    currentConversationKey = null;
+    currentRoom = null;
+    activeRoomMemberId = null;
     isGodModeActive = false;
     closePersonaSettings();
     hideError();
     applyChatRuntimeState('idle');
     removeGift();
+    renderPersonaList();
     syncBrowserViewState(HOME_HISTORY_STATE, historyMode);
 };
 
@@ -5265,9 +5658,9 @@ const navigateBackToSelectionView = () => {
 const handleBrowserPopState = (event: PopStateEvent) => {
     const state = event.state as AppHistoryState | null;
 
-    if (state?.view === 'chat' && state.personaKey) {
-        if (currentPersonaKey !== state.personaKey || chatView.classList.contains('hidden')) {
-            startChat(state.personaKey, null, 'skip');
+    if (state?.view === 'chat' && state.conversationKey) {
+        if (currentConversationKey !== state.conversationKey || chatView.classList.contains('hidden')) {
+            startChat(state.conversationKey, null, 'skip');
         }
         return;
     }
@@ -5413,8 +5806,8 @@ const updatePhotoProposal = (
 };
 
 const refreshPhotoProposalCard = (proposalId: string) => {
-    if (!currentPersonaKey) return;
-    const proposal = findPhotoProposalMessage(currentPersonaKey, proposalId)?.message.content.photoProposal;
+    if (!currentConversationKey) return;
+    const proposal = findPhotoProposalMessage(currentConversationKey, proposalId)?.message.content.photoProposal;
     if (!proposal) return;
     chatContainer.querySelectorAll<HTMLElement>('[data-photo-proposal-id]').forEach(card => {
         if (card.dataset.photoProposalId === proposalId) {
@@ -5435,15 +5828,29 @@ const usesConfirmedPublicIdentity = (persona: Persona | null | undefined) => Boo
     persona?.publicIdentityEnabled && persona.publicIdentity,
 );
 
+const resolvePhotoProposalPersona = (proposal: CharacterPhotoProposal) => {
+    const member = currentRoom?.members.find(item => item.id === proposal.senderMemberId);
+    if (!member) return currentPersona as Persona | null;
+    const sourcePersona = member.sourcePersonaKey ? memoryManager.getPersona(member.sourcePersonaKey) : undefined;
+    return {
+        ...member.persona,
+        avatarUrl: member.persona.avatarUrl || sourcePersona?.avatarUrl || null,
+    } satisfies Persona;
+};
+
 const switchCharacterPhotoIdentityMode = async (
     proposalId: string,
     useAvatarReference: boolean,
 ) => {
-    if (!currentPersonaKey || switchingCharacterPhotoProposalId || activeCharacterPhotoProposalId) return;
-    const personaKey = currentPersonaKey;
-    const persona = memoryManager.getPersona(personaKey);
-    const proposal = findPhotoProposalMessage(personaKey, proposalId)?.message.content.photoProposal;
+    if (!currentConversationKey || switchingCharacterPhotoProposalId || activeCharacterPhotoProposalId) return;
+    const conversationKey = currentConversationKey;
+    const proposal = findPhotoProposalMessage(conversationKey, proposalId)?.message.content.photoProposal;
+    const persona = proposal ? resolvePhotoProposalPersona(proposal) : null;
     if (!persona || !proposal?.scenePrompt) return;
+    if ((proposal.subjectMemberIds?.length || 0) > 1) {
+        showError('多人照片固定使用文字生成，不能切換成單一頭像參考。');
+        return;
+    }
     if (usesConfirmedPublicIdentity(persona)) {
         showError('已確認的公眾人物／知名角色固定使用公開身份文字生成。');
         return;
@@ -5460,7 +5867,7 @@ const switchCharacterPhotoIdentityMode = async (
         await loadImageModels(mode);
         const model = getPreferredCharacterPhotoModel(mode);
         if (!model) throw new Error('目前沒有可用的 Venice 圖片模型。');
-        updatePhotoProposal(personaKey, proposalId, {
+        updatePhotoProposal(conversationKey, proposalId, {
             prompt: buildCharacterPhotoPrompt(persona, proposal.scenePrompt, useAvatarReference),
             useAvatarReference,
             identityMode: useAvatarReference ? 'avatar_reference' : 'persona_description',
@@ -5476,7 +5883,7 @@ const switchCharacterPhotoIdentityMode = async (
         showError(error instanceof Error ? error.message : '無法切換照片的外貌來源。');
     } finally {
         switchingCharacterPhotoProposalId = null;
-        if (currentPersonaKey === personaKey) refreshPhotoProposalCard(proposalId);
+        if (currentConversationKey === conversationKey) refreshPhotoProposalCard(proposalId);
     }
 };
 
@@ -5484,6 +5891,7 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
     const card = document.createElement('section');
     card.className = `character-photo-proposal is-${proposal.status}`;
     card.dataset.photoProposalId = proposal.id;
+    const proposalPersona = resolvePhotoProposalPersona(proposal);
 
     const eyebrow = document.createElement('p');
     eyebrow.className = 'character-photo-eyebrow';
@@ -5511,13 +5919,13 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
     const identitySource = document.createElement('div');
     identitySource.className = `character-photo-identity ${proposal.useAvatarReference ? 'uses-avatar' : 'uses-description'}`;
     const hasUsableAvatar = Boolean(
-        currentPersona?.avatarUrl
-        && !currentPersona.avatarUrl.startsWith('generating_'),
+        proposalPersona?.avatarUrl
+        && !proposalPersona.avatarUrl.startsWith('generating_'),
     );
-    if (proposal.useAvatarReference && hasUsableAvatar && currentPersona?.avatarUrl) {
+    if (proposal.useAvatarReference && hasUsableAvatar && proposalPersona?.avatarUrl) {
         const referenceImage = document.createElement('img');
-        referenceImage.src = currentPersona.avatarUrl;
-        referenceImage.alt = `${currentPersona.name} 的實際參考頭像`;
+        referenceImage.src = proposalPersona.avatarUrl;
+        referenceImage.alt = `${proposalPersona.name} 的實際參考頭像`;
         referenceImage.className = 'character-photo-reference-image';
         identitySource.appendChild(referenceImage);
     } else {
@@ -5531,20 +5939,21 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
     identityCopy.className = 'character-photo-identity-copy';
     const identityTitle = document.createElement('strong');
     identityTitle.textContent = usesPublicIdentity
-        ? `已確認公開身份：${currentPersona?.publicIdentity?.canonicalName || currentPersona?.name || '角色'}`
+        ? `已確認公開身份：${proposalPersona?.publicIdentity?.canonicalName || proposalPersona?.name || '角色'}`
         : proposal.useAvatarReference ? '使用這張頭像鎖定身分' : '使用角色名稱與外貌設定';
     const identityDetail = document.createElement('span');
     identityDetail.textContent = usesPublicIdentity
         ? '不會上傳頭像；Prompt 會固定加入已確認的標準名稱、身份及原作視覺設定。'
         : proposal.useAvatarReference
             ? '這張預覽圖會送到 edit 模型，不只作為畫面顯示。'
-            : `不會上傳頭像；適合像 ${currentPersona?.name || 'IU'} 這類文字生成辨識較準的人物。`;
+            : `不會上傳頭像；適合像 ${proposalPersona?.name || 'IU'} 這類文字生成辨識較準的人物。`;
     identityCopy.append(identityTitle, identityDetail);
     identitySource.appendChild(identityCopy);
 
     const canSwitchIdentity = Boolean(
         proposal.scenePrompt
         && hasUsableAvatar
+        && (proposal.subjectMemberIds?.length || 0) <= 1
         && !usesPublicIdentity
         && proposal.status !== 'generating'
         && proposal.status !== 'generated'
@@ -5742,7 +6151,7 @@ const createChatImageAttachment = (
             if (!imageUrl) throw new Error('Photo asset is unavailable.');
             openPhotoViewer(
                 imageUrl,
-                buildPhotoViewerContextFromContent(content, 'chat', currentPersonaKey),
+                buildPhotoViewerContextFromContent(content, 'chat', currentConversationKey),
             );
             detail.textContent = content.imageAssetId
                 ? '只存於私人相簿 · 點擊查看'
@@ -5760,31 +6169,546 @@ const createChatImageAttachment = (
     return attachment;
 };
 
-const appendMessage = (content: Content, sender: 'user' | 'bot' | 'system' | 'god-mode'): HTMLElement => {
+const createStoredChatAttachmentCard = (attachment: ChatAttachment) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `stored-chat-attachment is-${attachment.kind}`;
+    const icon = document.createElement('span');
+    icon.className = 'stored-chat-attachment-icon';
+    icon.textContent = attachment.kind === 'image' ? 'IMG' : attachment.kind === 'video' ? '▶' : 'DOC';
+    const copy = document.createElement('span');
+    const name = document.createElement('strong');
+    name.textContent = attachment.name;
+    const meta = document.createElement('small');
+    meta.textContent = `${Math.max(1, Math.round(attachment.size / 1024))} KB · 點擊開啟`;
+    copy.append(name, meta);
+    button.append(icon, copy);
+    button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+            const blob = await getChatAttachmentBlob(attachment.assetId);
+            if (!blob) throw new Error('附件只存在原本裝置，或已被清除。');
+            let objectUrl = chatAttachmentObjectUrls.get(attachment.assetId);
+            if (!objectUrl) {
+                objectUrl = URL.createObjectURL(blob);
+                chatAttachmentObjectUrls.set(attachment.assetId, objectUrl);
+            }
+            if (attachment.kind === 'image') {
+                photoFullscreenImage.src = objectUrl;
+                photoFullscreenModal.classList.remove('hidden');
+                resetPhotoFullscreenTransform();
+                window.setTimeout(() => closePhotoFullscreen.focus(), 0);
+            } else if (attachment.kind === 'video') {
+                window.open(objectUrl, '_blank', 'noopener,noreferrer');
+            } else {
+                const link = document.createElement('a');
+                link.href = objectUrl;
+                link.download = attachment.name;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+            }
+        } catch (error) {
+            alert(error instanceof Error ? error.message : '附件暫時無法開啟。');
+        } finally {
+            button.disabled = false;
+        }
+    });
+    return button;
+};
+
+const findMemoryProposalMessage = (conversationKey: string, proposalId: string) => {
+    const history = memoryManager.getChatHistory(conversationKey);
+    const messageIndex = history.findIndex(message => message.content.memoryProposal?.id === proposalId);
+    return messageIndex >= 0 ? { history, messageIndex, message: history[messageIndex] } : null;
+};
+
+const updateMemoryProposal = (
+    conversationKey: string,
+    proposalId: string,
+    updates: Partial<NonNullable<Content['memoryProposal']>>,
+) => {
+    const found = findMemoryProposalMessage(conversationKey, proposalId);
+    if (!found?.message.content.memoryProposal) return null;
+    found.message.content.memoryProposal = { ...found.message.content.memoryProposal, ...updates };
+    memoryManager.setChatHistory(conversationKey, found.history);
+    return found.message.content.memoryProposal;
+};
+
+const createMemoryProposalCard = (proposal: NonNullable<Content['memoryProposal']>) => {
+    const card = document.createElement('section');
+    card.className = 'system-action-card memory-proposal-card';
+    card.dataset.memoryProposalId = proposal.id;
+    const title = document.createElement('strong');
+    title.textContent = proposal.status === 'pending' ? '要把這件事記住很久嗎？' : '記憶處理結果';
+    const summary = document.createElement('p');
+    summary.textContent = proposal.summary;
+    card.append(title, summary);
+
+    const room = currentRoom;
+    const targetWrap = document.createElement('div');
+    targetWrap.className = 'memory-target-list';
+    if (room && proposal.status === 'pending') {
+        room.members
+            .filter(member => room.scene.presentMemberIds.includes(member.id))
+            .forEach(member => {
+                const label = document.createElement('label');
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.value = member.id;
+                checkbox.checked = proposal.targetMemberIds.includes(member.id);
+                label.append(checkbox, document.createTextNode(member.persona.name));
+                targetWrap.appendChild(label);
+            });
+        card.appendChild(targetWrap);
+    }
+
+    if (proposal.status !== 'pending') {
+        const status = document.createElement('span');
+        status.className = 'system-action-status';
+        status.textContent = proposal.status === 'saved'
+            ? '已加入永久記憶'
+            : proposal.status === 'session-only' ? '只在目前對話使用' : '沒有儲存';
+        card.appendChild(status);
+        return card;
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'system-action-buttons';
+    const makeButton = (label: string, action: 'saved' | 'session-only' | 'declined', primary = false) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = primary ? 'is-primary' : '';
+        button.textContent = label;
+        button.addEventListener('click', async () => {
+            if (!currentConversationKey || activeChatRequest) return;
+            const targetIds = room
+                ? Array.from(targetWrap.querySelectorAll<HTMLInputElement>('input:checked')).map(input => input.value)
+                : [];
+            if (action === 'saved' && room && targetIds.length === 0) {
+                alert('請至少選擇 1 位角色。');
+                return;
+            }
+            if (action === 'saved') {
+                if (room) {
+                    roomManager.addSoulMemory(room.id, targetIds, {
+                        kind: 'vulnerability',
+                        title: proposal.summary.slice(0, 36),
+                        summary: proposal.summary,
+                        originalText: proposal.originalText,
+                        participants: targetIds,
+                    });
+                    refreshCurrentRoom();
+                } else if (currentPersonaKey && currentPersona) {
+                    const memoryLine = `[永久記憶] ${proposal.summary}`;
+                    const nextMemory = [currentPersona.memory?.trim(), memoryLine].filter(Boolean).join('\n');
+                    memoryManager.updatePersona(currentPersonaKey, { memory: nextMemory });
+                    currentPersona.memory = nextMemory;
+                }
+            }
+            const conversationKey = currentConversationKey;
+            updateMemoryProposal(conversationKey, proposal.id, {
+                status: action,
+                targetMemberIds: targetIds,
+            });
+            startChat(conversationKey, null, 'skip');
+            await continuePendingConversationTurn(proposal.originalText);
+        });
+        return button;
+    };
+    actions.append(
+        makeButton('永久記住', 'saved', true),
+        makeButton('只限本次', 'session-only'),
+        makeButton('不要儲存', 'declined'),
+    );
+    card.appendChild(actions);
+    return card;
+};
+
+const findPhotoIntentMessage = (conversationKey: string, proposalId: string) => {
+    const history = memoryManager.getChatHistory(conversationKey);
+    const messageIndex = history.findIndex(message => message.content.photoIntent?.id === proposalId);
+    return messageIndex >= 0 ? { history, messageIndex, message: history[messageIndex] } : null;
+};
+
+const updatePhotoIntent = (
+    conversationKey: string,
+    proposalId: string,
+    updates: Partial<NonNullable<Content['photoIntent']>>,
+) => {
+    const found = findPhotoIntentMessage(conversationKey, proposalId);
+    if (!found?.message.content.photoIntent) return null;
+    found.message.content.photoIntent = { ...found.message.content.photoIntent, ...updates };
+    memoryManager.setChatHistory(conversationKey, found.history);
+    return found.message.content.photoIntent;
+};
+
+const createPhotoIntentCard = (proposal: NonNullable<Content['photoIntent']>) => {
+    const card = document.createElement('section');
+    card.className = 'system-action-card photo-intent-card';
+    const title = document.createElement('strong');
+    title.textContent = proposal.status === 'pending' ? '要真的請角色準備照片嗎？' : '照片要求已處理';
+    const request = document.createElement('p');
+    request.textContent = proposal.requestText;
+    card.append(title, request);
+    const room = currentRoom;
+    let senderSelect: HTMLSelectElement | null = null;
+    const subjectWrap = document.createElement('div');
+    subjectWrap.className = 'photo-intent-subjects';
+    if (room && proposal.status === 'pending') {
+        const senderLabel = document.createElement('label');
+        senderLabel.className = 'wa-field-label';
+        senderLabel.textContent = '由誰準備';
+        senderSelect = document.createElement('select');
+        room.members
+            .filter(member => room.scene.presentMemberIds.includes(member.id))
+            .forEach(member => {
+                const option = document.createElement('option');
+                option.value = member.id;
+                option.textContent = member.persona.name;
+                option.selected = member.id === proposal.senderMemberId;
+                senderSelect!.appendChild(option);
+            });
+        senderLabel.appendChild(senderSelect);
+        const subjectLabel = document.createElement('span');
+        subjectLabel.className = 'system-action-label';
+        subjectLabel.textContent = '照片中的角色';
+        subjectWrap.appendChild(subjectLabel);
+        room.members
+            .filter(member => room.scene.presentMemberIds.includes(member.id))
+            .forEach(member => {
+                const label = document.createElement('label');
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.value = member.id;
+                checkbox.checked = proposal.subjectMemberIds.includes(member.id);
+                label.append(checkbox, document.createTextNode(member.persona.name));
+                subjectWrap.appendChild(label);
+            });
+        card.append(senderLabel, subjectWrap);
+    }
+    if (proposal.status !== 'pending') {
+        const status = document.createElement('span');
+        status.className = 'system-action-status';
+        status.textContent = proposal.status === 'confirmed' ? '已交給角色構思照片' : '已改為普通文字回覆';
+        card.appendChild(status);
+        return card;
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'system-action-buttons';
+    const approve = document.createElement('button');
+    approve.type = 'button';
+    approve.className = 'is-primary';
+    approve.textContent = '是，準備照片';
+    approve.addEventListener('click', async () => {
+        if (!currentConversationKey || activeChatRequest) return;
+        const senderMemberId = senderSelect?.value || proposal.senderMemberId;
+        const subjectMemberIds = room
+            ? Array.from(subjectWrap.querySelectorAll<HTMLInputElement>('input:checked')).map(input => input.value)
+            : proposal.subjectMemberIds;
+        if (room && (!senderMemberId || subjectMemberIds.length === 0)) {
+            alert('請選擇準備照片的人，以及至少 1 位照片中的角色。');
+            return;
+        }
+        const conversationKey = currentConversationKey;
+        updatePhotoIntent(conversationKey, proposal.id, {
+            status: 'confirmed',
+            senderMemberId,
+            subjectMemberIds,
+        });
+        if (senderMemberId) selectActiveRoomMember(senderMemberId);
+        startChat(conversationKey, null, 'skip');
+        await continuePendingPhotoTurn(proposal.requestText, senderMemberId, subjectMemberIds);
+    });
+    const decline = document.createElement('button');
+    decline.type = 'button';
+    decline.textContent = '不用拍，照常回覆';
+    decline.addEventListener('click', async () => {
+        if (!currentConversationKey || activeChatRequest) return;
+        const conversationKey = currentConversationKey;
+        updatePhotoIntent(conversationKey, proposal.id, { status: 'declined' });
+        startChat(conversationKey, null, 'skip');
+        await continuePendingConversationTurn(proposal.requestText);
+    });
+    actions.append(approve, decline);
+    card.appendChild(actions);
+    return card;
+};
+
+const findNpcProposalMessage = (conversationKey: string, proposalId: string) => {
+    const history = memoryManager.getChatHistory(conversationKey);
+    const messageIndex = history.findIndex(message => message.content.npcProposal?.id === proposalId);
+    return messageIndex >= 0 ? { history, messageIndex, message: history[messageIndex] } : null;
+};
+
+const updateNpcProposal = (
+    conversationKey: string,
+    proposalId: string,
+    updates: Partial<NonNullable<Content['npcProposal']>>,
+) => {
+    const found = findNpcProposalMessage(conversationKey, proposalId);
+    if (!found?.message.content.npcProposal) return null;
+    found.message.content.npcProposal = { ...found.message.content.npcProposal, ...updates };
+    memoryManager.setChatHistory(conversationKey, found.history);
+    return found.message.content.npcProposal;
+};
+
+const addNpcProposalToRoom = async (
+    proposal: NonNullable<Content['npcProposal']>,
+    resolvePublicIdentity: boolean,
+) => {
+    if (!currentRoom || !currentConversationKey || activeChatRequest) return;
+    const roomId = currentRoom.id;
+    const conversationKey = currentConversationKey;
+    if (currentRoom.members.length >= ROOM_MEMBER_LIMIT) {
+        alert(`這個聊天室已有 ${ROOM_MEMBER_LIMIT} 位固定角色，請先到聊天室資料移除一位。`);
+        return;
+    }
+    const duplicate = currentRoom.members.find(member => (
+        member.persona.name.trim().toLocaleLowerCase() === proposal.name.trim().toLocaleLowerCase()
+    ));
+    if (duplicate) {
+        updateNpcProposal(conversationKey, proposal.id, {
+            status: 'added',
+            memberId: duplicate.id,
+        });
+        if (currentConversationKey === conversationKey) startChat(conversationKey, null, 'skip');
+        return;
+    }
+
+    const identityResolution = resolvePublicIdentity
+        ? await requestPublicIdentityResolution(proposal.publicFigureQuery || proposal.name)
+        : null;
+    if (resolvePublicIdentity && !identityResolution) return;
+    const latestRoom = roomManager.getRoom(roomId);
+    if (!latestRoom || latestRoom.members.length >= ROOM_MEMBER_LIMIT) return;
+
+    const memberId = `member_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const identity = identityResolution?.identity;
+    const persona: Persona = {
+        name: proposal.name,
+        emoji: proposal.gender === 'male' ? '◆' : '🌼',
+        gender: proposal.gender,
+        description: proposal.description,
+        prompt: [
+            `${proposal.name} 是這個聊天室中固定、獨立的角色。${proposal.description}`,
+            '保持自己的第一人稱、語氣、動機、關係位置與已知記憶，不可被其他成員的人格同化。',
+            '先回應最新一句話，再以自然對話、動作和環境細節推進；不要重複同一反應，也不要代替使用者說話。',
+            identity ? `已確認公眾身份：${identity.canonicalName}。公開資料只固定國籍、職業、作品及外觀識別；聊天室內關係屬虛構連續世界。` : '',
+        ].filter(Boolean).join('\n'),
+        greeting: `（${proposal.name} 第一次以固定成員身份留在聊天室，先看了看其他人，再自然地接回剛才的話題。）`,
+        avatarPrompt: identity?.visualPrompt || proposal.description,
+        avatarUrl: identityResolution?.avatarUrl || null,
+        memory: '',
+        publicIdentityEnabled: Boolean(identity),
+        publicIdentity: identity,
+    };
+    const joinedAt = Date.now();
+    const member: RoomMember = {
+        id: memberId,
+        persona,
+        joinedAt,
+        soul: [{
+            id: `soul_${joinedAt}_${Math.random().toString(36).slice(2, 7)}`,
+            kind: 'core',
+            title: '加入聊天室時的身份錨點',
+            summary: proposal.description,
+            participants: [memberId],
+            createdAt: joinedAt,
+            pinned: true,
+            roleplayOnly: true,
+        }],
+        memories: [],
+    };
+    roomManager.addMember(roomId, member);
+    updateNpcProposal(conversationKey, proposal.id, { status: 'added', memberId });
+    if (currentConversationKey === conversationKey) {
+        refreshCurrentRoom();
+        startChat(roomId, null, 'skip');
+    } else {
+        renderPersonaList();
+    }
+};
+
+const createNpcProposalCard = (proposal: NonNullable<Content['npcProposal']>) => {
+    const card = document.createElement('section');
+    card.className = 'system-action-card npc-proposal-card';
+    const title = document.createElement('strong');
+    title.textContent = proposal.status === 'pending' ? `要把 ${proposal.name} 加入固定成員嗎？` : '新角色處理結果';
+    const description = document.createElement('p');
+    description.textContent = proposal.description;
+    card.append(title, description);
+    if (proposal.publicFigureQuery) {
+        const identityHint = document.createElement('span');
+        identityHint.className = 'system-action-hint';
+        identityHint.textContent = `可能是公眾人物：${proposal.publicFigureQuery}`;
+        card.appendChild(identityHint);
+    }
+    if (proposal.status !== 'pending') {
+        const status = document.createElement('span');
+        status.className = 'system-action-status';
+        status.textContent = proposal.status === 'added' ? '已成為固定成員' : '保留為本段臨時人物';
+        card.appendChild(status);
+        return card;
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'system-action-buttons';
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'is-primary';
+    add.textContent = '加入固定成員';
+    add.addEventListener('click', () => void addNpcProposalToRoom(proposal, false));
+    const identify = document.createElement('button');
+    identify.type = 'button';
+    identify.textContent = '辨識公眾身份後加入';
+    identify.addEventListener('click', () => void addNpcProposalToRoom(proposal, true));
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.textContent = '只作臨時人物';
+    dismiss.addEventListener('click', () => {
+        if (!currentConversationKey) return;
+        const conversationKey = currentConversationKey;
+        updateNpcProposal(conversationKey, proposal.id, { status: 'dismissed' });
+        startChat(conversationKey, null, 'skip');
+    });
+    actions.append(add, identify, dismiss);
+    card.appendChild(actions);
+    return card;
+};
+
+const clearChatSearchMatches = () => {
+    chatSearchMatches.forEach(element => element.classList.remove('chat-search-match', 'is-current'));
+    chatSearchMatches = [];
+    chatSearchMatchIndex = -1;
+    chatSearchCount.textContent = '0 / 0';
+    chatSearchPrev.disabled = true;
+    chatSearchNext.disabled = true;
+};
+
+const focusChatSearchMatch = (index: number) => {
+    if (chatSearchMatches.length === 0) return;
+    chatSearchMatches.forEach(element => element.classList.remove('is-current'));
+    chatSearchMatchIndex = (index + chatSearchMatches.length) % chatSearchMatches.length;
+    const current = chatSearchMatches[chatSearchMatchIndex];
+    current.classList.add('is-current');
+    chatSearchCount.textContent = `${chatSearchMatchIndex + 1} / ${chatSearchMatches.length}`;
+    current.scrollIntoView({ block: 'center', behavior: 'smooth' });
+};
+
+const runChatSearch = () => {
+    clearChatSearchMatches();
+    const query = chatSearchInput.value.trim().toLocaleLowerCase();
+    if (!query) return;
+    chatSearchMatches = Array.from(chatContainer.children)
+        .filter((element): element is HTMLElement => element instanceof HTMLElement)
+        .filter(element => element.textContent?.toLocaleLowerCase().includes(query));
+    chatSearchMatches.forEach(element => element.classList.add('chat-search-match'));
+    const hasMatches = chatSearchMatches.length > 0;
+    chatSearchPrev.disabled = !hasMatches;
+    chatSearchNext.disabled = !hasMatches;
+    if (hasMatches) focusChatSearchMatch(chatSearchMatches.length - 1);
+};
+
+const openChatSearch = () => {
+    chatSearchBar.classList.remove('hidden');
+    chatSearchInput.focus();
+    chatSearchInput.select();
+    runChatSearch();
+};
+
+const closeChatSearch = () => {
+    clearChatSearchMatches();
+    chatSearchInput.value = '';
+    chatSearchBar.classList.add('hidden');
+};
+
+const appendMessage = (
+    content: Content,
+    sender: 'user' | 'bot' | 'system' | 'god-mode',
+    messageMeta?: Pick<ChatMessage, 'speakerId' | 'createdAt' | 'id'>,
+): HTMLElement => {
     const isSystemMessage = sender === 'system';
     
     let messageWrapper: HTMLElement;
 
-    if (isSystemMessage) {
+    if (isSystemMessage && content.memoryProposal) {
         messageWrapper = document.createElement('div');
-        messageWrapper.className = 'w-full text-center text-xs text-gray-400 py-2 whitespace-pre-wrap';
+        messageWrapper.className = 'system-action-message';
+        messageWrapper.appendChild(createMemoryProposalCard(content.memoryProposal));
+    } else if (isSystemMessage && content.photoIntent) {
+        messageWrapper = document.createElement('div');
+        messageWrapper.className = 'system-action-message';
+        messageWrapper.appendChild(createPhotoIntentCard(content.photoIntent));
+    } else if (isSystemMessage && content.npcProposal) {
+        messageWrapper = document.createElement('div');
+        messageWrapper.className = 'system-action-message';
+        messageWrapper.appendChild(createNpcProposalCard(content.npcProposal));
+    } else if (sender === 'bot' && currentRoom && content.segments?.length) {
+        messageWrapper = document.createElement('div');
+        messageWrapper.className = 'group-chat-turn';
+        content.segments.forEach(segment => {
+            if (segment.type === 'narration') {
+                const narration = document.createElement('div');
+                narration.className = 'group-narration';
+                narration.textContent = segment.text;
+                messageWrapper.appendChild(narration);
+                return;
+            }
+
+            const member = currentRoom?.members.find(item => item.id === segment.speakerId);
+            if (!member) return;
+            const sourcePersona = member.persona.avatarUrl
+                ? member.persona
+                : member.sourcePersonaKey
+                    ? memoryManager.getPersona(member.sourcePersonaKey) || member.persona
+                    : member.persona;
+            const row = document.createElement('div');
+            row.className = 'group-dialogue-row';
+            const avatar = document.createElement('span');
+            avatar.className = 'group-dialogue-avatar';
+            if (sourcePersona.avatarUrl && !sourcePersona.avatarUrl.startsWith('generating_')) {
+                const image = document.createElement('img');
+                image.src = sourcePersona.avatarUrl;
+                image.alt = sourcePersona.name;
+                avatar.appendChild(image);
+            } else {
+                avatar.textContent = sourcePersona.emoji || '●';
+            }
+            const bubble = document.createElement('div');
+            bubble.className = 'chat-bubble bot-bubble group-dialogue-bubble';
+            const speaker = document.createElement('span');
+            speaker.className = 'group-speaker-name';
+            speaker.textContent = member.persona.name;
+            const text = document.createElement('p');
+            text.textContent = segment.text;
+            bubble.append(speaker, text);
+            row.append(avatar, bubble);
+            messageWrapper.appendChild(row);
+        });
+    } else if (isSystemMessage) {
+        messageWrapper = document.createElement('div');
+        messageWrapper.className = 'system-chat-message';
         messageWrapper.textContent = content.text || '';
     } else {
         messageWrapper = document.createElement('div');
         messageWrapper.className = `flex items-start p-1 space-x-2 ${sender === 'user' ? 'justify-end' : ''}`;
 
         if (sender === 'bot' && currentPersona) {
+            const speakerMember = currentRoom?.members.find(member => member.id === messageMeta?.speakerId);
+            const avatarPersona = speakerMember?.persona || currentPersona;
             const avatarContainer = document.createElement('div');
             avatarContainer.className = 'w-8 h-8 rounded-full bg-gray-700 flex-shrink-0 flex items-center justify-center';
-            if (currentPersona.avatarUrl && !currentPersona.avatarUrl.startsWith('generating_')) {
+            if (avatarPersona.avatarUrl && !avatarPersona.avatarUrl.startsWith('generating_')) {
                 const img = document.createElement('img');
-                img.src = currentPersona.avatarUrl;
-                img.alt = currentPersona.name;
+                img.src = avatarPersona.avatarUrl;
+                img.alt = avatarPersona.name;
                 img.className = 'w-full h-full rounded-full object-cover';
                 avatarContainer.appendChild(img);
             } else {
                 avatarContainer.classList.add('emoji-avatar');
-                avatarContainer.textContent = currentPersona.emoji;
+                avatarContainer.textContent = avatarPersona.emoji;
             }
             messageWrapper.appendChild(avatarContainer);
         } else if (sender === 'god-mode') {
@@ -5816,6 +6740,9 @@ const appendMessage = (content: Content, sender: 'user' | 'bot' | 'system' | 'go
         if (content.imageUrl || content.imageAssetId) {
             bubble.appendChild(createChatImageAttachment(content, sender));
         }
+        content.attachments?.forEach(attachment => {
+            bubble.appendChild(createStoredChatAttachmentCard(attachment));
+        });
 
         messageWrapper.appendChild(bubble);
 
@@ -5905,7 +6832,7 @@ const setAuthSubmitting = (isSubmitting: boolean) => {
     authSubmitButton.disabled = isSubmitting;
     authPasswordInput.disabled = isSubmitting;
     authSubmitLoading.classList.toggle('hidden', !isSubmitting);
-    authSubmitLabel.textContent = isSubmitting ? '驗證中...' : '進入 G工作室';
+    authSubmitLabel.textContent = isSubmitting ? '驗證中...' : '進入 Wetapp';
 };
 
 const setUnlockedState = (unlocked: boolean) => {
@@ -6024,7 +6951,9 @@ const updateSendButtonState = () => {
         || chatRuntimeState === 'queueing'
         || chatRuntimeState === 'generating'
         || chatRuntimeState === 'retrying';
-    sendButton.disabled = !isUnlocked || requestInProgress || messageInput.value.trim() === '';
+    sendButton.disabled = !isUnlocked
+        || requestInProgress
+        || (messageInput.value.trim() === '' && pendingChatAttachments.length === 0);
     sendButton.setAttribute('aria-busy', requestInProgress ? 'true' : 'false');
 };
 
@@ -6032,6 +6961,149 @@ const removeGift = () => {
     attachedGift = null;
     giftPreviewContainer.classList.add('hidden');
     giftPreviewImage.src = '';
+};
+
+const getAttachmentKind = (mimeType: string): ChatAttachment['kind'] => {
+    if (mimeType.startsWith('image/')) return 'image';
+    if (mimeType.startsWith('video/')) return 'video';
+    if (/pdf|text|json|xml|csv|word|excel|sheet|presentation|markdown|javascript|typescript|yaml|sql/iu.test(mimeType)) {
+        return 'document';
+    }
+    return 'other';
+};
+
+const prepareChatAttachment = async (sourceFile: File) => {
+    let file = sourceFile;
+    let width: number | undefined;
+    let height: number | undefined;
+    if (sourceFile.type.startsWith('image/')) {
+        const sourceUrl = URL.createObjectURL(sourceFile);
+        const image = new Image();
+        image.src = sourceUrl;
+        try {
+            await image.decode();
+            const scale = Math.min(1, MAX_CHAT_IMAGE_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
+            width = Math.max(1, Math.round(image.naturalWidth * scale));
+            height = Math.max(1, Math.round(image.naturalHeight * scale));
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const context = canvas.getContext('2d');
+            if (!context) throw new Error('瀏覽器無法處理這張附件圖片。');
+            context.imageSmoothingEnabled = true;
+            context.imageSmoothingQuality = 'high';
+            context.drawImage(image, 0, 0, width, height);
+            let blob = await canvasToBlob(canvas, 0.86);
+            if (blob.size > 1_500_000) blob = await canvasToBlob(canvas, 0.68);
+            const name = sourceFile.name.replace(/\.[^.]+$/u, '') || 'image';
+            file = new File([blob], `${name}.webp`, { type: blob.type, lastModified: Date.now() });
+        } finally {
+            URL.revokeObjectURL(sourceUrl);
+        }
+    }
+    const currentBytes = pendingChatAttachments.reduce((sum, item) => sum + item.file.size, 0);
+    if (currentBytes + file.size > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
+        throw new Error('本次要交給 AI 分析的附件合計不可超過 2.5MB。圖片已先自動壓縮。');
+    }
+    const id = crypto.randomUUID?.() || `attachment-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const attachment: ChatAttachment = {
+        id,
+        assetId: id,
+        name: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        size: file.size,
+        kind: getAttachmentKind(file.type || ''),
+        width,
+        height,
+    };
+    return {
+        attachment,
+        file,
+        previewUrl: attachment.kind === 'image' ? URL.createObjectURL(file) : undefined,
+    };
+};
+
+const renderPendingChatAttachments = () => {
+    chatAttachmentPreview.innerHTML = '';
+    chatAttachmentPreview.classList.toggle('hidden', pendingChatAttachments.length === 0);
+    pendingChatAttachments.forEach(item => {
+        const chip = document.createElement('div');
+        chip.className = 'pending-attachment-chip';
+        if (item.previewUrl) {
+            const image = document.createElement('img');
+            image.src = item.previewUrl;
+            image.alt = '';
+            chip.appendChild(image);
+        } else {
+            const icon = document.createElement('span');
+            icon.className = 'pending-attachment-icon';
+            icon.textContent = item.attachment.kind === 'video' ? '▶' : 'DOC';
+            chip.appendChild(icon);
+        }
+        const copy = document.createElement('span');
+        copy.textContent = `${item.attachment.name} · ${Math.max(1, Math.round(item.attachment.size / 1024))} KB`;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.setAttribute('aria-label', `移除 ${item.attachment.name}`);
+        remove.textContent = '×';
+        remove.addEventListener('click', () => {
+            if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+            pendingChatAttachments = pendingChatAttachments.filter(candidate => candidate.attachment.id !== item.attachment.id);
+            renderPendingChatAttachments();
+            updateSendButtonState();
+        });
+        chip.append(copy, remove);
+        chatAttachmentPreview.appendChild(chip);
+    });
+};
+
+const handleChatAttachmentSelection = async () => {
+    const files = Array.from(chatAttachmentInput.files || []);
+    chatAttachmentInput.value = '';
+    for (const file of files) {
+        try {
+            pendingChatAttachments.push(await prepareChatAttachment(file));
+        } catch (error) {
+            alert(error instanceof Error ? error.message : `無法加入 ${file.name}。`);
+        }
+    }
+    renderPendingChatAttachments();
+    updateSendButtonState();
+};
+
+const persistPendingChatAttachments = async (conversationKey: string) => {
+    const snapshot = [...pendingChatAttachments];
+    const contentParts: VeniceMessageContentPart[] = [];
+    for (const item of snapshot) {
+        await saveChatAttachment({
+            id: item.attachment.assetId,
+            conversationKey,
+            blob: item.file,
+            name: item.attachment.name,
+            mimeType: item.attachment.mimeType,
+            createdAt: Date.now(),
+        });
+        if (item.attachment.kind === 'image') {
+            contentParts.push({
+                type: 'image_url',
+                image_url: { url: await readBlobAsDataUrl(item.file), detail: 'auto' },
+            });
+        } else if (item.attachment.kind === 'document') {
+            contentParts.push({
+                type: 'file',
+                file: { file_data: await readBlobAsDataUrl(item.file), filename: item.attachment.name },
+            });
+        } else {
+            contentParts.push({
+                type: 'text',
+                text: `[已附上${item.attachment.kind === 'video' ? '影片' : '檔案'}：${item.attachment.name}；此類型只保存於私人附件，不聲稱已分析內容。]`,
+            });
+        }
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    }
+    pendingChatAttachments = [];
+    renderPendingChatAttachments();
+    return { attachments: snapshot.map(item => item.attachment), contentParts };
 };
 
 const showDisabledFeatureNotice = (featureName: string) => {
@@ -6400,7 +7472,9 @@ const collectRecentMessagesWithinBudget = (
 
     for (let index = messages.length - 1; index >= 0; index -= 1) {
         const message = messages[index];
-        const weight = message.content.length + 24;
+        const weight = (typeof message.content === 'string'
+            ? message.content.length
+            : message.content.reduce((total, part) => total + (part.type === 'text' ? part.text.length : 256), 0)) + 24;
         const shouldInclude = selected.length < hardLimit && (usedChars + weight <= charBudget || selected.length < 6);
 
         if (!shouldInclude) {
@@ -6430,8 +7504,14 @@ const collapseRedundantCompletedTurns = (messages: VeniceMessage[]) => {
             return;
         }
 
+        const messageText = typeof message.content === 'string'
+            ? message.content
+            : message.content
+                .filter(part => part.type === 'text')
+                .map(part => part.type === 'text' ? part.text : '')
+                .join('\n');
         const isRedundant = recentAssistantReplies.some(previousReply => {
-            return repliesAreTooSimilar(previousReply, message.content);
+            return repliesAreTooSimilar(previousReply, messageText);
         });
 
         if (isRedundant) {
@@ -6443,7 +7523,7 @@ const collapseRedundantCompletedTurns = (messages: VeniceMessage[]) => {
         }
 
         selected.push(message);
-        recentAssistantReplies.push(message.content);
+        recentAssistantReplies.push(messageText);
         recentAssistantReplies = recentAssistantReplies.slice(-3);
     });
 
@@ -6451,17 +7531,19 @@ const collapseRedundantCompletedTurns = (messages: VeniceMessage[]) => {
 };
 
 const getRecentChatMessages = (
-    personaKey: string,
+    conversationKey: string,
     latestUserMessage?: string,
     assistantMode = false,
+    personaOverride?: Persona,
+    room?: ChatRoom,
 ): VeniceMessage[] => {
-    const persona = memoryManager.getPersona(personaKey);
-    if (!persona) {
+    const persona = personaOverride || memoryManager.getPersona(conversationKey);
+    if (!persona && !room) {
         return [];
     }
 
     const completeHistory = memoryManager
-        .getChatHistory(personaKey)
+        .getChatHistory(conversationKey)
         .filter(
             message =>
                 message.role === 'user'
@@ -6482,7 +7564,9 @@ const getRecentChatMessages = (
     const historyMessages: VeniceMessage[] = [];
 
     sourceHistory.forEach(message => {
-        const rawText = message.content.text?.trim();
+        const rawText = room && message.role === 'model'
+            ? contentToGroupHistoryText(message.content, room).trim()
+            : message.content.text?.trim();
         const isContaminated = !rawText
             || (message.role !== 'system' && (/\[PERSONA_UPDATE:/i.test(rawText) || /^THINK\b/i.test(rawText)));
         if (isContaminated) {
@@ -6494,13 +7578,15 @@ const getRecentChatMessages = (
 
         const text =
             message.role === 'model'
-                ? assistantMode
+                ? room
+                    ? rawText
+                    : assistantMode
                     ? cleanVeniceAssistantReply(rawText)
                     : cleanVeniceChatReply(rawText)
                 : message.role === 'system'
                     ? rawText
                     : normalizeHistoryText(rawText);
-        if (!text || (message.role === 'model' && !assistantMode && isInvalidVeniceChatReply(text))) {
+        if (!text || (message.role === 'model' && !assistantMode && !room && isInvalidVeniceChatReply(text))) {
             if (message.role === 'model' && historyMessages.at(-1)?.role === 'user') {
                 historyMessages.pop();
             }
@@ -6855,6 +7941,17 @@ const polishCcReply = async (
     }
 };
 
+const getLatestUserVeniceContent = (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+): string | VeniceMessageContentPart[] => {
+    if (!request.attachmentParts?.length) return latestUserMessage;
+    return [
+        { type: 'text', text: latestUserMessage },
+        ...request.attachmentParts,
+    ];
+};
+
 const continueTruncatedChatReply = async (
     request: ActiveChatRequest,
     model: string,
@@ -6867,8 +7964,14 @@ const continueTruncatedChatReply = async (
         model,
         messages: [
             { role: 'system', content: systemPrompt },
-            ...getRecentChatMessages(request.personaKey, latestUserMessage, assistantMode),
-            { role: 'user', content: latestUserMessage },
+            ...getRecentChatMessages(
+                request.conversationKey,
+                latestUserMessage,
+                assistantMode,
+                request.persona,
+                request.room,
+            ),
+            { role: 'user', content: getLatestUserVeniceContent(request, latestUserMessage) },
             { role: 'assistant', content: partialReply },
             {
                 role: 'user',
@@ -6905,11 +8008,11 @@ const continueTruncatedChatReply = async (
 };
 
 const getRecentAssistantRepliesForPersona = (
-    personaKey: string,
+    conversationKey: string,
     assistantMode: boolean,
     limit = 6,
 ) => {
-    const history = memoryManager.getChatHistory(personaKey);
+    const history = memoryManager.getChatHistory(conversationKey);
     const replies: string[] = [];
     for (let index = history.length - 1; index >= 0; index -= 1) {
         if (history[index].role === 'system') break;
@@ -6933,7 +8036,7 @@ const runConversationGeneration = async (
     const baseSystemPrompt = assistantMode
         ? buildAssistantSystemPrompt()
         : buildChatSystemPrompt(request.personaKey, request.persona);
-    const recentAssistantReplies = getRecentAssistantRepliesForPersona(request.personaKey, assistantMode);
+    const recentAssistantReplies = getRecentAssistantRepliesForPersona(request.conversationKey, assistantMode);
     const addressedNpcNames = assistantMode
         ? []
         : extractDirectlyAddressedNpcNames(latestUserMessage, request.persona.name);
@@ -6972,8 +8075,14 @@ const runConversationGeneration = async (
                     });
                 }
 
-                messages.push(...getRecentChatMessages(request.personaKey, latestUserMessage, assistantMode));
-                messages.push({ role: 'user', content: latestUserMessage });
+                messages.push(...getRecentChatMessages(
+                    request.conversationKey,
+                    latestUserMessage,
+                    assistantMode,
+                    request.persona,
+                    request.room,
+                ));
+                messages.push({ role: 'user', content: getLatestUserVeniceContent(request, latestUserMessage) });
 
                 const result = await generateChatTextWithTimeout({
                     model,
@@ -7219,14 +8328,35 @@ const buildCharacterPhotoProposal = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
 ): Promise<{ text: string; proposal: CharacterPhotoProposal }> => {
+    const subjectMembers = request.room
+        ? request.room.members.filter(member => request.photoSubjectMemberIds?.includes(member.id))
+        : [];
+    const subjectPersonas = subjectMembers.length > 0
+        ? subjectMembers.map(member => member.persona)
+        : [request.persona];
+    const isMultiSubject = subjectPersonas.length > 1;
     const usesPublicIdentity = usesConfirmedPublicIdentity(request.persona);
+    const usesAnyPublicIdentity = subjectPersonas.some(usesConfirmedPublicIdentity);
     const useAvatarReference = Boolean(
+        !isMultiSubject
+        &&
         !usesPublicIdentity
         && request.persona.avatarUrl
         && !request.persona.avatarUrl.startsWith('generating_'),
     );
     const publicIdentity = request.persona.publicIdentity;
-    const imagePromptIdentityRules = usesPublicIdentity && publicIdentity
+    const imagePromptIdentityRules = isMultiSubject
+        ? [
+            `This is one group photo with exactly ${subjectPersonas.length} distinct people: ${subjectPersonas.map(persona => persona.publicIdentity?.canonicalName || persona.name).join(', ')}.`,
+            'No reference image will be supplied. Begin <prompt> by listing every person by exact name. Keep each face, body, clothing, pose and action separate; do not merge, clone, omit or add people.',
+            ...subjectPersonas.map(persona => {
+                const identity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
+                return identity
+                    ? `${persona.name}: canonical identity ${identity.canonicalName}; ${identity.visualPrompt}; ${identity.summary}`
+                    : `${persona.name}: ${persona.avatarPrompt || persona.description}`;
+            }),
+        ]
+        : usesPublicIdentity && publicIdentity
         ? [
             'No reference image will be supplied. The app will add a user-confirmed public identity block separately.',
             `Inside <prompt>, begin exactly with "${publicIdentity.canonicalName}" and thereafter refer to the subject consistently. Describe the requested scene, pose, action, expression, clothing or requested state, setting, lighting, framing, viewpoint, and relevant objects.`,
@@ -7247,6 +8377,12 @@ const buildCharacterPhotoProposal = async (
         ];
     const systemPrompt = [
         buildChatSystemPrompt(request.personaKey, request.persona),
+        request.room ? [
+            `This request belongs to fixed room "${request.room.title}".`,
+            `The character preparing the photo is ${request.persona.name} (${request.photoSenderMemberId || request.room.leadMemberId}).`,
+            `The requested visible character subjects are: ${subjectPersonas.map(persona => persona.name).join(', ')}.`,
+            'Do not make an absent or unselected room member visible in the image.',
+        ].join('\n') : '',
         'The newest user message is a request for the character to take or send a photo.',
         'Do not generate an image and do not claim the photo has already been taken or sent. Stay fully in character and propose exactly what the character intends to photograph, based on the newest request, current scene, relationship, clothing and physical continuity from recent conversation.',
         'The proposal may be ordinary, romantic, fantasy, or explicitly adult according to the user request and established context. Preserve direct wording and intent; do not make an ordinary request sexual, and do not sanitize an explicit adult request.',
@@ -7272,14 +8408,20 @@ const buildCharacterPhotoProposal = async (
         const model = models[modelIndex];
         applyChatRuntimeState(modelIndex === 0 ? 'generating' : 'retrying', '構思照片中...');
         try {
-            const recentMessages = getRecentChatMessages(request.personaKey, latestUserMessage, false).slice(-24);
+            const recentMessages = getRecentChatMessages(
+                request.conversationKey,
+                latestUserMessage,
+                false,
+                request.persona,
+                request.room,
+            ).slice(-24);
             while (recentMessages[0]?.role === 'assistant') recentMessages.shift();
             const result = await generateChatTextWithTimeout({
                 model,
                 messages: [
                     { role: 'system', content: systemPrompt },
                     ...recentMessages,
-                    { role: 'user', content: latestUserMessage },
+                    { role: 'user', content: getLatestUserVeniceContent(request, latestUserMessage) },
                 ],
                 temperature: 0.76,
                 topP: 0.92,
@@ -7301,7 +8443,19 @@ const buildCharacterPhotoProposal = async (
     const scenePrompt = useAvatarReference
         ? replaceGenericReferenceSubject(draft.scenePrompt, request.persona.name)
         : draft.scenePrompt;
-    const prompt = buildCharacterPhotoPrompt(request.persona, scenePrompt, useAvatarReference);
+    const prompt = isMultiSubject
+        ? trimPhotoPromptSection([
+            `Exactly ${subjectPersonas.length} distinct people in one image:`,
+            ...subjectPersonas.map(persona => {
+                const identity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
+                return identity
+                    ? `${identity.canonicalName} (${identity.visualPrompt})`
+                    : `${persona.name} (${persona.avatarPrompt || persona.description})`;
+            }),
+            `Requested scene and composition: ${scenePrompt}`,
+            'Preserve every named identity separately. No duplicate people, merged faces, generic substitutions, extra subjects, text, captions, logos, or watermarks.',
+        ].join(' '), CHARACTER_PHOTO_PROMPT_MAX_LENGTH)
+        : buildCharacterPhotoPrompt(request.persona, scenePrompt, useAvatarReference);
     const reply = request.personaKey === 'cc'
         ? normalizeCcCantoneseLeaks(draft.reply)
         : normalizeTraditionalChineseLeaks(draft.reply);
@@ -7320,9 +8474,11 @@ const buildCharacterPhotoProposal = async (
             status: 'pending',
             createdAt: Date.now(),
             useAvatarReference,
-            identityMode: usesPublicIdentity
+            identityMode: usesAnyPublicIdentity
                 ? 'public_identity'
                 : useAvatarReference ? 'avatar_reference' : 'persona_description',
+            senderMemberId: request.photoSenderMemberId,
+            subjectMemberIds: request.photoSubjectMemberIds,
             modelId: imageModel?.id,
             modelName: imageModel?.name,
             resolution: imageModel?.constraints.defaultResolution || imageModel?.constraints.resolutions?.[0],
@@ -7331,7 +8487,93 @@ const buildCharacterPhotoProposal = async (
     };
 };
 
-const runCharacterChatGeneration = async (request: ActiveChatRequest, latestUserMessage: string) => {
+const runRoomConversationGeneration = async (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+    models: string[],
+): Promise<GroupGenerationResult> => {
+    if (!request.room) throw new Error('Room snapshot is unavailable.');
+
+    let lastError: Error | null = null;
+    let rejectedReply = '';
+    const recentReplies = getRecentAssistantRepliesForPersona(request.conversationKey, false, 8);
+
+    for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
+        const model = models[modelIndex];
+        const attempts = modelIndex === 0 ? 2 : 1;
+
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+            const isRetry = modelIndex > 0 || attempt > 0;
+            applyChatRuntimeState(isRetry ? 'retrying' : 'generating', isRetry ? '重新思考中...' : '思考中...');
+            try {
+                const messages: VeniceMessage[] = [
+                    { role: 'system', content: buildGroupSystemPrompt(request.room) },
+                ];
+                if (isRetry) {
+                    messages.push({
+                        role: 'system',
+                        content: [
+                            'The previous attempt was invalid, repetitive, confused a speaker, or failed to answer the newest message.',
+                            'Rebuild the fixed identity ledger and answer the newest turn from scratch with a genuinely new reaction and scene beat.',
+                            rejectedReply ? `Rejected output; do not copy it:\n${rejectedReply.slice(0, 900)}` : '',
+                        ].filter(Boolean).join('\n'),
+                    });
+                }
+                messages.push(...getRecentChatMessages(
+                    request.conversationKey,
+                    latestUserMessage,
+                    false,
+                    request.persona,
+                    request.room,
+                ));
+                messages.push({ role: 'user', content: getLatestUserVeniceContent(request, latestUserMessage) });
+
+                const result = await generateChatTextWithTimeout({
+                    model,
+                    messages,
+                    responseFormat: GROUP_RESPONSE_FORMAT,
+                    temperature: 0.78,
+                    topP: 0.92,
+                    repetitionPenalty: 1.1,
+                    stop: [],
+                    signal: request.controller.signal,
+                });
+                const parsed = parseGroupGeneration(result.text, request.room);
+                const repeats = recentReplies.some(previous => (
+                    repliesAreTooSimilar(previous, parsed.text)
+                    || replyReusesOpeningOrNarrativeBeat(previous, parsed.text)
+                    || replyReusesCompletedClause(previous, parsed.text)
+                ));
+                if (repeats && !userExplicitlyRequestsContinuation(latestUserMessage)) {
+                    rejectedReply = parsed.text;
+                    throw new Error(`Repeated group reply from ${model}.`);
+                }
+
+                console.info('[aigf4 group generation]', {
+                    requestId: request.id,
+                    model: result.model,
+                    latencyMs: Math.round(performance.now() - request.startedAt),
+                    promptTokens: result.promptTokens,
+                    completionTokens: result.completionTokens,
+                    finishReason: result.finishReason,
+                    roomId: request.room.id,
+                });
+                return parsed;
+            } catch (error) {
+                if (isAbortError(error)) throw error;
+                lastError = error instanceof Error ? error : new Error(String(error));
+                if (lastError.message === CHAT_MODEL_TIMEOUT_ERROR) break;
+            }
+        }
+    }
+
+    throw lastError || new Error('Group reply was invalid.');
+};
+
+const runCharacterChatGeneration = async (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+): Promise<string | GroupGenerationResult> => {
     const preferredModels = request.personaKey === 'cc'
         ? [
             VENICE_CC_MODEL,
@@ -7341,6 +8583,9 @@ const runCharacterChatGeneration = async (request: ActiveChatRequest, latestUser
         ]
         : [VENICE_CHAT_MODEL, VENICE_CHAT_QUALITY_FALLBACK_MODEL, VENICE_CHAT_FALLBACK_MODEL];
     const models = Array.from(new Set(preferredModels.filter(Boolean)));
+    if (request.room) {
+        return runRoomConversationGeneration(request, latestUserMessage, models);
+    }
     return runConversationGeneration(request, latestUserMessage, models, false);
 };
 
@@ -7427,13 +8672,20 @@ const getGodModeResponse = async (request: ActiveChatRequest) => {
             result.personaUpdate!,
             request.persona.name,
         );
-        memoryManager.updatePersona(request.personaKey, { prompt: mergedPrompt });
-        if (currentPersonaKey === request.personaKey && currentPersona) {
+        if (request.room && request.roomMemberId) {
+            roomManager.updateMember(request.room.id, request.roomMemberId, {
+                persona: { prompt: mergedPrompt },
+            });
+            if (currentRoom?.id === request.room.id) currentRoom = roomManager.getRoom(request.room.id) || currentRoom;
+        } else {
+            memoryManager.updatePersona(request.personaKey, { prompt: mergedPrompt });
+        }
+        if (currentConversationKey === request.conversationKey && currentPersona) {
             currentPersona.prompt = mergedPrompt;
         }
 
         const godModeContent = { text: result.visibleText };
-        if (currentPersonaKey === request.personaKey) {
+        if (currentConversationKey === request.conversationKey) {
             appendMessage(godModeContent, 'god-mode');
         }
         godModeHistory.push({ role: 'model', content: godModeContent });
@@ -7452,7 +8704,7 @@ const getGodModeResponse = async (request: ActiveChatRequest) => {
         const message = 'God Mode 這次沒有順利套用人格補充，請再試一次。';
 
         finishChatRequest(request, 'error');
-        if (currentPersonaKey === request.personaKey) {
+        if (currentConversationKey === request.conversationKey) {
             showError(message);
             appendMessage({ text: `[系統] ${message}` }, 'system');
         }
@@ -7494,8 +8746,8 @@ const prepareCharacterAvatarReference = async (persona: Persona) => {
 };
 
 const declineCharacterPhoto = (proposalId: string) => {
-    if (!currentPersonaKey || activeCharacterPhotoProposalId === proposalId) return;
-    updatePhotoProposal(currentPersonaKey, proposalId, {
+    if (!currentConversationKey || activeCharacterPhotoProposalId === proposalId) return;
+    updatePhotoProposal(currentConversationKey, proposalId, {
         status: 'declined',
         error: undefined,
     });
@@ -7503,16 +8755,16 @@ const declineCharacterPhoto = (proposalId: string) => {
 };
 
 const approveCharacterPhoto = async (proposalId: string) => {
-    if (!currentPersonaKey || activeCharacterPhotoProposalId) return;
-    const personaKey = currentPersonaKey;
-    const persona = memoryManager.getPersona(personaKey);
-    const found = findPhotoProposalMessage(personaKey, proposalId);
+    if (!currentConversationKey || activeCharacterPhotoProposalId) return;
+    const conversationKey = currentConversationKey;
+    const found = findPhotoProposalMessage(conversationKey, proposalId);
     const proposal = found?.message.content.photoProposal;
+    const persona = proposal ? resolvePhotoProposalPersona(proposal) : null;
     if (!persona || !proposal || proposal.status === 'generated' || proposal.status === 'declined') return;
 
     activeCharacterPhotoProposalId = proposalId;
     characterPhotoRequestController = new AbortController();
-    updatePhotoProposal(personaKey, proposalId, { status: 'generating', error: undefined });
+    updatePhotoProposal(conversationKey, proposalId, { status: 'generating', error: undefined });
     refreshPhotoProposalCard(proposalId);
 
     try {
@@ -7557,7 +8809,7 @@ const approveCharacterPhoto = async (proposalId: string) => {
         const assetId = `character-photo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
         await saveCharacterPhotoAsset({
             id: assetId,
-            personaKey,
+            personaKey: conversationKey,
             blob,
             prompt: proposal.prompt,
             createdAt: Date.now(),
@@ -7565,7 +8817,7 @@ const approveCharacterPhoto = async (proposalId: string) => {
         const price = resolution && typeof model.resolutionPrices[resolution] === 'number'
             ? model.resolutionPrices[resolution]
             : model.priceUsd;
-        updatePhotoProposal(personaKey, proposalId, {
+        updatePhotoProposal(conversationKey, proposalId, {
             status: 'generated',
             modelId: model.id,
             modelName: model.name,
@@ -7588,25 +8840,25 @@ const approveCharacterPhoto = async (proposalId: string) => {
                 identityMode: proposal.identityMode,
             },
         };
-        memoryManager.addMessage(personaKey, 'model', photoContent);
-        if (currentPersonaKey === personaKey) {
+        memoryManager.addMessage(conversationKey, 'model', photoContent, { speakerId: proposal.senderMemberId });
+        if (currentConversationKey === conversationKey) {
             refreshPhotoProposalCard(proposalId);
-            appendMessage(photoContent, 'bot');
+            appendMessage(photoContent, 'bot', { speakerId: proposal.senderMemberId });
             updateAlbumState();
         }
     } catch (error) {
         const message = isAbortError(error)
             ? '照片生成已停止，可以按「重試生成」再試。'
             : error instanceof Error ? error.message : '這次照片生成失敗。';
-        updatePhotoProposal(personaKey, proposalId, { status: 'failed', error: message });
-        if (currentPersonaKey === personaKey) {
+        updatePhotoProposal(conversationKey, proposalId, { status: 'failed', error: message });
+        if (currentConversationKey === conversationKey) {
             refreshPhotoProposalCard(proposalId);
             if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
         }
     } finally {
         activeCharacterPhotoProposalId = null;
         characterPhotoRequestController = null;
-        if (currentPersonaKey === personaKey) refreshPhotoProposalCard(proposalId);
+        if (currentConversationKey === conversationKey) refreshPhotoProposalCard(proposalId);
     }
 };
 
@@ -7622,23 +8874,67 @@ const getResponse = async (
             const result = await buildCharacterPhotoProposal(request, triggeringMessage);
             if (!isActiveChatRequest(request)) return;
             const botContent: Content = { text: result.text, photoProposal: result.proposal };
-            memoryManager.addMessage(request.personaKey, 'model', botContent);
-            if (currentPersonaKey === request.personaKey) appendMessage(botContent, 'bot');
+            memoryManager.addMessage(request.conversationKey, 'model', botContent, {
+                speakerId: request.photoSenderMemberId,
+            });
+            if (currentConversationKey === request.conversationKey) appendMessage(botContent, 'bot', {
+                speakerId: request.photoSenderMemberId,
+            });
             finishChatRequest(request);
             return;
         }
 
-        const cleanedText = request.mode === 'assistant'
+        const generated = request.mode === 'assistant'
             ? await runAssistantChatGeneration(request, triggeringMessage, assistantModel || VENICE_ASSISTANT_MODEL)
             : await runCharacterChatGeneration(request, triggeringMessage);
         if (!isActiveChatRequest(request)) return;
 
-        const botContent = { text: cleanedText };
-        memoryManager.addMessage(request.personaKey, 'model', botContent);
-        if (currentPersonaKey === request.personaKey) {
+        const botContent: Content = typeof generated === 'string'
+            ? { text: generated }
+            : { text: generated.text, segments: generated.segments };
+        if (typeof generated !== 'string' && request.room) {
+            roomManager.updateRoom(request.room.id, room => {
+                room.scene = generated.scene;
+            });
+            request.room.scene = generated.scene;
+            if (currentRoom?.id === request.room.id) {
+                currentRoom = roomManager.getRoom(request.room.id) || currentRoom;
+            }
+        }
+        memoryManager.addMessage(request.conversationKey, 'model', botContent);
+        if (currentConversationKey === request.conversationKey) {
             appendMessage(botContent, 'bot');
         }
+        if (typeof generated !== 'string' && request.room && generated.npcCandidate) {
+            const candidate = generated.npcCandidate;
+            const normalizedName = candidate.name.trim().toLocaleLowerCase();
+            const room = roomManager.getRoom(request.room.id) || request.room;
+            const alreadyFixed = room.members.some(member => (
+                member.persona.name.trim().toLocaleLowerCase() === normalizedName
+                || member.persona.publicIdentity?.canonicalName?.trim().toLocaleLowerCase() === normalizedName
+            ));
+            const alreadyOffered = memoryManager.getChatHistory(request.conversationKey).some(message => (
+                message.content.npcProposal?.name.trim().toLocaleLowerCase() === normalizedName
+            ));
+            if (!alreadyFixed && !alreadyOffered && room.members.length < ROOM_MEMBER_LIMIT) {
+                const proposalContent: Content = {
+                    npcProposal: {
+                        id: crypto.randomUUID?.() || `npc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                        name: candidate.name,
+                        gender: candidate.gender,
+                        description: candidate.description,
+                        publicFigureQuery: candidate.publicFigureQuery,
+                        status: 'pending',
+                        createdAt: Date.now(),
+                    },
+                };
+                memoryManager.addMessage(request.conversationKey, 'system', proposalContent);
+                if (currentConversationKey === request.conversationKey) appendMessage(proposalContent, 'system');
+            }
+        }
+        renderPersonaList();
         finishChatRequest(request);
+        if (request.room) void maybeSummarizeRoomMemory(request.room.id);
     } catch (error) {
         if (isAbortError(error)) {
             finishChatRequest(request);
@@ -7653,14 +8949,202 @@ const getResponse = async (
         const message = '這次沒有順利生成回覆，請再試一次。';
 
         finishChatRequest(request, 'error');
-        if (currentPersonaKey === request.personaKey) {
+        if (currentConversationKey === request.conversationKey) {
             showError(message);
             appendMessage({ text: `[系統] ${message}` }, 'system');
         }
     }
 };
 
-const sendMessage = async ({ characterPhotoRequest = false }: { characterPhotoRequest?: boolean } = {}) => {
+const maybeSummarizeRoomMemory = async (roomId: string, force = false) => {
+    const room = roomManager.getRoom(roomId);
+    if (!room || roomSummaryInFlight.has(roomId)) return;
+    const history = memoryManager.peekChatHistory(roomId);
+    const userMessageCount = history.filter(message => message.role === 'user').length;
+    if (!force && userMessageCount - room.lastSummarizedUserMessageCount < ROOM_MEMORY_SUMMARY_TURN_INTERVAL) return;
+    if (userMessageCount <= room.lastSummarizedUserMessageCount) return;
+    roomSummaryInFlight.add(roomId);
+    try {
+        const transcript = history
+            .filter(message => message.role === 'user' || message.role === 'model')
+            .slice(-48)
+            .map(message => message.role === 'user'
+                ? `[USER] ${message.content.text || ''}`
+                : contentToGroupHistoryText(message.content, room))
+            .filter(Boolean)
+            .join('\n\n');
+        const memberLedger = room.members.map(member => `${member.id}=${member.persona.name}`).join(', ');
+        const result = await generateVeniceText({
+            model: VENICE_CHAT_MODEL,
+            messages: [
+                {
+                    role: 'system',
+                    content: [
+                        'Extract durable memory from a private fictional group conversation.',
+                        `Valid member ledger: ${memberLedger}.`,
+                        'Keep only events, promises, boundaries, preferences, relationship changes and user vulnerability that will improve future continuity.',
+                        'Do not copy graphic wording or transient physical choreography. Preserve emotional meaning, trust and boundaries accurately.',
+                        'Only include members who were present or directly involved. Return 1 to 6 concise memories in Traditional Chinese.',
+                    ].join('\n'),
+                },
+                { role: 'user', content: transcript },
+            ],
+            responseFormat: {
+                type: 'json_schema',
+                json_schema: {
+                    name: 'room_memory_update',
+                    strict: true,
+                    schema: {
+                        type: 'object',
+                        additionalProperties: false,
+                        required: ['memories'],
+                        properties: {
+                            memories: {
+                                type: 'array',
+                                maxItems: 6,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    required: ['kind', 'title', 'summary', 'participants'],
+                                    properties: {
+                                        kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
+                                        title: { type: 'string' },
+                                        summary: { type: 'string' },
+                                        participants: { type: 'array', minItems: 1, items: { type: 'string' } },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+            temperature: 0.2,
+            topP: 0.85,
+            repetitionPenalty: 1.04,
+        });
+        const parsed = JSON.parse(result.text.replace(/^\s*```(?:json)?|```\s*$/giu, '').trim()) as {
+            memories?: Array<{
+                kind?: RoomMemoryEntry['kind'];
+                title?: string;
+                summary?: string;
+                participants?: string[];
+            }>;
+        };
+        const validIds = new Set(room.members.map(member => member.id));
+        const memories = (parsed.memories || []).flatMap(memory => {
+            const participants = (memory.participants || []).filter(id => validIds.has(id));
+            if (!memory.kind || !memory.title?.trim() || !memory.summary?.trim() || participants.length === 0) return [];
+            return [{
+                kind: memory.kind,
+                title: memory.title.trim(),
+                summary: memory.summary.trim(),
+                participants,
+            }];
+        });
+        if (memories.length > 0) roomManager.addEpisodicMemories(roomId, memories);
+        roomManager.updateRoom(roomId, editableRoom => {
+            editableRoom.lastSummarizedUserMessageCount = userMessageCount;
+        });
+        if (currentRoom?.id === roomId) refreshCurrentRoom();
+    } catch (error) {
+        console.warn('Background room memory summary skipped:', error);
+    } finally {
+        roomSummaryInFlight.delete(roomId);
+    }
+};
+
+const continuePendingConversationTurn = async (triggeringMessage: string) => {
+    if (
+        activeChatRequest
+        || !currentConversationKey
+        || !currentPersonaKey
+        || !currentPersona
+        || isAssistantPersonaKey(currentPersonaKey)
+    ) return;
+    const request = beginChatRequest(
+        currentPersonaKey,
+        currentPersona as Persona,
+        'character',
+        currentConversationKey,
+    );
+    await getResponse(request, triggeringMessage);
+};
+
+const continuePendingPhotoTurn = async (
+    triggeringMessage: string,
+    senderMemberId?: string,
+    subjectMemberIds: string[] = [],
+) => {
+    if (senderMemberId) selectActiveRoomMember(senderMemberId);
+    if (
+        activeChatRequest
+        || !currentConversationKey
+        || !currentPersonaKey
+        || !currentPersona
+        || isAssistantPersonaKey(currentPersonaKey)
+    ) return;
+    const request = beginChatRequest(
+        currentPersonaKey,
+        currentPersona as Persona,
+        'character',
+        currentConversationKey,
+    );
+    request.characterPhotoRequest = true;
+    request.photoSenderMemberId = senderMemberId;
+    request.photoSubjectMemberIds = subjectMemberIds;
+    await getResponse(request, triggeringMessage);
+};
+
+const isExplicitCharacterPhotoRequest = (text: string) => {
+    if (/(?:唔使|不用|不要|毋須|別|no need).{0,8}(?:影|拍|相|照片|photo|picture|selfie)/iu.test(text)) return false;
+    return /(?:影|拍|send|take|傳|發|給|畀).{0,14}(?:相|照片|photo|picture|selfie)|(?:相|照片|photo|picture|selfie).{0,14}(?:給我|畀我|傳來|發來|send|take)/iu.test(text);
+};
+
+const createPhotoIntentProposal = (text: string): NonNullable<Content['photoIntent']> => {
+    const room = currentRoom;
+    const namedMembers = room?.members.filter(member => (
+        room.scene.presentMemberIds.includes(member.id)
+        && text.toLocaleLowerCase().includes(member.persona.name.toLocaleLowerCase())
+    )) || [];
+    const senderMemberId = namedMembers[0]?.id || activeRoomMemberId || room?.leadMemberId;
+    return {
+        id: crypto.randomUUID?.() || `photo-intent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        senderMemberId,
+        subjectMemberIds: namedMembers.length > 0
+            ? namedMembers.map(member => member.id)
+            : senderMemberId ? [senderMemberId] : [],
+        requestText: text,
+        status: 'pending',
+        createdAt: Date.now(),
+    };
+};
+
+const isPermanentMemoryRequest = (text: string) => {
+    return /(?:永遠|一世|一直|以後都).{0,10}(?:記住|唔好忘記|不要忘記)|(?:記住|唔好忘記|不要忘記).{0,10}(?:永遠|一世|forever)|remember\s+(?:this|that|it).{0,8}forever|never\s+forget\s+(?:this|that|it)/iu.test(text);
+};
+
+const buildPermanentMemorySummary = (conversationKey: string, text: string) => {
+    const stripped = text
+        .replace(/(?:請|麻煩|我要|我想|希望)?(?:你|你們|大家)?(?:永遠|一世|一直|以後都)?(?:記住|唔好忘記|不要忘記)(?:這件事|呢件事|這個|呢個|this|that|it)?/giu, '')
+        .replace(/remember\s+(?:this|that|it).{0,8}forever|never\s+forget\s+(?:this|that|it)/giu, '')
+        .replace(/[：:，,。.!！?？\s]+$/gu, '')
+        .trim();
+    if (stripped.length >= 8) return stripped;
+    const previousUser = memoryManager.getChatHistory(conversationKey)
+        .filter(message => message.role === 'user' && message.content.text?.trim() && message.content.text !== text)
+        .at(-1)?.content.text?.trim();
+    return previousUser || text;
+};
+
+const sendMessage = async ({
+    characterPhotoRequest = false,
+    photoSenderMemberId,
+    photoSubjectMemberIds = [],
+}: {
+    characterPhotoRequest?: boolean;
+    photoSenderMemberId?: string;
+    photoSubjectMemberIds?: string[];
+} = {}) => {
     if (USES_VENICE_PROXY_AUTH && !isUnlocked) {
         handleAuthRequired('\u8acb\u5148\u8f38\u5165\u5bc6\u78bc\u5f8c\u518d\u4f7f\u7528\u804a\u5929\u3002');
         return;
@@ -7673,19 +9157,21 @@ const sendMessage = async ({ characterPhotoRequest = false }: { characterPhotoRe
         || chatRuntimeState === 'retrying'
         || !currentPersona
         || !currentPersonaKey
+        || !currentConversationKey
     ) {
         return;
     }
 
-    const userMessage = messageInput.value.trim();
-    if (!userMessage) return;
+    const typedMessage = messageInput.value.trim();
+    if (!typedMessage && pendingChatAttachments.length === 0) return;
+    const userMessage = typedMessage || '請查看附件。';
 
     hideSuggestionContainer();
 
     const userMessageUpper = userMessage.toUpperCase();
     const assistantMode = isAssistantPersonaKey(currentPersonaKey);
 
-    if (!assistantMode && userMessageUpper === GOD_MODE_ENTER_COMMAND && !isGodModeActive) {
+    if (!assistantMode && pendingChatAttachments.length === 0 && userMessageUpper === GOD_MODE_ENTER_COMMAND && !isGodModeActive) {
         isGodModeActive = true;
         godModeHistory = [];
         messageInput.value = '';
@@ -7697,7 +9183,7 @@ const sendMessage = async ({ characterPhotoRequest = false }: { characterPhotoRe
         return;
     }
 
-    if (!assistantMode && userMessageUpper === GOD_MODE_EXIT_COMMAND && isGodModeActive) {
+    if (!assistantMode && pendingChatAttachments.length === 0 && userMessageUpper === GOD_MODE_EXIT_COMMAND && isGodModeActive) {
         isGodModeActive = false;
         messageInput.value = '';
         resetMessageInput();
@@ -7708,7 +9194,29 @@ const sendMessage = async ({ characterPhotoRequest = false }: { characterPhotoRe
         return;
     }
 
-    const userContent = { text: userMessage };
+    if (isGodModeActive && pendingChatAttachments.length > 0) {
+        alert('God Mode 只修改人格；請先離開 God Mode 再傳附件。');
+        return;
+    }
+
+    const personaKey = currentPersonaKey;
+    const conversationKey = currentConversationKey;
+    let attachmentBundle: { attachments: ChatAttachment[]; contentParts: VeniceMessageContentPart[] } = {
+        attachments: [],
+        contentParts: [],
+    };
+    try {
+        if (pendingChatAttachments.length > 0) {
+            attachmentBundle = await persistPendingChatAttachments(conversationKey);
+        }
+    } catch (error) {
+        showError(error instanceof Error ? error.message : '附件儲存失敗。');
+        return;
+    }
+    const userContent: Content = {
+        text: userMessage,
+        attachments: attachmentBundle.attachments.length > 0 ? attachmentBundle.attachments : undefined,
+    };
 
     messageInput.value = '';
     resetMessageInput();
@@ -7727,11 +9235,51 @@ const sendMessage = async ({ characterPhotoRequest = false }: { characterPhotoRe
         return;
     }
 
-    const personaKey = currentPersonaKey;
     const persona = currentPersona as Persona;
-    memoryManager.addMessage(personaKey, 'user', userContent);
-    const request = beginChatRequest(personaKey, persona, assistantMode ? 'assistant' : 'character');
+    memoryManager.addMessage(conversationKey, 'user', userContent);
+    if (
+        !assistantMode
+        && !characterPhotoRequest
+        && attachmentBundle.attachments.length === 0
+        && isPermanentMemoryRequest(userMessage)
+    ) {
+        const proposal = {
+            id: crypto.randomUUID?.() || `memory-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            targetMemberIds: currentRoom ? [...currentRoom.scene.presentMemberIds] : [],
+            originalText: userMessage,
+            summary: buildPermanentMemorySummary(conversationKey, userMessage),
+            status: 'pending' as const,
+            createdAt: Date.now(),
+        };
+        const systemContent: Content = { memoryProposal: proposal };
+        memoryManager.addMessage(conversationKey, 'system', systemContent);
+        appendMessage(systemContent, 'system');
+        renderPersonaList();
+        return;
+    }
+    if (
+        !assistantMode
+        && !characterPhotoRequest
+        && attachmentBundle.attachments.length === 0
+        && isExplicitCharacterPhotoRequest(userMessage)
+    ) {
+        const systemContent: Content = { photoIntent: createPhotoIntentProposal(userMessage) };
+        memoryManager.addMessage(conversationKey, 'system', systemContent);
+        appendMessage(systemContent, 'system');
+        renderPersonaList();
+        return;
+    }
+    const request = beginChatRequest(
+        personaKey,
+        persona,
+        assistantMode ? 'assistant' : 'character',
+        conversationKey,
+    );
     request.characterPhotoRequest = !assistantMode && characterPhotoRequest;
+    request.photoSenderMemberId = photoSenderMemberId;
+    request.photoSubjectMemberIds = photoSubjectMemberIds;
+    request.attachments = attachmentBundle.attachments;
+    request.attachmentParts = attachmentBundle.contentParts;
     await getResponse(request, userMessage, assistantMode ? selectedAssistantModel : undefined);
 };
 
@@ -7800,8 +9348,8 @@ function closeInterestsModal() {
 }
 
 function updateAlbumState() {
-    if (!currentPersonaKey) return;
-    const history = memoryManager.getChatHistory(currentPersonaKey);
+    if (!currentConversationKey) return;
+    const history = memoryManager.getChatHistory(currentConversationKey);
     albumPhotos = history
         .map((msg, index) => ({ ...msg, historyIndex: index })) // Add original index
         .filter(msg => msg.content.imageUrl || msg.content.imageAssetId)
@@ -7813,6 +9361,7 @@ function updateAlbumState() {
             historyIndex: msg.historyIndex,
             content: msg.content,
         }));
+    albumAttachments = history.flatMap(message => message.content.attachments || []);
     
     albumDownloadBtn.disabled = true;
     albumDeleteBtn.disabled = true;
@@ -7823,15 +9372,15 @@ function updateAlbumState() {
 
 function renderAlbum() {
     if (!currentPersona) return;
-    albumModalTitle.textContent = `${currentPersona.name} 的私人相簿`;
+    albumModalTitle.textContent = `${currentRoom?.title || currentPersona.name} 的媒體`;
     albumGridContainer.innerHTML = '';
 
-    if (albumPhotos.length === 0) {
-        albumGridContainer.innerHTML = `<p class="text-gray-400 col-span-full text-center py-8">私人相簿目前是空的。請從功能選單選擇「請角色拍照」，再向 ${currentPersona.name} 說明想收到的照片。</p>`;
+    if (albumPhotos.length === 0 && albumAttachments.length === 0) {
+        albumGridContainer.innerHTML = '<p class="text-gray-400 col-span-full text-center py-8">目前還沒有照片、文件或影片附件。</p>';
         albumActions.classList.add('hidden');
         return;
     }
-     albumActions.classList.remove('hidden');
+     albumActions.classList.toggle('hidden', albumPhotos.length === 0);
 
 
     albumPhotos.forEach((photo, index) => {
@@ -7856,7 +9405,7 @@ function renderAlbum() {
                 if (imageUrl) {
                     openPhotoViewer(
                         imageUrl,
-                        buildPhotoViewerContextFromContent(photo.content, 'album', currentPersonaKey),
+                        buildPhotoViewerContextFromContent(photo.content, 'album', currentConversationKey),
                     );
                 }
             });
@@ -7875,6 +9424,18 @@ function renderAlbum() {
 
         albumGridContainer.appendChild(thumb);
     });
+
+    if (albumAttachments.length > 0) {
+        const attachmentSection = document.createElement('section');
+        attachmentSection.className = 'album-attachment-section';
+        const heading = document.createElement('h3');
+        heading.textContent = `文件與附件 (${albumAttachments.length})`;
+        attachmentSection.appendChild(heading);
+        albumAttachments.forEach(attachment => {
+            attachmentSection.appendChild(createStoredChatAttachmentCard(attachment));
+        });
+        albumGridContainer.appendChild(attachmentSection);
+    }
 }
 
 function updateAlbumActionButtons() {
@@ -7957,7 +9518,7 @@ function showMainAlbumButtons() {
 
 
 async function deleteSelectedPhotos() {
-    if (selectedPhotoIndices.size === 0 || !currentPersonaKey) return;
+    if (selectedPhotoIndices.size === 0 || !currentConversationKey) return;
     
     // Get the history indices of the photos to be deleted
     const historyIndicesToDelete = new Set(
@@ -7968,10 +9529,10 @@ async function deleteSelectedPhotos() {
         .filter((assetId): assetId is string => Boolean(assetId));
 
     // Filter the chat history, keeping only messages whose index is NOT in the deletion set
-    const currentHistory = memoryManager.getChatHistory(currentPersonaKey);
+    const currentHistory = memoryManager.getChatHistory(currentConversationKey);
     const newHistory = currentHistory.filter((_, index) => !historyIndicesToDelete.has(index));
     
-    memoryManager.setChatHistory(currentPersonaKey, newHistory);
+    memoryManager.setChatHistory(currentConversationKey, newHistory);
     await Promise.all(assetIdsToDelete.map(async assetId => {
         const objectUrl = characterPhotoObjectUrls.get(assetId);
         if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -7984,7 +9545,7 @@ async function deleteSelectedPhotos() {
     renderAlbum();
     
     // Also refresh the main chat view
-    startChat(currentPersonaKey);
+    startChat(currentConversationKey);
     
     showMainAlbumButtons();
 }
@@ -8370,6 +9931,366 @@ async function getSuggestions() {
     showDisabledFeatureNotice('建議功能');
 }
 
+const refreshCurrentRoom = () => {
+    if (!currentConversationKey) return null;
+    currentRoom = roomManager.getRoom(currentConversationKey) || null;
+    return currentRoom;
+};
+
+const selectActiveRoomMember = (memberId: string) => {
+    const room = refreshCurrentRoom();
+    const member = room?.members.find(item => item.id === memberId);
+    if (!room || !member) return false;
+    activeRoomMemberId = member.id;
+    const sourcePersona = member.sourcePersonaKey ? memoryManager.getPersona(member.sourcePersonaKey) : undefined;
+    currentPersona = {
+        ...member.persona,
+        avatarUrl: member.persona.avatarUrl || sourcePersona?.avatarUrl || null,
+    };
+    currentPersonaKey = member.sourcePersonaKey || `${room.id}:${member.id}`;
+    renderPersonaSettingsAvatar();
+    return true;
+};
+
+const renderRoomInfo = () => {
+    const room = refreshCurrentRoom();
+    if (!room) return;
+    roomInfoTitle.textContent = room.title;
+    roomInfoSummary.textContent = `${room.members.length} 位固定成員 · ${room.scene.presentMemberIds.length} 位目前在場 · 最多 ${ROOM_MEMBER_LIMIT} 位`;
+    roomMemberList.innerHTML = '';
+
+    room.members.forEach(member => {
+        const row = document.createElement('div');
+        row.className = `room-member-row${member.id === activeRoomMemberId ? ' is-active' : ''}`;
+        const avatar = document.createElement('span');
+        avatar.className = 'room-member-avatar';
+        const sourcePersona = member.persona.avatarUrl
+            ? member.persona
+            : member.sourcePersonaKey
+                ? memoryManager.getPersona(member.sourcePersonaKey) || member.persona
+                : member.persona;
+        if (sourcePersona.avatarUrl && !sourcePersona.avatarUrl.startsWith('generating_')) {
+            const image = document.createElement('img');
+            image.src = sourcePersona.avatarUrl;
+            image.alt = sourcePersona.name;
+            avatar.appendChild(image);
+        } else {
+            avatar.textContent = sourcePersona.emoji || '●';
+        }
+
+        const copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'room-member-copy';
+        const name = document.createElement('strong');
+        name.textContent = member.persona.name;
+        const detail = document.createElement('span');
+        detail.textContent = member.persona.publicIdentityEnabled
+            ? `已確認身份 · ${member.persona.description}`
+            : member.persona.description;
+        copy.append(name, detail);
+        copy.addEventListener('click', () => {
+            selectActiveRoomMember(member.id);
+            personaSettingsRoomTarget = { roomId: room.id, memberId: member.id };
+            openPersonaSettings();
+            renderRoomInfo();
+        });
+
+        const avatarButton = document.createElement('button');
+        avatarButton.type = 'button';
+        avatarButton.className = 'room-member-mini-action';
+        avatarButton.textContent = '頭像';
+        avatarButton.addEventListener('click', () => requestRoomMemberAvatarUpload(room.id, member.id));
+
+        const presence = document.createElement('label');
+        presence.className = 'room-presence-toggle';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = room.scene.presentMemberIds.includes(member.id);
+        const label = document.createElement('span');
+        label.textContent = '在場';
+        presence.append(checkbox, label);
+        checkbox.addEventListener('change', () => {
+            const currentIds = [...room.scene.presentMemberIds];
+            const nextIds = checkbox.checked
+                ? [...currentIds, member.id]
+                : currentIds.filter(id => id !== member.id);
+            if (nextIds.length === 0) {
+                checkbox.checked = true;
+                alert('場景中至少需要 1 位角色在場。');
+                return;
+            }
+            try {
+                roomManager.setPresentMembers(room.id, nextIds);
+                renderRoomInfo();
+                renderPersonaList();
+            } catch (error) {
+                checkbox.checked = !checkbox.checked;
+                alert(error instanceof Error ? error.message : '無法更新在場成員。');
+            }
+        });
+        row.append(avatar, copy, avatarButton, presence);
+        roomMemberList.appendChild(row);
+    });
+
+    roomSceneEditor.innerHTML = '';
+    const locationLabel = document.createElement('label');
+    locationLabel.className = 'wa-field-label';
+    locationLabel.textContent = '位置';
+    const locationInput = document.createElement('input');
+    locationInput.value = room.scene.location;
+    locationLabel.appendChild(locationInput);
+    const realityLabel = document.createElement('label');
+    realityLabel.className = 'wa-field-label';
+    realityLabel.textContent = '對話層';
+    const realitySelect = document.createElement('select');
+    [
+        ['physical', '同一實體場景'],
+        ['texting', '遠端訊息'],
+        ['imagined', '想像／故事中'],
+    ].forEach(([value, labelText]) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = labelText;
+        option.selected = room.scene.realityLayer === value;
+        realitySelect.appendChild(option);
+    });
+    realityLabel.appendChild(realitySelect);
+    const summaryLabel = document.createElement('label');
+    summaryLabel.className = 'wa-field-label';
+    summaryLabel.textContent = '場景摘要';
+    const summaryInput = document.createElement('textarea');
+    summaryInput.rows = 4;
+    summaryInput.value = room.scene.summary;
+    summaryLabel.appendChild(summaryInput);
+    const saveScene = document.createElement('button');
+    saveScene.type = 'button';
+    saveScene.className = 'wa-secondary-button';
+    saveScene.textContent = '儲存場景狀態';
+    saveScene.addEventListener('click', () => {
+        roomManager.updateRoom(room.id, editableRoom => {
+            editableRoom.scene.location = locationInput.value.trim() || editableRoom.scene.location;
+            editableRoom.scene.realityLayer = realitySelect.value as RoomSceneState['realityLayer'];
+            editableRoom.scene.summary = summaryInput.value.trim() || editableRoom.scene.summary;
+        });
+        refreshCurrentRoom();
+        saveScene.textContent = '已儲存';
+        window.setTimeout(() => { saveScene.textContent = '儲存場景狀態'; }, 1200);
+    });
+    roomSceneEditor.append(locationLabel, realityLabel, summaryLabel, saveScene);
+};
+
+const openRoomInfo = () => {
+    if (!currentRoom) {
+        personaSettingsRoomTarget = null;
+        openPersonaSettings();
+        return;
+    }
+    renderRoomInfo();
+    roomInfoModal.classList.remove('hidden');
+    moreOptionsMenu.classList.add('hidden');
+};
+
+const closeRoomInfo = () => roomInfoModal.classList.add('hidden');
+
+const renderRoomMemory = () => {
+    const room = refreshCurrentRoom();
+    if (!room) return;
+    if (!selectedMemoryMemberId || !room.members.some(member => member.id === selectedMemoryMemberId)) {
+        selectedMemoryMemberId = activeRoomMemberId || room.leadMemberId;
+    }
+    memoryMemberTabs.innerHTML = '';
+    room.members.forEach(member => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = member.id === selectedMemoryMemberId ? 'is-active' : '';
+        button.textContent = member.persona.name;
+        button.addEventListener('click', () => {
+            selectedMemoryMemberId = member.id;
+            renderRoomMemory();
+        });
+        memoryMemberTabs.appendChild(button);
+    });
+    memorySoulTab.classList.toggle('is-active', selectedMemoryType === 'soul');
+    memoryEventTab.classList.toggle('is-active', selectedMemoryType === 'memory');
+    roomMemoryList.innerHTML = '';
+    const member = room.members.find(item => item.id === selectedMemoryMemberId);
+    if (!member) return;
+
+    const addButton = document.createElement('button');
+    addButton.type = 'button';
+    addButton.className = 'memory-add-button';
+    addButton.textContent = selectedMemoryType === 'soul' ? '＋ 新增永久記憶' : '＋ 新增重要事件';
+    addButton.addEventListener('click', () => {
+        const title = window.prompt('記憶標題');
+        if (!title?.trim()) return;
+        const summary = window.prompt('要讓角色長期記住甚麼？');
+        if (!summary?.trim()) return;
+        if (selectedMemoryType === 'soul') {
+            roomManager.addSoulMemory(room.id, [member.id], {
+                kind: 'preference',
+                title: title.trim(),
+                summary: summary.trim(),
+                participants: [member.id],
+            });
+        } else {
+            roomManager.addEpisodicMemories(room.id, [{
+                kind: 'event',
+                title: title.trim(),
+                summary: summary.trim(),
+                participants: [member.id],
+            }]);
+        }
+        renderRoomMemory();
+    });
+    roomMemoryList.appendChild(addButton);
+
+    const entries = selectedMemoryType === 'soul' ? member.soul : member.memories;
+    entries.forEach(entry => {
+        const card = document.createElement('article');
+        card.className = 'room-memory-card';
+        const title = document.createElement('input');
+        title.value = entry.title;
+        title.setAttribute('aria-label', '記憶標題');
+        const summary = document.createElement('textarea');
+        summary.rows = 4;
+        summary.value = entry.summary;
+        summary.setAttribute('aria-label', '記憶內容');
+        const meta = document.createElement('p');
+        meta.textContent = [
+            entry.pinned ? '永久' : '事件',
+            entry.sourceMessageIndexes?.length ? `來源訊息 ${entry.sourceMessageIndexes.join(', ')}` : '',
+        ].filter(Boolean).join(' · ');
+        const actions = document.createElement('div');
+        actions.className = 'room-memory-actions';
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.textContent = '儲存';
+        save.addEventListener('click', () => {
+            roomManager.updateMemory(room.id, member.id, entry.id, selectedMemoryType, {
+                title: title.value,
+                summary: summary.value,
+            });
+            save.textContent = '已儲存';
+            window.setTimeout(() => { save.textContent = '儲存'; }, 1000);
+        });
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'is-danger';
+        remove.textContent = '刪除';
+        remove.addEventListener('click', () => {
+            if (!confirm(`刪除「${entry.title}」？`)) return;
+            roomManager.deleteMemory(room.id, member.id, entry.id, selectedMemoryType);
+            renderRoomMemory();
+        });
+        actions.append(save, remove);
+        card.append(title, summary, meta, actions);
+        roomMemoryList.appendChild(card);
+    });
+};
+
+const openRoomMemory = () => {
+    if (!currentRoom) {
+        openMemoryEditor();
+        return;
+    }
+    selectedMemoryMemberId = activeRoomMemberId || currentRoom.leadMemberId;
+    renderRoomMemory();
+    roomInfoModal.classList.add('hidden');
+    roomMemoryModal.classList.remove('hidden');
+};
+
+const closeRoomMemory = () => roomMemoryModal.classList.add('hidden');
+
+const renderCreateGroupMembers = () => {
+    createGroupMemberList.innerHTML = '';
+    const targetRoom = groupModalTargetRoomId ? roomManager.getRoom(groupModalTargetRoomId) : null;
+    const existingKeys = new Set(targetRoom?.members.map(member => member.sourcePersonaKey).filter(Boolean));
+    Object.entries(memoryManager.getAllPersonas()).forEach(([key, persona]) => {
+        if (key === VENICE_ASSISTANT_PERSONA_KEY || persona.gender !== 'female' || existingKeys.has(key)) return;
+        const label = document.createElement('label');
+        label.className = 'create-group-member-option';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = key;
+        const avatar = document.createElement('span');
+        avatar.className = 'room-member-avatar';
+        if (persona.avatarUrl && !persona.avatarUrl.startsWith('generating_')) {
+            const image = document.createElement('img');
+            image.src = persona.avatarUrl;
+            image.alt = persona.name;
+            avatar.appendChild(image);
+        } else avatar.textContent = persona.emoji || '●';
+        const copy = document.createElement('span');
+        copy.innerHTML = `<strong></strong><small></small>`;
+        copy.querySelector('strong')!.textContent = persona.name;
+        copy.querySelector('small')!.textContent = persona.description;
+        label.append(checkbox, avatar, copy);
+        createGroupMemberList.appendChild(label);
+    });
+};
+
+const openCreateGroup = (targetRoomId: string | null = null) => {
+    groupModalTargetRoomId = targetRoomId;
+    createGroupName.closest('label')?.classList.toggle('hidden', Boolean(targetRoomId));
+    createGroupName.value = '';
+    confirmCreateGroupBtn.textContent = targetRoomId ? '加入所選角色' : '建立群組';
+    renderCreateGroupMembers();
+    createGroupModal.classList.remove('hidden');
+    newChatMenu.classList.add('hidden');
+};
+
+const closeCreateGroup = () => {
+    createGroupModal.classList.add('hidden');
+    groupModalTargetRoomId = null;
+};
+
+const confirmCreateGroup = () => {
+    const selectedKeys = Array.from(createGroupMemberList.querySelectorAll<HTMLInputElement>('input:checked'))
+        .map(input => input.value);
+    if (groupModalTargetRoomId) {
+        const room = roomManager.getRoom(groupModalTargetRoomId);
+        if (!room || selectedKeys.length === 0) {
+            alert('請至少選擇 1 位角色。');
+            return;
+        }
+        if (room.members.length + selectedKeys.length > ROOM_MEMBER_LIMIT) {
+            alert(`每個群組最多 ${ROOM_MEMBER_LIMIT} 位角色。`);
+            return;
+        }
+        selectedKeys.forEach((key, index) => {
+            const persona = memoryManager.getPersona(key);
+            if (!persona) return;
+            roomManager.addMember(room.id, {
+                id: `member_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`,
+                sourcePersonaKey: key,
+                persona: structuredClone(persona),
+                joinedAt: Date.now(),
+                soul: [],
+                memories: [],
+            });
+        });
+        closeCreateGroup();
+        refreshCurrentRoom();
+        renderRoomInfo();
+        renderPersonaList();
+        return;
+    }
+
+    if (selectedKeys.length < 2) {
+        alert('群組至少需要 2 位角色。');
+        return;
+    }
+    const selected = selectedKeys.flatMap(key => {
+        const persona = memoryManager.getPersona(key);
+        return persona ? [{ sourcePersonaKey: key, persona }] : [];
+    });
+    const room = roomManager.createRoom(createGroupName.value, selected);
+    memoryManager.addMessage(room.id, 'system', { text: `${room.title} 已建立。` });
+    closeCreateGroup();
+    renderPersonaList();
+    startChat(room.id);
+};
+
 const openMemoryEditor = () => {
     if (currentPersona) {
         memoryEditor.value = currentPersona.memory || '';
@@ -8418,6 +10339,7 @@ const closePersonaSettings = () => {
     personaSettingsModal.classList.add('hidden');
     personaSettingsResolvedIdentity = null;
     personaSettingsResolvedAvatarUrl = null;
+    personaSettingsRoomTarget = null;
 };
 
 const closeMemoryEditor = () => {
@@ -8498,7 +10420,13 @@ const savePersonaSettings = async () => {
         if (publicIdentityEnabled && personaSettingsResolvedAvatarUrl) {
             updates.avatarUrl = personaSettingsResolvedAvatarUrl;
         }
-        memoryManager.updatePersona(currentPersonaKey, updates);
+        const roomTarget = personaSettingsRoomTarget;
+        if (roomTarget) {
+            roomManager.updateMember(roomTarget.roomId, roomTarget.memberId, { persona: updates });
+            if (currentRoom?.id === roomTarget.roomId) currentRoom = roomManager.getRoom(roomTarget.roomId) || currentRoom;
+        } else {
+            memoryManager.updatePersona(currentPersonaKey, updates);
+        }
 
         Object.assign(currentPersona, updates);
         if (updates.avatarUrl) {
@@ -8506,15 +10434,17 @@ const savePersonaSettings = async () => {
             renderPersonaSettingsAvatar();
         }
 
-        const history = memoryManager.getChatHistory(currentPersonaKey);
-        if (
-            history.length === 1 &&
-            history[0].role === 'model' &&
-            history[0].content.text === previousGreeting &&
-            greeting
-        ) {
-            history[0].content.text = greeting;
-            memoryManager.setChatHistory(currentPersonaKey, history);
+        if (!roomTarget) {
+            const history = memoryManager.getChatHistory(currentPersonaKey);
+            if (
+                history.length === 1 &&
+                history[0].role === 'model' &&
+                history[0].content.text === previousGreeting &&
+                greeting
+            ) {
+                history[0].content.text = greeting;
+                memoryManager.setChatHistory(currentPersonaKey, history);
+            }
         }
 
         renderPersonaList();
@@ -8531,15 +10461,51 @@ const savePersonaSettings = async () => {
 };
 
 const startNewScene = () => {
-    if (!currentPersonaKey) return;
+    if (!currentConversationKey) return;
+    if (currentRoom) void maybeSummarizeRoomMemory(currentRoom.id, true);
     appendMessage({ text: SCENE_START_LABEL }, 'system');
-    memoryManager.addMessage(currentPersonaKey, 'system', { text: SCENE_END_MARKER });
+    memoryManager.addMessage(currentConversationKey, 'system', { text: SCENE_END_MARKER });
+    if (currentRoom) {
+        roomManager.updateRoom(currentRoom.id, room => {
+            room.scene.id = crypto.randomUUID?.() || `scene-${Date.now()}`;
+            room.scene.startedAt = Date.now();
+            room.scene.summary = '使用者剛開始一個新場景，等待建立位置、在場人物與事件。';
+            room.scene.unresolved = [];
+        });
+        refreshCurrentRoom();
+    }
     moreOptionsMenu.classList.add('hidden');
 };
 
 const openPhotoPromptModal = () => {
     if (!currentPersonaKey || !currentPersona || isAssistantPersonaKey(currentPersonaKey) || isGodModeActive) return;
     photoPromptInput.value = '';
+    photoSenderSelect.innerHTML = '';
+    photoSubjectsContainer.innerHTML = '';
+    pendingPhotoSenderMemberId = null;
+    pendingPhotoSubjectMemberIds = [];
+    if (currentRoom) {
+        photoRoomMemberControls.classList.remove('hidden');
+        currentRoom.members
+            .filter(member => currentRoom!.scene.presentMemberIds.includes(member.id))
+            .forEach(member => {
+                const option = document.createElement('option');
+                option.value = member.id;
+                option.textContent = member.persona.name;
+                option.selected = member.id === (activeRoomMemberId || currentRoom!.leadMemberId);
+                photoSenderSelect.appendChild(option);
+                const label = document.createElement('label');
+                label.className = 'photo-subject-option';
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.value = member.id;
+                checkbox.checked = option.selected;
+                label.append(checkbox, document.createTextNode(member.persona.name));
+                photoSubjectsContainer.appendChild(label);
+            });
+    } else {
+        photoRoomMemberControls.classList.add('hidden');
+    }
     photoPromptModal.classList.remove('hidden');
     moreOptionsMenu.classList.add('hidden');
     window.setTimeout(() => photoPromptInput.focus(), 0);
@@ -8557,11 +10523,24 @@ const generatePhotoFromPrompt = async () => {
         return;
     }
     photoPromptInput.setCustomValidity('');
+    const senderMemberId = currentRoom ? photoSenderSelect.value : undefined;
+    const subjectMemberIds = currentRoom
+        ? Array.from(photoSubjectsContainer.querySelectorAll<HTMLInputElement>('input:checked')).map(input => input.value)
+        : [];
+    if (currentRoom && (!senderMemberId || subjectMemberIds.length === 0)) {
+        alert('請選擇準備照片的人，以及至少 1 位照片中的角色。');
+        return;
+    }
+    if (senderMemberId) selectActiveRoomMember(senderMemberId);
     closePhotoPromptModal();
     messageInput.value = requestText;
     resetMessageInput();
     updateSendButtonState();
-    await sendMessage({ characterPhotoRequest: true });
+    await sendMessage({
+        characterPhotoRequest: true,
+        photoSenderMemberId: senderMemberId,
+        photoSubjectMemberIds: subjectMemberIds,
+    });
 };
 
 // --- Event Listeners ---
@@ -8573,6 +10552,62 @@ const setupEventListeners = () => {
     authPasswordInput.addEventListener('input', () => {
         hideAuthError();
     });
+    const emojis = ['😀', '😂', '🥹', '😍', '🥰', '😘', '😳', '😊', '😌', '😏', '🙈', '😭', '😤', '🤍', '❤️', '🫶', '✨', '🌙', '🌹', '🍎', '☕', '🎵', '📷', '🔥'];
+    emojiPicker.innerHTML = '';
+    emojis.forEach(emoji => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = emoji;
+        button.addEventListener('click', () => {
+            const start = messageInput.selectionStart ?? messageInput.value.length;
+            const end = messageInput.selectionEnd ?? start;
+            messageInput.setRangeText(emoji, start, end, 'end');
+            messageInput.focus();
+            updateSendButtonState();
+        });
+        emojiPicker.appendChild(button);
+    });
+    emojiButton.addEventListener('click', event => {
+        event.stopPropagation();
+        emojiPicker.classList.toggle('hidden');
+    });
+    attachmentButton.addEventListener('click', () => chatAttachmentInput.click());
+    chatAttachmentInput.addEventListener('change', () => void handleChatAttachmentSelection());
+    composerCameraButton.addEventListener('click', openPhotoPromptModal);
+    chatSearchBtn.addEventListener('click', openChatSearch);
+    chatSearchClose.addEventListener('click', closeChatSearch);
+    chatSearchInput.addEventListener('input', runChatSearch);
+    chatSearchInput.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+            closeChatSearch();
+            return;
+        }
+        if (event.key === 'Enter' && chatSearchMatches.length > 0) {
+            event.preventDefault();
+            focusChatSearchMatch(chatSearchMatchIndex + (event.shiftKey ? -1 : 1));
+        }
+    });
+    chatSearchPrev.addEventListener('click', () => focusChatSearchMatch(chatSearchMatchIndex - 1));
+    chatSearchNext.addEventListener('click', () => focusChatSearchMatch(chatSearchMatchIndex + 1));
+    homeSearchToggle.addEventListener('click', () => conversationSearchInput.focus());
+    conversationSearchInput.addEventListener('input', renderPersonaList);
+    homeMenuToggle.addEventListener('click', event => {
+        event.stopPropagation();
+        homeMenu.classList.toggle('hidden');
+        newChatMenu.classList.add('hidden');
+    });
+    homeExportAll.addEventListener('click', () => {
+        void fileManager.saveAllChats();
+        homeMenu.classList.add('hidden');
+    });
+    newChatFab.addEventListener('click', event => {
+        event.stopPropagation();
+        newChatMenu.classList.toggle('hidden');
+        homeMenu.classList.add('hidden');
+    });
+    createGroupRoomBtn.addEventListener('click', () => openCreateGroup());
+    closeCreateGroupBtn.addEventListener('click', closeCreateGroup);
+    confirmCreateGroupBtn.addEventListener('click', confirmCreateGroup);
     assistantModelSelect.addEventListener('change', () => {
         if (!assistantModelSelect.value || activeChatRequest) return;
         selectedAssistantModel = assistantModelSelect.value;
@@ -8700,6 +10735,7 @@ const setupEventListeners = () => {
         });
         if (videoSource) URL.revokeObjectURL(videoSource.previewUrl);
         characterPhotoObjectUrls.forEach(url => URL.revokeObjectURL(url));
+        chatAttachmentObjectUrls.forEach(url => URL.revokeObjectURL(url));
     });
 
     backButton.addEventListener('click', navigateBackToSelectionView);
@@ -8752,8 +10788,8 @@ const setupEventListeners = () => {
     savePromptEdit.addEventListener('click', saveAvatarPrompt);
 
     downloadChatBtn.addEventListener('click', () => {
-        if (currentPersonaKey && currentPersona) {
-            fileManager.saveCurrentChat(currentPersonaKey, currentPersona.name);
+        if (currentConversationKey && currentPersona) {
+            fileManager.saveCurrentChat(currentConversationKey, currentRoom?.title || currentPersona.name);
         }
         moreOptionsMenu.classList.add('hidden');
     });
@@ -8763,8 +10799,8 @@ const setupEventListeners = () => {
         moreOptionsMenu.classList.add('hidden');
     });
     downloadImagesBtn.addEventListener('click', () => {
-         if (currentPersonaKey && currentPersona) {
-            fileManager.downloadImages(currentPersonaKey, currentPersona.name);
+         if (currentConversationKey && currentPersona) {
+            fileManager.downloadImages(currentConversationKey, currentRoom?.title || currentPersona.name);
         }
         moreOptionsMenu.classList.add('hidden');
     });
@@ -8801,12 +10837,13 @@ const setupEventListeners = () => {
     removeGiftBtn.addEventListener('click', removeGift);
 
     clearChatBtn.addEventListener('click', async () => {
-        if (currentPersonaKey && currentPersona) {
-            if (confirm(`\u78ba\u5b9a\u8981\u6e05\u9664 ${currentPersona.name} \u7684\u5c0d\u8a71\u7d00\u9304\u55ce\uff1f`)) {
+        if (currentConversationKey && currentPersona) {
+            const conversationKey = currentConversationKey;
+            if (confirm(`確定要清除 ${currentRoom?.title || currentPersona.name} 的對話記錄嗎？`)) {
                 if (characterPhotoRequestController) characterPhotoRequestController.abort();
-                await deleteCharacterPhotoAssetsForHistory(memoryManager.getChatHistory(currentPersonaKey));
-                memoryManager.clearChatHistory(currentPersonaKey);
-                startChat(currentPersonaKey);
+                await deleteCharacterPhotoAssetsForHistory(memoryManager.getChatHistory(conversationKey));
+                memoryManager.clearChatHistory(conversationKey);
+                startChat(conversationKey);
             }
         }
         moreOptionsMenu.classList.add('hidden');
@@ -8829,19 +10866,45 @@ const setupEventListeners = () => {
     
     // Memory modal listeners
     memoryBtn.addEventListener('click', () => {
-        openMemoryEditor();
+        openRoomMemory();
         moreOptionsMenu.classList.add('hidden');
     });
     personaSettingsBtn.addEventListener('click', () => {
+        personaSettingsRoomTarget = currentRoom && activeRoomMemberId
+            ? { roomId: currentRoom.id, memberId: activeRoomMemberId }
+            : null;
         openPersonaSettings();
         moreOptionsMenu.classList.add('hidden');
     });
     changeAvatarBtn.addEventListener('click', () => {
-        if (currentPersonaKey) requestPersonaAvatarUpload(currentPersonaKey);
+        if (currentRoom && activeRoomMemberId) requestRoomMemberAvatarUpload(currentRoom.id, activeRoomMemberId);
+        else if (currentPersonaKey) requestPersonaAvatarUpload(currentPersonaKey);
         moreOptionsMenu.classList.add('hidden');
     });
     personaSettingsAvatarBtn.addEventListener('click', () => {
-        if (currentPersonaKey) requestPersonaAvatarUpload(currentPersonaKey);
+        if (personaSettingsRoomTarget) {
+            requestRoomMemberAvatarUpload(personaSettingsRoomTarget.roomId, personaSettingsRoomTarget.memberId);
+        } else if (currentPersonaKey) requestPersonaAvatarUpload(currentPersonaKey);
+    });
+    roomInfoBtn.addEventListener('click', openRoomInfo);
+    closeRoomInfoBtn.addEventListener('click', closeRoomInfo);
+    addRoomMemberBtn.addEventListener('click', () => {
+        if (currentRoom) openCreateGroup(currentRoom.id);
+    });
+    openRoomMemoryBtn.addEventListener('click', openRoomMemory);
+    exportRoomBtn.addEventListener('click', () => {
+        if (currentConversationKey && currentRoom) {
+            void fileManager.saveCurrentChat(currentConversationKey, currentRoom.title);
+        }
+    });
+    closeRoomMemoryBtn.addEventListener('click', closeRoomMemory);
+    memorySoulTab.addEventListener('click', () => {
+        selectedMemoryType = 'soul';
+        renderRoomMemory();
+    });
+    memoryEventTab.addEventListener('click', () => {
+        selectedMemoryType = 'memory';
+        renderRoomMemory();
     });
     personaPublicIdentityCheckbox.addEventListener('change', renderPersonaPublicIdentitySettings);
     recheckPublicIdentityBtn.addEventListener('click', () => {
@@ -8998,15 +11061,24 @@ const setupEventListeners = () => {
         if (!moreOptionsBtn.contains(e.target as Node) && !moreOptionsMenu.contains(e.target as Node)) {
             moreOptionsMenu.classList.add('hidden');
         }
+        if (!homeMenuToggle.contains(e.target as Node) && !homeMenu.contains(e.target as Node)) {
+            homeMenu.classList.add('hidden');
+        }
+        if (!newChatFab.contains(e.target as Node) && !newChatMenu.contains(e.target as Node)) {
+            newChatMenu.classList.add('hidden');
+        }
         if (!suggestionButton.contains(e.target as Node) && !suggestionContainer.contains(e.target as Node)) {
             hideSuggestionContainer();
+        }
+        if (!emojiButton.contains(e.target as Node) && !emojiPicker.contains(e.target as Node)) {
+            emojiPicker.classList.add('hidden');
         }
     });
 
     // Save before exit modal
     saveAndExitBtn.addEventListener('click', () => {
-        if (currentPersonaKey && currentPersona) {
-            fileManager.saveCurrentChat(currentPersonaKey, currentPersona.name);
+        if (currentConversationKey && currentPersona) {
+            fileManager.saveCurrentChat(currentConversationKey, currentRoom?.title || currentPersona.name);
         }
         saveExitModal.classList.add('hidden');
         showSelectionView('replace');

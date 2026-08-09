@@ -1,7 +1,8 @@
-# aigf4
+# Wetapp
 
-Private Venice-powered app with romance personas, God Mode persona editing,
-conversation-history imports, a general-purpose assistant, and image/video studios.
+Private Venice-powered messaging workspace with romance personas, fixed multi-character
+rooms, long-term memory, God Mode persona editing, conversation-history imports, a
+general-purpose assistant, and image/video studios.
 
 ## Local development
 
@@ -36,6 +37,12 @@ The browser never receives `VENICE_API_KEY` in proxy mode.
 - Default and imported characters use `qwen-3-6-plus` for stronger multi-speaker continuity.
 - Invalid, repetitive, or malformed replies retry automatically before using the configured fallbacks.
 - Named third parties can speak in the current scene without taking over the active character or user identity.
+- The home and chat screens use a WhatsApp-style conversation layout with search, emoji, private attachments, per-chat media, and mobile back navigation.
+- A fixed group room can store up to 8 character identities, with up to 4 physically present in one scene.
+- Newly introduced recurring people are offered as explicit fixed-member candidates; public identities can be confirmed through the existing Wikipedia-backed resolver before joining.
+- Group members keep separate persona, presence, `soul.md`, and `memory.md` records. Automatic episodic summaries run every 24 user turns without rewriting the original chat.
+- Writing that something must be remembered forever opens a confirmation card before it enters permanent memory.
+- The original IU direct conversation is left untouched; the curated IU, Jennie, and Irene room is created separately when the source IU persona exists.
 
 ## Image studio
 
@@ -60,6 +67,7 @@ The browser never receives `VENICE_API_KEY` in proxy mode.
 - Chat history renders generated images as compact attachments. The full-screen attachment viewer keeps the image, complete scrollable prompt, model, ratio, resolution, and regenerate controls inside the viewport; regenerated variants are saved as new photos without replacing the original.
 - Finished photos are stored in the browser-private IndexedDB and never enter Camera Roll automatically; the app requests persistent storage, while an explicit ZIP export is the only action that writes them to Downloads. This storage is origin-isolated rather than encrypted and is removed when the user clears site data.
 - Photos appear in the character private album and are bundled under `photos/` during chat export/import without inflating localStorage JSON.
+- Chat attachments are also stored in IndexedDB and exported under `attachments/`; group-member avatars are exported as binary files under `room-avatars/` instead of inflating JSON with base64 data.
 
 ## Video studio
 

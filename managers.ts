@@ -134,6 +134,55 @@ export interface CharacterPhotoProposal {
     resolution?: string;
     estimatedPriceUsd?: number;
     error?: string;
+    senderMemberId?: string;
+    subjectMemberIds?: string[];
+}
+
+export interface ChatSegment {
+    type: 'narration' | 'dialogue';
+    text: string;
+    speakerId?: string;
+    speakerName?: string;
+}
+
+export interface ChatAttachment {
+    id: string;
+    assetId: string;
+    name: string;
+    mimeType: string;
+    size: number;
+    kind: 'image' | 'document' | 'video' | 'other';
+    width?: number;
+    height?: number;
+}
+
+export interface MemoryProposal {
+    id: string;
+    targetMemberIds: string[];
+    originalText: string;
+    summary: string;
+    status: 'pending' | 'saved' | 'session-only' | 'declined';
+    createdAt: number;
+}
+
+export interface PhotoIntentProposal {
+    id: string;
+    senderMemberId?: string;
+    subjectMemberIds: string[];
+    requestText: string;
+    status: 'pending' | 'confirmed' | 'declined';
+    createdAt: number;
+}
+
+export interface NpcPromotionProposal {
+    id: string;
+    name: string;
+    gender: 'male' | 'female';
+    description: string;
+    publicFigureQuery?: string;
+    status: 'pending' | 'added' | 'dismissed';
+    memberId?: string;
+    createdAt: number;
 }
 
 export interface ImageGenerationMetadata {
@@ -148,14 +197,23 @@ export interface ImageGenerationMetadata {
 
 export interface Content {
     text?: string;
+    segments?: ChatSegment[];
+    attachments?: ChatAttachment[];
     imageUrl?: string;
     imageAssetId?: string;
     imagePrompt?: string;
     imageGeneration?: ImageGenerationMetadata;
     photoProposal?: CharacterPhotoProposal;
+    memoryProposal?: MemoryProposal;
+    photoIntent?: PhotoIntentProposal;
+    npcProposal?: NpcPromotionProposal;
+    legacy?: boolean;
 }
 
 export interface ChatMessage {
+    id?: string;
+    createdAt?: number;
+    speakerId?: string;
     role: 'user' | 'model' | 'system';
     content: Content;
 }
@@ -542,15 +600,34 @@ export class MemoryManager {
         this.persistChatHistories();
     }
 
+    hasChatHistory(key: string) {
+        return Array.isArray(this.chatHistories[key]) && this.chatHistories[key].length > 0;
+    }
+
+    peekChatHistory(key: string): ChatMessage[] {
+        return this.chatHistories[key] || [];
+    }
+
     getAllChatHistories(): { [key: string]: ChatMessage[] } {
         return this.chatHistories;
     }
 
-    addMessage(key: string, role: 'user' | 'model' | 'system', content: Content) {
+    addMessage(
+        key: string,
+        role: 'user' | 'model' | 'system',
+        content: Content,
+        metadata: Pick<ChatMessage, 'speakerId' | 'createdAt' | 'id'> = {},
+    ) {
         if (!this.chatHistories[key]) {
             this.getChatHistory(key); // Initialize if it doesn't exist
         }
-        this.chatHistories[key].push({ role, content });
+        this.chatHistories[key].push({
+            id: metadata.id || crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+            createdAt: metadata.createdAt || Date.now(),
+            speakerId: metadata.speakerId,
+            role,
+            content,
+        });
         this.persistChatHistories();
     }
 
@@ -576,10 +653,12 @@ export class MemoryManager {
         const persona = this.getPersona(key);
         if (persona) {
             this.chatHistories[key] = [{ role: 'model', content: { text: persona.greeting } }];
-            delete this.diaries[key];
-            delete this.interests[key];
-            this.persistChatHistories();
+        } else {
+            this.chatHistories[key] = [];
         }
+        delete this.diaries[key];
+        delete this.interests[key];
+        this.persistChatHistories();
     }
     
     // --- Diary Methods ---

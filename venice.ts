@@ -1,8 +1,22 @@
 export type RequestState = 'idle' | 'queueing' | 'generating' | 'retrying' | 'error';
 
+export type VeniceMessageContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }
+  | { type: 'file'; file: { file_data: string; filename: string } };
+
 export interface VeniceMessage {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  content: string | VeniceMessageContentPart[];
+}
+
+export interface VeniceJsonSchemaResponseFormat {
+  type: 'json_schema';
+  json_schema: {
+    name: string;
+    strict: boolean;
+    schema: Record<string, unknown>;
+  };
 }
 
 export interface VeniceTextGenerationOptions {
@@ -14,6 +28,7 @@ export interface VeniceTextGenerationOptions {
   repetitionPenalty?: number;
   stop?: string[];
   seed?: number;
+  responseFormat?: VeniceJsonSchemaResponseFormat;
   signal?: AbortSignal;
   onStateChange?: (state: RequestState, detail?: string) => void;
 }
@@ -181,6 +196,7 @@ export async function generateVeniceText(
     repetitionPenalty = 1.08,
     stop = ['\nUser:', '\nUSER:', '\n使用者:'],
     seed,
+    responseFormat,
     signal,
     onStateChange,
   } = options;
@@ -207,6 +223,7 @@ export async function generateVeniceText(
       reasoning_effort: 'none',
       seed,
       stop,
+      ...(responseFormat ? { response_format: responseFormat } : {}),
       venice_parameters: {
         include_venice_system_prompt: false,
         disable_thinking: true,
