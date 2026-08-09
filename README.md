@@ -42,7 +42,7 @@ The browser never receives `VENICE_API_KEY` in proxy mode.
 - Newly introduced recurring people are offered as explicit fixed-member candidates; public identities can be confirmed through the existing Wikipedia-backed resolver before joining.
 - Group members keep separate persona, presence, `soul.md`, and `memory.md` records. Automatic episodic summaries run every 24 user turns without rewriting the original chat.
 - Writing that something must be remembered forever opens a confirmation card before it enters permanent memory.
-- The original IU direct conversation is left untouched; the curated IU, Jennie, and Irene room is created separately when the source IU persona exists.
+- The curated IU, Jennie, and Irene room is always created separately; when an older IU persona exists, it is linked for the legacy avatar while the original direct conversation remains untouched.
 
 ## Image studio
 

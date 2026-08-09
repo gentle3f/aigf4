@@ -92,6 +92,26 @@ const publicIdentity = (
     verifiedAt: Date.now(),
 });
 
+const fallbackIuPersona: Persona = {
+    name: 'IU',
+    emoji: '🌙',
+    gender: 'female',
+    description: '南韓歌手、詞曲作家及演員。',
+    prompt: '',
+    greeting: '',
+    avatarPrompt: 'IU, Lee Ji-eun, South Korean singer-songwriter and actress',
+    avatarUrl: null,
+    memory: '',
+    publicIdentityEnabled: true,
+    publicIdentity: publicIdentity(
+        'IU',
+        '李知恩（IU）是南韓歌手、詞曲作家及演員。',
+        'IU, Lee Ji-eun, South Korean singer-songwriter and actress',
+        'IU (entertainer)',
+        'https://en.wikipedia.org/wiki/IU_(entertainer)',
+    ),
+};
+
 const memory = (
     id: string,
     kind: RoomMemoryKind,
@@ -497,18 +517,25 @@ export class RoomManager {
     }
 
     ensureIuGroupRoom(memoryManager: MemoryManager) {
-        const existing = this.rooms[IU_GROUP_ROOM_ID];
-        if (existing?.migrationVersion === IU_GROUP_MIGRATION_VERSION) return existing;
-
         const personas = memoryManager.getAllPersonas();
         const iuEntry = Object.entries(personas).find(([, persona]) => {
             const name = persona.name.trim().toLowerCase();
             const canonical = persona.publicIdentity?.canonicalName?.trim().toLowerCase();
             return name === 'iu' || canonical === 'iu';
         });
-        if (!iuEntry) return null;
+        const existing = this.rooms[IU_GROUP_ROOM_ID];
+        if (existing?.migrationVersion === IU_GROUP_MIGRATION_VERSION) {
+            if (iuEntry && !existing.legacySourcePersonaKey) {
+                existing.legacySourcePersonaKey = iuEntry[0];
+                const iuMember = existing.members.find(member => member.id === 'iu');
+                if (iuMember) iuMember.sourcePersonaKey = iuEntry[0];
+                this.persist();
+            }
+            return existing;
+        }
 
-        const [iuPersonaKey, sourceIu] = iuEntry;
+        const iuPersonaKey = iuEntry?.[0];
+        const sourceIu = iuEntry?.[1] || fallbackIuPersona;
         const now = Date.now();
         const members: RoomMember[] = [
             {

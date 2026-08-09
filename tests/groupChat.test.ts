@@ -4,7 +4,7 @@ import {
     buildGroupSystemPrompt,
     parseGroupGeneration,
 } from '../groupChat.js';
-import { ChatRoom, RoomMember } from '../roomManager.js';
+import { ChatRoom, RoomManager, RoomMember } from '../roomManager.js';
 
 const member = (id: string, name: string): RoomMember => ({
     id,
@@ -93,4 +93,29 @@ test('group parser rejects dialogue spoken only by an absent member', () => {
         },
         npc_candidate: null,
     }), createRoom()), /valid member dialogue/i);
+});
+
+test('curated IU group exists even before a legacy IU chat is imported', () => {
+    const storage = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: {
+            getItem: (key: string) => storage.get(key) || null,
+            setItem: (key: string, value: string) => storage.set(key, value),
+        },
+    });
+    const chatHistories = new Map<string, unknown[]>();
+    const memoryManager = {
+        getAllPersonas: () => ({}),
+        hasChatHistory: (key: string) => (chatHistories.get(key)?.length || 0) > 0,
+        setChatHistory: (key: string, history: unknown[]) => chatHistories.set(key, history),
+    };
+
+    const roomManager = new RoomManager();
+    const room = roomManager.ensureIuGroupRoom(memoryManager as never);
+
+    assert.ok(room);
+    assert.equal(room.members.map(item => item.persona.name).join(','), 'IU,Jennie,Irene');
+    assert.equal(room.legacySourcePersonaKey, undefined);
+    assert.equal(chatHistories.get(room.id)?.length, 1);
 });
