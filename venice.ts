@@ -222,7 +222,7 @@ export async function generateVeniceText(
         : {}),
       reasoning_effort: 'none',
       seed,
-      stop,
+      ...(stop.length > 0 ? { stop } : {}),
       ...(responseFormat ? { response_format: responseFormat } : {}),
       venice_parameters: {
         include_venice_system_prompt: false,

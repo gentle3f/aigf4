@@ -4,6 +4,7 @@ import {
     buildGroupSystemPrompt,
     parseGroupGeneration,
     selectLegacyGroupHistory,
+    trimTrailingUnansweredUserMessages,
 } from '../groupChat.js';
 import { ChatMessage } from '../managers.js';
 import { ChatRoom, cloneRoomSnapshot, RoomManager, RoomMember } from '../roomManager.js';
@@ -96,6 +97,27 @@ test('group parser accepts Venice legacy messages and sender_id fields', () => {
     assert.equal(parsed.scene.location, 'living room');
 });
 
+test('group parser ignores malformed optional arrays instead of crashing', () => {
+    const parsed = parseGroupGeneration(JSON.stringify({
+        segments: [
+            null,
+            { type: 'dialogue', speaker_id: 'iu', text: '我而家可以正常答你。' },
+        ],
+        scene: {
+            location: 'living room',
+            reality_layer: 'physical',
+            present_member_ids: 'iu',
+            summary: 'IU answered.',
+            unresolved: 'none',
+        },
+        npc_candidate: null,
+    }), createRoom());
+
+    assert.equal(parsed.segments[0]?.speakerId, 'iu');
+    assert.deepEqual(parsed.scene.presentMemberIds, ['iu', 'jennie']);
+    assert.deepEqual(parsed.scene.unresolved, []);
+});
+
 test('group parser accepts labelled transcript fallback and resolves display names', () => {
     const parsed = parseGroupGeneration([
         '（Jennie 把杯子放到茶几上。）',
@@ -143,6 +165,20 @@ test('legacy group context keeps a bounded tail of completed turns', () => {
     assert.equal(selected.at(-1)?.role, 'model');
     assert.match(selected.at(-1)?.content.text || '', /^message 999 /u);
     assert.equal(selected.some(message => message.id?.startsWith('unfinished')), false);
+});
+
+test('new retries ignore all older unanswered user messages without deleting history', () => {
+    const history: ChatMessage[] = [
+        { id: 'answered-user', role: 'user', content: { text: '早晨' } },
+        { id: 'answered-model', role: 'model', content: { text: '早晨呀' } },
+        { id: 'failed-1', role: 'user', content: { text: '第一次失敗' } },
+        { id: 'failed-2', role: 'user', content: { text: '第二次失敗' } },
+    ];
+
+    const completed = trimTrailingUnansweredUserMessages(history);
+
+    assert.deepEqual(completed.map(message => message.id), ['answered-user', 'answered-model']);
+    assert.equal(history.length, 4);
 });
 
 test('room snapshots do not depend on structuredClone and remain independent', () => {

@@ -16,8 +16,8 @@ export interface GroupGenerationResult {
     npcCandidate?: GroupNpcCandidate;
 }
 
-const compact = (value: string | undefined, maxLength = 1600) => {
-    const normalized = (value || '').replace(/\s+/gu, ' ').trim();
+const compact = (value: unknown, maxLength = 1600) => {
+    const normalized = (value == null ? '' : String(value)).replace(/\s+/gu, ' ').trim();
     return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength - 1)}…`;
 };
 
@@ -56,6 +56,12 @@ export const selectLegacyGroupHistory = (
     while (selected[0]?.role !== 'user') selected.shift();
     while (selected.at(-1)?.role !== 'model') selected.pop();
     return selected;
+};
+
+export const trimTrailingUnansweredUserMessages = (history: ChatMessage[]) => {
+    const completed = [...history];
+    while (completed.at(-1)?.role === 'user') completed.pop();
+    return completed;
 };
 
 const memberIdentityBlock = (member: RoomMember, isPresent: boolean) => {
@@ -345,8 +351,11 @@ export const parseGroupGeneration = (
     } | null);
     const knownIds = new Set(room.members.map(member => member.id));
     const presentIds = new Set(room.scene.presentMemberIds);
-    const rawSegments = parsed?.segments || parsed?.messages || [];
+    const rawSegments = Array.isArray(parsed?.segments)
+        ? parsed.segments
+        : Array.isArray(parsed?.messages) ? parsed.messages : [];
     const segments = rawSegments.reduce<ChatSegment[]>((result, segment) => {
+        if (!segment || typeof segment !== 'object') return result;
         const text = compact(segment.text || segment.content || segment.message, 2200);
         if (!text) return result;
         const rawSpeaker = segment.speaker_id ?? segment.sender_id ?? segment.speaker ?? segment.name;
@@ -371,9 +380,15 @@ export const parseGroupGeneration = (
         throw new Error('Group reply did not contain valid member dialogue.');
     }
 
-    const requestedIds = (parsed?.scene?.present_member_ids || room.scene.presentMemberIds)
+    const requestedMemberIds = Array.isArray(parsed?.scene?.present_member_ids)
+        ? parsed.scene.present_member_ids
+        : room.scene.presentMemberIds;
+    const requestedIds = requestedMemberIds
         .filter(id => knownIds.has(id))
         .slice(0, 4);
+    const unresolved = Array.isArray(parsed?.scene?.unresolved)
+        ? parsed.scene.unresolved
+        : Array.isArray(room.scene.unresolved) ? room.scene.unresolved : [];
     const scene: RoomSceneState = {
         ...room.scene,
         location: compact(parsed?.scene?.location, 240) || room.scene.location,
@@ -382,7 +397,7 @@ export const parseGroupGeneration = (
             : room.scene.realityLayer,
         presentMemberIds: requestedIds.length > 0 ? requestedIds : room.scene.presentMemberIds,
         summary: compact(parsed?.scene?.summary, 1200) || room.scene.summary,
-        unresolved: (parsed?.scene?.unresolved || room.scene.unresolved).map(item => compact(item, 240)).filter(Boolean).slice(0, 6),
+        unresolved: unresolved.map(item => compact(item, 240)).filter(Boolean).slice(0, 6),
     };
     const npc = parsed?.npc_candidate;
 

@@ -91,6 +91,7 @@ import {
     parseGroupGeneration,
     resolveRoomMemberPersona,
     selectLegacyGroupHistory,
+    trimTrailingUnansweredUserMessages,
 } from "./groupChat.js";
 import {
     buildNpcContinuityRequirement,
@@ -7926,17 +7927,20 @@ const getRecentChatMessages = (
                 || message.role === 'model'
                 || (!assistantMode && message.role === 'system' && message.content.text?.trim() === SCENE_END_MARKER),
         );
+    const completedHistory = latestUserMessage
+        ? trimTrailingUnansweredUserMessages(completeHistory)
+        : completeHistory;
     let activeSceneStart = 0;
     if (!assistantMode) {
-        for (let index = completeHistory.length - 1; index >= 0; index -= 1) {
-            const message = completeHistory[index];
+        for (let index = completedHistory.length - 1; index >= 0; index -= 1) {
+            const message = completedHistory[index];
             if (message.role === 'system' && message.content.text?.trim() === SCENE_END_MARKER) {
                 activeSceneStart = index;
                 break;
             }
         }
     }
-    const sourceHistory = completeHistory.slice(activeSceneStart);
+    const sourceHistory = completedHistory.slice(activeSceneStart);
     const historyMessages: VeniceMessage[] = [];
 
     sourceHistory.forEach(message => {
@@ -9369,6 +9373,9 @@ const diagnoseChatFailure = (error: unknown, isGroup: boolean): ChatFailureDiagn
     }
     if (/context|token|payload|too large|413/iu.test(detail)) {
         return { code: `${prefix}_CONTEXT`, detail: '這次送出的對話上下文過大。' };
+    }
+    if (/invalid request parameters?|invalid parameters?|bad request|\b400\b/iu.test(detail)) {
+        return { code: `${prefix}_REQUEST`, detail: '聊天服務拒絕了其中一個請求參數。' };
     }
     if (/repeat|similar|repetiti/iu.test(detail)) {
         return { code: `${prefix}_REPETITION`, detail: '回覆與近期內容過度相似，重試後仍未通過。' };
