@@ -77,6 +77,7 @@ import {
     IU_GROUP_ROOM_ID,
     ROOM_MEMBER_LIMIT,
     ROOM_PRESENT_MEMBER_LIMIT,
+    cloneRoomSnapshot,
 } from "./roomManager.js";
 import {
     getChatAttachmentBlob,
@@ -89,6 +90,7 @@ import {
     GroupGenerationResult,
     parseGroupGeneration,
     resolveRoomMemberPersona,
+    selectLegacyGroupHistory,
 } from "./groupChat.js";
 import {
     buildNpcContinuityRequirement,
@@ -5557,7 +5559,7 @@ const beginChatRequest = (
         personaKey,
         conversationKey,
         persona: { ...persona },
-        room: currentRoom ? structuredClone(currentRoom) : undefined,
+        room: currentRoom ? cloneRoomSnapshot(currentRoom) : undefined,
         roomMemberId: currentRoom ? activeRoomMemberId || currentRoom.leadMemberId : undefined,
         mode,
         controller: new AbortController(),
@@ -5683,7 +5685,7 @@ const recoverInterruptedPhotoProposals = (personaKey: string, history: ChatMessa
     return recovered;
 };
 
-const LEGACY_HISTORY_PREVIEW_LIMIT = 240;
+const LEGACY_HISTORY_PREVIEW_LIMIT = 80;
 
 const appendHistoryDivider = (label: string) => {
     const divider = document.createElement('div');
@@ -7912,7 +7914,7 @@ const getRecentChatMessages = (
 
     const linkedLegacyHistory = room?.legacySourcePersonaKey
         && room.legacySourcePersonaKey !== conversationKey
-        ? memoryManager.peekChatHistory(room.legacySourcePersonaKey).slice(-48)
+        ? selectLegacyGroupHistory(memoryManager.peekChatHistory(room.legacySourcePersonaKey))
         : [];
     const completeHistory = [
         ...linkedLegacyHistory,
@@ -9327,6 +9329,64 @@ const approveCharacterPhoto = async (proposalId: string) => {
     }
 };
 
+type ChatFailureDiagnostic = {
+    code: string;
+    detail: string;
+};
+
+const sanitizeChatFailureDetail = (error: unknown) => {
+    const raw = error instanceof Error ? error.message : String(error || 'Unknown error');
+    const withoutSecrets = raw
+        .replace(/Bearer\s+\S+/giu, 'Bearer [hidden]')
+        .replace(/(?:sk-|VENICE_INFERENCE_KEY_)[A-Za-z0-9_-]{12,}/gu, '[hidden]');
+    const withoutModelNames = [
+        VENICE_CHAT_MODEL,
+        VENICE_CHAT_QUALITY_FALLBACK_MODEL,
+        VENICE_CHAT_FALLBACK_MODEL,
+        VENICE_CC_MODEL,
+    ].filter(Boolean).reduce(
+        (text, model) => text.replace(new RegExp(escapeRegExp(model), 'giu'), '聊天服務'),
+        withoutSecrets,
+    );
+    return withoutModelNames.replace(/\s+/gu, ' ').trim().slice(0, 220);
+};
+
+const diagnoseChatFailure = (error: unknown, isGroup: boolean): ChatFailureDiagnostic => {
+    const prefix = isGroup ? 'GROUP' : 'CHAT';
+    const detail = sanitizeChatFailureDetail(error);
+
+    if (detail === CHAT_MODEL_TIMEOUT_ERROR || /timed?\s*out|timeout|504/iu.test(detail)) {
+        return { code: `${prefix}_TIMEOUT`, detail: '聊天服務在等待時間內未完成回覆。' };
+    }
+    if (/quota|storage|儲存空間|localStorage|exceeded/iu.test(detail)) {
+        return { code: `${prefix}_STORAGE`, detail: '手機瀏覽器儲存空間不足，群組狀態未能完整寫入。' };
+    }
+    if (/429|rate.?limit|too many requests/iu.test(detail)) {
+        return { code: `${prefix}_RATE_LIMIT`, detail: '聊天服務暫時限制了請求頻率。' };
+    }
+    if (/failed to fetch|network|502|503|upstream|connection/iu.test(detail)) {
+        return { code: `${prefix}_NETWORK`, detail: '手機與聊天服務之間的連線失敗。' };
+    }
+    if (/context|token|payload|too large|413/iu.test(detail)) {
+        return { code: `${prefix}_CONTEXT`, detail: '這次送出的對話上下文過大。' };
+    }
+    if (/repeat|similar|repetiti/iu.test(detail)) {
+        return { code: `${prefix}_REPETITION`, detail: '回覆與近期內容過度相似，重試後仍未通過。' };
+    }
+    if (isGroup && /valid member dialogue|group reply|json|schema|speaker|segment|format/iu.test(detail)) {
+        return { code: 'GROUP_FORMAT', detail: '群組回覆格式不完整，系統未能辨認發言者。' };
+    }
+
+    return {
+        code: `${prefix}_UNKNOWN`,
+        detail: detail || '瀏覽器沒有提供更多技術資料。',
+    };
+};
+
+const formatChatFailureMessage = (diagnostic: ChatFailureDiagnostic) => (
+    `這次未能完成回覆（錯誤代碼：${diagnostic.code}）。${diagnostic.detail} 請把這段錯誤告訴我。`
+);
+
 const getResponse = async (
     request: ActiveChatRequest,
     triggeringMessage: string,
@@ -9358,12 +9418,19 @@ const getResponse = async (
             ? { text: generated }
             : { text: generated.text, segments: generated.segments };
         if (typeof generated !== 'string' && request.room) {
-            roomManager.updateRoom(request.room.id, room => {
-                room.scene = generated.scene;
-            });
+            try {
+                roomManager.updateRoom(request.room.id, room => {
+                    room.scene = generated.scene;
+                });
+            } catch (error) {
+                // A nearly full mobile storage quota must not swallow a valid live reply.
+                console.warn('Unable to persist the latest room scene.', error);
+            }
             request.room.scene = generated.scene;
             if (currentRoom?.id === request.room.id) {
-                currentRoom = roomManager.getRoom(request.room.id) || currentRoom;
+                const storedRoom = roomManager.getRoom(request.room.id);
+                currentRoom = storedRoom || { ...currentRoom, scene: generated.scene };
+                currentRoom.scene = generated.scene;
             }
         }
         memoryManager.addMessage(request.conversationKey, 'model', botContent);
@@ -9424,7 +9491,7 @@ const getResponse = async (
             handleAuthRequired();
             return;
         }
-        const message = '這次沒有順利生成回覆，請再試一次。';
+        const message = formatChatFailureMessage(diagnoseChatFailure(error, Boolean(request.room)));
 
         finishChatRequest(request, 'error');
         if (currentConversationKey === request.conversationKey) {
@@ -9845,6 +9912,22 @@ const sendMessage = async ({
     request.attachments = attachmentBundle.attachments;
     request.attachmentParts = attachmentBundle.contentParts;
     await getResponse(request, userMessage, assistantMode ? selectedAssistantModel : undefined);
+};
+
+const dispatchSendMessage = (options: Parameters<typeof sendMessage>[0] = {}) => {
+    void sendMessage(options).catch(error => {
+        console.error('Unexpected send failure:', error);
+        if (activeChatRequest) cancelActiveChatRequest();
+        const diagnosed = diagnoseChatFailure(error, Boolean(currentRoom));
+        const diagnostic = diagnosed.code.endsWith('_UNKNOWN')
+            ? { ...diagnosed, code: currentRoom ? 'GROUP_PREPARE' : 'CHAT_PREPARE' }
+            : diagnosed;
+        const message = formatChatFailureMessage(diagnostic);
+        applyChatRuntimeState('error');
+        updateSendButtonState();
+        showError(message);
+        if (currentConversationKey) appendMessage({ text: `[系統] ${message}` }, 'system');
+    });
 };
 
 function showDateProposal(location: string, duration: number) {
@@ -10850,7 +10933,7 @@ const confirmCreateGroup = () => {
             roomManager.addMember(room.id, {
                 id: `member_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`,
                 sourcePersonaKey: key,
-                persona: structuredClone(persona),
+                persona: cloneRoomSnapshot(persona),
                 joinedAt: Date.now(),
                 soul: [],
                 memories: [],
@@ -11123,7 +11206,7 @@ const generatePhotoFromPrompt = async () => {
     messageInput.value = requestText;
     resetMessageInput();
     updateSendButtonState();
-    await sendMessage({
+    dispatchSendMessage({
         characterPhotoRequest: true,
         photoSenderMemberId: senderMemberId,
         photoSubjectMemberIds: subjectMemberIds,
@@ -11345,12 +11428,12 @@ const setupEventListeners = () => {
     backButton.addEventListener('click', navigateBackToSelectionView);
     window.addEventListener('popstate', handleBrowserPopState);
     sendButton.addEventListener('click', () => {
-        void sendMessage();
+        dispatchSendMessage();
     });
     messageInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            sendMessage();
+            dispatchSendMessage();
         }
     });
 

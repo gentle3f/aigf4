@@ -1,4 +1,4 @@
-import { ChatSegment, Content, Persona } from './managers.js';
+import { ChatMessage, ChatSegment, Content, Persona } from './managers.js';
 import { ChatRoom, RoomMember, RoomSceneState } from './roomManager.js';
 import { VeniceJsonSchemaResponseFormat } from './venice.js';
 
@@ -19,6 +19,43 @@ export interface GroupGenerationResult {
 const compact = (value: string | undefined, maxLength = 1600) => {
     const normalized = (value || '').replace(/\s+/gu, ' ').trim();
     return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength - 1)}…`;
+};
+
+export const LEGACY_GROUP_HISTORY_MESSAGE_LIMIT = 24;
+export const LEGACY_GROUP_HISTORY_CHAR_BUDGET = 18_000;
+
+export const selectLegacyGroupHistory = (
+    history: ChatMessage[],
+    messageLimit = LEGACY_GROUP_HISTORY_MESSAGE_LIMIT,
+    charBudget = LEGACY_GROUP_HISTORY_CHAR_BUDGET,
+) => {
+    const conversational = history.filter(message => (
+        (message.role === 'user' || message.role === 'model')
+        && Boolean(message.content?.text?.trim())
+    ));
+    let lastCompletedIndex = -1;
+    for (let index = conversational.length - 1; index >= 0; index -= 1) {
+        if (conversational[index].role === 'model') {
+            lastCompletedIndex = index;
+            break;
+        }
+    }
+    if (lastCompletedIndex < 0) return [];
+
+    const selected: ChatMessage[] = [];
+    let usedChars = 0;
+    for (let index = lastCompletedIndex; index >= 0 && selected.length < messageLimit; index -= 1) {
+        const message = conversational[index];
+        const weight = (message.content.text || '').length + 24;
+        if (selected.length >= 2 && usedChars + weight > charBudget) break;
+        selected.push(message);
+        usedChars += weight;
+    }
+
+    selected.reverse();
+    while (selected[0]?.role !== 'user') selected.shift();
+    while (selected.at(-1)?.role !== 'model') selected.pop();
+    return selected;
 };
 
 const memberIdentityBlock = (member: RoomMember, isPresent: boolean) => {

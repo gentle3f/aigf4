@@ -266,7 +266,9 @@ const memberMemories = (memberId: string): RoomMemoryEntry[] => {
     ];
 };
 
-const cloneRoom = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+// Keep room snapshots compatible with mobile browsers that do not expose structuredClone.
+export const cloneRoomSnapshot = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+const cloneRoom = cloneRoomSnapshot;
 
 const sanitizeFileName = (value: string) => value.replace(/[<>:"/\\|?*\u0000-\u001F]/gu, '_').trim() || 'character';
 

@@ -3,8 +3,10 @@ import test from 'node:test';
 import {
     buildGroupSystemPrompt,
     parseGroupGeneration,
+    selectLegacyGroupHistory,
 } from '../groupChat.js';
-import { ChatRoom, RoomManager, RoomMember } from '../roomManager.js';
+import { ChatMessage } from '../managers.js';
+import { ChatRoom, cloneRoomSnapshot, RoomManager, RoomMember } from '../roomManager.js';
 
 const member = (id: string, name: string): RoomMember => ({
     id,
@@ -119,6 +121,38 @@ test('group parser rejects dialogue spoken only by an absent member', () => {
         },
         npc_candidate: null,
     }), createRoom()), /valid member dialogue/i);
+});
+
+test('legacy group context keeps a bounded tail of completed turns', () => {
+    const history: ChatMessage[] = Array.from({ length: 1000 }, (_, index) => ({
+        id: `message-${index}`,
+        role: index % 2 === 0 ? 'user' : 'model',
+        content: { text: `message ${index} ${'x'.repeat(1200)}` },
+    }));
+    history.push(
+        { id: 'unfinished-1', role: 'user', content: { text: 'unanswered old command' } },
+        { id: 'unfinished-2', role: 'user', content: { text: 'another unanswered old command' } },
+    );
+
+    const selected = selectLegacyGroupHistory(history);
+    const selectedChars = selected.reduce((total, message) => total + (message.content.text || '').length + 24, 0);
+
+    assert.ok(selected.length <= 24);
+    assert.ok(selectedChars <= 18_000);
+    assert.equal(selected[0]?.role, 'user');
+    assert.equal(selected.at(-1)?.role, 'model');
+    assert.match(selected.at(-1)?.content.text || '', /^message 999 /u);
+    assert.equal(selected.some(message => message.id?.startsWith('unfinished')), false);
+});
+
+test('room snapshots do not depend on structuredClone and remain independent', () => {
+    const room = createRoom();
+    const snapshot = cloneRoomSnapshot(room);
+    snapshot.scene.location = 'a different room';
+    snapshot.members[0].persona.name = 'Changed';
+
+    assert.equal(room.scene.location, 'living room');
+    assert.equal(room.members[0].persona.name, 'IU');
 });
 
 test('curated IU group exists even before a legacy IU chat is imported', () => {
