@@ -7139,6 +7139,15 @@ const appendMessage = (
             line.append(speaker, text);
             storyBubble.appendChild(line);
         });
+        if (content.photoProposal) {
+            storyBubble.appendChild(createPhotoProposalCard(content.photoProposal));
+        }
+        if (content.imageUrl || content.imageAssetId) {
+            storyBubble.appendChild(createChatImageAttachment(content, sender));
+        }
+        content.attachments?.forEach(attachment => {
+            storyBubble.appendChild(createStoredChatAttachmentCard(attachment));
+        });
         messageWrapper.appendChild(storyBubble);
     } else if (isSystemMessage) {
         messageWrapper = document.createElement('div');
@@ -8666,15 +8675,31 @@ const extractPhotoProposalSection = (text: string, tag: string) => {
 };
 
 const parseCharacterPhotoProposalDraft = (text: string): CharacterPhotoProposalDraft | null => {
-    const reply = cleanVeniceChatReply(extractPhotoProposalSection(text, 'reply'));
-    const scenePrompt = cleanGeneratedPhotoPrompt(extractPhotoProposalSection(text, 'prompt')
+    const unfenced = text
+        .replace(/^\s*```(?:json|text)?\s*/iu, '')
+        .replace(/\s*```\s*$/iu, '')
+        .trim();
+    let jsonDraft: Record<string, unknown> | null = null;
+    try {
+        const parsed = JSON.parse(unfenced) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            jsonDraft = parsed as Record<string, unknown>;
+        }
+    } catch {
+        // Older or fallback models may still return the legacy XML envelope.
+    }
+    const readJsonString = (key: string) => typeof jsonDraft?.[key] === 'string'
+        ? (jsonDraft[key] as string).trim()
+        : '';
+    const reply = cleanVeniceChatReply(readJsonString('reply') || extractPhotoProposalSection(text, 'reply'));
+    const scenePrompt = cleanGeneratedPhotoPrompt((readJsonString('prompt') || extractPhotoProposalSection(text, 'prompt'))
         .replace(/^```(?:text)?\s*|\s*```$/giu, '')
         .trim());
-    const favoriteScenePrompt = cleanGeneratedPhotoPrompt(extractPhotoProposalSection(text, 'favorite_prompt')
+    const favoriteScenePrompt = cleanGeneratedPhotoPrompt((readJsonString('favorite_prompt') || extractPhotoProposalSection(text, 'favorite_prompt'))
         .replace(/^```(?:text)?\s*|\s*```$/giu, '')
         .trim());
-    const caption = cleanVeniceChatReply(extractPhotoProposalSection(text, 'caption'));
-    const rawRatio = extractPhotoProposalSection(text, 'ratio');
+    const caption = cleanVeniceChatReply(readJsonString('caption') || extractPhotoProposalSection(text, 'caption'));
+    const rawRatio = readJsonString('ratio') || extractPhotoProposalSection(text, 'ratio');
     const allowedRatios: CharacterPhotoProposal['aspectRatio'][] = ['1:1', '3:4', '4:5', '16:9', '9:16'];
     const aspectRatio = allowedRatios.includes(rawRatio as CharacterPhotoProposal['aspectRatio'])
         ? rawRatio as CharacterPhotoProposal['aspectRatio']
@@ -8831,7 +8856,7 @@ const buildCharacterPhotoProposal = async (
         : usesPublicIdentity && publicIdentity
         ? [
             'No reference image will be supplied. The app will add a user-confirmed public identity block separately.',
-            `Inside <prompt>, begin exactly with "${publicIdentity.canonicalName}" and thereafter refer to the subject consistently. Describe the requested scene, pose, action, expression, clothing or requested state, setting, lighting, framing, viewpoint, and relevant objects.`,
+            `Inside the prompt field, begin exactly with "${publicIdentity.canonicalName}" and thereafter refer to the subject consistently. Describe the requested scene, pose, action, expression, clothing or requested state, setting, lighting, framing, viewpoint, and relevant objects.`,
             publicIdentity.kind === 'fictional_character'
                 ? 'Keep the scene compatible with the character’s canonical franchise design and original source-medium visual language; do not turn the character into a generic photorealistic person.'
                 : 'Do not replace the named public figure with a generic nationality, ethnicity, age group, or lookalike description.',
@@ -8839,12 +8864,12 @@ const buildCharacterPhotoProposal = async (
         : useAvatarReference
         ? [
             'A reference portrait will be attached later and is the only source of visual identity.',
-            `Inside <prompt>, begin exactly with "${request.persona.name}" and thereafter refer to the subject only as "she". Describe only the requested scene, pose, action, expression, clothing or requested state, setting, lighting, camera framing, viewpoint, and relevant objects.`,
+            `Inside the prompt field, begin exactly with "${request.persona.name}" and thereafter refer to the subject only as "she". Describe only the requested scene, pose, action, expression, clothing or requested state, setting, lighting, camera framing, viewpoint, and relevant objects.`,
             'Do not infer or state her age, ethnicity, nationality, facial features, skin tone, eye appearance, hair identity, or body type unless the newest user message explicitly requests that exact visible change.',
             'Never replace her identity with a generic demographic description. The app will add the identity-lock instruction separately.',
         ]
         : [
-            `No reference image will be supplied. Inside <prompt>, identify ${request.persona.name} by name and use the established character appearance where useful.`,
+            `No reference image will be supplied. Inside the prompt field, identify ${request.persona.name} by name and use the established character appearance where useful.`,
             'Describe the subject count and identity, visible pose or action, expression, clothing or requested state, setting, lighting, camera framing, viewpoint, and relevant objects.',
         ];
     const systemPrompt = [
@@ -8867,24 +8892,24 @@ const buildCharacterPhotoProposal = async (
         'The proposal may be ordinary, romantic, fantasy, or explicitly adult according to the user request and established context. Preserve direct wording and intent; do not make an ordinary request sexual, and do not sanitize an explicit adult request.',
         favoritePrompt ? [
             `SAVED FAVORITE PHOTO INSTRUCTION: ${favoritePrompt}`,
-            '- <prompt> must be the clean baseline based only on the newest request and current-moment continuity; do not apply the saved favorite instruction there.',
-            '- <favorite_prompt> must be a second complete image prompt that integrates every compatible part of the saved favorite instruction into the same current moment.',
+            '- The prompt field must be the clean baseline based only on the newest request and current-moment continuity; do not apply the saved favorite instruction there.',
+            '- The favorite_prompt field must be a second complete image prompt that integrates every compatible part of the saved favorite instruction into the same current moment.',
             '- Current visible continuity and the newest explicit request outrank the saved favorite instruction. Silently adapt or omit only the conflicting favorite detail instead of writing both alternatives.',
             '- The two prompts must each stand alone. Do not mention merging, conflicts, defaults, options, checkboxes, omitted details, or these rules inside either prompt.',
             '- Never describe a discarded alternative negatively. If all favorite details conflict, make <favorite_prompt> identical to <prompt>. The final image prompt must contain only the one positive visual truth the image model should draw.',
         ].join('\n') : '',
         ...imagePromptIdentityRules,
         'The English image prompt must describe one still image. Do not invent a new major event or a user action.',
+        'Do not merely translate, quote, or paraphrase the user request. Turn it into a production-ready visual prompt by resolving the current environment, clothing, facial expression, body pose, movement, camera angle, framing, lighting, and relevant objects from the latest conversation.',
+        'When a visible detail is not established and the user leaves it to the character, choose one specific detail that fits the character and current moment. Never leave placeholders such as "as requested", "appropriate clothing", "same environment", or unresolved options.',
         'Choose one definite composition yourself. Do not offer multiple unresolved clothing, pose, expression, or scene options; the visible reply and English prompt must describe the same single choice.',
         'The reply and later caption must use the character’s established Traditional Chinese regional voice. The reply must briefly describe that one chosen photo and naturally ask the user to approve it without mentioning AI, models, policy, generation, or internal prompts.',
-        'Return only the following XML blocks and no other text:',
-        '<reply>in-character approval question</reply>',
-        `<prompt>English still-image ${useAvatarReference ? 'edit instruction, 25 to 70 words' : 'scene prompt, 45 to 100 words'}</prompt>`,
+        'Return only one JSON object with these fields: reply, prompt, favorite_prompt, caption, ratio.',
+        `prompt must be a complete English still-image ${useAvatarReference ? 'edit instruction of 25 to 70 words' : 'scene prompt of 45 to 100 words'}.`,
         favoritePrompt
-            ? `<favorite_prompt>second complete English still-image ${useAvatarReference ? 'edit instruction' : 'scene prompt'} with the compatible saved favorite instruction already reconciled</favorite_prompt>`
-            : '',
-        '<caption>short in-character line to send together with the finished photo</caption>',
-        '<ratio>one of 1:1, 3:4, 4:5, 16:9, 9:16</ratio>',
+            ? 'favorite_prompt must be a second complete English prompt with the compatible saved favorite instruction already reconciled.'
+            : 'favorite_prompt must be an empty string.',
+        'ratio must be exactly one of 1:1, 3:4, 4:5, 16:9, 9:16.',
     ].join('\n\n');
     const models = Array.from(new Set([
         request.personaKey === 'cc' ? VENICE_CC_MODEL : VENICE_CHAT_MODEL,
@@ -8916,10 +8941,29 @@ const buildCharacterPhotoProposal = async (
                 temperature: 0.76,
                 topP: 0.92,
                 repetitionPenalty: 1.06,
+                responseFormat: {
+                    type: 'json_schema',
+                    json_schema: {
+                        name: 'character_photo_proposal',
+                        strict: true,
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            required: ['reply', 'prompt', 'favorite_prompt', 'caption', 'ratio'],
+                            properties: {
+                                reply: { type: 'string' },
+                                prompt: { type: 'string' },
+                                favorite_prompt: { type: 'string' },
+                                caption: { type: 'string' },
+                                ratio: { type: 'string', enum: ['1:1', '3:4', '4:5', '16:9', '9:16'] },
+                            },
+                        },
+                    },
+                },
                 signal: request.controller.signal,
             });
             const candidate = parseCharacterPhotoProposalDraft(result.text);
-            if (!candidate || (favoritePrompt && !candidate.favoriteScenePrompt)) {
+            if (!candidate) {
                 throw new Error(`Invalid photo proposal from ${model}.`);
             }
             draft = candidate;
