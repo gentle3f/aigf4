@@ -717,6 +717,7 @@ const VIDEO_ADULT_CONFIRM_STORAGE_KEY = 'veniceVideoAdultConfirmed';
 const VIDEO_PENDING_JOB_STORAGE_KEY = 'veniceVideoPendingJobV1';
 const RANDOM_PERSONA_VARIATION_HISTORY_KEY = 'aigf4RandomPersonaVariationsV2';
 const CHARACTER_PHOTO_PROMPT_MAX_LENGTH = 1500;
+const CHARACTER_PHOTO_EDITOR_MAX_LENGTH = 7500;
 const VIDEO_PROMPT_OPTIMIZER_TIMEOUT_MS = 45_000;
 const VIDEO_PROMPT_OPTIMIZER_ATTEMPT_TIMEOUT_MS = 15_000;
 const VIDEO_POLL_INTERVAL_MS = 5_000;
@@ -6412,7 +6413,7 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
         const editor = document.createElement('textarea');
         editor.className = 'character-photo-prompt-editor';
         editor.value = proposal.prompt;
-        editor.maxLength = CHARACTER_PHOTO_PROMPT_MAX_LENGTH;
+        editor.maxLength = CHARACTER_PHOTO_EDITOR_MAX_LENGTH;
 
         const editorActions = document.createElement('div');
         editorActions.className = 'character-photo-actions';
@@ -6425,8 +6426,8 @@ const createPhotoProposalCard = (proposal: CharacterPhotoProposal) => {
                 editor.reportValidity();
                 return;
             }
-            if (nextPrompt.length > CHARACTER_PHOTO_PROMPT_MAX_LENGTH) {
-                editor.setCustomValidity(`Prompt 不可超過 ${CHARACTER_PHOTO_PROMPT_MAX_LENGTH} 字元。`);
+            if (nextPrompt.length > CHARACTER_PHOTO_EDITOR_MAX_LENGTH) {
+                editor.setCustomValidity(`Prompt 不可超過 ${CHARACTER_PHOTO_EDITOR_MAX_LENGTH} 字元。`);
                 editor.reportValidity();
                 return;
             }
