@@ -728,7 +728,7 @@ type AppHistoryState =
     | { view: 'image' }
     | { view: 'video' };
 type MimicBuildMode = 'transcript' | 'manual';
-type ChatMode = 'character' | 'assistant' | 'god';
+type ChatMode = 'character' | 'assistant' | 'god' | 'photo';
 type ActiveChatRequest = {
     id: number;
     personaKey: string;
@@ -8926,13 +8926,44 @@ const buildCharacterPhotoProposal = async (
         } catch (error) {
             if (isAbortError(error)) throw error;
             lastError = error instanceof Error ? error : new Error(String(error));
+            if (modelIndex === models.length - 1) {
+                console.warn('Using a local photo proposal because the model proposal was unavailable.', lastError);
+                const subjectNames = subjectPersonas
+                    .map(persona => persona.publicIdentity?.canonicalName || persona.name)
+                    .join(', ');
+                const currentScene = request.room
+                    ? [
+                        request.room.scene.location ? `Current location: ${request.room.scene.location}.` : '',
+                        request.room.scene.summary ? `Current moment: ${request.room.scene.summary}.` : '',
+                    ].filter(Boolean).join(' ')
+                    : '';
+                draft = {
+                    reply: request.personaKey === 'cc'
+                        ? '好呀，我照你講嘅內容構思咗張相。你睇吓下面個 Prompt 啱唔啱，確認後我先影。'
+                        : '好，我已經按照現在的情境構思好照片了。你看看下面的 Prompt 是否正確，確認後我才拍。',
+                    scenePrompt: [
+                        `One coherent still image featuring exactly: ${subjectNames}.`,
+                        currentScene,
+                        `Follow this exact user request: ${latestUserMessage}`,
+                        'Preserve the established current location, clothing, visible objects, actions, and relationships unless the user explicitly asks to change them.',
+                    ].filter(Boolean).join(' '),
+                    caption: request.personaKey === 'cc' ? '影好喇，畀你。' : '拍好了，給你。',
+                    aspectRatio: '3:4',
+                };
+            }
         }
     }
 
     if (!draft) throw lastError || new Error('角色未能整理照片草稿。');
     const mode: VeniceImageMode = useAvatarReference ? 'edit' : 'generate';
-    await loadImageModels(mode);
-    const imageModel = getPreferredCharacterPhotoModel(mode);
+    let imageModel = getPreferredCharacterPhotoModel(mode);
+    try {
+        await loadImageModels(mode);
+        imageModel = getPreferredCharacterPhotoModel(mode);
+    } catch (error) {
+        // Discovery is retried on approval; failure here must not hide the prompt card.
+        console.warn('Image model discovery deferred until photo approval.', error);
+    }
     const normalizeScenePrompt = (value: string) => useAvatarReference
         ? replaceGenericReferenceSubject(value, request.persona.name)
         : value;
@@ -8998,6 +9029,72 @@ const buildCharacterPhotoProposal = async (
             resolution: imageModel?.constraints.defaultResolution || imageModel?.constraints.resolutions?.[0],
             seed,
             estimatedPriceUsd: getImageModelPrice(imageModel, imageModel?.constraints.defaultResolution),
+        },
+    };
+};
+
+const buildEmergencyCharacterPhotoProposal = (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+): { text: string; proposal: CharacterPhotoProposal } => {
+    const subjectMembers = request.room
+        ? request.room.members.filter(member => request.photoSubjectMemberIds?.includes(member.id))
+        : [];
+    const subjectPersonas = subjectMembers.length > 0
+        ? subjectMembers.map(member => member.persona)
+        : [request.persona];
+    const isMultiSubject = subjectPersonas.length > 1;
+    const usesAnyPublicIdentity = subjectPersonas.some(usesConfirmedPublicIdentity);
+    const useAvatarReference = Boolean(
+        !isMultiSubject
+        && !usesConfirmedPublicIdentity(request.persona)
+        && request.persona.avatarUrl
+        && !request.persona.avatarUrl.startsWith('generating_'),
+    );
+    const currentScene = request.room
+        ? [
+            request.room.scene.location ? `Current location: ${request.room.scene.location}.` : '',
+            request.room.scene.summary ? `Current moment: ${request.room.scene.summary}.` : '',
+        ].filter(Boolean).join(' ')
+        : '';
+    const scenePrompt = trimPhotoPromptSection([
+        currentScene,
+        `Follow this exact user request: ${latestUserMessage}`,
+        'Keep the image internally coherent and preserve established current-moment continuity unless the request explicitly changes it.',
+    ].filter(Boolean).join(' '), 760);
+    const basePrompt = isMultiSubject
+        ? trimPhotoPromptSection([
+            `Create one coherent still image with exactly ${subjectPersonas.length} distinct people:`,
+            ...subjectPersonas.map(persona => {
+                const identity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
+                return identity
+                    ? `${identity.canonicalName} (${identity.visualPrompt})`
+                    : `${persona.name} (${persona.avatarPrompt || persona.description})`;
+            }),
+            scenePrompt,
+            'Keep every named identity, face, body, clothing, pose, and action separate. No extra or omitted people, merged faces, captions, logos, or watermarks.',
+        ].join(' '), CHARACTER_PHOTO_PROMPT_MAX_LENGTH)
+        : buildCharacterPhotoPrompt(request.persona, scenePrompt, useAvatarReference);
+
+    return {
+        text: request.personaKey === 'cc'
+            ? '好呀，我照你講嘅內容整好咗個照片 Prompt。你睇吓啱唔啱，確認後我先影。'
+            : '好，我已經按照現在的情境整理好照片 Prompt。你看看是否正確，確認後我才拍。',
+        proposal: {
+            id: crypto.randomUUID?.() || `photo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+            prompt: basePrompt,
+            basePrompt,
+            scenePrompt,
+            caption: request.personaKey === 'cc' ? '影好喇，畀你。' : '拍好了，給你。',
+            aspectRatio: '3:4',
+            status: 'pending',
+            createdAt: Date.now(),
+            useAvatarReference,
+            identityMode: usesAnyPublicIdentity
+                ? 'public_identity'
+                : useAvatarReference ? 'avatar_reference' : 'persona_description',
+            senderMemberId: request.photoSenderMemberId,
+            subjectMemberIds: request.photoSubjectMemberIds,
         },
     };
 };
@@ -9464,8 +9561,15 @@ const getResponse = async (
     hideError();
 
     try {
-        if (request.mode === 'character' && request.characterPhotoRequest) {
-            const result = await buildCharacterPhotoProposal(request, triggeringMessage);
+        if (request.mode === 'photo' || (request.mode === 'character' && request.characterPhotoRequest)) {
+            let result: { text: string; proposal: CharacterPhotoProposal };
+            try {
+                result = await buildCharacterPhotoProposal(request, triggeringMessage);
+            } catch (error) {
+                if (isAbortError(error)) throw error;
+                console.warn('Photo proposal generation failed; showing an editable local proposal.', error);
+                result = buildEmergencyCharacterPhotoProposal(request, triggeringMessage);
+            }
             if (!isActiveChatRequest(request)) return;
             const botContent: Content = { text: result.text, photoProposal: result.proposal };
             memoryManager.addMessage(request.conversationKey, 'model', botContent, {
@@ -9700,7 +9804,7 @@ const continuePendingPhotoTurn = async (
     const request = beginChatRequest(
         currentPersonaKey,
         currentPersona as Persona,
-        'character',
+        'photo',
         currentConversationKey,
     );
     request.characterPhotoRequest = true;
@@ -9974,7 +10078,7 @@ const sendMessage = async ({
     const request = beginChatRequest(
         personaKey,
         persona,
-        assistantMode ? 'assistant' : 'character',
+        assistantMode ? 'assistant' : characterPhotoRequest ? 'photo' : 'character',
         conversationKey,
     );
     request.characterPhotoRequest = !assistantMode && characterPhotoRequest;
