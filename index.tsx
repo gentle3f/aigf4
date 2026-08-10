@@ -8674,7 +8674,10 @@ const extractPhotoProposalSection = (text: string, tag: string) => {
     return text.match(new RegExp(`<${escapedTag}>\\s*([\\s\\S]*?)\\s*</${escapedTag}>`, 'iu'))?.[1]?.trim() || '';
 };
 
-const parseCharacterPhotoProposalDraft = (text: string): CharacterPhotoProposalDraft | null => {
+const parseCharacterPhotoProposalDraft = (
+    text: string,
+    personaKey?: string,
+): CharacterPhotoProposalDraft | null => {
     const unfenced = text
         .replace(/^\s*```(?:json|text)?\s*/iu, '')
         .replace(/\s*```\s*$/iu, '')
@@ -8691,15 +8694,25 @@ const parseCharacterPhotoProposalDraft = (text: string): CharacterPhotoProposalD
     const readJsonString = (key: string) => typeof jsonDraft?.[key] === 'string'
         ? (jsonDraft[key] as string).trim()
         : '';
-    const reply = cleanVeniceChatReply(readJsonString('reply') || extractPhotoProposalSection(text, 'reply'));
+    const fallbackReply = personaKey === 'cc'
+        ? '好呀，我按住而家嘅情境諗好咗點影。你睇吓下面個 Prompt 啱唔啱，確認後我先影。'
+        : '好，我已經按照現在的情境構思好照片了。你看看下面的 Prompt 是否正確，確認後我才拍。';
+    const fallbackCaption = personaKey === 'cc' ? '影好喇，畀你。' : '拍好了，給你。';
+    const reply = cleanVeniceChatReply(
+        readJsonString('reply') || extractPhotoProposalSection(text, 'reply') || fallbackReply,
+    );
     const scenePrompt = cleanGeneratedPhotoPrompt((readJsonString('prompt') || extractPhotoProposalSection(text, 'prompt'))
         .replace(/^```(?:text)?\s*|\s*```$/giu, '')
         .trim());
     const favoriteScenePrompt = cleanGeneratedPhotoPrompt((readJsonString('favorite_prompt') || extractPhotoProposalSection(text, 'favorite_prompt'))
         .replace(/^```(?:text)?\s*|\s*```$/giu, '')
         .trim());
-    const caption = cleanVeniceChatReply(readJsonString('caption') || extractPhotoProposalSection(text, 'caption'));
-    const rawRatio = readJsonString('ratio') || extractPhotoProposalSection(text, 'ratio');
+    const caption = cleanVeniceChatReply(
+        readJsonString('caption') || extractPhotoProposalSection(text, 'caption') || fallbackCaption,
+    );
+    const rawRatio = readJsonString('ratio')
+        || readJsonString('aspect_ratio')
+        || extractPhotoProposalSection(text, 'ratio');
     const allowedRatios: CharacterPhotoProposal['aspectRatio'][] = ['1:1', '3:4', '4:5', '16:9', '9:16'];
     const aspectRatio = allowedRatios.includes(rawRatio as CharacterPhotoProposal['aspectRatio'])
         ? rawRatio as CharacterPhotoProposal['aspectRatio']
@@ -8962,7 +8975,7 @@ const buildCharacterPhotoProposal = async (
                 },
                 signal: request.controller.signal,
             });
-            const candidate = parseCharacterPhotoProposalDraft(result.text);
+            const candidate = parseCharacterPhotoProposalDraft(result.text, request.personaKey);
             if (!candidate) {
                 throw new Error(`Invalid photo proposal from ${model}.`);
             }
