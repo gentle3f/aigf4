@@ -6804,7 +6804,6 @@ const createPhotoIntentCard = (proposal: NonNullable<Content['photoIntent']>) =>
             subjectMemberIds,
         });
         if (senderMemberId) selectActiveRoomMember(senderMemberId);
-        startChat(conversationKey, null, 'skip');
         await continuePendingPhotoTurn(proposal.requestText, senderMemberId, subjectMemberIds);
     });
     const decline = document.createElement('button');
@@ -8765,7 +8764,7 @@ const buildCharacterPhotoPrompt = (
             'Facial identity preservation is the highest priority, above pose, styling, clothing, background, or prompt aesthetics. If any requested change conflicts with likeness, preserve likeness.',
             'Treat the input image as identity evidence, not merely a style reference. Preserve the exact facial proportions and geometry, face shape, eyes and spacing, brows, nose, lips, jawline, skin details, hairline, and every distinctive feature.',
             'Do not beautify into a different face, average the subject into a generic East Asian appearance, alter apparent age, or borrow facial traits from the requested setting.',
-            'Copy every unspecified physical detail from the reference image instead of inferring it from text.',
+            'Copy only identity-defining physical details from the reference image instead of inferring them from text. Clothing, accessories, styling, pose, and surroundings must follow the requested scene and current conversation, and are not locked to the reference portrait.',
             'Keep the face sufficiently visible, sharp, naturally lit, and unobstructed so the same identity remains immediately recognizable.',
             `Change only the requested scene, pose, expression, clothing, camera, and surroundings: ${scene}`,
             qualityInstruction,
@@ -9826,10 +9825,12 @@ const sendMessage = async ({
     characterPhotoRequest = false,
     photoSenderMemberId,
     photoSubjectMemberIds = [],
+    messageText,
 }: {
     characterPhotoRequest?: boolean;
     photoSenderMemberId?: string;
     photoSubjectMemberIds?: string[];
+    messageText?: string;
 } = {}) => {
     if (USES_VENICE_PROXY_AUTH && !isUnlocked) {
         handleAuthRequired('\u8acb\u5148\u8f38\u5165\u5bc6\u78bc\u5f8c\u518d\u4f7f\u7528\u804a\u5929\u3002');
@@ -9848,7 +9849,7 @@ const sendMessage = async ({
         return;
     }
 
-    const typedMessage = messageInput.value.trim();
+    const typedMessage = (messageText ?? messageInput.value).trim();
     if (!typedMessage && pendingChatAttachments.length === 0) return;
     const userMessage = typedMessage || '請查看附件。';
 
@@ -11301,13 +11302,11 @@ const generatePhotoFromPrompt = async () => {
     }
     if (senderMemberId) selectActiveRoomMember(senderMemberId);
     closePhotoPromptModal();
-    messageInput.value = requestText;
-    resetMessageInput();
-    updateSendButtonState();
-    dispatchSendMessage({
+    await sendMessage({
         characterPhotoRequest: true,
         photoSenderMemberId: senderMemberId,
         photoSubjectMemberIds: subjectMemberIds,
+        messageText: requestText,
     });
 };
 
