@@ -9,6 +9,7 @@ import {
     Interest,
     MemoryManager,
     Persona,
+    PersonaMemoryEntry,
     POLICY_VIOLATION,
     PublicIdentity,
     cleanAiResponse,
@@ -492,6 +493,7 @@ const openRoomMemoryBtn = document.getElementById('open-room-memory-btn') as HTM
 const exportRoomBtn = document.getElementById('export-room-btn') as HTMLButtonElement;
 const roomMemoryModal = document.getElementById('room-memory-modal')!;
 const closeRoomMemoryBtn = document.getElementById('close-room-memory') as HTMLButtonElement;
+const roomMemoryTitle = document.getElementById('room-memory-title')!;
 const memoryMemberTabs = document.getElementById('memory-member-tabs')!;
 const memorySoulTab = document.getElementById('memory-soul-tab') as HTMLButtonElement;
 const memoryEventTab = document.getElementById('memory-event-tab') as HTMLButtonElement;
@@ -683,6 +685,7 @@ let pendingVideoJob: PersistedVideoJob | null = null;
 let videoLastProgressIndex = -1;
 let isRandomRecruiting = false;
 const roomSummaryInFlight = new Set<string>();
+const personaSummaryInFlight = new Set<string>();
 let chatSearchMatches: HTMLElement[] = [];
 let chatSearchMatchIndex = -1;
 
@@ -6704,10 +6707,12 @@ const createMemoryProposalCard = (proposal: NonNullable<Content['memoryProposal'
                     });
                     refreshCurrentRoom();
                 } else if (currentPersonaKey && currentPersona) {
-                    const memoryLine = `[永久記憶] ${proposal.summary}`;
-                    const nextMemory = [currentPersona.memory?.trim(), memoryLine].filter(Boolean).join('\n');
-                    memoryManager.updatePersona(currentPersonaKey, { memory: nextMemory });
-                    currentPersona.memory = nextMemory;
+                    memoryManager.addPersonaMemory(currentPersonaKey, 'soul', {
+                        kind: 'vulnerability',
+                        title: proposal.summary.slice(0, 36),
+                        summary: proposal.summary,
+                        originalText: proposal.originalText,
+                    });
                 }
             }
             const conversationKey = currentConversationKey;
@@ -6892,6 +6897,8 @@ const buildNpcMemberPersona = (
         avatarPrompt: identity?.visualPrompt || storedPersona?.avatarPrompt || proposal.description,
         avatarUrl: identityResolution?.avatarUrl || storedPersona?.avatarUrl || null,
         memory: storedPersona?.memory || '',
+        soul: storedPersona?.soul ? cloneRoomSnapshot(storedPersona.soul) : [],
+        memories: storedPersona?.memories ? cloneRoomSnapshot(storedPersona.memories) : [],
         publicIdentityEnabled: Boolean(identity),
         publicIdentity: identity,
     };
@@ -6909,7 +6916,13 @@ const createNpcRoomMember = (
         sourcePersonaKey,
         persona,
         joinedAt,
-        soul: [{
+        soul: [
+            ...(persona.soul || []).map(entry => ({
+                ...cloneRoomSnapshot(entry),
+                participants: [memberId],
+                roleplayOnly: true,
+            })),
+            {
             id: `soul_${joinedAt}_${Math.random().toString(36).slice(2, 7)}`,
             kind: 'core',
             title: '加入聊天室時的身份錨點',
@@ -6918,8 +6931,13 @@ const createNpcRoomMember = (
             createdAt: joinedAt,
             pinned: true,
             roleplayOnly: true,
-        }],
-        memories: [],
+            },
+        ],
+        memories: (persona.memories || []).map(entry => ({
+            ...cloneRoomSnapshot(entry),
+            participants: [memberId],
+            roleplayOnly: true,
+        })),
     };
 };
 
@@ -7756,9 +7774,10 @@ const formatCurrentPersonaDetails = () => {
         `開場語 / 語氣樣本：\n${currentPersona.greeting || '未設定'}`,
     ];
 
-    if (currentPersona.memory?.trim()) {
-        sections.push(`角色記憶：\n${currentPersona.memory.trim()}`);
-    }
+    const soulMemory = formatPersonaMemoryPrompt(currentPersona, 'soul');
+    const episodicMemory = formatPersonaMemoryPrompt(currentPersona, 'memory');
+    if (soulMemory) sections.push(`soul.md：\n${soulMemory}`);
+    if (episodicMemory) sections.push(`memory.md：\n${episodicMemory}`);
 
     return sections.join('\n\n');
 };
@@ -8133,9 +8152,22 @@ const getRecentGodModeMessages = (latestUserInstruction?: string): VeniceMessage
     return messages;
 };
 
+const formatPersonaMemoryPrompt = (persona: Persona, type: 'soul' | 'memory') => {
+    const entries = type === 'soul' ? persona.soul || [] : persona.memories || [];
+    const legacy = type === 'soul' && persona.memory?.trim()
+        ? [`- 舊版永久記憶：${persona.memory.trim()}`]
+        : [];
+    const structured = entries
+        .slice(type === 'soul' ? -12 : -18)
+        .map(entry => `- ${entry.title}: ${entry.summary.replace(/\s+/gu, ' ').trim().slice(0, type === 'soul' ? 480 : 420)}`);
+    return [...legacy, ...structured].join('\n');
+};
+
 const buildChatSystemPrompt = (personaKey: string, persona: Persona) => {
     const behaviorGuidance = buildPersonaBehaviorGuidance(personaKey, persona);
     const publicIdentity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
+    const soulMemory = formatPersonaMemoryPrompt(persona, 'soul');
+    const episodicMemory = formatPersonaMemoryPrompt(persona, 'memory');
     const sections = [
         `You are ${persona.name}, the active romance character in a continuous private conversation. You are not an AI assistant.`,
         persona.description?.trim() ? `Short identity:\n${persona.description.trim()}` : '',
@@ -8149,7 +8181,8 @@ const buildChatSystemPrompt = (personaKey: string, persona: Persona) => {
         persona.greeting?.trim()
             ? `Voice reference only (never repeat or continue this sample verbatim):\n${persona.greeting.trim()}`
             : '',
-        persona.memory?.trim() ? `Persistent facts and preferences:\n${persona.memory.trim()}` : '',
+        soulMemory ? `soul.md permanent identity, relationship and user anchors:\n${soulMemory}` : '',
+        episodicMemory ? `memory.md recent important events and continuity:\n${episodicMemory}` : '',
         behaviorGuidance.length > 0 ? `Personality anchors:\n- ${behaviorGuidance.join('\n- ')}` : '',
         `Shared roleplay contract:\n${coreInstruction}`,
         [
@@ -8212,11 +8245,14 @@ const buildAssistantSystemPrompt = () => {
 };
 
 const buildGodModeSystemPrompt = (persona: Persona) => {
+    const soulMemory = formatPersonaMemoryPrompt(persona, 'soul');
+    const episodicMemory = formatPersonaMemoryPrompt(persona, 'memory');
     const sections = [
         'You are editing the CURRENT active character persona for a romance chat app.',
         `Current character name: ${persona.name}`,
         `Current full persona prompt:\n${persona.prompt}`,
-        persona.memory?.trim() ? `Current user memory:\n${persona.memory.trim()}` : '',
+        soulMemory ? `Current soul.md:\n${soulMemory}` : '',
+        episodicMemory ? `Current memory.md:\n${episodicMemory}` : '',
         'Task:\n- Modify only the current character persona.\n- Keep the same character identity.\n- Do not switch to another persona, profession, species, or assistant role.\n- Output only the added personality adjustments, not a full rewrite.',
         `Identity that must stay unchanged:\n- Character name must stay exactly: ${persona.name}`,
         'Output rules:\n- Reply in Traditional Chinese.\n- First output exactly one short confirmation sentence.\n- Then output exactly one tag on a new line: [PERSONA_UPDATE: <only the added personality adjustments>]\n- The tag content must be 1 to 3 short sentences about new traits only.\n- Do not use first-person self-introduction such as「我是一個...」.\n- Do not output JSON.\n- Do not output markdown headings.\n- Do not output code fences.\n- Do not output any other tags.',
@@ -9744,6 +9780,7 @@ const getResponse = async (
         renderPersonaList();
         finishChatRequest(request);
         if (request.room) void maybeSummarizeRoomMemory(request.room.id);
+        else if (request.mode === 'character') void maybeSummarizePersonaMemory(request.personaKey);
     } catch (error) {
         if (isAbortError(error)) {
             finishChatRequest(request);
@@ -9859,6 +9896,96 @@ const maybeSummarizeRoomMemory = async (roomId: string, force = false) => {
         console.warn('Background room memory summary skipped:', error);
     } finally {
         roomSummaryInFlight.delete(roomId);
+    }
+};
+
+const maybeSummarizePersonaMemory = async (personaKey: string, force = false) => {
+    const persona = memoryManager.getPersona(personaKey);
+    if (!persona || isAssistantPersonaKey(personaKey) || personaSummaryInFlight.has(personaKey)) return;
+    const history = memoryManager.peekChatHistory(personaKey);
+    const userMessageCount = history.filter(message => message.role === 'user').length;
+    const lastSummarized = Number(persona.lastMemorySummaryUserMessageCount || 0);
+    if (!force && userMessageCount - lastSummarized < ROOM_MEMORY_SUMMARY_TURN_INTERVAL) return;
+    if (userMessageCount <= lastSummarized) return;
+    personaSummaryInFlight.add(personaKey);
+    try {
+        const transcript = history
+            .filter(message => message.role === 'user' || message.role === 'model')
+            .slice(-48)
+            .map(message => `${message.role === 'user' ? '[USER]' : `[${persona.name}]`} ${message.content.text || ''}`)
+            .filter(Boolean)
+            .join('\n\n');
+        const existing = (persona.memories || [])
+            .slice(-24)
+            .map(entry => `- ${entry.title}: ${entry.summary}`)
+            .join('\n');
+        const result = await generateVeniceText({
+            model: VENICE_CHAT_MODEL,
+            messages: [
+                {
+                    role: 'system',
+                    content: [
+                        `Extract durable episodic memory for ${persona.name} from a continuous private romance conversation.`,
+                        'Keep only events, promises, boundaries, preferences, relationship changes and user vulnerability that will improve future continuity.',
+                        'Do not copy transient choreography or summarize routine small talk. Preserve emotional meaning, trust and boundaries accurately.',
+                        'Return 1 to 6 concise, non-duplicate memories in Traditional Chinese.',
+                        existing ? `Already stored memory.md entries; do not repeat them:\n${existing}` : '',
+                    ].filter(Boolean).join('\n'),
+                },
+                { role: 'user', content: transcript },
+            ],
+            responseFormat: {
+                type: 'json_schema',
+                json_schema: {
+                    name: 'persona_memory_update',
+                    strict: true,
+                    schema: {
+                        type: 'object',
+                        additionalProperties: false,
+                        required: ['memories'],
+                        properties: {
+                            memories: {
+                                type: 'array',
+                                maxItems: 6,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    required: ['kind', 'title', 'summary'],
+                                    properties: {
+                                        kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
+                                        title: { type: 'string' },
+                                        summary: { type: 'string' },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+            temperature: 0.2,
+            topP: 0.85,
+            repetitionPenalty: 1.04,
+        });
+        const parsed = JSON.parse(result.text.replace(/^\s*```(?:json)?|```\s*$/giu, '').trim()) as {
+            memories?: Array<{
+                kind?: PersonaMemoryEntry['kind'];
+                title?: string;
+                summary?: string;
+            }>;
+        };
+        (parsed.memories || []).forEach(memory => {
+            if (!memory.kind || !memory.title?.trim() || !memory.summary?.trim()) return;
+            memoryManager.addPersonaMemory(personaKey, 'memory', {
+                kind: memory.kind,
+                title: memory.title.trim(),
+                summary: memory.summary.trim(),
+            });
+        });
+        memoryManager.updatePersona(personaKey, { lastMemorySummaryUserMessageCount: userMessageCount });
+    } catch (error) {
+        console.warn('Background persona memory summary skipped:', error);
+    } finally {
+        personaSummaryInFlight.delete(personaKey);
     }
 };
 
@@ -11061,27 +11188,33 @@ const closeRoomInfo = () => roomInfoModal.classList.add('hidden');
 
 const renderRoomMemory = () => {
     const room = refreshCurrentRoom();
-    if (!room) return;
-    if (!selectedMemoryMemberId || !room.members.some(member => member.id === selectedMemoryMemberId)) {
-        selectedMemoryMemberId = activeRoomMemberId || room.leadMemberId;
-    }
+    const personaKey = room ? null : currentPersonaKey;
+    const persona = room ? null : currentPersona;
+    if (!room && (!personaKey || !persona)) return;
+    roomMemoryTitle.textContent = `${room?.title || persona?.name || '角色'}的靈魂與記憶`;
     memoryMemberTabs.innerHTML = '';
-    room.members.forEach(member => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = member.id === selectedMemoryMemberId ? 'is-active' : '';
-        button.textContent = member.persona.name;
-        button.addEventListener('click', () => {
-            selectedMemoryMemberId = member.id;
-            renderRoomMemory();
+    memoryMemberTabs.classList.toggle('hidden', !room);
+    if (room) {
+        if (!selectedMemoryMemberId || !room.members.some(member => member.id === selectedMemoryMemberId)) {
+            selectedMemoryMemberId = activeRoomMemberId || room.leadMemberId;
+        }
+        room.members.forEach(member => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = member.id === selectedMemoryMemberId ? 'is-active' : '';
+            button.textContent = member.persona.name;
+            button.addEventListener('click', () => {
+                selectedMemoryMemberId = member.id;
+                renderRoomMemory();
+            });
+            memoryMemberTabs.appendChild(button);
         });
-        memoryMemberTabs.appendChild(button);
-    });
+    }
     memorySoulTab.classList.toggle('is-active', selectedMemoryType === 'soul');
     memoryEventTab.classList.toggle('is-active', selectedMemoryType === 'memory');
     roomMemoryList.innerHTML = '';
-    const member = room.members.find(item => item.id === selectedMemoryMemberId);
-    if (!member) return;
+    const member = room?.members.find(item => item.id === selectedMemoryMemberId);
+    if (room && !member) return;
 
     const addButton = document.createElement('button');
     addButton.type = 'button';
@@ -11090,33 +11223,68 @@ const renderRoomMemory = () => {
     addButton.addEventListener('click', () => {
         const title = window.prompt('記憶標題');
         if (!title?.trim()) return;
-        const summary = window.prompt('要讓角色長期記住甚麼？');
+        const summary = window.prompt(selectedMemoryType === 'soul'
+            ? '要讓角色永久記住甚麼？'
+            : '這件重要事件發生了甚麼？');
         if (!summary?.trim()) return;
-        if (selectedMemoryType === 'soul') {
-            roomManager.addSoulMemory(room.id, [member.id], {
-                kind: 'preference',
+        if (room && member) {
+            if (selectedMemoryType === 'soul') {
+                roomManager.addSoulMemory(room.id, [member.id], {
+                    kind: 'preference',
+                    title: title.trim(),
+                    summary: summary.trim(),
+                    participants: [member.id],
+                });
+            } else {
+                roomManager.addEpisodicMemories(room.id, [{
+                    kind: 'event',
+                    title: title.trim(),
+                    summary: summary.trim(),
+                    participants: [member.id],
+                }]);
+            }
+        } else if (personaKey) {
+            memoryManager.addPersonaMemory(personaKey, selectedMemoryType, {
+                kind: selectedMemoryType === 'soul' ? 'preference' : 'event',
                 title: title.trim(),
                 summary: summary.trim(),
-                participants: [member.id],
             });
-        } else {
-            roomManager.addEpisodicMemories(room.id, [{
-                kind: 'event',
-                title: title.trim(),
-                summary: summary.trim(),
-                participants: [member.id],
-            }]);
         }
         renderRoomMemory();
     });
     roomMemoryList.appendChild(addButton);
 
-    const entries = selectedMemoryType === 'soul' ? member.soul : member.memories;
+    let entries: Array<RoomMemoryEntry | PersonaMemoryEntry> = [];
+    if (room && member) {
+        entries = selectedMemoryType === 'soul' ? member.soul : member.memories;
+    } else if (personaKey && persona) {
+        entries = [...memoryManager.getPersonaMemoryEntries(personaKey, selectedMemoryType)];
+        if (selectedMemoryType === 'soul' && persona.memory?.trim()) {
+            entries.unshift({
+                id: 'legacy-persona-memory',
+                kind: 'core',
+                title: '舊版永久記憶',
+                summary: persona.memory.trim(),
+                createdAt: 0,
+                pinned: true,
+            });
+        }
+    }
+    if (entries.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'room-memory-empty';
+        empty.textContent = selectedMemoryType === 'soul'
+            ? '尚未加入永久核心記憶。'
+            : '尚未整理重要事件；系統會每 24 個使用者回合自動更新。';
+        roomMemoryList.appendChild(empty);
+    }
     entries.forEach(entry => {
+        const isLegacyPersonaMemory = !room && entry.id === 'legacy-persona-memory';
         const card = document.createElement('article');
         card.className = 'room-memory-card';
         const title = document.createElement('input');
         title.value = entry.title;
+        title.disabled = isLegacyPersonaMemory;
         title.setAttribute('aria-label', '記憶標題');
         const summary = document.createElement('textarea');
         summary.rows = 4;
@@ -11133,10 +11301,22 @@ const renderRoomMemory = () => {
         save.type = 'button';
         save.textContent = '儲存';
         save.addEventListener('click', () => {
-            roomManager.updateMemory(room.id, member.id, entry.id, selectedMemoryType, {
-                title: title.value,
-                summary: summary.value,
-            });
+            if (room && member) {
+                roomManager.updateMemory(room.id, member.id, entry.id, selectedMemoryType, {
+                    title: title.value,
+                    summary: summary.value,
+                });
+            } else if (personaKey) {
+                if (isLegacyPersonaMemory) {
+                    memoryManager.updatePersona(personaKey, { memory: summary.value.trim() });
+                    if (currentPersona) currentPersona.memory = summary.value.trim();
+                } else {
+                    memoryManager.updatePersonaMemory(personaKey, selectedMemoryType, entry.id, {
+                        title: title.value,
+                        summary: summary.value,
+                    });
+                }
+            }
             save.textContent = '已儲存';
             window.setTimeout(() => { save.textContent = '儲存'; }, 1000);
         });
@@ -11146,7 +11326,16 @@ const renderRoomMemory = () => {
         remove.textContent = '刪除';
         remove.addEventListener('click', () => {
             if (!confirm(`刪除「${entry.title}」？`)) return;
-            roomManager.deleteMemory(room.id, member.id, entry.id, selectedMemoryType);
+            if (room && member) {
+                roomManager.deleteMemory(room.id, member.id, entry.id, selectedMemoryType);
+            } else if (personaKey) {
+                if (isLegacyPersonaMemory) {
+                    memoryManager.updatePersona(personaKey, { memory: '' });
+                    if (currentPersona) currentPersona.memory = '';
+                } else {
+                    memoryManager.deletePersonaMemory(personaKey, selectedMemoryType, entry.id);
+                }
+            }
             renderRoomMemory();
         });
         actions.append(save, remove);
@@ -11156,11 +11345,8 @@ const renderRoomMemory = () => {
 };
 
 const openRoomMemory = () => {
-    if (!currentRoom) {
-        openMemoryEditor();
-        return;
-    }
-    selectedMemoryMemberId = activeRoomMemberId || currentRoom.leadMemberId;
+    if (!currentRoom && (!currentPersonaKey || !currentPersona)) return;
+    selectedMemoryMemberId = currentRoom ? activeRoomMemberId || currentRoom.leadMemberId : null;
     renderRoomMemory();
     roomInfoModal.classList.add('hidden');
     roomMemoryModal.classList.remove('hidden');
@@ -11435,6 +11621,7 @@ const savePersonaSettings = async () => {
 const startNewScene = () => {
     if (!currentConversationKey) return;
     if (currentRoom) void maybeSummarizeRoomMemory(currentRoom.id, true);
+    else if (currentPersonaKey) void maybeSummarizePersonaMemory(currentPersonaKey, true);
     appendMessage({ text: SCENE_START_LABEL }, 'system');
     memoryManager.addMessage(currentConversationKey, 'system', { text: SCENE_END_MARKER });
     if (currentRoom) {

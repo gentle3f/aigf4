@@ -411,8 +411,17 @@ export class FileManager {
         await Promise.all(tasks);
     }
 
-    private addMemoryMarkdownToZip(zip: any, roomId?: string) {
-        this.roomManager?.buildMarkdownFiles(roomId).forEach(file => zip.file(file.path, file.content));
+    private addMemoryMarkdownToZip(zip: any, roomId?: string, personaKey?: string) {
+        if (roomId) {
+            this.roomManager?.buildMarkdownFiles(roomId).forEach(file => zip.file(file.path, file.content));
+        } else if (!personaKey) {
+            this.roomManager?.buildMarkdownFiles().forEach(file => zip.file(file.path, file.content));
+        }
+        if (personaKey) {
+            this.memoryManager.buildPersonaMarkdownFiles(personaKey).forEach(file => zip.file(file.path, file.content));
+        } else if (!roomId) {
+            this.memoryManager.buildPersonaMarkdownFiles().forEach(file => zip.file(file.path, file.content));
+        }
     }
 
     async saveCurrentChat(personaKey: string, personaName: string) {
@@ -451,7 +460,7 @@ export class FileManager {
 
         await this.addCharacterPhotosToZip(zip, { [personaKey]: chatHistory });
         await this.addChatAttachmentsToZip(zip, { [personaKey]: chatHistory });
-        this.addMemoryMarkdownToZip(zip, room?.id);
+        this.addMemoryMarkdownToZip(zip, room?.id, room ? undefined : personaKey);
 
         zip.generateAsync({
             type: "blob",

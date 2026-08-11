@@ -970,6 +970,10 @@ body.app-body {
     border-bottom: 1px solid var(--wa-line);
 }
 
+.memory-member-tabs.hidden {
+    display: none;
+}
+
 .memory-member-tabs button,
 .memory-type-tabs button {
     flex: 0 0 auto;
@@ -985,6 +989,17 @@ body.app-body {
 .memory-type-tabs button.is-active {
     color: white;
     background: var(--wa-green);
+}
+
+.room-memory-empty {
+    margin: 18px 4px;
+    border-radius: 8px;
+    padding: 16px;
+    color: var(--wa-muted);
+    background: white;
+    font-size: 0.82rem;
+    line-height: 1.55;
+    text-align: center;
 }
 
 .memory-card {

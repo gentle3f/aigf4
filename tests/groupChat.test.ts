@@ -272,6 +272,43 @@ test('room favorite photo prompt survives a manager reload', () => {
     assert.equal(restored?.favoritePhotoPrompt, 'soft window light, candid phone photo');
 });
 
+test('upgrading a one-to-one chat to a room carries its soul and episodic memory', () => {
+    const storage = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: {
+            getItem: (key: string) => storage.get(key) || null,
+            setItem: (key: string, value: string) => storage.set(key, value),
+        },
+    });
+    const lead = member('lead', 'Lead').persona;
+    lead.soul = [{
+        id: 'soul-one',
+        kind: 'promise',
+        title: '承諾',
+        summary: '她會記住這項承諾。',
+        createdAt: 1,
+        pinned: true,
+    }];
+    lead.memories = [{
+        id: 'memory-one',
+        kind: 'event',
+        title: '共同事件',
+        summary: '兩人一起經歷的重要事件。',
+        createdAt: 2,
+        pinned: false,
+    }];
+
+    const room = new RoomManager().createRoom('Converted room', [
+        { sourcePersonaKey: 'lead', persona: lead },
+        { sourcePersonaKey: 'friend', persona: member('friend', 'Friend').persona },
+    ]);
+
+    assert.equal(room.members[0].soul[0].title, '承諾');
+    assert.equal(room.members[0].memories[0].title, '共同事件');
+    assert.deepEqual(room.members[0].soul[0].participants, [room.members[0].id]);
+});
+
 test('curated IU group exists even before a legacy IU chat is imported', () => {
     const storage = new Map<string, string>();
     Object.defineProperty(globalThis, 'localStorage', {

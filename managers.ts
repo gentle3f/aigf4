@@ -235,6 +235,27 @@ export interface DiaryEntry {
 
 export type PublicIdentityKind = 'real_person' | 'fictional_character' | 'other';
 
+export type PersonaMemoryKind =
+    | 'core'
+    | 'relationship'
+    | 'vulnerability'
+    | 'promise'
+    | 'preference'
+    | 'event'
+    | 'boundary';
+
+export interface PersonaMemoryEntry {
+    id: string;
+    kind: PersonaMemoryKind;
+    title: string;
+    summary: string;
+    originalText?: string;
+    sourceMessageIds?: string[];
+    sourceMessageIndexes?: number[];
+    createdAt: number;
+    pinned: boolean;
+}
+
 export interface PublicIdentity {
     canonicalName: string;
     kind: PublicIdentityKind;
@@ -259,6 +280,9 @@ export interface Persona {
     avatarPrompt: string;
     avatarUrl: string | null;
     memory?: string;
+    soul?: PersonaMemoryEntry[];
+    memories?: PersonaMemoryEntry[];
+    lastMemorySummaryUserMessageCount?: number;
     favoritePhotoPrompt?: string;
     publicIdentityEnabled?: boolean;
     publicIdentity?: PublicIdentity;
@@ -325,6 +349,10 @@ export class MemoryManager {
                     currentPersona.avatarPrompt !== originalPersona.avatarPrompt ||
                     currentPersona.avatarUrl !== originalPersona.avatarUrl ||
                     currentPersona.memory !== originalPersona.memory ||
+                    JSON.stringify(currentPersona.soul || []) !== JSON.stringify(originalPersona.soul || []) ||
+                    JSON.stringify(currentPersona.memories || []) !== JSON.stringify(originalPersona.memories || []) ||
+                    Number(currentPersona.lastMemorySummaryUserMessageCount || 0) !== Number(originalPersona.lastMemorySummaryUserMessageCount || 0) ||
+                    currentPersona.favoritePhotoPrompt !== originalPersona.favoritePhotoPrompt ||
                     Boolean(currentPersona.publicIdentityEnabled) !== Boolean(originalPersona.publicIdentityEnabled) ||
                     JSON.stringify(currentPersona.publicIdentity || null) !== JSON.stringify(originalPersona.publicIdentity || null)
                 ) 
@@ -631,6 +659,9 @@ export class MemoryManager {
             gender: "female",
             avatarUrl: null,
             memory: "",
+            soul: [],
+            memories: [],
+            lastMemorySummaryUserMessageCount: 0,
             publicIdentityEnabled: Boolean(personaData.publicIdentityEnabled),
             publicIdentity: personaData.publicIdentity,
         };
@@ -686,6 +717,96 @@ export class MemoryManager {
             this.persistChatHistories();
         }
         return this.chatHistories[key];
+    }
+
+    getPersonaMemoryEntries(key: string, type: 'soul' | 'memory'): PersonaMemoryEntry[] {
+        const persona = this.personas[key];
+        if (!persona) return [];
+        return type === 'soul' ? persona.soul || [] : persona.memories || [];
+    }
+
+    addPersonaMemory(
+        key: string,
+        type: 'soul' | 'memory',
+        entry: Omit<PersonaMemoryEntry, 'id' | 'createdAt' | 'pinned'>,
+    ) {
+        const persona = this.personas[key];
+        if (!persona) return null;
+        const target = type === 'soul'
+            ? (persona.soul ||= [])
+            : (persona.memories ||= []);
+        const normalizedSummary = entry.summary.trim().toLocaleLowerCase();
+        const duplicate = target.find(item => item.summary.trim().toLocaleLowerCase() === normalizedSummary);
+        if (duplicate) return duplicate;
+        const created: PersonaMemoryEntry = {
+            ...entry,
+            id: crypto.randomUUID?.() || `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+            title: entry.title.trim(),
+            summary: entry.summary.trim(),
+            createdAt: Date.now(),
+            pinned: type === 'soul',
+        };
+        target.push(created);
+        this.persistModifiedPersonas();
+        return created;
+    }
+
+    updatePersonaMemory(
+        key: string,
+        type: 'soul' | 'memory',
+        memoryId: string,
+        updates: Pick<PersonaMemoryEntry, 'title' | 'summary'>,
+    ) {
+        const entry = this.getPersonaMemoryEntries(key, type).find(item => item.id === memoryId);
+        if (!entry) return null;
+        entry.title = updates.title.trim() || entry.title;
+        entry.summary = updates.summary.trim() || entry.summary;
+        this.persistModifiedPersonas();
+        return entry;
+    }
+
+    deletePersonaMemory(key: string, type: 'soul' | 'memory', memoryId: string) {
+        const persona = this.personas[key];
+        if (!persona) return;
+        if (type === 'soul') persona.soul = (persona.soul || []).filter(entry => entry.id !== memoryId);
+        else persona.memories = (persona.memories || []).filter(entry => entry.id !== memoryId);
+        this.persistModifiedPersonas();
+    }
+
+    buildPersonaMarkdownFiles(key?: string) {
+        const sanitizeFileName = (value: string) => value.replace(/[<>:"/\\|?*\u0000-\u001F]/gu, '_').trim() || 'character';
+        const personas = key
+            ? [[key, this.personas[key]] as const].filter((entry): entry is readonly [string, Persona] => Boolean(entry[1]))
+            : Object.entries(this.personas);
+        return personas.flatMap(([personaKey, persona]) => {
+            const base = `characters/${sanitizeFileName(persona.name)}_${sanitizeFileName(personaKey)}`;
+            const format = (type: 'soul' | 'memory') => {
+                const entries = this.getPersonaMemoryEntries(personaKey, type);
+                const legacyEntries = type === 'soul' && persona.memory?.trim()
+                    ? [{ title: '舊版永久記憶', summary: persona.memory.trim(), originalText: '' }]
+                    : [];
+                const allEntries = [...legacyEntries, ...entries];
+                return [
+                    `# ${persona.name} · ${type === 'soul' ? '永久核心記憶' : '重要事件記憶'}`,
+                    '',
+                    `角色鍵值：${personaKey}`,
+                    '',
+                    ...(allEntries.length > 0
+                        ? allEntries.flatMap(entry => [
+                            `## ${entry.title}`,
+                            '',
+                            entry.summary,
+                            entry.originalText ? `\n> 使用者原句：${entry.originalText.replace(/\n+/gu, ' ')}` : '',
+                            '',
+                        ])
+                        : ['尚未記錄。', '']),
+                ].join('\n');
+            };
+            return [
+                { path: `${base}/soul.md`, content: format('soul') },
+                { path: `${base}/memory.md`, content: format('memory') },
+            ];
+        });
     }
     
     setChatHistory(key: string, history: ChatMessage[]) {

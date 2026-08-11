@@ -381,14 +381,40 @@ export class RoomManager {
 
         const now = Date.now();
         const roomId = `room_${now}_${Math.random().toString(36).slice(2, 9)}`;
-        const roomMembers: RoomMember[] = uniqueMembers.map((entry, index) => ({
-            id: `member_${index + 1}_${Math.random().toString(36).slice(2, 7)}`,
-            sourcePersonaKey: entry.sourcePersonaKey,
-            persona: cloneRoom(entry.persona),
-            joinedAt: now,
-            soul: [],
-            memories: [],
-        }));
+        const roomMembers: RoomMember[] = uniqueMembers.map((entry, index) => {
+            const memberId = `member_${index + 1}_${Math.random().toString(36).slice(2, 7)}`;
+            const legacySoul = entry.persona.memory?.trim()
+                ? [{
+                    id: createId('soul'),
+                    kind: 'core' as const,
+                    title: '單聊永久記憶',
+                    summary: entry.persona.memory.trim(),
+                    participants: [memberId],
+                    createdAt: now,
+                    pinned: true,
+                    roleplayOnly: true,
+                }]
+                : [];
+            return {
+                id: memberId,
+                sourcePersonaKey: entry.sourcePersonaKey,
+                persona: cloneRoom(entry.persona),
+                joinedAt: now,
+                soul: [
+                    ...legacySoul,
+                    ...(entry.persona.soul || []).map(memoryEntry => ({
+                        ...cloneRoom(memoryEntry),
+                        participants: [memberId],
+                        roleplayOnly: true,
+                    })),
+                ],
+                memories: (entry.persona.memories || []).map(memoryEntry => ({
+                    ...cloneRoom(memoryEntry),
+                    participants: [memberId],
+                    roleplayOnly: true,
+                })),
+            };
+        });
         const room: ChatRoom = {
             id: roomId,
             type: 'group',
