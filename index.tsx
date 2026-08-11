@@ -8628,6 +8628,8 @@ const runConversationGeneration = async (
                 if (
                     addressedNpcNames.length > 0
                     && !replyContainsAttributedNpcSpeech(cleanedText, addressedNpcNames)
+                    && request.personaKey !== 'cc'
+                    && (attempt < attemptCount - 1 || index < models.length - 1)
                 ) {
                     failedCandidate = cleanedText;
                     throw new Error(`Missing attributed NPC speech from ${model}.`);
