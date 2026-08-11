@@ -205,6 +205,16 @@ export interface ImageGenerationMetadata {
     identityMode?: 'avatar_reference' | 'persona_description' | 'public_identity';
 }
 
+export interface ChatSceneSnapshot {
+    id: string;
+    location: string;
+    realityLayer: 'physical' | 'texting' | 'imagined';
+    presentMemberIds: string[];
+    summary: string;
+    unresolved: string[];
+    startedAt: number;
+}
+
 export interface Content {
     text?: string;
     segments?: ChatSegment[];
@@ -217,6 +227,7 @@ export interface Content {
     memoryProposal?: MemoryProposal;
     photoIntent?: PhotoIntentProposal;
     npcProposal?: NpcPromotionProposal;
+    roomSceneBeforeTurn?: ChatSceneSnapshot;
     legacy?: boolean;
 }
 
@@ -544,6 +555,11 @@ export class MemoryManager {
             const parsed = JSON.parse(saved);
             if (parsed && typeof parsed === 'object') {
                 this.chatHistories = parsed;
+                let changed = false;
+                Object.values(this.chatHistories).forEach(history => {
+                    if (this.ensureChatMessageMetadata(history)) changed = true;
+                });
+                if (changed) this.persistChatHistories();
             }
         } catch (error) {
             console.error('Failed to load chat histories:', error);
@@ -557,6 +573,21 @@ export class MemoryManager {
             console.error('Failed to save chat histories:', error);
             if (throwOnError) throw error;
         }
+    }
+
+    private ensureChatMessageMetadata(history: ChatMessage[]) {
+        let changed = false;
+        history.forEach((message, index) => {
+            if (!message.id) {
+                message.id = crypto.randomUUID?.() || `message-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`;
+                changed = true;
+            }
+            if (!message.createdAt) {
+                message.createdAt = Date.now() + index;
+                changed = true;
+            }
+        });
+        return changed;
     }
     
     loadAllData(data: AllData) {
@@ -716,6 +747,9 @@ export class MemoryManager {
                 : [];
             this.persistChatHistories();
         }
+        if (this.ensureChatMessageMetadata(this.chatHistories[key])) {
+            this.persistChatHistories();
+        }
         return this.chatHistories[key];
     }
 
@@ -810,8 +844,20 @@ export class MemoryManager {
     }
     
     setChatHistory(key: string, history: ChatMessage[]) {
+        this.ensureChatMessageMetadata(history);
         this.chatHistories[key] = history;
         this.persistChatHistories();
+    }
+
+    removeUserTurn(key: string, messageId: string) {
+        const history = this.getChatHistory(key);
+        const startIndex = history.findIndex(message => message.id === messageId && message.role === 'user');
+        if (startIndex < 0) return null;
+        let endIndex = startIndex + 1;
+        while (endIndex < history.length && history[endIndex].role !== 'user') endIndex += 1;
+        const removed = history.splice(startIndex, endIndex - startIndex);
+        this.persistChatHistories();
+        return { removed, remaining: history, startIndex };
     }
 
     hasChatHistory(key: string) {

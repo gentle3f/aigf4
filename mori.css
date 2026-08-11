@@ -530,25 +530,39 @@ body.app-body {
 .composer-frame {
     display: flex !important;
     align-items: flex-end !important;
-    gap: 2px !important;
+    gap: 7px !important;
     padding: 0 !important;
     border: 0 !important;
     background: transparent !important;
 }
 
+.composer-input-shell {
+    display: flex;
+    min-width: 0;
+    min-height: 56px;
+    flex: 1 1 auto;
+    align-items: flex-end;
+    overflow: hidden;
+    border-radius: 28px;
+    background: white;
+    box-shadow: 0 1px 1px rgba(11, 20, 26, 0.08);
+}
+
 #message-input {
-    width: 100% !important;
+    width: auto !important;
     height: 56px !important;
     min-height: 56px !important;
     max-height: 56px !important;
-    margin: 0 4px !important;
-    padding: 15px 15px !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    padding: 15px 5px 15px 17px !important;
+    flex: 1 1 auto !important;
     overflow-y: auto !important;
     border: 0 !important;
-    border-radius: 9px !important;
+    border-radius: 28px !important;
     outline: 0 !important;
     color: var(--mori-ink) !important;
-    background: white !important;
+    background: transparent !important;
     font-size: 1rem !important;
     line-height: 24px !important;
     resize: none !important;
@@ -585,7 +599,71 @@ body.app-body {
 
 #send-button:disabled {
     color: #8696a0 !important;
-    background: transparent !important;
+    background: #dfe5e7 !important;
+    box-shadow: none !important;
+}
+
+#composer-camera-button {
+    margin-right: 3px;
+    transition: opacity 120ms ease, width 120ms ease, flex-basis 120ms ease;
+}
+
+#composer-camera-button.is-hidden-for-text {
+    display: none !important;
+}
+
+#loading-indicator {
+    position: relative !important;
+    left: auto !important;
+    bottom: auto !important;
+    z-index: 1 !important;
+    min-height: 44px;
+    flex: 0 0 auto;
+    margin: 0 !important;
+    padding: 4px clamp(10px, 4vw, 7%) 6px !important;
+    background: var(--mori-chat) !important;
+}
+
+#loading-indicator > div:first-child {
+    width: 28px !important;
+    height: 28px !important;
+}
+
+#loading-indicator .chat-bubble {
+    min-height: 34px;
+    padding: 6px 10px !important;
+}
+
+.chat-bubble.has-message-actions {
+    position: relative;
+    padding-right: 30px !important;
+}
+
+.message-recall-button {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    display: inline-flex;
+    width: 26px;
+    height: 26px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    color: #667781;
+    background: transparent;
+    opacity: 0.48;
+}
+
+.message-recall-button:hover,
+.message-recall-button:focus-visible {
+    background: rgba(84, 101, 111, 0.1);
+    opacity: 1;
+}
+
+.message-recall-button svg {
+    width: 17px;
+    height: 17px;
+    stroke-width: 2;
 }
 
 .emoji-picker {
@@ -1302,7 +1380,7 @@ body.app-body {
     }
 
     #message-input {
-        margin: 0 3px !important;
+        margin: 0 !important;
     }
 
     .wa-modal-backdrop {

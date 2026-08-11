@@ -81,6 +81,7 @@ import {
     cloneRoomSnapshot,
 } from "./roomManager.js";
 import {
+    deleteChatAttachment,
     getChatAttachmentBlob,
     saveChatAttachment,
 } from "./chatMediaStore.js";
@@ -180,9 +181,6 @@ const authError = document.getElementById('auth-error')!;
 const authSubmitButton = document.getElementById('auth-submit-button') as HTMLButtonElement;
 const authSubmitLabel = document.getElementById('auth-submit-label')!;
 const authSubmitLoading = document.getElementById('auth-submit-loading')!;
-const emojiButton = document.getElementById('emoji-button') as HTMLButtonElement;
-const emojiPicker = document.getElementById('emoji-picker')!;
-const attachmentButton = document.getElementById('attachment-button') as HTMLButtonElement;
 const chatAttachmentInput = document.getElementById('chat-attachment-input') as HTMLInputElement;
 const chatAttachmentPreview = document.getElementById('chat-attachment-preview')!;
 const composerCameraButton = document.getElementById('composer-camera-button') as HTMLButtonElement;
@@ -348,6 +346,7 @@ const interestsGridContainer = document.getElementById('interests-grid-container
 
 // Album Module Elements
 const albumBtn = document.getElementById('album-btn')!;
+const attachFileMenuBtn = document.getElementById('attach-file-menu-btn') as HTMLButtonElement;
 const albumModal = document.getElementById('album-modal')!;
 // FIX: Renamed variable to avoid duplicate identifier conflict with the `closeAlbumModal` function.
 const closeAlbumModalBtn = document.getElementById('close-album-modal')!;
@@ -5833,15 +5832,16 @@ const startLegacyChat = (key: string, restoredHistory: any[] | null = null, hist
 
     chatHistory.forEach(message => {
         if (message.role === 'user') {
-            appendMessage(message.content, 'user');
+            appendMessage(message.content, 'user', message);
         } else if (message.role === 'model') {
-            appendMessage(message.content, 'bot');
+            appendMessage(message.content, 'bot', message);
         } else if (message.role === 'system') {
             appendMessage(
                 message.content.text?.trim() === SCENE_END_MARKER
                     ? { ...message.content, text: SCENE_START_LABEL }
                     : message.content,
                 'system',
+                message,
             );
         }
     });
@@ -6123,6 +6123,70 @@ const deleteCharacterPhotoAssetsForHistory = async (history: ChatMessage[]) => {
         characterPhotoObjectUrls.delete(assetId);
         await deleteCharacterPhotoAsset(assetId);
     }));
+};
+
+const deleteChatAttachmentAssetsForHistory = async (history: ChatMessage[]) => {
+    const assetIds = Array.from(new Set(history.flatMap(message => (
+        message.content.attachments?.map(attachment => attachment.assetId) || []
+    ))));
+    await Promise.all(assetIds.map(async assetId => {
+        const objectUrl = chatAttachmentObjectUrls.get(assetId);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        chatAttachmentObjectUrls.delete(assetId);
+        await deleteChatAttachment(assetId);
+    }));
+};
+
+const recallUserMessage = async (messageId: string) => {
+    if (!currentConversationKey) return;
+    const conversationKey = currentConversationKey;
+    const history = memoryManager.getChatHistory(conversationKey);
+    const startIndex = history.findIndex(message => message.id === messageId && message.role === 'user');
+    if (startIndex < 0) {
+        alert('找不到這則訊息，可能已經被移除。');
+        return;
+    }
+    let endIndex = startIndex + 1;
+    while (endIndex < history.length && history[endIndex].role !== 'user') endIndex += 1;
+    const turn = history.slice(startIndex, endIndex);
+    const replyCount = turn.filter(message => message.role === 'model').length;
+    const confirmed = confirm(replyCount > 0
+        ? '收回這則訊息，並刪除角色對這一回合的回覆？'
+        : '收回這則訊息？');
+    if (!confirmed) return;
+
+    if (activeChatRequest?.conversationKey === conversationKey) cancelActiveChatRequest();
+    const result = memoryManager.removeUserTurn(conversationKey, messageId);
+    if (!result) return;
+    const recalledMessage = result.removed[0];
+    const sceneBeforeTurn = recalledMessage.content.roomSceneBeforeTurn;
+    if (sceneBeforeTurn && roomManager.getRoom(conversationKey)) {
+        roomManager.updateRoom(conversationKey, room => {
+            room.scene = cloneRoomSnapshot(sceneBeforeTurn);
+        });
+    }
+    await Promise.all([
+        deleteCharacterPhotoAssetsForHistory(result.removed).catch(error => {
+            console.warn('Unable to remove recalled photo assets:', error);
+        }),
+        deleteChatAttachmentAssetsForHistory(result.removed).catch(error => {
+            console.warn('Unable to remove recalled attachment assets:', error);
+        }),
+    ]);
+
+    const recalledText = recalledMessage.content.attachments?.length
+        && recalledMessage.content.text?.trim() === '請查看附件。'
+        ? ''
+        : recalledMessage.content.text || '';
+    startChat(conversationKey, null, 'skip');
+    messageInput.value = recalledText;
+    resetMessageInput();
+    updateSendButtonState();
+    renderPersonaList();
+    window.setTimeout(() => {
+        messageInput.focus();
+        messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+    }, 40);
 };
 
 const findPhotoProposalMessage = (personaKey: string, proposalId: string) => {
@@ -7256,6 +7320,23 @@ const appendMessage = (
             bubble.appendChild(createStoredChatAttachmentCard(attachment));
         });
 
+        if (sender === 'user' && messageMeta?.id && !content.legacy) {
+            messageWrapper.dataset.messageId = messageMeta.id;
+            bubble.classList.add('has-message-actions');
+            const recallButton = document.createElement('button');
+            recallButton.type = 'button';
+            recallButton.className = 'message-recall-button';
+            recallButton.title = '收回訊息';
+            recallButton.setAttribute('aria-label', '收回這則訊息');
+            recallButton.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m7 10 5 5 5-5"></path></svg>';
+            recallButton.addEventListener('click', event => {
+                event.preventDefault();
+                event.stopPropagation();
+                void recallUserMessage(messageMeta.id!);
+            });
+            bubble.appendChild(recallButton);
+        }
+
         messageWrapper.appendChild(bubble);
 
         if (sender === 'user') {
@@ -7297,7 +7378,10 @@ const applyChatRuntimeState = (state: RequestState, detail?: string) => {
     if (showLoadingIndicator) {
         loadingText.textContent = detail || statusTextMap[state];
         loadingIndicator.classList.remove('hidden');
-        setTimeout(() => loadingIndicator.classList.remove('opacity-0', 'translate-y-2'), 10);
+        setTimeout(() => {
+            loadingIndicator.classList.remove('opacity-0', 'translate-y-2');
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }, 10);
     } else {
         loadingIndicator.classList.add('hidden', 'opacity-0', 'translate-y-2');
     }
@@ -7468,6 +7552,12 @@ const updateSendButtonState = () => {
         || requestInProgress
         || (messageInput.value.trim() === '' && pendingChatAttachments.length === 0);
     sendButton.setAttribute('aria-busy', requestInProgress ? 'true' : 'false');
+    const hideCamera = messageInput.value.trim().length > 0
+        || isAssistantPersonaKey(currentPersonaKey)
+        || isGodModeActive;
+    composerCameraButton.classList.toggle('is-hidden-for-text', hideCamera);
+    composerCameraButton.setAttribute('aria-hidden', hideCamera ? 'true' : 'false');
+    composerCameraButton.tabIndex = hideCamera ? -1 : 0;
 };
 
 const removeGift = () => {
@@ -10225,12 +10315,17 @@ const sendMessage = async ({
     const userContent: Content = {
         text: userMessage,
         attachments: attachmentBundle.attachments.length > 0 ? attachmentBundle.attachments : undefined,
+        roomSceneBeforeTurn: currentRoom ? cloneRoomSnapshot(currentRoom.scene) : undefined,
+    };
+    const userMessageMeta = isGodModeActive ? undefined : {
+        id: crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: Date.now(),
     };
 
     messageInput.value = '';
     resetMessageInput();
     updateSendButtonState();
-    appendMessage(userContent, 'user');
+    appendMessage(userContent, 'user', userMessageMeta);
 
     if (isGodModeActive) {
         if (isPersonaInspectCommand(userMessage)) {
@@ -10245,7 +10340,7 @@ const sendMessage = async ({
     }
 
     const persona = currentPersona as Persona;
-    memoryManager.addMessage(conversationKey, 'user', userContent);
+    memoryManager.addMessage(conversationKey, 'user', userContent, userMessageMeta);
     if (
         !assistantMode
         && !characterPhotoRequest
@@ -11709,26 +11804,10 @@ const setupEventListeners = () => {
     authPasswordInput.addEventListener('input', () => {
         hideAuthError();
     });
-    const emojis = ['😀', '😂', '🥹', '😍', '🥰', '😘', '😳', '😊', '😌', '😏', '🙈', '😭', '😤', '🤍', '❤️', '🫶', '✨', '🌙', '🌹', '🍎', '☕', '🎵', '📷', '🔥'];
-    emojiPicker.innerHTML = '';
-    emojis.forEach(emoji => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = emoji;
-        button.addEventListener('click', () => {
-            const start = messageInput.selectionStart ?? messageInput.value.length;
-            const end = messageInput.selectionEnd ?? start;
-            messageInput.setRangeText(emoji, start, end, 'end');
-            messageInput.focus();
-            updateSendButtonState();
-        });
-        emojiPicker.appendChild(button);
+    attachFileMenuBtn.addEventListener('click', () => {
+        moreOptionsMenu.classList.add('hidden');
+        chatAttachmentInput.click();
     });
-    emojiButton.addEventListener('click', event => {
-        event.stopPropagation();
-        emojiPicker.classList.toggle('hidden');
-    });
-    attachmentButton.addEventListener('click', () => chatAttachmentInput.click());
     chatAttachmentInput.addEventListener('change', () => void handleChatAttachmentSelection());
     composerCameraButton.addEventListener('click', openPhotoPromptModal);
     chatSearchBtn.addEventListener('click', openChatSearch);
@@ -12268,9 +12347,6 @@ const setupEventListeners = () => {
         }
         if (!suggestionButton.contains(e.target as Node) && !suggestionContainer.contains(e.target as Node)) {
             hideSuggestionContainer();
-        }
-        if (!emojiButton.contains(e.target as Node) && !emojiPicker.contains(e.target as Node)) {
-            emojiPicker.classList.add('hidden');
         }
     });
 
