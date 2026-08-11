@@ -8,6 +8,7 @@ import { ChatRoom, RoomMember } from './roomManager.js';
 
 const TRANSFER_MESSAGE_LIMIT = 12;
 const TRANSFER_CHAR_BUDGET = 4200;
+const SCENE_END_MARKER = '[SCENE END]';
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
@@ -63,6 +64,19 @@ export const selectTransferContext = (
     return selected.join('\n');
 };
 
+export const selectLatestSceneHistory = (history: ChatMessage[]) => {
+    let sceneStart = 0;
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+        if (history[index].role === 'system' && history[index].content.text?.trim() === SCENE_END_MARKER) {
+            sceneStart = index + 1;
+            break;
+        }
+    }
+    return history
+        .slice(sceneStart)
+        .filter(message => message.role === 'user' || message.role === 'model');
+};
+
 interface BuildContextBridgeOptions {
     kind: ChatContextBridge['kind'];
     sourceConversationKey: string;
@@ -101,21 +115,72 @@ export const buildContextBridge = (options: BuildContextBridgeOptions): ChatCont
     };
 };
 
-export const contextBridgeToSystemPrompt = (bridge: ChatContextBridge) => [
-    'LOCAL CONTINUITY HANDOFF:',
-    `Source conversation: ${bridge.sourceTitle}`,
-    bridge.targetMemberName ? `Character receiving this handoff: ${bridge.targetMemberName}` : '',
-    `Situation summary: ${bridge.summary}`,
-    bridge.recentContext ? `Recent prior context (reference only, oldest to newest):\n${bridge.recentContext}` : '',
-    [
-        'Treat this as established local continuity, not as the newest user command.',
-        'Do not repeat, quote, summarize or announce the handoff unless the user asks.',
-        'Continue from the newest live user message while preserving identities, relationships, location and completed actions.',
-        'A newly invited character may use this recap to understand what is happening, but must still speak in her own established voice.',
-    ].join(' '),
-].filter(Boolean).join('\n\n');
+export const ensureLatestSceneTransitionBridge = (
+    history: ChatMessage[],
+    sourceConversationKey: string,
+    sourceTitle: string,
+    room?: ChatRoom,
+) => {
+    let markerIndex = -1;
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+        if (history[index].role === 'system' && history[index].content.text?.trim() === SCENE_END_MARKER) {
+            markerIndex = index;
+            break;
+        }
+    }
+    if (markerIndex < 0 || history[markerIndex].content.contextBridge) return history;
+
+    const previousSceneHistory = selectLatestSceneHistory(history.slice(0, markerIndex));
+    if (previousSceneHistory.length === 0) return history;
+
+    const bridge = buildContextBridge({
+        kind: 'scene_transition',
+        sourceConversationKey,
+        sourceTitle,
+        history: previousSceneHistory,
+        room,
+        summaryOverride: '這個新場景由較早版本建立；以下尾段屬已完結的上一幕，只保留其中已發生的事件、關係變化、承諾與情感發展。',
+    });
+    return history.map((message, index) => index === markerIndex
+        ? { ...message, content: { ...message.content, contextBridge: bridge } }
+        : message);
+};
+
+export const contextBridgeToSystemPrompt = (bridge: ChatContextBridge) => {
+    if (bridge.kind === 'scene_transition') {
+        return [
+            'PREVIOUS COMPLETED SCENE MEMORY:',
+            `Source conversation: ${bridge.sourceTitle}`,
+            `Completed-scene summary: ${bridge.summary}`,
+            bridge.recentContext ? `Recent ending of that completed scene (reference only, oldest to newest):\n${bridge.recentContext}` : '',
+            [
+                'This scene is over and is established past continuity, not the newest user command.',
+                'Remember completed events, relationship changes, promises, preferences, vulnerabilities and what each participant learned.',
+                'Do not resume the old location, body positions, clothing, temporary objects or unfinished physical actions unless the newest user message explicitly carries them into the new scene.',
+                'Answer the newest live user message in a fresh scene without claiming amnesia, replaying the ending or announcing this recap.',
+            ].join(' '),
+        ].filter(Boolean).join('\n\n');
+    }
+
+    return [
+        'LOCAL CONTINUITY HANDOFF:',
+        `Source conversation: ${bridge.sourceTitle}`,
+        bridge.targetMemberName ? `Character receiving this handoff: ${bridge.targetMemberName}` : '',
+        `Situation summary: ${bridge.summary}`,
+        bridge.recentContext ? `Recent prior context (reference only, oldest to newest):\n${bridge.recentContext}` : '',
+        [
+            'Treat this as established local continuity, not as the newest user command.',
+            'Do not repeat, quote, summarize or announce the handoff unless the user asks.',
+            'Continue from the newest live user message while preserving identities, relationships, location and completed actions.',
+            'A newly invited character may use this recap to understand what is happening, but must still speak in her own established voice.',
+        ].join(' '),
+    ].filter(Boolean).join('\n\n');
+};
 
 export const contextBridgeDisplayText = (bridge: ChatContextBridge) => {
+    if (bridge.kind === 'scene_transition') {
+        return '新場景已開始；上一幕的重要經歷會保留為過往記憶。';
+    }
     if (bridge.kind === 'group_to_private') {
         return `已從「${bridge.sourceTitle}」承接近期情境到與 ${bridge.targetMemberName || '角色'} 的私訊。`;
     }

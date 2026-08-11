@@ -180,6 +180,10 @@ body.app-body {
     box-shadow: none !important;
 }
 
+.conversation-row-shell .conversation-row {
+    padding-right: 52px !important;
+}
+
 .conversation-row:hover,
 .conversation-row.is-active {
     background: #f5f6f6 !important;

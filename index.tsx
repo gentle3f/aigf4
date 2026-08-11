@@ -115,7 +115,9 @@ import {
     buildContextBridge,
     contextBridgeDisplayText,
     contextBridgeToSystemPrompt,
+    ensureLatestSceneTransitionBridge,
     roomMemberToPersona,
+    selectLatestSceneHistory,
 } from "./conversationTransfer.js";
 
 
@@ -2973,6 +2975,8 @@ const renderPersonaList = () => {
         room?: ChatRoom;
         pinned?: boolean;
     }) => {
+        const shell = document.createElement('div');
+        shell.className = 'conversation-row-shell';
         const button = document.createElement('button');
         button.type = 'button';
         button.className = `conversation-row${currentConversationKey === options.key ? ' is-active' : ''}`;
@@ -3012,7 +3016,23 @@ const renderPersonaList = () => {
         copy.append(line, preview);
         button.append(avatar, copy);
         button.addEventListener('click', () => startChat(options.key));
-        return button;
+        shell.appendChild(button);
+
+        if (!options.pinned) {
+            const deleteButton = document.createElement('button');
+            deleteButton.type = 'button';
+            deleteButton.className = 'conversation-delete-button';
+            deleteButton.title = options.room ? `刪除群組 ${options.title}` : `刪除與 ${options.title} 的聊天`;
+            deleteButton.setAttribute('aria-label', deleteButton.title);
+            deleteButton.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5m4-5v5"></path></svg>';
+            deleteButton.addEventListener('click', event => {
+                event.preventDefault();
+                event.stopPropagation();
+                void deleteConversationFromList(options.key, options.title, options.room);
+            });
+            shell.appendChild(deleteButton);
+        }
+        return shell;
     };
 
     const assistant = personas[VENICE_ASSISTANT_PERSONA_KEY];
@@ -5932,6 +5952,16 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
     chatContainer.innerHTML = '';
     let chatHistory = restoredHistory || memoryManager.getChatHistory(key);
     if (restoredHistory) memoryManager.setChatHistory(key, restoredHistory);
+    const bridgedHistory = ensureLatestSceneTransitionBridge(
+        chatHistory,
+        key,
+        room?.title || selectedPersona?.name || '目前對話',
+        room || undefined,
+    );
+    if (bridgedHistory !== chatHistory) {
+        chatHistory = bridgedHistory;
+        memoryManager.setChatHistory(key, chatHistory);
+    }
     chatHistory = recoverInterruptedPhotoProposals(key, chatHistory);
     if (room) appendLinkedLegacyHistory(room);
     chatHistory.forEach(message => {
@@ -6141,6 +6171,33 @@ const deleteCharacterPhotoAssetsForHistory = async (history: ChatMessage[]) => {
         characterPhotoObjectUrls.delete(assetId);
         await deleteCharacterPhotoAsset(assetId);
     }));
+};
+
+const deleteConversationFromList = async (key: string, title: string, room?: ChatRoom) => {
+    const prompt = room
+        ? `確定要刪除群組「${title}」及其全部聊天記錄嗎？群組成員原本的一對一聊天不會受影響。此動作無法復原。`
+        : `確定要刪除與「${title}」的聊天記錄嗎？角色人格、頭像、soul.md 與 memory.md 會保留。`;
+    if (!confirm(prompt)) return;
+
+    if (currentConversationKey === key) {
+        cancelActiveChatRequest();
+        if (characterPhotoRequestController) characterPhotoRequestController.abort();
+    }
+    const history = memoryManager.peekChatHistory(key);
+    await Promise.all([
+        deleteCharacterPhotoAssetsForHistory(history),
+        deleteChatAttachmentAssetsForHistory(history),
+    ]);
+
+    if (room) {
+        memoryManager.deleteChatHistory(key);
+        roomManager.deleteRoom(key);
+        if (currentConversationKey === key) showSelectionView('replace');
+    } else {
+        memoryManager.clearChatHistory(key);
+        if (currentConversationKey === key) startChat(key, null, 'replace');
+    }
+    renderPersonaList();
 };
 
 const deleteChatAttachmentAssetsForHistory = async (history: ChatMessage[]) => {
@@ -7249,7 +7306,7 @@ const appendMessage = (
         messageWrapper = document.createElement('div');
         messageWrapper.className = 'system-action-message';
         messageWrapper.appendChild(createNpcProposalCard(content.npcProposal));
-    } else if (isSystemMessage && content.contextBridge) {
+    } else if (isSystemMessage && content.contextBridge && content.contextBridge.kind !== 'scene_transition') {
         messageWrapper = document.createElement('div');
         messageWrapper.className = 'system-action-message';
         messageWrapper.appendChild(createContextBridgeCard(content.contextBridge));
@@ -12203,11 +12260,46 @@ const savePersonaSettings = async () => {
 
 const startNewScene = () => {
     if (!currentConversationKey) return;
+    const completedSceneHistory = selectLatestSceneHistory(
+        memoryManager.peekChatHistory(currentConversationKey),
+    );
+    const transitionBridge = completedSceneHistory.length > 0
+        ? buildContextBridge({
+            kind: 'scene_transition',
+            sourceConversationKey: currentConversationKey,
+            sourceTitle: currentRoom?.title || currentPersona?.name || '目前對話',
+            history: completedSceneHistory,
+            room: currentRoom || undefined,
+            summaryOverride: currentRoom
+                ? [
+                    `已完成位置：${currentRoom.scene.location}`,
+                    `已完成情節：${currentRoom.scene.summary}`,
+                    currentRoom.scene.unresolved.length
+                        ? `結束時尚未處理：${currentRoom.scene.unresolved.join('；')}`
+                        : '',
+                ].filter(Boolean).join('。')
+                : '上一場景已完結；保留已發生的事件、關係變化、承諾與情感發展，新的即時狀態由下一則訊息建立。',
+        })
+        : undefined;
+
     if (currentRoom) void maybeSummarizeRoomMemory(currentRoom.id, true);
     else if (currentPersonaKey) void maybeSummarizePersonaMemory(currentPersonaKey, true);
     appendMessage({ text: SCENE_START_LABEL }, 'system');
-    memoryManager.addMessage(currentConversationKey, 'system', { text: SCENE_END_MARKER });
+    memoryManager.addMessage(currentConversationKey, 'system', {
+        text: SCENE_END_MARKER,
+        contextBridge: transitionBridge,
+    });
     if (currentRoom) {
+        const previousScene = cloneRoomSnapshot(currentRoom.scene);
+        if (completedSceneHistory.length > 0 && previousScene.presentMemberIds.length > 0) {
+            roomManager.addEpisodicMemories(currentRoom.id, [{
+                kind: 'event',
+                title: `已完成場景：${previousScene.location || '上一幕'}`,
+                summary: previousScene.summary,
+                participants: [...previousScene.presentMemberIds],
+                roleplayOnly: true,
+            }]);
+        }
         roomManager.updateRoom(currentRoom.id, room => {
             room.scene.id = crypto.randomUUID?.() || `scene-${Date.now()}`;
             room.scene.startedAt = Date.now();

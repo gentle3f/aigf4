@@ -217,7 +217,7 @@ export interface ChatSceneSnapshot {
 
 export interface ChatContextBridge {
     id: string;
-    kind: 'group_to_private' | 'private_to_group' | 'member_invited' | 'member_left' | 'member_returned';
+    kind: 'group_to_private' | 'private_to_group' | 'member_invited' | 'member_left' | 'member_returned' | 'scene_transition';
     sourceConversationKey: string;
     sourceTitle: string;
     targetMemberName?: string;
@@ -958,6 +958,13 @@ export class MemoryManager {
         } else {
             this.chatHistories[key] = [];
         }
+        delete this.diaries[key];
+        delete this.interests[key];
+        this.persistChatHistories();
+    }
+
+    deleteChatHistory(key: string) {
+        delete this.chatHistories[key];
         delete this.diaries[key];
         delete this.interests[key];
         this.persistChatHistories();

@@ -7,7 +7,7 @@ import {
     selectLegacyGroupHistory,
     trimTrailingUnansweredUserMessages,
 } from '../groupChat.js';
-import { ChatMessage, Content } from '../managers.js';
+import { ChatMessage, Content, MemoryManager } from '../managers.js';
 import { ChatRoom, cloneRoomSnapshot, RoomManager, RoomMember } from '../roomManager.js';
 
 const member = (id: string, name: string): RoomMember => ({
@@ -270,6 +270,45 @@ test('room favorite photo prompt survives a manager reload', () => {
 
     const restored = new RoomManager().getRoom(room.id);
     assert.equal(restored?.favoritePhotoPrompt, 'soft window light, candid phone photo');
+});
+
+test('deleting a room removes it after manager reload', () => {
+    const storage = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: {
+            getItem: (key: string) => storage.get(key) || null,
+            setItem: (key: string, value: string) => storage.set(key, value),
+        },
+    });
+    const manager = new RoomManager();
+    const created = manager.createRoom('Temporary room', [
+        { persona: member('iu', 'IU').persona },
+        { persona: member('jennie', 'Jennie').persona },
+    ]);
+
+    assert.equal(manager.deleteRoom(created.id), true);
+    assert.equal(new RoomManager().getRoom(created.id), undefined);
+});
+
+test('a deleted curated room is not recreated on reload', () => {
+    const storage = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: {
+            getItem: (key: string) => storage.get(key) || null,
+            setItem: (key: string, value: string) => storage.set(key, value),
+        },
+    });
+    const memoryManager = new MemoryManager();
+    const manager = new RoomManager();
+    const curated = manager.ensureIuGroupRoom(memoryManager);
+    assert.ok(curated);
+    assert.equal(manager.deleteRoom(curated.id), true);
+
+    const restored = new RoomManager();
+    assert.equal(restored.ensureIuGroupRoom(memoryManager), undefined);
+    assert.equal(restored.getRoom(curated.id), undefined);
 });
 
 test('upgrading a one-to-one chat to a room carries its soul and episodic memory', () => {

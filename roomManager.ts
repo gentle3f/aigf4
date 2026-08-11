@@ -1,6 +1,7 @@
 import { ChatMessage, MemoryManager, Persona, PublicIdentity } from './managers.js';
 
 const ROOM_STORAGE_KEY = 'aigf4RoomsV2';
+const DELETED_ROOM_IDS_STORAGE_KEY = 'aigf4DeletedRoomIdsV1';
 export const IU_GROUP_ROOM_ID = 'room_iu_jennie_irene_v1';
 const IU_GROUP_MIGRATION_VERSION = 2;
 
@@ -296,9 +297,24 @@ const formatMemoryMarkdown = (member: RoomMember, room: ChatRoom, type: 'soul' |
 
 export class RoomManager {
     private rooms: Record<string, ChatRoom> = {};
+    private deletedRoomIds = new Set<string>();
 
     constructor() {
+        this.loadDeletedRoomIds();
         this.load();
+    }
+
+    private loadDeletedRoomIds() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(DELETED_ROOM_IDS_STORAGE_KEY) || '[]');
+            if (Array.isArray(parsed)) this.deletedRoomIds = new Set(parsed.filter(id => typeof id === 'string'));
+        } catch (error) {
+            console.error('Failed to load deleted room IDs:', error);
+        }
+    }
+
+    private persistDeletedRoomIds() {
+        localStorage.setItem(DELETED_ROOM_IDS_STORAGE_KEY, JSON.stringify([...this.deletedRoomIds]));
     }
 
     private load() {
@@ -327,9 +343,13 @@ export class RoomManager {
         const roomData = data as Partial<RoomExportData>;
         if (!Array.isArray(roomData.rooms)) return;
         roomData.rooms.forEach(room => {
-            if (room?.id) this.rooms[room.id] = cloneRoom(room);
+            if (room?.id) {
+                this.rooms[room.id] = cloneRoom(room);
+                this.deletedRoomIds.delete(room.id);
+            }
         });
         this.persist();
+        this.persistDeletedRoomIds();
     }
 
     getRooms() {
@@ -343,8 +363,19 @@ export class RoomManager {
     saveRoom(room: ChatRoom) {
         room.updatedAt = Date.now();
         this.rooms[room.id] = cloneRoom(room);
+        this.deletedRoomIds.delete(room.id);
         this.persist();
+        this.persistDeletedRoomIds();
         return this.rooms[room.id];
+    }
+
+    deleteRoom(id: string) {
+        if (!this.rooms[id]) return false;
+        delete this.rooms[id];
+        this.deletedRoomIds.add(id);
+        this.persist();
+        this.persistDeletedRoomIds();
+        return true;
     }
 
     updateRoom(id: string, updater: (room: ChatRoom) => void) {
@@ -548,6 +579,7 @@ export class RoomManager {
     }
 
     ensureIuGroupRoom(memoryManager: MemoryManager) {
+        if (this.deletedRoomIds.has(IU_GROUP_ROOM_ID)) return undefined;
         const personas = memoryManager.getAllPersonas();
         const iuEntry = Object.entries(personas)
             .filter(([, persona]) => {

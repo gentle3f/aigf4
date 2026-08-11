@@ -203,6 +203,44 @@ body.app-body {
     transition: background-color 120ms ease;
 }
 
+.conversation-row-shell {
+    position: relative;
+}
+
+.conversation-row-shell .conversation-row {
+    padding-right: 52px;
+}
+
+.conversation-delete-button {
+    position: absolute;
+    z-index: 2;
+    top: 50%;
+    right: 10px;
+    display: grid;
+    width: 36px;
+    height: 36px;
+    place-items: center;
+    border-radius: 999px;
+    color: #667781;
+    transform: translateY(-50%);
+    transition: color 120ms ease, background-color 120ms ease, transform 80ms ease;
+}
+
+.conversation-delete-button:hover {
+    color: #d43f4f;
+    background: #f6e9eb;
+}
+
+.conversation-delete-button:active {
+    transform: translateY(-50%) scale(0.9);
+}
+
+.conversation-delete-button svg {
+    width: 20px;
+    height: 20px;
+    stroke-width: 1.8;
+}
+
 .conversation-row:hover,
 .conversation-row.is-active {
     background: #f5f6f6;
@@ -296,6 +334,10 @@ body.app-body {
 }
 
 .conversation-row:last-child .conversation-copy {
+    border-bottom-color: transparent;
+}
+
+.conversation-row-shell:last-child .conversation-copy {
     border-bottom-color: transparent;
 }
 

@@ -3,7 +3,9 @@ import test from 'node:test';
 import {
     buildContextBridge,
     contextBridgeToSystemPrompt,
+    ensureLatestSceneTransitionBridge,
     roomMemberToPersona,
+    selectLatestSceneHistory,
     selectTransferContext,
 } from '../conversationTransfer.js';
 import { ChatMessage, MemoryManager, Persona } from '../managers.js';
@@ -94,6 +96,48 @@ test('group handoff preserves separate speaker names and scene context', () => {
     assert.match(bridge.summary, /客廳/u);
     assert.match(prompt, /not as the newest user command/i);
     assert.match(prompt, /Character receiving this handoff: IU/u);
+});
+
+test('new scene handoff keeps only the latest completed scene as past continuity', () => {
+    const history: ChatMessage[] = [
+        { role: 'user', content: { text: '很久以前的場景' } },
+        { role: 'model', content: { text: '很久以前的回覆' } },
+        { role: 'system', content: { text: '[SCENE END]' } },
+        { role: 'user', content: { text: '我們一起煮晚餐' } },
+        { role: 'model', content: { text: '大家記住這頓晚餐' } },
+    ];
+    const latestScene = selectLatestSceneHistory(history);
+    const bridge = buildContextBridge({
+        kind: 'scene_transition',
+        sourceConversationKey: 'room-one',
+        sourceTitle: 'IU、Jennie',
+        history: latestScene,
+        room: room(),
+    });
+    const prompt = contextBridgeToSystemPrompt(bridge);
+
+    assert.equal(latestScene.length, 2);
+    assert.doesNotMatch(bridge.recentContext, /很久以前/u);
+    assert.match(bridge.recentContext, /一起煮晚餐/u);
+    assert.match(prompt, /PREVIOUS COMPLETED SCENE MEMORY/u);
+    assert.match(prompt, /Remember completed events, relationship changes, promises/u);
+    assert.match(prompt, /Do not resume the old location/u);
+});
+
+test('an old plain scene marker is upgraded without losing the current scene', () => {
+    const history: ChatMessage[] = [
+        { role: 'user', content: { text: '上一幕的重要約定' } },
+        { role: 'model', content: { text: '我會記得這個約定' } },
+        { role: 'system', content: { text: '[SCENE END]' } },
+        { role: 'user', content: { text: '這是新場景的第一句' } },
+    ];
+    const upgraded = ensureLatestSceneTransitionBridge(history, 'room-one', 'IU、Jennie', room());
+    const bridge = upgraded[2].content.contextBridge;
+
+    assert.notEqual(upgraded, history);
+    assert.equal(bridge?.kind, 'scene_transition');
+    assert.match(bridge?.recentContext || '', /上一幕的重要約定/u);
+    assert.equal(upgraded[3].content.text, '這是新場景的第一句');
 });
 
 test('room member becomes a private persona without losing either memory file', () => {
