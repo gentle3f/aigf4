@@ -215,6 +215,17 @@ export interface ChatSceneSnapshot {
     startedAt: number;
 }
 
+export interface ChatContextBridge {
+    id: string;
+    kind: 'group_to_private' | 'private_to_group' | 'member_invited' | 'member_left' | 'member_returned';
+    sourceConversationKey: string;
+    sourceTitle: string;
+    targetMemberName?: string;
+    summary: string;
+    recentContext: string;
+    createdAt: number;
+}
+
 export interface Content {
     text?: string;
     segments?: ChatSegment[];
@@ -227,6 +238,7 @@ export interface Content {
     memoryProposal?: MemoryProposal;
     photoIntent?: PhotoIntentProposal;
     npcProposal?: NpcPromotionProposal;
+    contextBridge?: ChatContextBridge;
     roomSceneBeforeTurn?: ChatSceneSnapshot;
     legacy?: boolean;
 }
@@ -698,6 +710,36 @@ export class MemoryManager {
         };
         this.persistModifiedPersonas();
         return personaKey;
+    }
+
+    async saveCustomPersonaCopy(persona: Persona): Promise<string> {
+        this.customPersonaCounter++;
+        const personaKey = `custom_${this.customPersonaCounter}_${Date.now()}`;
+        const copy = JSON.parse(JSON.stringify(persona)) as Persona;
+        const privateAvatar = copy.avatarUrl?.startsWith('data:image/') ? copy.avatarUrl : null;
+
+        this.personas[personaKey] = {
+            ...copy,
+            avatarUrl: privateAvatar ? null : copy.avatarUrl,
+            soul: copy.soul || [],
+            memories: copy.memories || [],
+            lastMemorySummaryUserMessageCount: Number(copy.lastMemorySummaryUserMessageCount || 0),
+        };
+
+        try {
+            if (privateAvatar) {
+                await savePersonaAvatar(personaKey, privateAvatar);
+                this.privateAvatarKeys.add(personaKey);
+                this.personas[personaKey].avatarUrl = privateAvatar;
+            }
+            this.persistModifiedPersonas(true);
+            return personaKey;
+        } catch (error) {
+            this.privateAvatarKeys.delete(personaKey);
+            delete this.personas[personaKey];
+            await deletePersonaAvatar(personaKey).catch(() => undefined);
+            throw error;
+        }
     }
 
     updatePersona(key: string, data: Partial<Persona>) {

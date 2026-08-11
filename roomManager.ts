@@ -33,6 +33,7 @@ export interface RoomMemoryEntry {
 export interface RoomMember {
     id: string;
     sourcePersonaKey?: string;
+    privatePersonaKey?: string;
     persona: Persona;
     joinedAt: number;
     soul: RoomMemoryEntry[];

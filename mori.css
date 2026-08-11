@@ -413,6 +413,10 @@ body.app-body {
     background: white !important;
 }
 
+#more-options-menu .dropdown-item.hidden {
+    display: none !important;
+}
+
 #more-options-menu .dropdown-item:hover {
     background: var(--mori-toolbar) !important;
 }
@@ -827,6 +831,15 @@ body.app-body {
     font-size: 0.82rem;
 }
 
+.context-bridge-card small {
+    display: block;
+    max-height: 4.5em;
+    overflow: hidden;
+    color: var(--mori-muted);
+    font-size: 0.72rem;
+    line-height: 1.5;
+}
+
 .memory-target-list,
 .photo-intent-subjects {
     display: flex;
@@ -1224,6 +1237,79 @@ body.app-body {
     font-size: 0.72rem;
 }
 
+.room-member-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 7px;
+}
+
+.participant-action-summary {
+    margin: 0 0 10px;
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: var(--mori-muted);
+    background: #eef7f4;
+    font-size: 0.78rem;
+    line-height: 1.5;
+}
+
+.participant-action-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.participant-action-row {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid var(--mori-line);
+    padding: 10px 2px;
+    color: var(--mori-ink);
+    background: transparent;
+    text-align: left;
+}
+
+.participant-action-row:active {
+    background: #e7f8f3;
+    transform: scale(0.99);
+}
+
+.participant-action-row:disabled {
+    opacity: 0.55;
+}
+
+.participant-action-copy {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    flex-direction: column;
+}
+
+.participant-action-copy small {
+    overflow: hidden;
+    color: var(--mori-muted);
+    font-size: 0.7rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.participant-action-label {
+    flex: 0 0 auto;
+    color: var(--mori-green-deep);
+    font-size: 0.75rem;
+    font-weight: 750;
+}
+
+.participant-action-empty {
+    padding: 24px 12px;
+    color: var(--mori-muted);
+    text-align: center;
+}
+
 .room-presence-toggle {
     display: flex;
     flex-direction: column;
@@ -1393,6 +1479,17 @@ body.app-body {
         width: 100% !important;
         max-height: 92dvh !important;
         border-radius: 14px 14px 0 0 !important;
+    }
+
+    .room-member-row {
+        align-items: flex-start;
+    }
+
+    .room-member-actions {
+        width: 76px;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 4px;
     }
 
     .emoji-picker {

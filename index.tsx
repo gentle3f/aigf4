@@ -2,6 +2,7 @@
 import {
     CharacterPhotoProposal,
     ChatAttachment,
+    ChatContextBridge,
     ChatMessage,
     ChatSegment,
     Content,
@@ -110,6 +111,12 @@ import {
     normalizeFavoritePhotoPrompt,
     selectPhotoPromptVersion,
 } from "./photoPromptPreference.js";
+import {
+    buildContextBridge,
+    contextBridgeDisplayText,
+    contextBridgeToSystemPrompt,
+    roomMemberToPersona,
+} from "./conversationTransfer.js";
 
 
 declare var JSZip: any;
@@ -166,6 +173,9 @@ const suggestionContainer = document.getElementById('suggestion-container')!;
 const newSceneBtn = document.getElementById('new-scene-btn') as HTMLButtonElement;
 const takePhotoBtn = document.getElementById('take-photo-btn') as HTMLButtonElement;
 const roomInfoBtn = document.getElementById('room-info-btn') as HTMLButtonElement;
+const dmRoomMemberBtn = document.getElementById('dm-room-member-btn') as HTMLButtonElement;
+const inviteCharacterBtn = document.getElementById('invite-character-btn') as HTMLButtonElement;
+const leaveRoomMemberBtn = document.getElementById('leave-room-member-btn') as HTMLButtonElement;
 const chatSearchBtn = document.getElementById('chat-search-btn') as HTMLButtonElement;
 const chatSearchBar = document.getElementById('chat-search-bar')!;
 const chatSearchInput = document.getElementById('chat-search-input') as HTMLInputElement;
@@ -502,6 +512,11 @@ const closeCreateGroupBtn = document.getElementById('close-create-group') as HTM
 const createGroupName = document.getElementById('create-group-name') as HTMLInputElement;
 const createGroupMemberList = document.getElementById('create-group-member-list')!;
 const confirmCreateGroupBtn = document.getElementById('confirm-create-group') as HTMLButtonElement;
+const participantActionModal = document.getElementById('participant-action-modal')!;
+const closeParticipantActionBtn = document.getElementById('close-participant-action') as HTMLButtonElement;
+const participantActionTitle = document.getElementById('participant-action-title')!;
+const participantActionSummary = document.getElementById('participant-action-summary')!;
+const participantActionList = document.getElementById('participant-action-list')!;
 
 
 // --- Managers ---
@@ -5573,6 +5588,9 @@ const updateChatModeControls = (key: string) => {
     [memoryBtn, personaSettingsBtn, changeAvatarBtn, albumBtn, takePhotoBtn, newSceneBtn, downloadImagesBtn].forEach(element => {
         element.classList.toggle('hidden', assistantMode);
     });
+    inviteCharacterBtn.classList.toggle('hidden', assistantMode);
+    dmRoomMemberBtn.classList.toggle('hidden', assistantMode || !currentRoom);
+    leaveRoomMemberBtn.classList.toggle('hidden', assistantMode || !currentRoom);
 
     if (assistantMode) {
         void loadAssistantModels();
@@ -7186,6 +7204,27 @@ const closeChatSearch = () => {
     chatSearchBar.classList.add('hidden');
 };
 
+const createContextBridgeCard = (bridge: ChatContextBridge) => {
+    const card = document.createElement('section');
+    card.className = 'system-action-card context-bridge-card';
+    const title = document.createElement('strong');
+    title.textContent = bridge.kind === 'group_to_private'
+        ? '私人對話已承接'
+        : bridge.kind === 'member_invited'
+            ? '新角色已加入'
+            : bridge.kind === 'member_left'
+                ? '角色已離場'
+                : bridge.kind === 'member_returned'
+                    ? '角色已回到場景'
+                    : '群組情境已承接';
+    const description = document.createElement('p');
+    description.textContent = contextBridgeDisplayText(bridge);
+    const summary = document.createElement('small');
+    summary.textContent = bridge.summary;
+    card.append(title, description, summary);
+    return card;
+};
+
 const appendMessage = (
     content: Content,
     sender: 'user' | 'bot' | 'system' | 'god-mode',
@@ -7210,6 +7249,10 @@ const appendMessage = (
         messageWrapper = document.createElement('div');
         messageWrapper.className = 'system-action-message';
         messageWrapper.appendChild(createNpcProposalCard(content.npcProposal));
+    } else if (isSystemMessage && content.contextBridge) {
+        messageWrapper = document.createElement('div');
+        messageWrapper.className = 'system-action-message';
+        messageWrapper.appendChild(createContextBridgeCard(content.contextBridge));
     } else if (sender === 'bot' && currentRoom && groupDisplaySegments.length) {
         messageWrapper = document.createElement('div');
         messageWrapper.className = 'group-chat-turn';
@@ -8135,7 +8178,10 @@ const getRecentChatMessages = (
             message =>
                 message.role === 'user'
                 || message.role === 'model'
-                || (!assistantMode && message.role === 'system' && message.content.text?.trim() === SCENE_END_MARKER),
+                || (!assistantMode && message.role === 'system' && (
+                    message.content.text?.trim() === SCENE_END_MARKER
+                    || Boolean(message.content.contextBridge)
+                )),
         );
     const completedHistory = latestUserMessage
         ? trimTrailingUnansweredUserMessages(completeHistory)
@@ -8154,9 +8200,11 @@ const getRecentChatMessages = (
     const historyMessages: VeniceMessage[] = [];
 
     sourceHistory.forEach(message => {
-        const rawText = room && message.role === 'model'
-            ? contentToGroupHistoryText(message.content, room).trim()
-            : message.content.text?.trim();
+        const rawText = message.role === 'system' && message.content.contextBridge
+            ? contextBridgeToSystemPrompt(message.content.contextBridge)
+            : room && message.role === 'model'
+                ? contentToGroupHistoryText(message.content, room).trim()
+                : message.content.text?.trim();
         const isContaminated = !rawText
             || (message.role !== 'system' && (/\[PERSONA_UPDATE:/i.test(rawText) || /^THINK\b/i.test(rawText)));
         if (isContaminated) {
@@ -11097,6 +11145,444 @@ async function getSuggestions() {
     showDisabledFeatureNotice('建議功能');
 }
 
+interface ParticipantTransferCandidate {
+    id: string;
+    persona: Persona;
+    sourcePersonaKey?: string;
+    sourceLabel: string;
+    originRoomId?: string;
+    originMemberId?: string;
+}
+
+const participantIdentityFingerprint = (persona: Persona) => (
+    persona.publicIdentity?.canonicalName || persona.name
+).replace(/\s+/gu, ' ').trim().toLocaleLowerCase();
+
+const participantContinuityFingerprint = (persona: Persona) => JSON.stringify({
+    name: persona.name,
+    description: persona.description,
+    prompt: persona.prompt,
+    soul: (persona.soul || []).map(entry => `${entry.kind}:${entry.summary}`),
+    memories: (persona.memories || []).map(entry => `${entry.kind}:${entry.summary}`),
+});
+
+const roomMemberMatchesCandidate = (member: RoomMember, candidate: ParticipantTransferCandidate) => {
+    if (candidate.sourcePersonaKey && (
+        member.sourcePersonaKey === candidate.sourcePersonaKey
+        || member.privatePersonaKey === candidate.sourcePersonaKey
+    )) return true;
+    return participantIdentityFingerprint(member.persona) === participantIdentityFingerprint(candidate.persona);
+};
+
+const collectParticipantTransferCandidates = () => {
+    const candidates = new Map<string, ParticipantTransferCandidate>();
+    const excludedKeys = new Set<string>();
+    const excludedIdentities = new Set<string>();
+
+    if (currentRoom) {
+        currentRoom.members.forEach(member => {
+            if (member.sourcePersonaKey) excludedKeys.add(member.sourcePersonaKey);
+            if (member.privatePersonaKey) excludedKeys.add(member.privatePersonaKey);
+            excludedIdentities.add(participantIdentityFingerprint(member.persona));
+        });
+    } else if (currentPersona && currentPersonaKey) {
+        excludedKeys.add(currentPersonaKey);
+        excludedIdentities.add(participantIdentityFingerprint(currentPersona));
+    }
+
+    Object.entries(memoryManager.getAllPersonas()).forEach(([key, persona]) => {
+        const identity = participantIdentityFingerprint(persona);
+        if (
+            key === VENICE_ASSISTANT_PERSONA_KEY
+            || persona.gender !== 'female'
+            || excludedKeys.has(key)
+            || excludedIdentities.has(identity)
+        ) return;
+        const candidateId = `persona:${key}`;
+        candidates.set(candidateId, {
+            id: candidateId,
+            persona: cloneRoomSnapshot(persona),
+            sourcePersonaKey: key,
+            sourceLabel: memoryManager.peekChatHistory(key).length > 0 ? '來自私人聊天' : '現有角色',
+        });
+    });
+
+    roomManager.getRooms().forEach(room => {
+        room.members.forEach(member => {
+            const sourcePersonaKey = member.privatePersonaKey || member.sourcePersonaKey;
+            const sourcePersona = sourcePersonaKey ? memoryManager.getPersona(sourcePersonaKey) : undefined;
+            const persona = roomMemberToPersona(member, sourcePersona);
+            const identity = participantIdentityFingerprint(persona);
+            const candidateId = `room:${room.id}:${member.id}`;
+            const matchesUnchangedSource = sourcePersonaKey
+                && candidates.has(`persona:${sourcePersonaKey}`)
+                && sourcePersona
+                && participantContinuityFingerprint(persona) === participantContinuityFingerprint(sourcePersona);
+            if (
+                persona.gender !== 'female'
+                || excludedIdentities.has(identity)
+                || (sourcePersonaKey && excludedKeys.has(sourcePersonaKey))
+                || matchesUnchangedSource
+            ) return;
+            candidates.set(candidateId, {
+                id: candidateId,
+                persona,
+                sourcePersonaKey,
+                sourceLabel: `來自群組「${room.title}」`,
+                originRoomId: room.id,
+                originMemberId: member.id,
+            });
+        });
+    });
+
+    return [...candidates.values()].sort((left, right) => (
+        left.persona.name.localeCompare(right.persona.name, 'zh-Hant')
+        || left.sourceLabel.localeCompare(right.sourceLabel, 'zh-Hant')
+    ));
+};
+
+const createTransferredRoomMember = (candidate: ParticipantTransferCandidate): RoomMember => {
+    const joinedAt = Date.now();
+    const memberId = `member_${joinedAt}_${Math.random().toString(36).slice(2, 8)}`;
+    const persona = cloneRoomSnapshot(candidate.persona);
+    const toRoomMemory = (entry: PersonaMemoryEntry, pinned: boolean): RoomMemoryEntry => ({
+        ...cloneRoomSnapshot(entry),
+        participants: [memberId],
+        pinned,
+        roleplayOnly: true,
+    });
+    return {
+        id: memberId,
+        sourcePersonaKey: candidate.sourcePersonaKey,
+        privatePersonaKey: candidate.sourcePersonaKey,
+        persona,
+        joinedAt,
+        soul: (persona.soul || []).map(entry => toRoomMemory(entry, true)),
+        memories: (persona.memories || []).map(entry => toRoomMemory(entry, false)),
+    };
+};
+
+const appendContextBridge = (conversationKey: string, bridge: ChatContextBridge) => {
+    memoryManager.addMessage(conversationKey, 'system', {
+        text: contextBridgeDisplayText(bridge),
+        contextBridge: bridge,
+    });
+};
+
+const saveBridgeAsPersonaMemory = (personaKey: string, bridge: ChatContextBridge) => {
+    memoryManager.addPersonaMemory(personaKey, 'memory', {
+        kind: 'event',
+        title: `從 ${bridge.sourceTitle} 承接的情境`,
+        summary: bridge.summary,
+    });
+};
+
+const resolveRoomMemberPrivatePersonaKey = async (room: ChatRoom, member: RoomMember) => {
+    const protectedIuArchive = room.id === IU_GROUP_ROOM_ID
+        && member.id === 'iu'
+        && member.sourcePersonaKey === room.legacySourcePersonaKey;
+    const existingKey = member.privatePersonaKey
+        || (!protectedIuArchive ? member.sourcePersonaKey : undefined);
+    if (existingKey && memoryManager.getPersona(existingKey)) {
+        if (member.privatePersonaKey !== existingKey) {
+            roomManager.updateMember(room.id, member.id, { privatePersonaKey: existingKey });
+        }
+        return existingKey;
+    }
+
+    const sourcePersona = member.sourcePersonaKey
+        ? memoryManager.getPersona(member.sourcePersonaKey)
+        : undefined;
+    const personaKey = await memoryManager.saveCustomPersonaCopy(roomMemberToPersona(member, sourcePersona));
+    roomManager.updateMember(room.id, member.id, { privatePersonaKey: personaKey });
+    return personaKey;
+};
+
+const openPrivateChatForRoomMember = async (roomId: string, memberId: string) => {
+    if (activeChatRequest) {
+        alert('請先等待目前回覆完成，再切換到私訊。');
+        return;
+    }
+    const room = roomManager.getRoom(roomId);
+    const member = room?.members.find(item => item.id === memberId);
+    if (!room || !member) throw new Error('找不到這位群組成員。');
+
+    const personaKey = await resolveRoomMemberPrivatePersonaKey(room, member);
+    const bridge = buildContextBridge({
+        kind: 'group_to_private',
+        sourceConversationKey: room.id,
+        sourceTitle: room.title,
+        history: memoryManager.getChatHistory(room.id),
+        room,
+        targetMemberName: member.persona.name,
+    });
+    const transferredPersona = roomMemberToPersona(member, memoryManager.getPersona(personaKey));
+    (transferredPersona.soul || []).forEach(entry => {
+        memoryManager.addPersonaMemory(personaKey, 'soul', {
+            kind: entry.kind,
+            title: entry.title,
+            summary: entry.summary,
+            originalText: entry.originalText,
+            sourceMessageIds: entry.sourceMessageIds,
+            sourceMessageIndexes: entry.sourceMessageIndexes,
+        });
+    });
+    (transferredPersona.memories || []).forEach(entry => {
+        memoryManager.addPersonaMemory(personaKey, 'memory', {
+            kind: entry.kind,
+            title: entry.title,
+            summary: entry.summary,
+            originalText: entry.originalText,
+            sourceMessageIds: entry.sourceMessageIds,
+            sourceMessageIndexes: entry.sourceMessageIndexes,
+        });
+    });
+    saveBridgeAsPersonaMemory(personaKey, bridge);
+    if (!memoryManager.hasChatHistory(personaKey)) memoryManager.setChatHistory(personaKey, []);
+    appendContextBridge(personaKey, bridge);
+
+    participantActionModal.classList.add('hidden');
+    roomInfoModal.classList.add('hidden');
+    renderPersonaList();
+    startChat(personaKey);
+};
+
+const inviteParticipantCandidate = (candidate: ParticipantTransferCandidate) => {
+    if (!currentConversationKey || !currentPersona || activeChatRequest) return;
+    const sourceConversationKey = currentConversationKey;
+    const sourceRoom = currentRoom ? roomManager.getRoom(currentRoom.id) || currentRoom : null;
+    const sourceTitle = sourceRoom?.title || currentPersona.name;
+    const sourceHistory = memoryManager.getChatHistory(sourceConversationKey);
+
+    if (sourceRoom) {
+        if (sourceRoom.members.length >= ROOM_MEMBER_LIMIT) {
+            alert(`每個群組最多 ${ROOM_MEMBER_LIMIT} 位角色。`);
+            return;
+        }
+        if (sourceRoom.scene.presentMemberIds.length >= ROOM_PRESENT_MEMBER_LIMIT) {
+            alert(`目前已有 ${ROOM_PRESENT_MEMBER_LIMIT} 位角色在場，請先請一位角色離場。`);
+            return;
+        }
+        if (sourceRoom.members.some(member => roomMemberMatchesCandidate(member, candidate))) {
+            alert(`${candidate.persona.name} 已經是這個聊天室的成員。`);
+            return;
+        }
+
+        const member = createTransferredRoomMember(candidate);
+        roomManager.addMember(sourceRoom.id, member);
+        roomManager.updateRoom(sourceRoom.id, room => {
+            room.scene.summary = `${room.scene.summary} ${member.persona.name} 剛獲邀加入，已閱讀必要的近期情境。`.slice(-1500);
+        });
+        const updatedRoom = roomManager.getRoom(sourceRoom.id)!;
+        const bridge = buildContextBridge({
+            kind: 'member_invited',
+            sourceConversationKey,
+            sourceTitle,
+            history: sourceHistory,
+            room: updatedRoom,
+            targetMemberName: member.persona.name,
+        });
+        roomManager.addEpisodicMemories(sourceRoom.id, [{
+            kind: 'event',
+            title: `${member.persona.name} 加入聊天室`,
+            summary: bridge.summary,
+            participants: [member.id],
+        }]);
+        appendContextBridge(sourceRoom.id, bridge);
+        participantActionModal.classList.add('hidden');
+        renderPersonaList();
+        startChat(sourceRoom.id, null, 'skip');
+        return;
+    }
+
+    if (!currentPersonaKey || roomManager.getRooms().some(room => room.id === sourceConversationKey)) return;
+    if (participantIdentityFingerprint(currentPersona) === participantIdentityFingerprint(candidate.persona)) {
+        alert('不能邀請目前正在私訊的同一位角色。');
+        return;
+    }
+
+    const room = roomManager.createRoom(
+        `${currentPersona.name}、${candidate.persona.name}`,
+        [
+            { sourcePersonaKey: currentPersonaKey, persona: cloneRoomSnapshot(currentPersona) },
+            { sourcePersonaKey: candidate.sourcePersonaKey, persona: cloneRoomSnapshot(candidate.persona) },
+        ],
+    );
+    const bridge = buildContextBridge({
+        kind: 'private_to_group',
+        sourceConversationKey,
+        sourceTitle,
+        history: sourceHistory,
+        targetMemberName: candidate.persona.name,
+    });
+    roomManager.updateRoom(room.id, editableRoom => {
+        editableRoom.legacySourcePersonaKey = sourceConversationKey;
+        editableRoom.description = `${currentPersona.name} 與 ${candidate.persona.name} 的群組`;
+        editableRoom.scene.location = '由私人聊天延續的群組聊天室';
+        editableRoom.scene.realityLayer = 'texting';
+        editableRoom.scene.summary = `${bridge.summary} ${candidate.persona.name} 已加入並讀取必要的近期情境。`.slice(-1500);
+        editableRoom.scene.unresolved = ['讓新加入的角色自然接上目前話題'];
+    });
+    const createdRoom = roomManager.getRoom(room.id)!;
+    roomManager.addEpisodicMemories(createdRoom.id, [{
+        kind: 'event',
+        title: `${candidate.persona.name} 加入對話`,
+        summary: bridge.summary,
+        participants: createdRoom.members.map(member => member.id),
+    }]);
+    appendContextBridge(createdRoom.id, bridge);
+    participantActionModal.classList.add('hidden');
+    renderPersonaList();
+    startChat(createdRoom.id, null, 'replace');
+};
+
+const setRoomMemberPresence = (roomId: string, memberId: string, present: boolean) => {
+    if (activeChatRequest) {
+        alert('請先等待目前回覆完成，再變更在場角色。');
+        return;
+    }
+    const room = roomManager.getRoom(roomId);
+    const member = room?.members.find(item => item.id === memberId);
+    if (!room || !member) return;
+    const currentIds = [...room.scene.presentMemberIds];
+    if (!present && currentIds.length <= 1) {
+        alert('場景中至少需要 1 位角色在場。');
+        return;
+    }
+    if (present && currentIds.length >= ROOM_PRESENT_MEMBER_LIMIT) {
+        alert(`同一場景最多 ${ROOM_PRESENT_MEMBER_LIMIT} 位角色在場。`);
+        return;
+    }
+    const nextIds = present
+        ? Array.from(new Set([...currentIds, member.id]))
+        : currentIds.filter(id => id !== member.id);
+    roomManager.setPresentMembers(room.id, nextIds);
+    roomManager.updateRoom(room.id, editableRoom => {
+        const event = present
+            ? `${member.persona.name} 已回到目前場景。`
+            : `${member.persona.name} 已離開目前場景，但仍保留為固定成員。`;
+        editableRoom.scene.summary = `${editableRoom.scene.summary} ${event}`.slice(-1500);
+    });
+    const updatedRoom = roomManager.getRoom(room.id)!;
+    const bridge = buildContextBridge({
+        kind: present ? 'member_returned' : 'member_left',
+        sourceConversationKey: room.id,
+        sourceTitle: room.title,
+        history: memoryManager.getChatHistory(room.id),
+        room: updatedRoom,
+        targetMemberName: member.persona.name,
+    });
+    appendContextBridge(room.id, bridge);
+    participantActionModal.classList.add('hidden');
+    if (currentConversationKey === room.id) startChat(room.id, null, 'skip');
+    renderPersonaList();
+};
+
+const closeParticipantAction = () => {
+    participantActionModal.classList.add('hidden');
+    participantActionList.innerHTML = '';
+};
+
+const appendParticipantActionRow = (
+    persona: Persona,
+    detail: string,
+    actionLabel: string,
+    action: () => void | Promise<void>,
+) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'participant-action-row';
+    const avatar = document.createElement('span');
+    avatar.className = 'room-member-avatar';
+    if (persona.avatarUrl && !persona.avatarUrl.startsWith('generating_')) {
+        const image = document.createElement('img');
+        image.src = persona.avatarUrl;
+        image.alt = persona.name;
+        avatar.appendChild(image);
+    } else avatar.textContent = persona.emoji || '●';
+    const copy = document.createElement('span');
+    copy.className = 'participant-action-copy';
+    const name = document.createElement('strong');
+    name.textContent = persona.name;
+    const description = document.createElement('small');
+    description.textContent = `${detail} · ${persona.description}`;
+    copy.append(name, description);
+    const actionText = document.createElement('span');
+    actionText.className = 'participant-action-label';
+    actionText.textContent = actionLabel;
+    button.append(avatar, copy, actionText);
+    button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+            await action();
+        } catch (error) {
+            alert(error instanceof Error ? error.message : '未能完成角色操作。');
+        } finally {
+            if (!participantActionModal.classList.contains('hidden')) button.disabled = false;
+        }
+    });
+    participantActionList.appendChild(button);
+};
+
+const openParticipantAction = (mode: 'dm' | 'invite' | 'leave') => {
+    if (activeChatRequest) {
+        alert('請先等待目前回覆完成。');
+        return;
+    }
+    participantActionList.innerHTML = '';
+    moreOptionsMenu.classList.add('hidden');
+
+    if (mode === 'invite') {
+        participantActionTitle.textContent = '邀請角色加入';
+        participantActionSummary.textContent = currentRoom
+            ? '選擇其他聊天中的角色；她會加入目前群組並先讀取必要的近期情境。'
+            : '選擇另一位角色；目前私訊會保留為備份，並延續成新的群組聊天室。';
+        collectParticipantTransferCandidates().forEach(candidate => {
+            appendParticipantActionRow(
+                candidate.persona,
+                candidate.sourceLabel,
+                '邀請',
+                () => inviteParticipantCandidate(candidate),
+            );
+        });
+    } else {
+        const room = currentRoom ? roomManager.getRoom(currentRoom.id) || currentRoom : null;
+        if (!room) return;
+        participantActionTitle.textContent = mode === 'dm' ? '私訊群組成員' : '請角色離場';
+        participantActionSummary.textContent = mode === 'dm'
+            ? '私訊會成為獨立聊天，並只承接必要的近期群組情境；原群組保持不變。'
+            : '角色只會離開目前場景，不會刪除人格、soul.md、memory.md 或群組身份。';
+        room.members
+            .filter(member => mode === 'dm' || room.scene.presentMemberIds.includes(member.id))
+            .forEach(member => {
+                appendParticipantActionRow(
+                    resolveRoomMemberAvatarPersona(member),
+                    mode === 'dm'
+                        ? room.scene.presentMemberIds.includes(member.id) ? '目前在場' : '目前不在場'
+                        : '目前在場',
+                    mode === 'dm' ? '私訊' : '離場',
+                    mode === 'dm'
+                        ? () => openPrivateChatForRoomMember(room.id, member.id)
+                        : () => {
+                            if (confirm(`請 ${member.persona.name} 離開目前場景？`)) {
+                                setRoomMemberPresence(room.id, member.id, false);
+                            }
+                        },
+                );
+            });
+    }
+
+    if (!participantActionList.children.length) {
+        const empty = document.createElement('p');
+        empty.className = 'participant-action-empty';
+        empty.textContent = mode === 'invite'
+            ? '暫時沒有其他可邀請的角色。'
+            : mode === 'leave' ? '目前沒有可請離場的角色。' : '這個群組沒有可私訊的角色。';
+        participantActionList.appendChild(empty);
+    }
+    participantActionModal.classList.remove('hidden');
+};
+
 const refreshCurrentRoom = () => {
     if (!currentConversationKey) return null;
     currentRoom = roomManager.getRoom(currentConversationKey) || null;
@@ -11167,6 +11653,20 @@ const renderRoomInfo = () => {
         avatarButton.textContent = '頭像';
         avatarButton.addEventListener('click', () => requestRoomMemberAvatarUpload(room.id, member.id));
 
+        const dmButton = document.createElement('button');
+        dmButton.type = 'button';
+        dmButton.className = 'room-member-mini-action';
+        dmButton.textContent = '私訊';
+        dmButton.addEventListener('click', async () => {
+            dmButton.disabled = true;
+            try {
+                await openPrivateChatForRoomMember(room.id, member.id);
+            } catch (error) {
+                alert(error instanceof Error ? error.message : '未能開啟私人聊天。');
+                dmButton.disabled = false;
+            }
+        });
+
         const presence = document.createElement('label');
         presence.className = 'room-presence-toggle';
         const checkbox = document.createElement('input');
@@ -11176,25 +11676,13 @@ const renderRoomInfo = () => {
         label.textContent = '在場';
         presence.append(checkbox, label);
         checkbox.addEventListener('change', () => {
-            const currentIds = [...room.scene.presentMemberIds];
-            const nextIds = checkbox.checked
-                ? [...currentIds, member.id]
-                : currentIds.filter(id => id !== member.id);
-            if (nextIds.length === 0) {
-                checkbox.checked = true;
-                alert('場景中至少需要 1 位角色在場。');
-                return;
-            }
-            try {
-                roomManager.setPresentMembers(room.id, nextIds);
-                renderRoomInfo();
-                renderPersonaList();
-            } catch (error) {
-                checkbox.checked = !checkbox.checked;
-                alert(error instanceof Error ? error.message : '無法更新在場成員。');
-            }
+            setRoomMemberPresence(room.id, member.id, checkbox.checked);
+            renderRoomInfo();
         });
-        row.append(avatar, copy, avatarButton, presence);
+        const actions = document.createElement('div');
+        actions.className = 'room-member-actions';
+        actions.append(dmButton, avatarButton, presence);
+        row.append(avatar, copy, actions);
         roomMemberList.appendChild(row);
     });
 
@@ -11844,6 +12332,10 @@ const setupEventListeners = () => {
     createGroupRoomBtn.addEventListener('click', () => openCreateGroup());
     closeCreateGroupBtn.addEventListener('click', closeCreateGroup);
     confirmCreateGroupBtn.addEventListener('click', confirmCreateGroup);
+    closeParticipantActionBtn.addEventListener('click', closeParticipantAction);
+    participantActionModal.addEventListener('click', event => {
+        if (event.target === participantActionModal) closeParticipantAction();
+    });
     assistantModelSelect.addEventListener('change', () => {
         if (!assistantModelSelect.value || activeChatRequest) return;
         selectedAssistantModel = assistantModelSelect.value;
@@ -12148,6 +12640,9 @@ const setupEventListeners = () => {
         } else if (currentPersonaKey) requestPersonaAvatarUpload(currentPersonaKey);
     });
     roomInfoBtn.addEventListener('click', openRoomInfo);
+    dmRoomMemberBtn.addEventListener('click', () => openParticipantAction('dm'));
+    inviteCharacterBtn.addEventListener('click', () => openParticipantAction('invite'));
+    leaveRoomMemberBtn.addEventListener('click', () => openParticipantAction('leave'));
     closeRoomInfoBtn.addEventListener('click', closeRoomInfo);
     addRoomMemberBtn.addEventListener('click', () => {
         if (currentRoom) openCreateGroup(currentRoom.id);

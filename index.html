@@ -119,6 +119,9 @@
                         </button>
                         <div id="more-options-menu" class="hidden absolute right-0 mt-2 w-48 bg-gray-800 border border-gray-700 rounded-md shadow-lg z-20">
                             <button id="room-info-btn" class="dropdown-item">聊天室資料</button>
+                            <button id="dm-room-member-btn" class="dropdown-item hidden">私訊群組成員</button>
+                            <button id="invite-character-btn" class="dropdown-item">邀請角色加入</button>
+                            <button id="leave-room-member-btn" class="dropdown-item hidden">請角色離場</button>
                             <button id="memory-btn" class="dropdown-item">靈魂與記憶</button>
                             <button id="persona-settings-btn" class="dropdown-item">人格設定</button>
                             <button id="change-avatar-btn" class="dropdown-item">更換角色頭像</button>
@@ -1290,6 +1293,19 @@
                 <div id="create-group-member-list" class="create-group-member-list"></div>
             </div>
             <footer class="wa-sheet-footer"><button id="confirm-create-group" type="button" class="wa-primary-button">建立群組</button></footer>
+        </section>
+    </div>
+
+    <div id="participant-action-modal" class="hidden wa-modal-backdrop">
+        <section class="wa-sheet" role="dialog" aria-modal="true" aria-labelledby="participant-action-title">
+            <header class="wa-sheet-header">
+                <button id="close-participant-action" class="wa-icon-button" aria-label="關閉"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m6 6 12 12M18 6 6 18"></path></svg></button>
+                <div><p class="wa-sheet-kicker">PARTICIPANTS</p><h2 id="participant-action-title">選擇角色</h2></div>
+            </header>
+            <div class="wa-sheet-scroll">
+                <p id="participant-action-summary" class="participant-action-summary"></p>
+                <div id="participant-action-list" class="participant-action-list"></div>
+            </div>
         </section>
     </div>
 
