@@ -447,6 +447,18 @@ body.app-body {
     height: 42px !important;
 }
 
+#chat-header-avatar-container .group-avatar-grid > span,
+#chat-header-avatar-container .group-avatar-grid > span > img {
+    width: 100% !important;
+    height: 100% !important;
+    min-width: 0;
+    min-height: 0;
+}
+
+.avatar-preview-target {
+    cursor: zoom-in;
+}
+
 #more-options-menu {
     width: 230px !important;
     border: 0 !important;
@@ -754,6 +766,9 @@ body.app-body {
 }
 
 .group-story-line > .group-speaker-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
     margin: 0;
     padding-top: 0.04rem;
     color: var(--wa-green-deep);
@@ -761,6 +776,27 @@ body.app-body {
     font-weight: 800;
     line-height: 1.65;
     white-space: nowrap;
+}
+
+.group-speaker-avatar {
+    display: inline-flex;
+    width: 1.35rem;
+    height: 1.35rem;
+    flex: 0 0 1.35rem;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 999px;
+    color: white;
+    background: var(--wa-green);
+    font-size: 0.62rem;
+    line-height: 1;
+}
+
+.group-speaker-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
 }
 
 .group-story-line > .group-narrator-name {

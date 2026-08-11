@@ -2883,6 +2883,28 @@ const renderLegacyPersonaList = () => {
     });
 };
 
+const resolveRoomMemberAvatarPersona = (member: RoomMember) => {
+    if (member.persona.avatarUrl) return member.persona;
+    return member.sourcePersonaKey
+        ? memoryManager.getPersona(member.sourcePersonaKey) || member.persona
+        : member.persona;
+};
+
+const enableAvatarPreview = (target: HTMLElement, persona: Persona) => {
+    const avatarUrl = persona.avatarUrl;
+    target.onclick = null;
+    target.classList.remove('avatar-preview-target');
+    target.removeAttribute('title');
+    if (!avatarUrl || avatarUrl.startsWith('generating_')) return;
+    target.classList.add('avatar-preview-target');
+    target.title = `查看 ${persona.name} 的完整頭像`;
+    target.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        openAvatarFullscreen(avatarUrl, persona.name);
+    };
+};
+
 const renderPersonaList = () => {
     aiAssistantList.innerHTML = '';
     femalePersonaList.innerHTML = '';
@@ -2925,12 +2947,6 @@ const renderPersonaList = () => {
             container.textContent = persona.emoji || '●';
         }
     };
-    const resolveMemberAvatar = (member: RoomMember) => {
-        if (member.persona.avatarUrl) return member.persona;
-        return member.sourcePersonaKey
-            ? memoryManager.getPersona(member.sourcePersonaKey) || member.persona
-            : member.persona;
-    };
     const createRow = (options: {
         key: string;
         title: string;
@@ -2953,11 +2969,14 @@ const renderPersonaList = () => {
         if (options.room) {
             options.room.members.slice(0, 4).forEach(member => {
                 const cell = document.createElement('span');
-                appendAvatar(cell, resolveMemberAvatar(member));
+                const avatarPersona = resolveRoomMemberAvatarPersona(member);
+                appendAvatar(cell, avatarPersona);
+                enableAvatarPreview(cell, avatarPersona);
                 avatar.appendChild(cell);
             });
         } else if (options.persona) {
             appendAvatar(avatar, options.persona);
+            if (!options.pinned) enableAvatarPreview(avatar, options.persona);
         }
 
         const copy = document.createElement('span');
@@ -5639,11 +5658,7 @@ const renderChatHeaderAvatar = () => {
         const grid = document.createElement('div');
         grid.className = `group-avatar-grid group-avatar-count-${Math.min(currentRoom.members.length, 4)} h-12 w-12 overflow-hidden rounded-full`;
         currentRoom.members.slice(0, 4).forEach(member => {
-            const sourcePersona = member.persona.avatarUrl
-                ? member.persona
-                : member.sourcePersonaKey
-                    ? memoryManager.getPersona(member.sourcePersonaKey) || member.persona
-                    : member.persona;
+            const sourcePersona = resolveRoomMemberAvatarPersona(member);
             const cell = document.createElement('span');
             if (sourcePersona.avatarUrl && !sourcePersona.avatarUrl.startsWith('generating_')) {
                 const image = document.createElement('img');
@@ -5653,6 +5668,7 @@ const renderChatHeaderAvatar = () => {
             } else {
                 cell.textContent = sourcePersona.emoji || '●';
             }
+            enableAvatarPreview(cell, sourcePersona);
             grid.appendChild(cell);
         });
         chatHeaderAvatarContainer.appendChild(grid);
@@ -5664,6 +5680,7 @@ const renderChatHeaderAvatar = () => {
         'w-12 h-12 rounded-full object-cover',
         'w-12 h-12 rounded-full bg-gray-700 flex items-center justify-center emoji-avatar',
     );
+    if (currentPersona) enableAvatarPreview(chatHeaderAvatarContainer, currentPersona);
 };
 
 const renderPersonaSettingsAvatar = () => {
@@ -7134,7 +7151,21 @@ const appendMessage = (
 
             const member = currentRoom?.members.find(item => item.id === segment.speakerId);
             if (!member) return;
-            speaker.textContent = `[${member.persona.name}]`;
+            const avatarPersona = resolveRoomMemberAvatarPersona(member);
+            const speakerAvatar = document.createElement('span');
+            speakerAvatar.className = 'group-speaker-avatar';
+            if (avatarPersona.avatarUrl && !avatarPersona.avatarUrl.startsWith('generating_')) {
+                const image = document.createElement('img');
+                image.src = avatarPersona.avatarUrl;
+                image.alt = avatarPersona.name;
+                speakerAvatar.appendChild(image);
+            } else {
+                speakerAvatar.textContent = avatarPersona.emoji || '●';
+            }
+            enableAvatarPreview(speakerAvatar, avatarPersona);
+            const speakerLabel = document.createElement('span');
+            speakerLabel.textContent = `[${member.persona.name}]`;
+            speaker.append(speakerAvatar, speakerLabel);
             text.className = 'group-story-dialogue-text';
             text.textContent = segment.text;
             line.append(speaker, text);
@@ -10484,6 +10515,14 @@ const getPhotoFullscreenPointerDistance = () => {
 function openPhotoFullscreenModal() {
     if (!photoViewerImage.src) return;
     photoFullscreenImage.src = photoViewerImage.src;
+    photoFullscreenModal.classList.remove('hidden');
+    resetPhotoFullscreenTransform();
+    window.setTimeout(() => closePhotoFullscreen.focus(), 0);
+}
+
+function openAvatarFullscreen(imageUrl: string, personaName: string) {
+    photoFullscreenImage.src = imageUrl;
+    photoFullscreenImage.alt = `${personaName} 的完整頭像`;
     photoFullscreenModal.classList.remove('hidden');
     resetPhotoFullscreenTransform();
     window.setTimeout(() => closePhotoFullscreen.focus(), 0);
