@@ -251,16 +251,20 @@ export async function generateVeniceText(
   };
 }
 
-export async function listVeniceTextModels(): Promise<VeniceModelSummary[]> {
+export async function listVeniceTextModels(forceRefresh = false): Promise<VeniceModelSummary[]> {
   ensureApiKey();
 
-  const endpoint = VENICE_MODELS_API_BASE.startsWith('/')
+  const baseEndpoint = VENICE_MODELS_API_BASE.startsWith('/')
     ? VENICE_MODELS_API_BASE
     : `${VENICE_MODELS_API_BASE}${VENICE_MODELS_API_BASE.includes('?') ? '&' : '?'}type=text`;
+  const endpoint = forceRefresh
+    ? `${baseEndpoint}${baseEndpoint.includes('?') ? '&' : '?'}refresh=${Date.now()}`
+    : baseEndpoint;
 
   const response = await fetchJson<VeniceModelsResponse>(endpoint, {
     method: 'GET',
     headers: REQUEST_HEADERS(),
+    cache: forceRefresh ? 'no-store' : 'default',
   });
 
   if (!Array.isArray(response.data)) {

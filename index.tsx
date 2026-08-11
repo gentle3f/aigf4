@@ -112,6 +112,18 @@ import {
     selectPhotoPromptVersion,
 } from "./photoPromptPreference.js";
 import {
+    buildCharacterModelRoute,
+    buildStrictReviewModelRoute,
+    CHAT_MODEL_SETTINGS_STORAGE_KEY,
+    normalizeChatModelSettings,
+    parseChatModelSettings,
+} from "./chatModelSettings.js";
+import type { ChatModelSettings } from "./chatModelSettings.js";
+import {
+    parseStrictReviewDecision,
+    STRICT_REVIEW_RESPONSE_FORMAT,
+} from "./strictReview.js";
+import {
     buildContextBridge,
     contextBridgeDisplayText,
     contextBridgeToSystemPrompt,
@@ -130,6 +142,13 @@ const Type = {
     INTEGER: 'integer',
 } as const;
 
+const DEFAULT_CHAT_MODEL_SETTINGS: ChatModelSettings = {
+    primary: VENICE_CHAT_MODEL,
+    qualityFallback: VENICE_CHAT_QUALITY_FALLBACK_MODEL,
+    emergencyFallback: VENICE_CHAT_FALLBACK_MODEL,
+    ccPrimary: VENICE_CC_MODEL,
+};
+
 // Disabled legacy helpers still reference `ai`; keep a harmless placeholder.
 const ai: any = null;
 // --- DOM Elements ---
@@ -141,6 +160,7 @@ const conversationSearchInput = document.getElementById('conversation-search-inp
 const homeSearchToggle = document.getElementById('home-search-toggle') as HTMLButtonElement;
 const homeMenuToggle = document.getElementById('home-menu-toggle') as HTMLButtonElement;
 const homeMenu = document.getElementById('home-menu')!;
+const homeChatModelSettingsBtn = document.getElementById('home-chat-model-settings') as HTMLButtonElement;
 const homeExportAll = document.getElementById('home-export-all') as HTMLButtonElement;
 const newChatFab = document.getElementById('new-chat-fab') as HTMLButtonElement;
 const newChatMenu = document.getElementById('new-chat-menu')!;
@@ -287,6 +307,22 @@ const moreOptionsBtn = document.getElementById('more-options-btn')!;
 const moreOptionsMenu = document.getElementById('more-options-menu')!;
 const personaSettingsBtn = document.getElementById('persona-settings-btn')!;
 const changeAvatarBtn = document.getElementById('change-avatar-btn') as HTMLButtonElement;
+const ccModelSettingsBtn = document.getElementById('cc-model-settings-btn') as HTMLButtonElement;
+const chatModelSettingsModal = document.getElementById('chat-model-settings-modal')!;
+const closeChatModelSettingsBtn = document.getElementById('close-chat-model-settings') as HTMLButtonElement;
+const chatModelSettingsTitle = document.getElementById('chat-model-settings-title')!;
+const globalChatModelFields = document.getElementById('global-chat-model-fields')!;
+const ccChatModelFields = document.getElementById('cc-chat-model-fields')!;
+const chatPrimaryModelSelect = document.getElementById('chat-primary-model-select') as HTMLSelectElement;
+const chatQualityModelSelect = document.getElementById('chat-quality-model-select') as HTMLSelectElement;
+const chatEmergencyModelSelect = document.getElementById('chat-emergency-model-select') as HTMLSelectElement;
+const ccPrimaryModelSelect = document.getElementById('cc-primary-model-select') as HTMLSelectElement;
+const globalModelRoutePreview = document.getElementById('global-model-route-preview')!;
+const ccModelRoutePreview = document.getElementById('cc-model-route-preview')!;
+const chatModelListStatus = document.getElementById('chat-model-list-status')!;
+const refreshChatModelsBtn = document.getElementById('refresh-chat-models') as HTMLButtonElement;
+const resetChatModelSettingsBtn = document.getElementById('reset-chat-model-settings') as HTMLButtonElement;
+const saveChatModelSettingsBtn = document.getElementById('save-chat-model-settings') as HTMLButtonElement;
 
 // Save Before Exit Modal
 const saveExitModal = document.getElementById('save-exit-modal')!;
@@ -627,6 +663,14 @@ let nextChatRequestId = 1;
 let assistantModels: VeniceModelSummary[] = [];
 let assistantModelsPromise: Promise<void> | null = null;
 let selectedAssistantModel = localStorage.getItem('veniceAssistantModel') || VENICE_ASSISTANT_MODEL;
+let chatModelSettings = parseChatModelSettings(
+    localStorage.getItem(CHAT_MODEL_SETTINGS_STORAGE_KEY),
+    DEFAULT_CHAT_MODEL_SETTINGS,
+);
+let chatModelSettingsDraft: ChatModelSettings = { ...chatModelSettings };
+let chatModelSettingsScope: 'global' | 'cc' = 'global';
+let assistantModelListUsesFallback = false;
+let assistantModelListUpdatedAt: number | null = null;
 let imageStudioMode: VeniceImageMode = 'generate';
 let imageModels: Record<VeniceImageMode, VeniceImageModelSummary[]> = {
     generate: [],
@@ -3500,10 +3544,8 @@ const formatModelPrice = (value?: number) => {
 const buildFallbackAssistantModels = (): VeniceModelSummary[] => {
     return Array.from(new Set([
         VENICE_ASSISTANT_MODEL,
-        VENICE_CC_MODEL,
-        VENICE_CHAT_MODEL,
-        VENICE_CHAT_QUALITY_FALLBACK_MODEL,
-        VENICE_CHAT_FALLBACK_MODEL,
+        ...Object.values(chatModelSettings),
+        ...Object.values(DEFAULT_CHAT_MODEL_SETTINGS),
         VENICE_GOD_MODEL,
         VENICE_GOD_FALLBACK_MODEL,
     ].filter(Boolean))).map(id => ({
@@ -3577,6 +3619,93 @@ const renderAssistantModelOptions = () => {
     updateAssistantModelMeta();
 };
 
+const chatModelSelects = [
+    chatPrimaryModelSelect,
+    chatQualityModelSelect,
+    chatEmergencyModelSelect,
+    ccPrimaryModelSelect,
+];
+
+const getChatModelOptionLabel = (model: VeniceModelSummary) => {
+    const context = formatContextSize(model.contextTokens);
+    const identity = model.name === model.id ? model.id : `${model.name} · ${model.id}`;
+    return `${identity}${context ? ` · ${context}` : ''}`;
+};
+
+const populateChatModelSelect = (select: HTMLSelectElement, selectedId: string) => {
+    select.innerHTML = '';
+    const sorted = [...assistantModels].sort((left, right) => {
+        if (left.uncensored !== right.uncensored) return left.uncensored ? -1 : 1;
+        return left.name.localeCompare(right.name, 'zh-Hant');
+    });
+    if (selectedId && !sorted.some(model => model.id === selectedId)) {
+        const current = document.createElement('option');
+        current.value = selectedId;
+        current.textContent = `${selectedId} · 目前設定（Venice 清單未找到）`;
+        select.appendChild(current);
+    }
+    sorted.forEach(model => {
+        const option = document.createElement('option');
+        option.value = model.id;
+        option.textContent = getChatModelOptionLabel(model);
+        select.appendChild(option);
+    });
+    select.value = selectedId;
+    if (!select.value && select.options.length > 0) select.selectedIndex = 0;
+};
+
+const readChatModelSettingsDraftFromControls = () => normalizeChatModelSettings({
+    primary: chatPrimaryModelSelect.value,
+    qualityFallback: chatQualityModelSelect.value,
+    emergencyFallback: chatEmergencyModelSelect.value,
+    ccPrimary: ccPrimaryModelSelect.value,
+}, chatModelSettingsDraft);
+
+const updateChatModelRoutePreviews = () => {
+    chatModelSettingsDraft = readChatModelSettingsDraftFromControls();
+    globalModelRoutePreview.textContent = `實際次序：${buildCharacterModelRoute(chatModelSettingsDraft, false).join(' → ')}。嚴格審查：${buildStrictReviewModelRoute(chatModelSettingsDraft, false).join(' → ')}。`;
+    ccModelRoutePreview.textContent = `Cc 實際次序：${buildCharacterModelRoute(chatModelSettingsDraft, true).join(' → ')}。Cc 的生成及審查均先使用專用模型。`;
+};
+
+const renderChatModelSettingsOptions = () => {
+    populateChatModelSelect(chatPrimaryModelSelect, chatModelSettingsDraft.primary);
+    populateChatModelSelect(chatQualityModelSelect, chatModelSettingsDraft.qualityFallback);
+    populateChatModelSelect(chatEmergencyModelSelect, chatModelSettingsDraft.emergencyFallback);
+    populateChatModelSelect(ccPrimaryModelSelect, chatModelSettingsDraft.ccPrimary);
+    chatModelSelects.forEach(select => { select.disabled = assistantModelsPromise !== null; });
+    refreshChatModelsBtn.disabled = assistantModelsPromise !== null;
+    updateChatModelRoutePreviews();
+    if (assistantModelListUsesFallback) {
+        chatModelListStatus.textContent = '未能連接 Venice；目前顯示已保存及程式預設模型。';
+    } else if (assistantModelListUpdatedAt) {
+        chatModelListStatus.textContent = `已從 Venice 取得 ${assistantModels.length} 個模型 · ${new Date(assistantModelListUpdatedAt).toLocaleTimeString('zh-Hant', { hour: '2-digit', minute: '2-digit' })}`;
+    } else {
+        chatModelListStatus.textContent = '正在讀取 Venice 模型清單...';
+    }
+};
+
+const closeChatModelSettings = () => chatModelSettingsModal.classList.add('hidden');
+
+const openChatModelSettings = (scope: 'global' | 'cc' = 'global') => {
+    chatModelSettingsScope = scope;
+    chatModelSettingsDraft = { ...chatModelSettings };
+    chatModelSettingsTitle.textContent = scope === 'cc' ? 'Cc 專用模型設定' : '聊天模型設定';
+    globalChatModelFields.classList.toggle('hidden', scope === 'cc');
+    ccChatModelFields.classList.remove('hidden');
+    renderChatModelSettingsOptions();
+    chatModelSettingsModal.classList.remove('hidden');
+    homeMenu.classList.add('hidden');
+    moreOptionsMenu.classList.add('hidden');
+    void loadAssistantModels().then(renderChatModelSettingsOptions);
+};
+
+const saveChatModelSettings = () => {
+    chatModelSettingsDraft = readChatModelSettingsDraftFromControls();
+    chatModelSettings = normalizeChatModelSettings(chatModelSettingsDraft, DEFAULT_CHAT_MODEL_SETTINGS);
+    localStorage.setItem(CHAT_MODEL_SETTINGS_STORAGE_KEY, JSON.stringify(chatModelSettings));
+    closeChatModelSettings();
+};
+
 const loadAssistantModels = async (force = false) => {
     if (assistantModelsPromise) {
         return assistantModelsPromise;
@@ -3588,17 +3717,21 @@ const loadAssistantModels = async (force = false) => {
 
     assistantModelSelect.disabled = true;
     refreshAssistantModelsBtn.disabled = true;
+    refreshChatModelsBtn.disabled = true;
     assistantModelMeta.textContent = '正在讀取 Venice 可用模型...';
 
     assistantModelsPromise = (async () => {
         try {
-            assistantModels = await listVeniceTextModels();
+            assistantModels = await listVeniceTextModels(force);
             if (assistantModels.length === 0) {
                 throw new Error('沒有可用的文字模型。');
             }
+            assistantModelListUsesFallback = false;
+            assistantModelListUpdatedAt = Date.now();
         } catch (error) {
             console.warn('Unable to load Venice models; using configured fallback list.', error);
             assistantModels = buildFallbackAssistantModels();
+            assistantModelListUsesFallback = true;
             if (error instanceof Error && error.message === VENICE_AUTH_REQUIRED_ERROR) {
                 handleAuthRequired();
             }
@@ -3606,6 +3739,7 @@ const loadAssistantModels = async (force = false) => {
             renderAssistantModelOptions();
             refreshAssistantModelsBtn.disabled = false;
             assistantModelsPromise = null;
+            renderChatModelSettingsOptions();
         }
     })();
 
@@ -5611,6 +5745,7 @@ const updateChatModeControls = (key: string) => {
     inviteCharacterBtn.classList.toggle('hidden', assistantMode);
     dmRoomMemberBtn.classList.toggle('hidden', assistantMode || !currentRoom);
     leaveRoomMemberBtn.classList.toggle('hidden', assistantMode || !currentRoom);
+    ccModelSettingsBtn.classList.toggle('hidden', assistantMode || key !== 'cc');
 
     if (assistantMode) {
         void loadAssistantModels();
@@ -8821,7 +8956,7 @@ const polishCcReply = async (
 ) => {
     try {
         const result = await generateChatTextWithTimeout({
-            model: VENICE_CC_MODEL,
+            model: chatModelSettings.ccPrimary,
             messages: [
                 { role: 'system', content: CC_CANTONESE_POLISH_PROMPT },
                 { role: 'user', content: rawReply },
@@ -9400,11 +9535,7 @@ const buildCharacterPhotoProposal = async (
             : 'favorite_prompt must be an empty string.',
         'ratio must be exactly one of 1:1, 3:4, 4:5, 16:9, 9:16.',
     ].join('\n\n');
-    const models = Array.from(new Set([
-        request.personaKey === 'cc' ? VENICE_CC_MODEL : VENICE_CHAT_MODEL,
-        VENICE_CHAT_QUALITY_FALLBACK_MODEL,
-        VENICE_CHAT_FALLBACK_MODEL,
-    ].filter(Boolean)));
+    const models = buildCharacterModelRoute(chatModelSettings, request.personaKey === 'cc');
     let draft: CharacterPhotoProposalDraft | null = null;
     let lastError: Error | null = null;
 
@@ -9642,17 +9773,7 @@ const runRoomConversationGeneration = async (
     let lastError: Error | null = null;
     let rejectedReply = '';
     const recentReplies = getRecentAssistantRepliesForPersona(request.conversationKey, false, 8);
-    const normalizedTurn = latestUserMessage.toLocaleLowerCase();
-    const directlyNamedMember = request.room.members.find(member => {
-        if (!request.room?.scene.presentMemberIds.includes(member.id)) return false;
-        const names = [member.persona.name, member.persona.publicIdentity?.canonicalName]
-            .filter((name): name is string => Boolean(name?.trim()));
-        return names.some(name => normalizedTurn.includes(name.trim().toLocaleLowerCase()));
-    });
-    const fallbackMemberId = directlyNamedMember?.id
-        || (request.room.scene.presentMemberIds.includes(request.roomMemberId || '') ? request.roomMemberId : undefined)
-        || (request.room.scene.presentMemberIds.includes(request.room.leadMemberId) ? request.room.leadMemberId : undefined)
-        || request.room.scene.presentMemberIds[0];
+    const fallbackMemberId = getGroupFallbackMemberId(request, latestUserMessage);
 
     for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
         const model = models[modelIndex];
@@ -9727,23 +9848,252 @@ const runRoomConversationGeneration = async (
     throw lastError || new Error('Group reply was invalid.');
 };
 
+const getDirectlyNamedRoomMember = (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+) => {
+    if (!request.room) return undefined;
+    const normalizedTurn = latestUserMessage.toLocaleLowerCase();
+    return request.room.members.find(member => {
+        if (!request.room?.scene.presentMemberIds.includes(member.id)) return false;
+        const names = [member.persona.name, member.persona.publicIdentity?.canonicalName]
+            .filter((name): name is string => Boolean(name?.trim()));
+        return names.some(name => normalizedTurn.includes(name.trim().toLocaleLowerCase()));
+    });
+};
+
+const getGroupFallbackMemberId = (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+) => {
+    if (!request.room) return undefined;
+    const directlyNamedMember = getDirectlyNamedRoomMember(request, latestUserMessage);
+    const fallbackMemberId = directlyNamedMember?.id
+        || (request.room.scene.presentMemberIds.includes(request.roomMemberId || '') ? request.roomMemberId : undefined)
+        || (request.room.scene.presentMemberIds.includes(request.room.leadMemberId) ? request.room.leadMemberId : undefined)
+        || request.room.scene.presentMemberIds[0];
+    return fallbackMemberId;
+};
+
+const STRICT_REVIEW_HISTORY_MESSAGE_LIMIT = 28;
+const STRICT_REVIEW_HISTORY_CHAR_BUDGET = 28000;
+
+const STRICT_REVIEW_EDITOR_PROMPT = [
+    'You are the strict final quality gate for a continuous private character conversation.',
+    'Audit the candidate against the authoritative character files, recent completed history, current scene and newest user message.',
+    'Check every item: it answers the newest request; identities and first-person ownership are correct; named people remain separate; location, clothing, body position, reality layer and completed actions do not contradict continuity; no old instruction or completed beat is replayed; personality and regional language remain vivid; relevant third parties may speak; the user is never puppeted; the ending is complete rather than cut off.',
+    'KEEP a strong response. Do not rewrite merely to impose your own prose style. REVISE only when there is at least one concrete defect.',
+    'When revising, preserve all valid detail, emotional intensity, relationship development, consensual adult intimacy and regional voice. Do not sanitize, moralize, summarize, shorten into a minimal answer, add meta-commentary, or mention this review.',
+    'Return only the requested JSON. For keep, revised_response must be an empty string. For revise, revised_response must be the complete replacement response, never notes or a partial patch.',
+].join('\n');
+
+const getStrictReviewHistory = (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+) => collectRecentMessagesWithinBudget(
+    getRecentChatMessages(
+        request.conversationKey,
+        latestUserMessage,
+        false,
+        request.persona,
+        request.room,
+    ),
+    STRICT_REVIEW_HISTORY_CHAR_BUDGET,
+    STRICT_REVIEW_HISTORY_MESSAGE_LIMIT,
+);
+
+const requestStrictReviewDecision = async (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+    authoritativePrompt: string,
+    candidateResponse: string,
+) => {
+    const reviewerModels = buildStrictReviewModelRoute(chatModelSettings, request.personaKey === 'cc');
+    for (let index = 0; index < reviewerModels.length; index += 1) {
+        const model = reviewerModels[index];
+        applyChatRuntimeState('retrying', index === 0 ? '檢查回覆中...' : '重新檢查中...');
+        try {
+            const result = await generateChatTextWithTimeout({
+                model,
+                messages: [
+                    { role: 'system', content: STRICT_REVIEW_EDITOR_PROMPT },
+                    { role: 'system', content: `AUTHORITATIVE CHARACTER AND CONTINUITY RULES:\n${authoritativePrompt}` },
+                    ...getStrictReviewHistory(request, latestUserMessage),
+                    {
+                        role: 'user',
+                        content: [
+                            `NEWEST USER MESSAGE:\n${latestUserMessage}`,
+                            `CANDIDATE RESPONSE TO AUDIT:\n${candidateResponse}`,
+                            'Return the strict review JSON now.',
+                        ].join('\n\n'),
+                    },
+                ],
+                temperature: 0.18,
+                topP: 0.82,
+                repetitionPenalty: 1.02,
+                stop: [],
+                responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,
+                signal: request.controller.signal,
+            });
+            const decision = parseStrictReviewDecision(result.text);
+            if (!decision) throw new Error(`Invalid strict review from ${model}.`);
+            console.info('[aigf4 strict review]', {
+                requestId: request.id,
+                model: result.model,
+                decision: decision.decision,
+                issues: decision.issues,
+                promptTokens: result.promptTokens,
+                completionTokens: result.completionTokens,
+            });
+            return decision;
+        } catch (error) {
+            if (isAbortError(error) && request.controller.signal.aborted) throw error;
+            console.warn('[aigf4 strict review unavailable]', {
+                requestId: request.id,
+                model,
+                reason: error instanceof Error ? error.message : String(error),
+            });
+        }
+    }
+    return null;
+};
+
+const strictReviewSingleReply = async (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+    candidate: string,
+) => {
+    const history = memoryManager.getChatHistory(request.conversationKey);
+    const establishedNpcNames = collectEstablishedNpcNames(
+        history,
+        request.persona.name,
+        latestUserMessage,
+    );
+    const addressedNpcNames = inferNpcSpeakersForTurn(
+        latestUserMessage,
+        request.persona.name,
+        establishedNpcNames,
+    );
+    const authoritativePrompt = [
+        buildChatSystemPrompt(request.personaKey, request.persona),
+        buildImmediateTurnOwnershipRequirement(request.persona.name, latestUserMessage),
+        buildNpcContinuityRequirement(establishedNpcNames),
+        buildNpcSpeechRequirement(addressedNpcNames),
+    ].filter(Boolean).join('\n\n');
+    const decision = await requestStrictReviewDecision(
+        request,
+        latestUserMessage,
+        authoritativePrompt,
+        candidate,
+    );
+    if (!decision || decision.decision === 'keep') return candidate;
+
+    let revision = cleanVeniceChatReply(decision.revisedResponse);
+    revision = request.personaKey === 'cc'
+        ? normalizeCcCantoneseLeaks(revision)
+        : normalizeTraditionalChineseLeaks(revision);
+    const lengthRatio = revision.length / Math.max(candidate.length, 1);
+    const recentReplies = getRecentAssistantRepliesForPersona(request.conversationKey, false, 8);
+    const repeats = recentReplies.some(previous => (
+        repliesAreTooSimilar(previous, revision)
+        || replyReusesOpeningOrNarrativeBeat(revision, previous)
+        || replyReusesCompletedClause(revision, previous)
+    ));
+    const validNpcSpeech = addressedNpcNames.length === 0
+        || request.personaKey === 'cc'
+        || replyContainsAttributedNpcSpeech(revision, addressedNpcNames);
+    if (
+        !revision
+        || isInvalidVeniceChatReply(revision)
+        || replyBreaksSpeakerOwnership(revision)
+        || !validNpcSpeech
+        || (repeats && !userExplicitlyRequestsContinuation(latestUserMessage))
+        || lengthRatio < 0.62
+        || lengthRatio > 1.85
+    ) {
+        console.warn('[aigf4 strict revision rejected]', { requestId: request.id, issues: decision.issues });
+        return candidate;
+    }
+    return revision;
+};
+
+const serializeGroupGenerationForReview = (result: GroupGenerationResult) => {
+    const chat = result.segments.map(segment => segment.type === 'narration'
+        ? `（${segment.text}）`
+        : `${segment.speakerName || segment.speakerId}：「${segment.text}」`).join('\n');
+    const scene = JSON.stringify({
+        location: result.scene.location,
+        reality_layer: result.scene.realityLayer,
+        present_member_ids: result.scene.presentMemberIds,
+        summary: result.scene.summary,
+        unresolved: result.scene.unresolved,
+    });
+    return [
+        `<chat>${chat}</chat>`,
+        `<scene>${scene}</scene>`,
+        `<npc_candidate>${JSON.stringify(result.npcCandidate || null)}</npc_candidate>`,
+    ].join('');
+};
+
+const strictReviewGroupReply = async (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+    candidate: GroupGenerationResult,
+) => {
+    if (!request.room) return candidate;
+    const serializedCandidate = serializeGroupGenerationForReview(candidate);
+    const decision = await requestStrictReviewDecision(
+        request,
+        latestUserMessage,
+        [
+            buildGroupSystemPrompt(request.room),
+            'STRICT REVISION FORMAT: revised_response must contain one complete <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate> envelope.',
+        ].join('\n\n'),
+        serializedCandidate,
+    );
+    if (!decision || decision.decision === 'keep') return candidate;
+    if (!/<chat>[\s\S]*<\/chat>/iu.test(decision.revisedResponse)
+        || !/<scene>[\s\S]*<\/scene>/iu.test(decision.revisedResponse)
+        || !/<npc_candidate>[\s\S]*<\/npc_candidate>/iu.test(decision.revisedResponse)) {
+        return candidate;
+    }
+    try {
+        const revision = parseGroupGeneration(
+            decision.revisedResponse,
+            request.room,
+            getGroupFallbackMemberId(request, latestUserMessage),
+        );
+        const namedMember = getDirectlyNamedRoomMember(request, latestUserMessage);
+        if (namedMember && !revision.segments.some(segment => (
+            segment.type === 'dialogue' && segment.speakerId === namedMember.id
+        ))) return candidate;
+        const recentReplies = getRecentAssistantRepliesForPersona(request.conversationKey, false, 8);
+        if (recentReplies.some(previous => repliesAreTooSimilar(previous, revision.text))
+            && !userExplicitlyRequestsContinuation(latestUserMessage)) return candidate;
+        return {
+            ...revision,
+            npcCandidate: revision.npcCandidate || candidate.npcCandidate,
+        };
+    } catch (error) {
+        console.warn('[aigf4 strict group revision rejected]', {
+            requestId: request.id,
+            reason: error instanceof Error ? error.message : String(error),
+        });
+        return candidate;
+    }
+};
+
 const runCharacterChatGeneration = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
 ): Promise<string | GroupGenerationResult> => {
-    const preferredModels = request.personaKey === 'cc'
-        ? [
-            VENICE_CC_MODEL,
-            VENICE_CHAT_QUALITY_FALLBACK_MODEL,
-            VENICE_CHAT_MODEL,
-            VENICE_CHAT_FALLBACK_MODEL,
-        ]
-        : [VENICE_CHAT_MODEL, VENICE_CHAT_QUALITY_FALLBACK_MODEL, VENICE_CHAT_FALLBACK_MODEL];
-    const models = Array.from(new Set(preferredModels.filter(Boolean)));
+    const models = buildCharacterModelRoute(chatModelSettings, request.personaKey === 'cc');
     if (request.room) {
-        return runRoomConversationGeneration(request, latestUserMessage, models);
+        const candidate = await runRoomConversationGeneration(request, latestUserMessage, models);
+        return strictReviewGroupReply(request, latestUserMessage, candidate);
     }
-    return runConversationGeneration(request, latestUserMessage, models, false);
+    const candidate = await runConversationGeneration(request, latestUserMessage, models, false);
+    return strictReviewSingleReply(request, latestUserMessage, candidate);
 };
 
 const runAssistantChatGeneration = async (
@@ -10036,10 +10386,8 @@ const sanitizeChatFailureDetail = (error: unknown) => {
         .replace(/Bearer\s+\S+/giu, 'Bearer [hidden]')
         .replace(/(?:sk-|VENICE_INFERENCE_KEY_)[A-Za-z0-9_-]{12,}/gu, '[hidden]');
     const withoutModelNames = [
-        VENICE_CHAT_MODEL,
-        VENICE_CHAT_QUALITY_FALLBACK_MODEL,
-        VENICE_CHAT_FALLBACK_MODEL,
-        VENICE_CC_MODEL,
+        ...Object.values(chatModelSettings),
+        ...Object.values(DEFAULT_CHAT_MODEL_SETTINGS),
     ].filter(Boolean).reduce(
         (text, model) => text.replace(new RegExp(escapeRegExp(model), 'giu'), '聊天服務'),
         withoutSecrets,
@@ -12691,6 +13039,7 @@ const setupEventListeners = () => {
         homeMenu.classList.toggle('hidden');
         newChatMenu.classList.add('hidden');
     });
+    homeChatModelSettingsBtn.addEventListener('click', () => openChatModelSettings('global'));
     homeExportAll.addEventListener('click', () => {
         void fileManager.saveAllChats();
         homeMenu.classList.add('hidden');
@@ -12716,6 +13065,24 @@ const setupEventListeners = () => {
     refreshAssistantModelsBtn.addEventListener('click', () => {
         void loadAssistantModels(true);
     });
+    ccModelSettingsBtn.addEventListener('click', () => openChatModelSettings('cc'));
+    closeChatModelSettingsBtn.addEventListener('click', closeChatModelSettings);
+    chatModelSettingsModal.addEventListener('click', event => {
+        if (event.target === chatModelSettingsModal) closeChatModelSettings();
+    });
+    chatModelSelects.forEach(select => select.addEventListener('change', updateChatModelRoutePreviews));
+    refreshChatModelsBtn.addEventListener('click', () => {
+        chatModelSettingsDraft = readChatModelSettingsDraftFromControls();
+        chatModelListStatus.textContent = '正在直接向 Venice 重新抓取模型清單...';
+        void loadAssistantModels(true).then(renderChatModelSettingsOptions);
+    });
+    resetChatModelSettingsBtn.addEventListener('click', () => {
+        chatModelSettingsDraft = chatModelSettingsScope === 'cc'
+            ? { ...chatModelSettingsDraft, ccPrimary: DEFAULT_CHAT_MODEL_SETTINGS.ccPrimary }
+            : { ...DEFAULT_CHAT_MODEL_SETTINGS };
+        renderChatModelSettingsOptions();
+    });
+    saveChatModelSettingsBtn.addEventListener('click', saveChatModelSettings);
     imageStudioEntry.addEventListener('click', () => showImageStudio('push'));
     imageStudioBack.addEventListener('click', navigateBackFromImageStudio);
     imageModeGenerateBtn.addEventListener('click', () => setImageStudioMode('generate'));

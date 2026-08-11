@@ -53,6 +53,7 @@
                 </div>
             </header>
             <div id="home-menu" class="wa-popover hidden">
+                <button id="home-chat-model-settings" type="button">聊天模型設定</button>
                 <button id="upload-zip-btn" type="button">匯入聊天備份</button>
                 <button id="home-export-all" type="button">匯出所有資料</button>
             </div>
@@ -124,6 +125,7 @@
                             <button id="leave-room-member-btn" class="dropdown-item hidden">請角色離場</button>
                             <button id="memory-btn" class="dropdown-item">靈魂與記憶</button>
                             <button id="persona-settings-btn" class="dropdown-item">人格設定</button>
+                            <button id="cc-model-settings-btn" class="dropdown-item hidden">Cc 模型設定</button>
                             <button id="change-avatar-btn" class="dropdown-item">更換角色頭像</button>
                             <button id="interests-btn" class="dropdown-item hidden">興趣技能</button>
                             <button id="date-btn" class="dropdown-item hidden">安排約會</button>
@@ -1253,6 +1255,41 @@
     </div>
 
     <!-- Room information and fixed-member controls -->
+    <div id="chat-model-settings-modal" class="hidden wa-modal-backdrop">
+        <section class="wa-sheet model-settings-sheet" role="dialog" aria-modal="true" aria-labelledby="chat-model-settings-title">
+            <header class="wa-sheet-header">
+                <button id="close-chat-model-settings" class="wa-icon-button" type="button" aria-label="關閉"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m6 6 12 12M18 6 6 18"></path></svg></button>
+                <div><p class="wa-sheet-kicker">CHAT ENGINE</p><h2 id="chat-model-settings-title">聊天模型設定</h2></div>
+            </header>
+            <div class="wa-sheet-scroll model-settings-scroll">
+                <div class="strict-mode-banner">
+                    <span class="strict-mode-dot" aria-hidden="true"></span>
+                    <span><strong>嚴格品質模式已固定開啟</strong><small>每次角色回覆完成後，會再檢查最新指令、人物歸屬、連續性、重複及句尾完整度。</small></span>
+                </div>
+                <div class="model-refresh-row">
+                    <div><strong>Venice 可用模型</strong><small id="chat-model-list-status">尚未更新模型清單</small></div>
+                    <button id="refresh-chat-models" type="button">重新抓取</button>
+                </div>
+                <section id="global-chat-model-fields" class="model-settings-card">
+                    <div class="wa-section-heading"><h3>一般角色聊天</h3></div>
+                    <label class="model-route-field">主模型<select id="chat-primary-model-select"></select><small>所有一般角色及群組首先使用。</small></label>
+                    <label class="model-route-field">品質後備／嚴格審查模型<select id="chat-quality-model-select"></select><small>主模型失敗時接手，並負責每輪第二次品質審查。</small></label>
+                    <label class="model-route-field">緊急後備模型<select id="chat-emergency-model-select"></select><small>前兩個模型均失效時使用。</small></label>
+                    <p id="global-model-route-preview" class="model-route-preview"></p>
+                </section>
+                <section id="cc-chat-model-fields" class="model-settings-card cc-model-settings-card">
+                    <div class="wa-section-heading"><h3>Cc 獨立設定</h3><span>不跟隨一般主模型</span></div>
+                    <label class="model-route-field">Cc 專用主模型<select id="cc-primary-model-select"></select><small>Cc 生成及粵語校稿均優先使用這個模型。</small></label>
+                    <p id="cc-model-route-preview" class="model-route-preview"></p>
+                </section>
+            </div>
+            <footer class="wa-sheet-footer model-settings-footer">
+                <button id="reset-chat-model-settings" type="button" class="wa-secondary-button">恢復程式預設</button>
+                <button id="save-chat-model-settings" type="button" class="wa-primary-button">儲存設定</button>
+            </footer>
+        </section>
+    </div>
+
     <div id="room-info-modal" class="hidden wa-modal-backdrop">
         <section class="wa-sheet" role="dialog" aria-modal="true" aria-labelledby="room-info-title">
             <header class="wa-sheet-header">
