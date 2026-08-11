@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    collectObservedNpcCandidates,
     collectEstablishedNpcNames,
     extractDirectNpcNames,
     inferIntroducedNpcNames,
@@ -38,4 +39,46 @@ test('offers a room upgrade for a named introduction but not a passing greeting'
     assert.deepEqual(inferIntroducedNpcNames('我介紹一個朋友叫 Peter 俾你識', 'IU'), ['Peter']);
     assert.deepEqual(inferIntroducedNpcNames('呢位係我朋友 Irene', 'IU'), ['Irene']);
     assert.deepEqual(inferIntroducedNpcNames('我哋見到 Peter，Hi Peter', 'IU'), []);
+});
+
+test('does not mistake an opinion after 這是 for a person name', () => {
+    assert.deepEqual(extractDirectNpcNames('這是最好的選擇。', 'IU'), []);
+    assert.deepEqual(inferIntroducedNpcNames('這是最好的選擇。', 'IU'), []);
+    assert.deepEqual(inferIntroducedNpcNames('這是最佳決定！', 'IU'), []);
+    assert.deepEqual(inferIntroducedNpcNames('呢個係正確方法。', 'IU'), []);
+});
+
+test('still recognises clear direct person introductions', () => {
+    assert.deepEqual(inferIntroducedNpcNames('這是 Jennie。', 'IU'), ['Jennie']);
+    assert.deepEqual(inferIntroducedNpcNames('這是我的朋友小美。', 'IU'), ['小美']);
+    assert.deepEqual(inferIntroducedNpcNames('這是「王小美」。', 'IU'), ['王小美']);
+});
+
+test('observes a recurring labelled speaker across three separate model turns', () => {
+    const twoTurns = [
+        { role: 'model' as const, content: { text: 'Jennie：「第一次說話。」\nIU：「我知道。」' } },
+        { role: 'user' as const, content: { text: '你們繼續說。' } },
+        { role: 'model' as const, content: { text: '（她坐近一點。）Jennie：「第二次說話。」' } },
+    ];
+    assert.deepEqual(collectObservedNpcCandidates(twoTurns, 'IU'), []);
+
+    const observed = collectObservedNpcCandidates([
+        ...twoTurns,
+        { role: 'user' as const, content: { text: '然後呢？' } },
+        { role: 'model' as const, content: { text: '事情告一段落。**Jennie**（笑著坐近）「第三次說話。」\nIU：「她已經熟悉大家了。」' } },
+    ], 'IU');
+    assert.deepEqual(observed.map(candidate => [candidate.name, candidate.modelTurnCount]), [['Jennie', 3]]);
+});
+
+test('does not count repeated labels in one reply or non-person labels as observation rounds', () => {
+    const history = [
+        { role: 'model' as const, content: { text: 'Jennie：「一句。」\nJennie：「同一回覆再說一句。」\n場景：客廳。' } },
+        { role: 'model' as const, content: { text: '最好的選擇：「這不是人物。」\n場景：仍在客廳。' } },
+        { role: 'model' as const, content: { text: 'Jennie：「第二個獨立回覆。」\n場景：天色變暗。' } },
+    ];
+    assert.deepEqual(collectObservedNpcCandidates(history, 'IU'), []);
+    assert.deepEqual(
+        collectObservedNpcCandidates(history, 'IU', 2).map(candidate => [candidate.name, candidate.modelTurnCount]),
+        [['Jennie', 2]],
+    );
 });

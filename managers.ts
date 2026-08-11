@@ -189,7 +189,10 @@ export interface NpcPromotionProposal {
     description: string;
     publicFigureQuery?: string;
     requestText?: string;
-    status: 'pending' | 'added' | 'dismissed';
+    detectionSource?: 'explicit' | 'observed';
+    observedTurns?: number;
+    evidence?: string;
+    status: 'pending' | 'added' | 'dismissed' | 'not_person' | 'transferred';
     memberId?: string;
     createdAt: number;
 }

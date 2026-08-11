@@ -5,7 +5,9 @@ type NpcHistoryMessage = {
 
 const LATIN_NAME = "[A-Za-z][A-Za-z'’-]{1,24}(?:\\s+[A-Za-z][A-Za-z'’-]{1,24})?";
 const HAN_NAME = '[\\p{Script=Han}]{2,8}';
+const SHORT_HAN_NAME = '[\\p{Script=Han}]{2,4}';
 const NAME_CAPTURE = `(${LATIN_NAME}|${HAN_NAME})`;
+const DIRECT_NAME_CAPTURE = `(${LATIN_NAME}|${SHORT_HAN_NAME})`;
 
 const normalizeName = (value: string) => value
     .trim()
@@ -16,6 +18,8 @@ const normalizeName = (value: string) => value
 const ignoredNameSet = (personaName: string) => new Set([
     personaName,
     '大家', '同學', '朋友', '同事', '老師', '醫生', '女生', '女仔', '男人', '女人',
+    '主人', '用戶', '場景', '環境', '地點', '時間', '內心', '心聲', '鏡頭', '描述',
+    '動作', '旁人', '路人',
     '我朋友', '我的朋友', '我同學', '我的同學', '我同事', '我的同事',
     '朋友叫', '同學叫', '同事叫', '閨蜜叫',
     '這是', '呢個', '呢位', '你好', '哈囉', '使用者', '旁白', '系統', '角色',
@@ -29,7 +33,12 @@ const uniqueValidNames = (values: string[], personaName: string) => {
     values.forEach(value => {
         const name = normalizeName(value);
         if (!name || name.length < 2 || name.length > 40 || ignored.has(name.toLocaleLowerCase())) return;
-        if (/^[\p{Script=Han}]+$/u.test(name) && /^[你我佢她他它這呢那請想可唔不怎點讓叫等跟同向對和]/u.test(name)) return;
+        if (/^[\p{Script=Han}]+$/u.test(name)) {
+            if (/^[你我佢她他它這呢那請想可唔不怎點讓叫等跟同向對和]/u.test(name)) return;
+            if (/[的嘅]/u.test(name)) return;
+            if (/^(?:最好|最佳|真正|唯一|正確|錯誤|其他|上一|下一)/u.test(name)) return;
+            if (/(?:選擇|決定|方法|做法|答案|問題|事情|東西|原因|結果|機會|想法|意思|地方|時候|感覺|情況|安排)$/u.test(name)) return;
+        }
         if (!result.some(item => item.toLocaleLowerCase() === name.toLocaleLowerCase())) result.push(name);
     });
     return result;
@@ -41,7 +50,9 @@ export const extractDirectNpcNames = (text: string, personaName: string) => {
         new RegExp(`\\b(?:hi|hello|hey)\\b\\s*[,，!！~～]?\\s*${NAME_CAPTURE}`, 'giu'),
         new RegExp(`(?:你好|嗨|哈囉|喂)[,，!！~～\\s]+${NAME_CAPTURE}`, 'giu'),
         new RegExp(`(?:叫做|名叫|named|called)\\s*[「『"']?${NAME_CAPTURE}`, 'giu'),
-        new RegExp(`(?:這是|呢個係|呢位係)\\s*(?:一位|一個|個|我的|我嘅|我)?\\s*(?:朋友|同學|同事|閨蜜|friend|classmate|colleague)?\\s*[「『"']?${NAME_CAPTURE}`, 'giu'),
+        new RegExp(`(?:這是|呢個係|呢位係)\\s*(?:一位|一個|個)?\\s*(?:我的|我嘅|我)?\\s*(?:朋友|同學|同事|閨蜜|friend|classmate|colleague)\\s*(?:叫做|名叫|叫|named|called)?\\s*[「『"']?${NAME_CAPTURE}`, 'giu'),
+        new RegExp(`(?:這是|呢個係|呢位係)\\s*[「『“"]\\s*${NAME_CAPTURE}\\s*[」』”"]`, 'giu'),
+        new RegExp(`(?:這是|呢個係|呢位係)\\s*${DIRECT_NAME_CAPTURE}(?![\\p{Script=Han}])(?=\\s*(?:[，,。！？!?]|$))`, 'giu'),
         new RegExp(`(?:介紹|introduce)\\s*(?:一位|一個|個)?\\s*(?:我的|我嘅|我)?\\s*(?:朋友|同學|同事|閨蜜|friend|classmate|colleague)\\s*[「『"']?${NAME_CAPTURE}`, 'giu'),
         new RegExp(`(?:介紹|introduce)\\s*[「『"']?(${LATIN_NAME})`, 'giu'),
         new RegExp(`(?:朋友|同學|同事|閨蜜|friend|classmate|colleague)[^。！？!?\\n]{0,18}(?:叫做|名叫|叫|named|called)\\s*[「『"']?${NAME_CAPTURE}`, 'giu'),
@@ -57,11 +68,48 @@ export const extractDirectNpcNames = (text: string, personaName: string) => {
 const extractAttributedNpcNames = (text: string, personaName: string) => {
     const candidates: string[] = [];
     const labelPattern = new RegExp(
-        `(?:^|\\n)\\s*(?:\\[)?${NAME_CAPTURE}(?:\\])?\\s*[:：]\\s*(?:[「『“"])?\\S`,
+        `(?:^|\\n|[）)。！？!?])\\s*(?:\\*{0,2})?(?:\\[)?${NAME_CAPTURE}(?:\\])?(?:\\*{0,2})?(?:\\s*[:：]\\s*(?:[「『“"])?\\S|\\s*(?=[（(]))`,
         'gimu',
     );
     for (const match of text.matchAll(labelPattern)) candidates.push(match[1]);
     return uniqueValidNames(candidates, personaName);
+};
+
+export interface ObservedNpcCandidate {
+    name: string;
+    modelTurnCount: number;
+    firstSeenIndex: number;
+    lastSeenIndex: number;
+}
+
+export const collectObservedNpcCandidates = (
+    history: NpcHistoryMessage[],
+    personaName: string,
+    minimumModelTurns = 3,
+) => {
+    const observations = new Map<string, ObservedNpcCandidate>();
+    history.slice(-48).forEach((message, index) => {
+        if (message.role !== 'model' || !message.content.text?.trim()) return;
+        const names = new Set(extractAttributedNpcNames(message.content.text, personaName));
+        names.forEach(name => {
+            const key = name.toLocaleLowerCase();
+            const existing = observations.get(key);
+            if (existing) {
+                existing.modelTurnCount += 1;
+                existing.lastSeenIndex = index;
+            } else {
+                observations.set(key, {
+                    name,
+                    modelTurnCount: 1,
+                    firstSeenIndex: index,
+                    lastSeenIndex: index,
+                });
+            }
+        });
+    });
+    return [...observations.values()]
+        .filter(candidate => candidate.modelTurnCount >= minimumModelTurns)
+        .sort((left, right) => left.firstSeenIndex - right.firstSeenIndex);
 };
 
 export const collectEstablishedNpcNames = (

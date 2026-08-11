@@ -99,8 +99,8 @@ import {
 import {
     buildNpcContinuityRequirement,
     collectEstablishedNpcNames,
+    collectObservedNpcCandidates,
     extractDirectNpcNames,
-    inferIntroducedNpcNames,
     inferNpcPromotionNames,
     inferNpcSpeakersForTurn,
     replyHasNpcSpeech,
@@ -7012,10 +7012,135 @@ const findStoredPersonaForNpc = (name: string, excludedKey?: string) => (
     })
 );
 
+type ObservedNpcPersonaDraft = {
+    description: string;
+    prompt: string;
+    greeting: string;
+    soul: PersonaMemoryEntry[];
+    memories: PersonaMemoryEntry[];
+};
+
+const analyzeObservedNpcPersona = async (
+    proposal: NonNullable<Content['npcProposal']>,
+    mainPersona: Persona,
+): Promise<ObservedNpcPersonaDraft | null> => {
+    if (proposal.detectionSource !== 'observed' || !proposal.evidence?.trim()) return null;
+    const result = await generateVeniceText({
+        model: VENICE_CHAT_MODEL,
+        messages: [
+            {
+                role: 'system',
+                content: [
+                    `Analyze the recurring adult character "${proposal.name}" from a private fictional romance conversation.`,
+                    `The original main character is "${mainPersona.name}" and the user is a separate person. Never merge either of them into ${proposal.name}.`,
+                    'Infer only patterns supported by the transcript: personality, initiative, resistance, humour, emotional rhythm, regional language, relationship position, established knowledge and recurring behaviour.',
+                    'Create a vivid independent persona that can keep developing naturally and respond to user direction without becoming generic, instantly obedient or trapped replaying the sampled lines.',
+                    'soul entries hold durable identity, voice, relationship anchors, values and boundaries. memory entries hold concrete events, promises, preferences and emotional moments already experienced.',
+                    'Do not copy long dialogue verbatim. Write concise Traditional Chinese, while preserving Hong Kong Cantonese, Taiwan Mandarin or another established regional voice accurately when evidence supports it.',
+                ].join('\n'),
+            },
+            {
+                role: 'user',
+                content: `Observed conversation evidence for ${proposal.name}:\n\n${proposal.evidence.slice(-10000)}`,
+            },
+        ],
+        responseFormat: {
+            type: 'json_schema',
+            json_schema: {
+                name: 'observed_npc_persona',
+                strict: true,
+                schema: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['description', 'persona_prompt', 'greeting', 'soul', 'memories'],
+                    properties: {
+                        description: { type: 'string' },
+                        persona_prompt: { type: 'string' },
+                        greeting: { type: 'string' },
+                        soul: {
+                            type: 'array',
+                            minItems: 2,
+                            maxItems: 6,
+                            items: {
+                                type: 'object',
+                                additionalProperties: false,
+                                required: ['kind', 'title', 'summary'],
+                                properties: {
+                                    kind: { type: 'string', enum: ['core', 'relationship', 'vulnerability', 'promise', 'preference', 'boundary'] },
+                                    title: { type: 'string' },
+                                    summary: { type: 'string' },
+                                },
+                            },
+                        },
+                        memories: {
+                            type: 'array',
+                            minItems: 1,
+                            maxItems: 8,
+                            items: {
+                                type: 'object',
+                                additionalProperties: false,
+                                required: ['kind', 'title', 'summary'],
+                                properties: {
+                                    kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
+                                    title: { type: 'string' },
+                                    summary: { type: 'string' },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        temperature: 0.25,
+        topP: 0.85,
+        repetitionPenalty: 1.04,
+    });
+    const parsed = JSON.parse(
+        result.text.replace(/^\s*```(?:json)?\s*/iu, '').replace(/\s*```\s*$/u, '').trim(),
+    ) as {
+        description?: string;
+        persona_prompt?: string;
+        greeting?: string;
+        soul?: Array<{ kind?: PersonaMemoryEntry['kind']; title?: string; summary?: string }>;
+        memories?: Array<{ kind?: PersonaMemoryEntry['kind']; title?: string; summary?: string }>;
+    };
+    const description = parsed.description?.trim();
+    const prompt = parsed.persona_prompt?.trim();
+    const greeting = parsed.greeting?.trim();
+    if (!description || !prompt || !greeting) return null;
+
+    const validKinds = new Set<PersonaMemoryEntry['kind']>([
+        'core', 'relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary',
+    ]);
+    const createEntries = (
+        entries: Array<{ kind?: PersonaMemoryEntry['kind']; title?: string; summary?: string }> | undefined,
+        pinned: boolean,
+        prefix: string,
+    ) => (entries || []).flatMap((entry, index) => {
+        if (!entry.kind || !validKinds.has(entry.kind) || !entry.title?.trim() || !entry.summary?.trim()) return [];
+        return [{
+            id: `${prefix}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
+            kind: entry.kind,
+            title: entry.title.trim(),
+            summary: entry.summary.trim(),
+            createdAt: Date.now(),
+            pinned,
+        } satisfies PersonaMemoryEntry];
+    });
+    return {
+        description,
+        prompt,
+        greeting,
+        soul: createEntries(parsed.soul, true, 'npc-soul'),
+        memories: createEntries(parsed.memories, false, 'npc-memory'),
+    };
+};
+
 const buildNpcMemberPersona = (
     proposal: NonNullable<Content['npcProposal']>,
     storedPersona: Persona | undefined,
     identityResolution: PublicIdentityResolution | null,
+    observedDraft: ObservedNpcPersonaDraft | null = null,
 ): Persona => {
     const identity = identityResolution?.identity || storedPersona?.publicIdentity;
     const continuityAnchor = [
@@ -7029,15 +7154,20 @@ const buildNpcMemberPersona = (
         name: storedPersona?.name || proposal.name,
         emoji: storedPersona?.emoji || (proposal.gender === 'male' ? '◆' : '🌼'),
         gender: storedPersona?.gender || proposal.gender,
-        description: storedPersona?.description || proposal.description,
-        prompt: [storedPersona?.prompt, continuityAnchor].filter(Boolean).join('\n\n'),
+        description: storedPersona?.description || observedDraft?.description || proposal.description,
+        prompt: [storedPersona?.prompt || observedDraft?.prompt, continuityAnchor].filter(Boolean).join('\n\n'),
         greeting: storedPersona?.greeting
+            || observedDraft?.greeting
             || `（${proposal.name} 第一次以固定成員身份留在聊天室，先看了看其他人，再自然地接回剛才的話題。）`,
         avatarPrompt: identity?.visualPrompt || storedPersona?.avatarPrompt || proposal.description,
         avatarUrl: identityResolution?.avatarUrl || storedPersona?.avatarUrl || null,
         memory: storedPersona?.memory || '',
-        soul: storedPersona?.soul ? cloneRoomSnapshot(storedPersona.soul) : [],
-        memories: storedPersona?.memories ? cloneRoomSnapshot(storedPersona.memories) : [],
+        soul: storedPersona?.soul
+            ? cloneRoomSnapshot(storedPersona.soul)
+            : cloneRoomSnapshot(observedDraft?.soul || []),
+        memories: storedPersona?.memories
+            ? cloneRoomSnapshot(storedPersona.memories)
+            : cloneRoomSnapshot(observedDraft?.memories || []),
         publicIdentityEnabled: Boolean(identity),
         publicIdentity: identity,
     };
@@ -7118,14 +7248,48 @@ const addNpcProposalToRoom = async (
     if (currentConversationKey !== conversationKey) return;
 
     const storedPersonaEntry = findStoredPersonaForNpc(proposal.name, sourcePersonaKey);
-    const persona = buildNpcMemberPersona(proposal, storedPersonaEntry?.[1], identityResolution);
+    const observedDraft = storedPersonaEntry
+        ? null
+        : await analyzeObservedNpcPersona(proposal, sourcePersona);
+    if (currentConversationKey !== conversationKey) return;
+    if (proposal.detectionSource === 'observed' && !storedPersonaEntry && !observedDraft) {
+        throw new Error(`未能完成 ${proposal.name} 的人格與記憶分析，請稍後再試。`);
+    }
+    const enrichedProposal = observedDraft
+        ? { ...proposal, description: observedDraft.description }
+        : proposal;
+    if (observedDraft) {
+        updateNpcProposal(conversationKey, proposal.id, { description: observedDraft.description });
+    }
+    const persona = buildNpcMemberPersona(
+        enrichedProposal,
+        storedPersonaEntry?.[1],
+        identityResolution,
+        observedDraft,
+    );
+    const siblingProposals = convertingFromSingle
+        ? memoryManager.peekChatHistory(conversationKey)
+            .flatMap(message => {
+                const sibling = message.content.npcProposal;
+                return sibling && sibling.id !== proposal.id && sibling.status === 'pending'
+                    ? [{ ...cloneRoomSnapshot(sibling), requestText: undefined }]
+                    : [];
+            })
+        : [];
+    const transferSiblingProposals = (targetConversationKey: string) => {
+        siblingProposals.forEach(sibling => {
+            memoryManager.addMessage(targetConversationKey, 'system', { npcProposal: sibling });
+            updateNpcProposal(conversationKey, sibling.id, { status: 'transferred' });
+        });
+    };
 
     if (activeTargetRoom) {
         const latestRoom = roomManager.getRoom(activeTargetRoom.id);
         if (!latestRoom || latestRoom.members.length >= ROOM_MEMBER_LIMIT) return;
-        const member = createNpcRoomMember(proposal, persona, storedPersonaEntry?.[0]);
+        const member = createNpcRoomMember(enrichedProposal, persona, storedPersonaEntry?.[0]);
         roomManager.addMember(latestRoom.id, member);
         updateNpcProposal(conversationKey, proposal.id, { status: 'added', memberId: member.id });
+        transferSiblingProposals(latestRoom.id);
         startChat(latestRoom.id, null, convertingFromSingle ? 'replace' : 'skip');
         if (convertingFromSingle && proposal.requestText) {
             await continuePendingConversationTurn(proposal.requestText);
@@ -7149,7 +7313,7 @@ const addNpcProposalToRoom = async (
         room.scene.realityLayer = 'texting';
         room.scene.summary = `${persona.name} 已獲使用者確認，正式加入原本由 ${sourcePersona.name} 主持的連續對話。加入前的互動仍然有效。`;
         const member = room.members.find(item => item.id === addedMember.id);
-        if (member) member.soul = createNpcRoomMember(proposal, persona, storedPersonaEntry?.[0]).soul.map(entry => ({
+        if (member) member.soul = createNpcRoomMember(enrichedProposal, persona, storedPersonaEntry?.[0]).soul.map(entry => ({
             ...entry,
             participants: [member.id],
         }));
@@ -7158,6 +7322,7 @@ const addNpcProposalToRoom = async (
     memoryManager.addMessage(createdRoom.id, 'system', {
         text: `${persona.name} 已加入；原本單人聊天已安全升級為群組，舊紀錄保持不變。`,
     });
+    transferSiblingProposals(createdRoom.id);
     renderPersonaList();
     startChat(createdRoom.id, null, 'replace');
     if (proposal.requestText) await continuePendingConversationTurn(proposal.requestText);
@@ -7175,6 +7340,12 @@ const createNpcProposalCard = (proposal: NonNullable<Content['npcProposal']>) =>
     const description = document.createElement('p');
     description.textContent = proposal.description;
     card.append(title, description);
+    if (proposal.detectionSource === 'observed' && proposal.observedTurns) {
+        const observationHint = document.createElement('span');
+        observationHint.className = 'system-action-hint';
+        observationHint.textContent = `已觀察 ${proposal.observedTurns} 個獨立回覆輪次；確認後才會建立固定人格與記憶。`;
+        card.appendChild(observationHint);
+    }
     if (proposal.publicFigureQuery) {
         const identityHint = document.createElement('span');
         identityHint.className = 'system-action-hint';
@@ -7184,7 +7355,13 @@ const createNpcProposalCard = (proposal: NonNullable<Content['npcProposal']>) =>
     if (proposal.status !== 'pending') {
         const status = document.createElement('span');
         status.className = 'system-action-status';
-        status.textContent = proposal.status === 'added' ? '已成為固定成員' : '保留為本段臨時人物';
+        status.textContent = proposal.status === 'added'
+            ? '已成為固定成員'
+            : proposal.status === 'not_person'
+                ? '已標記為非人物，不會加入聊天室'
+                : proposal.status === 'transferred'
+                    ? '候選已移到新群組，請在群組內確認'
+                    : '保留為本段臨時人物';
         card.appendChild(status);
         return card;
     }
@@ -7195,11 +7372,9 @@ const createNpcProposalCard = (proposal: NonNullable<Content['npcProposal']>) =>
     add.type = 'button';
     add.className = 'is-primary';
     add.textContent = currentRoom ? '加入固定成員' : '確認並升級群組';
-    add.addEventListener('click', () => void addNpcProposalToRoom(proposal, false));
     const identify = document.createElement('button');
     identify.type = 'button';
     identify.textContent = '辨識公眾身份後加入';
-    identify.addEventListener('click', () => void addNpcProposalToRoom(proposal, true));
     const dismiss = document.createElement('button');
     dismiss.type = 'button';
     dismiss.textContent = '只作臨時人物';
@@ -7210,7 +7385,43 @@ const createNpcProposalCard = (proposal: NonNullable<Content['npcProposal']>) =>
         startChat(conversationKey, null, 'skip');
         if (proposal.requestText) await continuePendingConversationTurn(proposal.requestText);
     });
-    actions.append(add, identify, dismiss);
+    const reject = document.createElement('button');
+    reject.type = 'button';
+    reject.textContent = '這不是人物';
+    reject.addEventListener('click', async () => {
+        if (!currentConversationKey) return;
+        const conversationKey = currentConversationKey;
+        updateNpcProposal(conversationKey, proposal.id, { status: 'not_person' });
+        startChat(conversationKey, null, 'skip');
+        if (proposal.requestText) await continuePendingConversationTurn(proposal.requestText);
+    });
+    actions.append(add, identify, dismiss, reject);
+    let isAdding = false;
+    const runAdd = async (resolvePublicIdentity: boolean) => {
+        if (isAdding) return;
+        isAdding = true;
+        const previousTitle = title.textContent;
+        const buttons = Array.from(actions.querySelectorAll('button'));
+        buttons.forEach(button => { button.disabled = true; });
+        title.textContent = proposal.detectionSource === 'observed'
+            ? `正在整理 ${proposal.name} 的人格、soul.md 與 memory.md…`
+            : `正在加入 ${proposal.name}…`;
+        try {
+            await addNpcProposalToRoom(proposal, resolvePublicIdentity);
+        } catch (error) {
+            console.error('Unable to add observed NPC:', error);
+            const message = error instanceof Error ? error.message : `未能加入 ${proposal.name}，請稍後再試。`;
+            alert(message);
+        } finally {
+            if (card.isConnected) {
+                isAdding = false;
+                buttons.forEach(button => { button.disabled = false; });
+                title.textContent = previousTitle;
+            }
+        }
+    };
+    add.addEventListener('click', () => void runAdd(false));
+    identify.addEventListener('click', () => void runAdd(true));
     card.appendChild(actions);
     return card;
 };
@@ -9960,17 +10171,15 @@ const getResponse = async (
             }
         }
         if (typeof generated === 'string' && !request.room && request.mode === 'character') {
-            const proposal = createSingleChatNpcPromotionProposal(
+            const proposals = createObservedNpcPromotionProposals(
                 request.conversationKey,
                 request.persona,
-                triggeringMessage,
-                'introduction',
             );
-            if (proposal) {
+            proposals.forEach(proposal => {
                 const proposalContent: Content = { npcProposal: proposal };
                 memoryManager.addMessage(request.conversationKey, 'system', proposalContent);
                 if (currentConversationKey === request.conversationKey) appendMessage(proposalContent, 'system');
-            }
+            });
         }
         renderPersonaList();
         finishChatRequest(request);
@@ -10300,18 +10509,44 @@ const buildNpcPromotionDescription = (
     ].join(' ');
 };
 
+const NPC_OBSERVATION_MODEL_TURNS = 3;
+const NPC_OBSERVATION_HISTORY_LIMIT = 48;
+const NPC_OBSERVATION_EVIDENCE_LIMIT = 10000;
+
+const buildNpcObservationEvidence = (
+    conversationKey: string,
+    name: string,
+) => {
+    const history = memoryManager.peekChatHistory(conversationKey)
+        .slice(-NPC_OBSERVATION_HISTORY_LIMIT);
+    const normalizedName = normalizedParticipantName(name);
+    const firstMentionIndex = history.findIndex(message => (
+        message.content.text
+            ?.toLocaleLowerCase()
+            .includes(normalizedName)
+    ));
+    const evidenceStart = Math.max(0, firstMentionIndex - 2);
+    return history
+        .slice(evidenceStart)
+        .filter(message => message.role !== 'system' && message.content.text?.trim())
+        .slice(-28)
+        .map(message => {
+            const speaker = message.role === 'user' ? 'USER' : 'CHAT';
+            return `[${speaker}] ${message.content.text!.trim().slice(0, 1800)}`;
+        })
+        .join('\n\n')
+        .slice(-NPC_OBSERVATION_EVIDENCE_LIMIT);
+};
+
 const createSingleChatNpcPromotionProposal = (
     conversationKey: string,
     persona: Persona,
     text: string,
-    source: 'promotion' | 'introduction' = 'promotion',
 ): NonNullable<Content['npcProposal']> | null => {
     if (currentRoom) return null;
     const history = memoryManager.peekChatHistory(conversationKey);
     const establishedNames = collectEstablishedNpcNames(history, persona.name, text);
-    const name = source === 'promotion'
-        ? inferNpcPromotionNames(text, persona.name, establishedNames)[0]
-        : inferIntroducedNpcNames(text, persona.name)[0];
+    const name = inferNpcPromotionNames(text, persona.name, establishedNames)[0];
     if (!name) return null;
     const normalizedName = normalizedParticipantName(name);
     const linkedRoom = roomManager.getRooms().find(room => room.legacySourcePersonaKey === conversationKey);
@@ -10320,11 +10555,12 @@ const createSingleChatNpcPromotionProposal = (
         || normalizedParticipantName(member.persona.publicIdentity?.canonicalName || '') === normalizedName
     ));
     if (alreadyFixed) return null;
-    const alreadyPending = history.some(message => (
-        message.content.npcProposal?.status === 'pending'
-        && normalizedParticipantName(message.content.npcProposal.name) === normalizedName
-    ));
-    if (alreadyPending) return null;
+    const alreadyHandled = history.some(message => {
+        const previous = message.content.npcProposal;
+        if (!previous || normalizedParticipantName(previous.name) !== normalizedName) return false;
+        return previous.status === 'pending' || previous.status === 'added';
+    });
+    if (alreadyHandled) return null;
 
     const storedPersonaEntry = findStoredPersonaForNpc(name, conversationKey);
     return {
@@ -10332,10 +10568,53 @@ const createSingleChatNpcPromotionProposal = (
         name: storedPersonaEntry?.[1].name || name,
         gender: storedPersonaEntry?.[1].gender || inferNpcPromotionGender(text),
         description: buildNpcPromotionDescription(conversationKey, name, text, storedPersonaEntry?.[1]),
-        requestText: source === 'promotion' ? text : undefined,
+        requestText: text,
+        detectionSource: 'explicit',
         status: 'pending',
         createdAt: Date.now(),
     };
+};
+
+const createObservedNpcPromotionProposals = (
+    conversationKey: string,
+    persona: Persona,
+): Array<NonNullable<Content['npcProposal']>> => {
+    const history = memoryManager.peekChatHistory(conversationKey);
+    const linkedRoom = roomManager.getRooms().find(room => room.legacySourcePersonaKey === conversationKey);
+    const handledNames = new Set(history.flatMap(message => {
+        const proposal = message.content.npcProposal;
+        return proposal ? [normalizedParticipantName(proposal.name)] : [];
+    }));
+    const fixedNames = new Set((linkedRoom?.members || []).flatMap(member => [
+        normalizedParticipantName(member.persona.name),
+        normalizedParticipantName(member.persona.publicIdentity?.canonicalName || ''),
+    ]).filter(Boolean));
+
+    return collectObservedNpcCandidates(history, persona.name, NPC_OBSERVATION_MODEL_TURNS)
+        .filter(candidate => {
+            const normalizedName = normalizedParticipantName(candidate.name);
+            return normalizedName !== normalizedParticipantName(persona.name)
+                && !handledNames.has(normalizedName)
+                && !fixedNames.has(normalizedName);
+        })
+        .slice(0, Math.max(0, ROOM_MEMBER_LIMIT - 1))
+        .map(candidate => {
+            const storedPersonaEntry = findStoredPersonaForNpc(candidate.name, conversationKey);
+            const evidence = buildNpcObservationEvidence(conversationKey, candidate.name);
+            return {
+                id: crypto.randomUUID?.() || `npc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                name: storedPersonaEntry?.[1].name || candidate.name,
+                gender: storedPersonaEntry?.[1].gender || inferNpcPromotionGender(evidence),
+                description: storedPersonaEntry
+                    ? `「${storedPersonaEntry[1].name}」已在最近對話中以獨立發言者持續出現 ${candidate.modelTurnCount} 個回覆輪次。確認後會沿用她現有的完整人格、soul.md、memory.md 與頭像。`
+                    : `${candidate.name} 已在最近對話中以獨立發言者持續出現 ${candidate.modelTurnCount} 個回覆輪次。確認後會根據累積互動整理她的語氣、人格、關係、soul.md 與 memory.md。`,
+                detectionSource: 'observed' as const,
+                observedTurns: candidate.modelTurnCount,
+                evidence,
+                status: 'pending' as const,
+                createdAt: Date.now(),
+            };
+        });
 };
 
 const sendMessage = async ({
