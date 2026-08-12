@@ -9973,8 +9973,12 @@ const runRoomConversationGeneration = async (
                     parseGroupGeneration(result.text, request.room, fallbackMemberId),
                 );
                 if (groupNarrationUsesFirstPerson(parsed)) {
-                    rejectedReply = parsed.text;
-                    throw new Error(`First-person narration confused group ownership in ${model}.`);
+                    // This is a quality signal for the strict reviewer, not a fatal transport error.
+                    // Rejecting here can exhaust every model even when the turn is otherwise usable.
+                    console.warn('[aigf4 group narration ownership warning]', {
+                        requestId: request.id,
+                        model: result.model,
+                    });
                 }
                 const repeats = recentReplies.some(previous => repliesAreTooSimilar(previous, parsed.text));
                 if (repeats && !userExplicitlyRequestsContinuation(latestUserMessage)) {

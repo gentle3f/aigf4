@@ -51,7 +51,7 @@ const createRoom = (): ChatRoom => ({
     lastSummarizedUserMessageCount: 0,
 });
 
-test('rejects first-person ownership inside group narration', () => {
+test('detects first-person ownership for soft review without rejecting dialogue pronouns', () => {
     const room = createRoom();
     const confused = parseGroupGeneration(
         '<chat>（Jennie 避開壓在我手臂上的重量。）\nJennie：「我先接電話。」</chat>'
