@@ -13,6 +13,7 @@ import {
     PersonaMemoryEntry,
     POLICY_VIOLATION,
     PublicIdentity,
+    SurpriseEventProposal,
     cleanAiResponse,
 } from "./managers.js";
 import { FileManager } from "./fileManager.js";
@@ -90,6 +91,7 @@ import {
     buildGroupSystemPrompt,
     contentToGroupHistoryText,
     getGroupDisplaySegments,
+    groupNarrationUsesFirstPerson,
     GroupGenerationResult,
     parseGroupGeneration,
     resolveRoomMemberPersona,
@@ -123,6 +125,19 @@ import {
     parseStrictReviewDecision,
     STRICT_REVIEW_RESPONSE_FORMAT,
 } from "./strictReview.js";
+import {
+    advanceRelationshipState,
+    collectRecentSurpriseEvents,
+    createFallbackSurpriseEvent,
+    formatRelationshipStatePrompt,
+    getSurpriseEventCategoryLabel,
+    getSurpriseEventIntensityLabel,
+    parseSurpriseEventProposal,
+    surpriseEventMatchesCategory,
+    surpriseEventsAreTooSimilar,
+    SURPRISE_EVENT_CATEGORY_GUIDES,
+    SURPRISE_EVENT_RESPONSE_FORMAT,
+} from "./experienceEngine.js";
 import {
     buildContextBridge,
     contextBridgeDisplayText,
@@ -194,6 +209,7 @@ const suggestionButton = document.getElementById('suggestion-button') as HTMLBut
 const suggestionContainer = document.getElementById('suggestion-container')!;
 const newSceneBtn = document.getElementById('new-scene-btn') as HTMLButtonElement;
 const takePhotoBtn = document.getElementById('take-photo-btn') as HTMLButtonElement;
+const surpriseEventBtn = document.getElementById('surprise-event-btn') as HTMLButtonElement;
 const roomInfoBtn = document.getElementById('room-info-btn') as HTMLButtonElement;
 const dmRoomMemberBtn = document.getElementById('dm-room-member-btn') as HTMLButtonElement;
 const inviteCharacterBtn = document.getElementById('invite-character-btn') as HTMLButtonElement;
@@ -764,6 +780,7 @@ const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 2_500_000;
 const MAX_CHAT_IMAGE_EDGE = 1600;
 const CHAT_MAX_AUTO_CONTINUES = 2;
 const CHAT_MODEL_ATTEMPT_TIMEOUT_MS = 45_000;
+const SURPRISE_EVENT_ATTEMPT_TIMEOUT_MS = 15_000;
 const CHAT_MODEL_TIMEOUT_ERROR = 'CHAT_MODEL_TIMEOUT';
 const SCENE_END_MARKER = '[SCENE END]';
 const SCENE_START_LABEL = '--- 新場景開始 ---';
@@ -792,7 +809,7 @@ type AppHistoryState =
     | { view: 'image' }
     | { view: 'video' };
 type MimicBuildMode = 'transcript' | 'manual';
-type ChatMode = 'character' | 'assistant' | 'god' | 'photo';
+type ChatMode = 'character' | 'assistant' | 'god' | 'photo' | 'event';
 type ActiveChatRequest = {
     id: number;
     personaKey: string;
@@ -806,6 +823,7 @@ type ActiveChatRequest = {
     attachmentParts?: VeniceMessageContentPart[];
     mode: ChatMode;
     characterPhotoRequest?: boolean;
+    surpriseEvent?: SurpriseEventProposal;
     controller: AbortController;
     startedAt: number;
 };
@@ -5739,7 +5757,7 @@ const updateChatModeControls = (key: string) => {
     assistantModelBar.classList.toggle('hidden', !assistantMode);
     messageInput.placeholder = assistantMode ? '問 Venice AI...' : '輸入訊息...';
 
-    [memoryBtn, personaSettingsBtn, changeAvatarBtn, albumBtn, takePhotoBtn, newSceneBtn, downloadImagesBtn].forEach(element => {
+    [memoryBtn, personaSettingsBtn, changeAvatarBtn, albumBtn, takePhotoBtn, surpriseEventBtn, newSceneBtn, downloadImagesBtn].forEach(element => {
         element.classList.toggle('hidden', assistantMode);
     });
     inviteCharacterBtn.classList.toggle('hidden', assistantMode);
@@ -5795,6 +5813,12 @@ const cancelActiveChatRequest = () => {
     const request = activeChatRequest;
     activeChatRequest = null;
     request.controller.abort();
+    if (request.surpriseEvent) {
+        updateSurpriseEventProposal(request.conversationKey, request.surpriseEvent.id, {
+            status: 'pending',
+            error: undefined,
+        });
+    }
     applyChatRuntimeState('idle');
     updateSendButtonState();
 };
@@ -7628,6 +7652,93 @@ const createContextBridgeCard = (bridge: ChatContextBridge) => {
     return card;
 };
 
+const getSurpriseEventParticipantNames = (proposal: SurpriseEventProposal) => {
+    if (currentRoom) {
+        return proposal.involvedMemberIds
+            .map(memberId => currentRoom?.members.find(member => member.id === memberId)?.persona.name)
+            .filter((name): name is string => Boolean(name));
+    }
+    return currentPersona ? [currentPersona.name] : [];
+};
+
+const createSurpriseEventCard = (proposal: SurpriseEventProposal) => {
+    const card = document.createElement('section');
+    card.className = `system-action-card surprise-event-card surprise-event-${proposal.status}`;
+    card.dataset.surpriseEventId = proposal.id;
+
+    const eyebrow = document.createElement('div');
+    eyebrow.className = 'surprise-event-eyebrow';
+    const deckLabel = document.createElement('span');
+    deckLabel.textContent = 'SURPRISE EVENT';
+    const statusLabel = document.createElement('span');
+    statusLabel.className = 'surprise-event-status';
+    statusLabel.textContent = proposal.status === 'active'
+        ? '進行中'
+        : proposal.status === 'completed'
+            ? '已完成'
+        : proposal.status === 'starting'
+            ? '正在展開'
+            : proposal.status === 'declined'
+                ? '已略過'
+                : proposal.status === 'failed' ? '未能展開' : '待選擇';
+    eyebrow.append(deckLabel, statusLabel);
+
+    const title = document.createElement('h4');
+    title.textContent = proposal.title;
+    const badges = document.createElement('div');
+    badges.className = 'surprise-event-badges';
+    [
+        getSurpriseEventCategoryLabel(proposal.category),
+        getSurpriseEventIntensityLabel(proposal.intensity),
+        ...getSurpriseEventParticipantNames(proposal),
+    ].forEach(label => {
+        const badge = document.createElement('span');
+        badge.textContent = label;
+        badges.appendChild(badge);
+    });
+    const hook = document.createElement('p');
+    hook.className = 'surprise-event-hook';
+    hook.textContent = proposal.hook;
+    const setup = document.createElement('p');
+    setup.className = 'surprise-event-setup';
+    setup.textContent = proposal.setup;
+    card.append(eyebrow, title, badges, hook, setup);
+
+    if (proposal.error) {
+        const error = document.createElement('small');
+        error.className = 'surprise-event-error';
+        error.textContent = proposal.error;
+        card.appendChild(error);
+    }
+
+    if (proposal.status === 'pending' || proposal.status === 'failed') {
+        const actions = document.createElement('div');
+        actions.className = 'system-card-actions surprise-event-actions';
+        const start = document.createElement('button');
+        start.type = 'button';
+        start.className = 'primary';
+        start.textContent = proposal.status === 'failed' ? '再試開始' : '開始事件';
+        start.addEventListener('click', () => void startSurpriseEvent(proposal.id));
+        const redraw = document.createElement('button');
+        redraw.type = 'button';
+        redraw.textContent = '換一張';
+        redraw.addEventListener('click', () => void drawSurpriseEventCard(proposal.id));
+        const decline = document.createElement('button');
+        decline.type = 'button';
+        decline.textContent = '暫時不要';
+        decline.addEventListener('click', () => declineSurpriseEvent(proposal.id));
+        actions.append(start, redraw, decline);
+        card.appendChild(actions);
+    } else if (proposal.status === 'starting') {
+        const progress = document.createElement('div');
+        progress.className = 'surprise-event-progress';
+        progress.innerHTML = '<span aria-hidden="true"></span>角色正在把事件帶進目前情境…';
+        card.appendChild(progress);
+    }
+
+    return card;
+};
+
 const appendMessage = (
     content: Content,
     sender: 'user' | 'bot' | 'system' | 'god-mode',
@@ -7652,6 +7763,10 @@ const appendMessage = (
         messageWrapper = document.createElement('div');
         messageWrapper.className = 'system-action-message';
         messageWrapper.appendChild(createNpcProposalCard(content.npcProposal));
+    } else if (isSystemMessage && content.surpriseEvent) {
+        messageWrapper = document.createElement('div');
+        messageWrapper.className = 'system-action-message';
+        messageWrapper.appendChild(createSurpriseEventCard(content.surpriseEvent));
     } else if (isSystemMessage && content.contextBridge && content.contextBridge.kind !== 'scene_transition') {
         messageWrapper = document.createElement('div');
         messageWrapper.className = 'system-action-message';
@@ -8724,6 +8839,7 @@ const buildChatSystemPrompt = (personaKey: string, persona: Persona) => {
             : '',
         soulMemory ? `soul.md permanent identity, relationship and user anchors:\n${soulMemory}` : '',
         episodicMemory ? `memory.md recent important events and continuity:\n${episodicMemory}` : '',
+        formatRelationshipStatePrompt(persona),
         behaviorGuidance.length > 0 ? `Personality anchors:\n- ${behaviorGuidance.join('\n- ')}` : '',
         `Shared roleplay contract:\n${coreInstruction}`,
         [
@@ -8760,6 +8876,8 @@ const buildChatSystemPrompt = (personaKey: string, persona: Persona) => {
             '- In scene-based conversation, normally combine meaningful spoken dialogue with fresh parenthetical action, expression, sensory environment, physical distance, or a brief in-character inner reaction. Do not merely say the minimum necessary line.',
             '- When third parties are introduced or present and relevant, let them react, move, and speak naturally while keeping the user and active character central. Make speaker changes unmistakable through names or clear narration. Never invent an irrelevant person just to fill space.',
             '- Let detail serve the live interaction: add one natural development, invitation, observation, or emotional shift rather than padding, summarizing, or writing a detached novel chapter.',
+            '- Give the character her own immediate wants and initiative. When natural, let her make a concrete choice, suggest a plan, reveal a small intention, or begin the next action instead of always waiting for an order or ending with a question.',
+            '- Pace romance and dramatic tension in steps. Preserve gains in closeness, let charged moments breathe, and transition naturally after an intense beat instead of abruptly resetting or endlessly escalating.',
             '- Never decide the user’s dialogue, actions, feelings, or consent. Leave room for the user to respond.',
             '- Do not invent prior dates, promises, relationship milestones, or shared events as facts. Express an unestablished detail as a wish, proposal, question, or imagination instead.',
             '- Do not repeat the previous opening, scene beat, pose, reassurance, or closing question; do not stall in the same emotional state or answer an older request.',
@@ -8852,6 +8970,7 @@ const mergeReplySegments = (baseText: string, continuationText: string) => {
 
 const generateChatTextWithTimeout = async (
     options: Parameters<typeof generateVeniceText>[0],
+    timeoutMs = CHAT_MODEL_ATTEMPT_TIMEOUT_MS,
 ) => {
     const upstreamSignal = options.signal;
     const timeoutController = new AbortController();
@@ -8867,7 +8986,7 @@ const generateChatTextWithTimeout = async (
     const timeoutId = window.setTimeout(() => {
         timedOut = true;
         timeoutController.abort();
-    }, CHAT_MODEL_ATTEMPT_TIMEOUT_MS);
+    }, timeoutMs);
 
     try {
         return await generateVeniceText({
@@ -8910,6 +9029,15 @@ const TRADITIONAL_CHARACTER_REPLACEMENTS: Record<string, string> = {
     写: '寫', 读: '讀', 买: '買', 卖: '賣', 师: '師', 赶: '趕', 礼: '禮',
     继: '繼', 续: '續', 张: '張', 赵: '趙', 刘: '劉', 陈: '陳', 备: '備',
     选: '選', 样: '樣', 种: '種', 记: '記', 压: '壓', 务: '務', 围: '圍',
+    规: '規', 划: '劃', 静: '靜', 里: '裡', 梦: '夢', 视: '視', 传: '傳',
+    递: '遞', 触: '觸', 览: '覽', 录: '錄', 乐: '樂', 舞: '舞', 台: '台',
+    历: '歷', 际: '際', 场: '場', 华: '華', 后: '後', 复: '復', 众: '眾',
+    组: '組', 织: '織', 别: '別', 顾: '顧', 议: '議', 决: '決', 随: '隨',
+    机: '機', 紧: '緊', 统: '統', 调: '調', 达: '達', 险: '險',
+    惊: '驚', 秘: '祕', 故: '故', 计: '計', 临: '臨',
+    满: '滿', 带: '帶', 诚: '誠', 语: '語', 词: '詞', 丽: '麗', 艺: '藝',
+    单: '單', 啧: '嘖', 几: '幾', 粘: '黏', 没: '沒', 扰: '擾', 显: '顯',
+    颤: '顫', 习: '習', 顿: '頓', 绝: '絕', 刚: '剛', 无: '無',
 };
 
 const normalizeTraditionalChineseLeaks = (text: string) => {
@@ -8917,6 +9045,32 @@ const normalizeTraditionalChineseLeaks = (text: string) => {
         new RegExp(`[${Object.keys(TRADITIONAL_CHARACTER_REPLACEMENTS).join('')}]`, 'gu'),
         character => TRADITIONAL_CHARACTER_REPLACEMENTS[character] || character,
     );
+};
+
+const normalizeGroupGenerationTraditional = (result: GroupGenerationResult): GroupGenerationResult => {
+    const segments = result.segments.map(segment => ({
+        ...segment,
+        text: normalizeTraditionalChineseLeaks(segment.text),
+    }));
+    const text = segments.map(segment => segment.type === 'narration'
+        ? `（${segment.text}）`
+        : `${segment.speakerName || segment.speakerId}：「${segment.text}」`).join('\n');
+    return {
+        ...result,
+        text,
+        segments,
+        scene: {
+            ...result.scene,
+            location: normalizeTraditionalChineseLeaks(result.scene.location),
+            summary: normalizeTraditionalChineseLeaks(result.scene.summary),
+            unresolved: result.scene.unresolved.map(normalizeTraditionalChineseLeaks),
+        },
+        npcCandidate: result.npcCandidate ? {
+            ...result.npcCandidate,
+            name: normalizeTraditionalChineseLeaks(result.npcCandidate.name),
+            description: normalizeTraditionalChineseLeaks(result.npcCandidate.description),
+        } : undefined,
+    };
 };
 
 const normalizeCcCantoneseLeaks = (text: string) => {
@@ -9814,7 +9968,13 @@ const runRoomConversationGeneration = async (
                     stop: [],
                     signal: request.controller.signal,
                 });
-                const parsed = parseGroupGeneration(result.text, request.room, fallbackMemberId);
+                const parsed = normalizeGroupGenerationTraditional(
+                    parseGroupGeneration(result.text, request.room, fallbackMemberId),
+                );
+                if (groupNarrationUsesFirstPerson(parsed)) {
+                    rejectedReply = parsed.text;
+                    throw new Error(`First-person narration confused group ownership in ${model}.`);
+                }
                 const repeats = recentReplies.some(previous => repliesAreTooSimilar(previous, parsed.text));
                 if (repeats && !userExplicitlyRequestsContinuation(latestUserMessage)) {
                     rejectedReply = parsed.text;
@@ -9882,6 +10042,7 @@ const STRICT_REVIEW_EDITOR_PROMPT = [
     'You are the strict final quality gate for a continuous private character conversation.',
     'Audit the candidate against the authoritative character files, recent completed history, current scene and newest user message.',
     'Check every item: it answers the newest request; identities and first-person ownership are correct; named people remain separate; location, clothing, body position, reality layer and completed actions do not contradict continuity; no old instruction or completed beat is replayed; personality and regional language remain vivid; relevant third parties may speak; the user is never puppeted; the ending is complete rather than cut off.',
+    'For group output, narration must stay external third-person and cannot use 我 / 我們 / 我哋 / I / me / my for a character or user. First person belongs only inside a labelled character dialogue line.',
     'KEEP a strong response. Do not rewrite merely to impose your own prose style. REVISE only when there is at least one concrete defect.',
     'When revising, preserve all valid detail, emotional intensity, relationship development, consensual adult intimacy and regional voice. Do not sanitize, moralize, summarize, shorten into a minimal answer, add meta-commentary, or mention this review.',
     'Return only the requested JSON. For keep, revised_response must be an empty string. For revise, revised_response must be the complete replacement response, never notes or a partial patch.',
@@ -10058,11 +10219,14 @@ const strictReviewGroupReply = async (
         return candidate;
     }
     try {
-        const revision = parseGroupGeneration(
-            decision.revisedResponse,
-            request.room,
-            getGroupFallbackMemberId(request, latestUserMessage),
+        const revision = normalizeGroupGenerationTraditional(
+            parseGroupGeneration(
+                decision.revisedResponse,
+                request.room,
+                getGroupFallbackMemberId(request, latestUserMessage),
+            ),
         );
+        if (groupNarrationUsesFirstPerson(revision)) return candidate;
         const namedMember = getDirectlyNamedRoomMember(request, latestUserMessage);
         if (namedMember && !revision.segments.some(segment => (
             segment.type === 'dialogue' && segment.speakerId === namedMember.id
@@ -10375,6 +10539,344 @@ const approveCharacterPhoto = async (proposalId: string) => {
     }
 };
 
+function findSurpriseEventMessage(conversationKey: string, proposalId: string) {
+    const history = memoryManager.getChatHistory(conversationKey);
+    const messageIndex = history.findIndex(message => message.content.surpriseEvent?.id === proposalId);
+    return messageIndex >= 0 ? { history, messageIndex, message: history[messageIndex] } : null;
+}
+
+function updateSurpriseEventProposal(
+    conversationKey: string,
+    proposalId: string,
+    updates: Partial<SurpriseEventProposal>,
+) {
+    const found = findSurpriseEventMessage(conversationKey, proposalId);
+    const proposal = found?.message.content.surpriseEvent;
+    if (!found || !proposal) return null;
+    Object.assign(proposal, updates);
+    memoryManager.setChatHistory(conversationKey, found.history);
+    if (currentConversationKey === conversationKey) refreshSurpriseEventCard(proposalId);
+    return proposal;
+}
+
+function completeActiveSurpriseEvents(conversationKey: string) {
+    const history = memoryManager.getChatHistory(conversationKey);
+    const completedIds: string[] = [];
+    history.forEach(message => {
+        const proposal = message.content.surpriseEvent;
+        if (proposal?.status !== 'active') return;
+        proposal.status = 'completed';
+        proposal.error = undefined;
+        completedIds.push(proposal.id);
+    });
+    if (completedIds.length === 0) return;
+    memoryManager.setChatHistory(conversationKey, history);
+    if (currentConversationKey === conversationKey) completedIds.forEach(refreshSurpriseEventCard);
+}
+
+function refreshSurpriseEventCard(proposalId: string) {
+    if (!currentConversationKey) return;
+    const proposal = findSurpriseEventMessage(currentConversationKey, proposalId)?.message.content.surpriseEvent;
+    const currentCard = chatContainer.querySelector<HTMLElement>(`[data-surprise-event-id="${CSS.escape(proposalId)}"]`);
+    if (!proposal || !currentCard) return;
+    currentCard.replaceWith(createSurpriseEventCard(proposal));
+}
+
+const buildSurpriseEventMemberContext = (request: ActiveChatRequest) => {
+    const compactEventText = (value: string | undefined, limit: number) => (
+        value?.replace(/\s+/gu, ' ').trim().slice(0, limit) || ''
+    );
+    if (!request.room) {
+        const identity = request.persona.publicIdentityEnabled ? request.persona.publicIdentity : undefined;
+        return [
+            `MEMBER ID: ${request.personaKey}`,
+            `Name: ${request.persona.name}`,
+            `Identity / occupation: ${compactEventText(request.persona.description, 600)}`,
+            identity ? `Confirmed public identity: ${identity.canonicalName}. ${compactEventText(identity.summary, 700)}` : '',
+            `Personality and voice: ${compactEventText(request.persona.prompt, 2200)}`,
+            formatRelationshipStatePrompt(request.persona),
+        ].filter(Boolean).join('\n');
+    }
+
+    const present = new Set(request.room.scene.presentMemberIds);
+    return request.room.members.map(member => {
+        const identity = member.persona.publicIdentityEnabled ? member.persona.publicIdentity : undefined;
+        return [
+            `MEMBER ID: ${member.id}`,
+            `Name: ${member.persona.name}`,
+            `Presence: ${present.has(member.id) ? 'PRESENT' : 'ABSENT'}`,
+            `Identity / occupation: ${compactEventText(member.persona.description, 500)}`,
+            identity ? `Confirmed public identity: ${identity.canonicalName}. ${compactEventText(identity.summary, 650)}` : '',
+            `Personality and voice: ${compactEventText(member.persona.prompt, 1800)}`,
+            formatRelationshipStatePrompt(member.persona),
+        ].filter(Boolean).join('\n');
+    }).join('\n\n---\n\n');
+};
+
+const generateSurpriseEvent = async (request: ActiveChatRequest): Promise<SurpriseEventProposal> => {
+    const history = memoryManager.getChatHistory(request.conversationKey);
+    const recentEvents = collectRecentSurpriseEvents(history, 8);
+    const validMemberIds = request.room
+        ? request.room.scene.presentMemberIds
+        : [request.personaKey];
+    const fallbackMemberId = request.room
+        ? request.room.scene.presentMemberIds.includes(request.roomMemberId || '')
+            ? request.roomMemberId!
+            : request.room.scene.presentMemberIds[0]
+        : request.personaKey;
+    const recentEventLedger = recentEvents.length > 0
+        ? recentEvents.map(event => `- ${event.category} | ${event.title} | ${event.hook}`).join('\n')
+        : '- none';
+    const identityLedger = buildSurpriseEventMemberContext(request);
+    const idolLike = /歌手|偶像|藝人|演員|舞台|音樂|團體|idol|singer|actress|performer|k-pop/iu.test(identityLedger);
+    const categoryPool = (idolLike
+        ? ['backstage', 'idol_schedule', 'public_spotlight', 'secret_escape', 'unexpected_guest', 'celebration', 'travel', 'emotional_turn', 'rivalry', 'mystery']
+        : ['secret_escape', 'unexpected_guest', 'celebration', 'travel', 'domestic', 'emotional_turn', 'rivalry', 'mystery', 'fantasy']) as SurpriseEventProposal['category'][];
+    const recentlyUsedCategories = new Set(recentEvents.slice(-6).map(event => event.category));
+    const freshCategoryPool = categoryPool.filter(category => !recentlyUsedCategories.has(category));
+    const selectableCategories = freshCategoryPool.length > 0 ? freshCategoryPool : categoryPool;
+    const targetCategory = selectableCategories[Math.floor(Math.random() * selectableCategories.length)];
+    const sceneContext = request.room
+        ? `Location: ${request.room.scene.location}\nReality layer: ${request.room.scene.realityLayer}\nPresent member IDs: ${request.room.scene.presentMemberIds.join(', ')}\nCurrent summary: ${request.room.scene.summary}\nUnresolved: ${request.room.scene.unresolved.join('; ') || 'none'}`
+        : 'Infer the live location, reality layer, participants and unfinished beat from the recent completed conversation. Do not contradict it.';
+    const eventSystemPrompt = [
+        'You design one fresh surprise-event card for a continuous private romance conversation.',
+        'The card is a playable opening, not a complete short story: create an immediate hook, concrete situation and unresolved tension that can develop naturally over several chat turns.',
+        'The active characters must remain recognizable and retain their established voice, nationality, occupation, public identity, memories and current relationship progress.',
+        'For a singer, idol, actor or other public performer, strongly prefer identity-specific inspiration when fresh: backstage timing, rehearsal, recording, award events, travel schedules, members or staff, public-versus-private tension, secret rest time, or a performance-related surprise. Keep all private developments explicitly inside this fictional conversation and never present invented claims as real news.',
+        'Vary scale and mood. Events may be tender, funny, awkward, dramatic, mysterious, romantically charged or adult according to established context, but must not sanitize the current relationship or force an intensity unsupported by it.',
+        'A surprise must contain one specific catalyst that changes the current moment: an interruption, deadline, discovery, secret, mistake, invitation, public/private conflict, unexpected person, or emotionally risky choice.',
+        'Reject routine waking up, ordinary meals, generic dates, generic rain, merely discussing an existing plan, or “they spend time together” unless a genuinely new concrete twist transforms it.',
+        'Never puppet the user, decide the user agrees, resolve the central tension, skip directly to the ending, reset the current relationship, or replay a completed scene.',
+        'Only use IDs from the valid present-member list. An event may include a clearly attributed staff member, friend, fan, manager or other NPC when useful, but do not silently turn an NPC into a fixed room member.',
+        'The opening_instruction is hidden from the user. It must tell the chat model exactly how to begin the event in character while preserving current location, clothing, positions and reality layer unless the event itself naturally initiates a transition.',
+        'Write title, hook and setup in natural Traditional Chinese. Return only the requested JSON.',
+        `VALID PRESENT MEMBER IDS: ${validMemberIds.join(', ')}`,
+        `MANDATORY FRESH CATEGORY: ${targetCategory}. The returned category must equal this exactly.`,
+        `MANDATORY CATEGORY PROOF: ${SURPRISE_EVENT_CATEGORY_GUIDES[targetCategory]} If the setup does not visibly contain this proof, discard it and invent another event.`,
+        `CURRENT SCENE:\n${sceneContext}`,
+        `FIXED CHARACTER FILES:\n${identityLedger}`,
+        `RECENT EVENT CARDS THAT MUST NOT BE REPEATED OR MERELY RENAMED:\n${recentEventLedger}`,
+    ].join('\n\n');
+
+    const models = Array.from(new Set([
+        chatModelSettings.qualityFallback,
+        chatModelSettings.emergencyFallback,
+        chatModelSettings.primary,
+    ].filter(Boolean)));
+    for (let index = 0; index < models.length; index += 1) {
+        const model = models[index];
+        applyChatRuntimeState(index === 0 ? 'generating' : 'retrying', index === 0 ? '正在抽取驚喜事件...' : '正在換一種靈感...');
+        try {
+            const result = await generateChatTextWithTimeout({
+                model,
+                messages: [
+                    { role: 'system', content: eventSystemPrompt },
+                    ...collectRecentMessagesWithinBudget(getRecentChatMessages(
+                        request.conversationKey,
+                        undefined,
+                        false,
+                        request.persona,
+                        request.room,
+                    ), 14000, 14),
+                    { role: 'user', content: 'Create exactly one new event card now. Do not continue the conversation itself.' },
+                ],
+                temperature: 0.96,
+                topP: 0.97,
+                repetitionPenalty: 1.12,
+                responseFormat: SURPRISE_EVENT_RESPONSE_FORMAT,
+                signal: request.controller.signal,
+            }, SURPRISE_EVENT_ATTEMPT_TIMEOUT_MS);
+            const draft = parseSurpriseEventProposal(result.text, validMemberIds, fallbackMemberId);
+            if (
+                !draft
+                || draft.category !== targetCategory
+                || !surpriseEventMatchesCategory(draft)
+                || recentEvents.some(previous => surpriseEventsAreTooSimilar(previous, draft))
+            ) {
+                throw new Error(`Repeated or invalid surprise event from ${model}.`);
+            }
+            draft.title = normalizeTraditionalChineseLeaks(draft.title);
+            draft.hook = normalizeTraditionalChineseLeaks(draft.hook);
+            draft.setup = normalizeTraditionalChineseLeaks(draft.setup);
+            draft.openingInstruction = normalizeTraditionalChineseLeaks(draft.openingInstruction);
+            return {
+                ...draft,
+                id: crypto.randomUUID?.() || `event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                status: 'pending',
+                createdAt: Date.now(),
+            };
+        } catch (error) {
+            if (isAbortError(error)) throw error;
+            console.warn('[aigf4 surprise event attempt rejected]', {
+                requestId: request.id,
+                model,
+                reason: error instanceof Error ? error.message : String(error),
+            });
+        }
+    }
+
+    const fallback = createFallbackSurpriseEvent(
+        request.persona,
+        fallbackMemberId,
+        recentEvents.map(event => event.category),
+        targetCategory,
+        validMemberIds,
+    );
+    return {
+        ...fallback,
+        id: crypto.randomUUID?.() || `event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        status: 'pending',
+        createdAt: Date.now(),
+    };
+};
+
+async function drawSurpriseEventCard(replacingProposalId?: string) {
+    if (USES_VENICE_PROXY_AUTH && !isUnlocked) {
+        handleAuthRequired('請先輸入密碼後再抽取事件牌。');
+        return;
+    }
+    if (activeChatRequest || !currentPersona || !currentPersonaKey || !currentConversationKey || isGodModeActive) return;
+    const conversationKey = currentConversationKey;
+    completeActiveSurpriseEvents(conversationKey);
+    if (replacingProposalId) {
+        updateSurpriseEventProposal(conversationKey, replacingProposalId, { status: 'declined', error: undefined });
+    }
+    moreOptionsMenu.classList.add('hidden');
+    const request = beginChatRequest(currentPersonaKey, currentPersona, 'event', conversationKey);
+    try {
+        const proposal = await generateSurpriseEvent(request);
+        if (!isActiveChatRequest(request)) return;
+        const content: Content = { surpriseEvent: proposal };
+        memoryManager.addMessage(conversationKey, 'system', content);
+        if (currentConversationKey === conversationKey) appendMessage(content, 'system');
+        finishChatRequest(request);
+        renderPersonaList();
+    } catch (error) {
+        if (isAbortError(error)) {
+            finishChatRequest(request);
+            return;
+        }
+        finishChatRequest(request, 'error');
+        if (error instanceof Error && error.message === VENICE_AUTH_REQUIRED_ERROR) {
+            handleAuthRequired();
+            return;
+        }
+        showError('這次未能抽取事件牌，請再試一次。');
+    }
+}
+
+function declineSurpriseEvent(proposalId: string) {
+    if (!currentConversationKey || activeChatRequest) return;
+    updateSurpriseEventProposal(currentConversationKey, proposalId, { status: 'declined', error: undefined });
+}
+
+const buildSurpriseEventDirectorCue = (proposal: SurpriseEventProposal, room?: ChatRoom) => {
+    const participantNames = room
+        ? proposal.involvedMemberIds
+            .map(memberId => room.members.find(member => member.id === memberId)?.persona.name)
+            .filter(Boolean)
+            .join(', ')
+        : currentPersona?.name || '';
+    return [
+        '[INTERNAL SURPRISE EVENT DIRECTOR CUE - this is not user dialogue and must never be mentioned]',
+        `Event: ${proposal.title}`,
+        `Hook: ${proposal.hook}`,
+        `Setup: ${proposal.setup}`,
+        `Primary participating characters: ${participantNames}`,
+        `Direction: ${proposal.openingInstruction}`,
+        'Begin the event now as a seamless continuation of the current conversation. Let the relevant character take the first concrete initiative, preserve exact current continuity, and leave the consequential choice or response to the user. Do not summarize the card, announce an event, explain rules, or complete the whole plot in one response.',
+    ].join('\n');
+};
+
+async function startSurpriseEvent(proposalId: string) {
+    if (USES_VENICE_PROXY_AUTH && !isUnlocked) {
+        handleAuthRequired('請先輸入密碼後再開始事件。');
+        return;
+    }
+    if (activeChatRequest || !currentConversationKey || !currentPersonaKey || !currentPersona || isGodModeActive) return;
+    const conversationKey = currentConversationKey;
+    const proposal = findSurpriseEventMessage(conversationKey, proposalId)?.message.content.surpriseEvent;
+    if (!proposal || !['pending', 'failed'].includes(proposal.status)) return;
+    updateSurpriseEventProposal(conversationKey, proposalId, { status: 'starting', error: undefined });
+    const request = beginChatRequest(currentPersonaKey, currentPersona, 'character', conversationKey);
+    request.surpriseEvent = { ...proposal, status: 'starting' };
+    await getResponse(request, buildSurpriseEventDirectorCue(proposal, currentRoom || undefined));
+}
+
+const updateRelationshipPulseAfterTurn = (
+    request: ActiveChatRequest,
+    triggeringMessage: string,
+    generated: string | GroupGenerationResult,
+) => {
+    const responseText = typeof generated === 'string' ? generated : generated.text;
+    const relationshipInput = request.surpriseEvent?.hook || triggeringMessage;
+    if (!request.room) {
+        const latestPersona = memoryManager.getPersona(request.personaKey) || request.persona;
+        const relationshipState = advanceRelationshipState(
+            latestPersona,
+            relationshipInput,
+            responseText,
+            request.surpriseEvent?.relationshipEffect,
+        );
+        memoryManager.updatePersona(request.personaKey, { relationshipState });
+        request.persona.relationshipState = relationshipState;
+        if (currentConversationKey === request.conversationKey && currentPersona) {
+            currentPersona.relationshipState = relationshipState;
+        }
+        return;
+    }
+
+    const speakingMemberIds = typeof generated === 'string'
+        ? []
+        : generated.segments.flatMap(segment => segment.type === 'dialogue' && segment.speakerId ? [segment.speakerId] : []);
+    const targetIds = new Set([
+        ...speakingMemberIds,
+        ...(request.surpriseEvent?.involvedMemberIds || []),
+    ]);
+    roomManager.updateRoom(request.room.id, room => {
+        room.members.forEach(member => {
+            if (!targetIds.has(member.id)) return;
+            member.persona.relationshipState = advanceRelationshipState(
+                member.persona,
+                relationshipInput,
+                responseText,
+                request.surpriseEvent?.involvedMemberIds.includes(member.id)
+                    ? request.surpriseEvent.relationshipEffect
+                    : undefined,
+            );
+        });
+    });
+    if (currentRoom?.id === request.room.id) refreshCurrentRoom();
+};
+
+const rememberStartedSurpriseEvent = (request: ActiveChatRequest) => {
+    const proposal = request.surpriseEvent;
+    if (!proposal) return;
+    const summary = `${proposal.setup} 事件已由角色自然帶入對話，後續發展及結果以之後實際聊天為準。`;
+    if (request.room) {
+        roomManager.addEpisodicMemories(request.room.id, [{
+            kind: 'event',
+            title: `驚喜事件：${proposal.title}`,
+            summary,
+            participants: proposal.involvedMemberIds,
+            roleplayOnly: true,
+        }]);
+        if (currentRoom?.id === request.room.id) refreshCurrentRoom();
+    } else {
+        memoryManager.addPersonaMemory(request.personaKey, 'memory', {
+            kind: 'event',
+            title: `驚喜事件：${proposal.title}`,
+            summary,
+            originalText: proposal.hook,
+        });
+    }
+    updateSurpriseEventProposal(request.conversationKey, proposal.id, {
+        status: 'active',
+        error: undefined,
+    });
+};
+
 type ChatFailureDiagnostic = {
     code: string;
     detail: string;
@@ -10491,6 +10993,21 @@ const getResponse = async (
         if (currentConversationKey === request.conversationKey) {
             appendMessage(botContent, 'bot');
         }
+        if (request.mode === 'character') {
+            try {
+                updateRelationshipPulseAfterTurn(request, triggeringMessage, generated);
+                rememberStartedSurpriseEvent(request);
+            } catch (error) {
+                // A valid live reply should not be lost if optional experience state cannot persist.
+                console.warn('Unable to persist relationship or surprise-event state.', error);
+                if (request.surpriseEvent) {
+                    updateSurpriseEventProposal(request.conversationKey, request.surpriseEvent.id, {
+                        status: 'active',
+                        error: undefined,
+                    });
+                }
+            }
+        }
         if (typeof generated !== 'string' && request.room && generated.npcCandidate) {
             const candidate = generated.npcCandidate;
             const normalizedName = candidate.name.trim().toLocaleLowerCase();
@@ -10535,11 +11052,23 @@ const getResponse = async (
         else if (request.mode === 'character') void maybeSummarizePersonaMemory(request.personaKey);
     } catch (error) {
         if (isAbortError(error)) {
+            if (request.surpriseEvent) {
+                updateSurpriseEventProposal(request.conversationKey, request.surpriseEvent.id, {
+                    status: 'pending',
+                    error: undefined,
+                });
+            }
             finishChatRequest(request);
             return;
         }
         console.error('Venice response error:', error);
         if (error instanceof Error && error.message === VENICE_AUTH_REQUIRED_ERROR) {
+            if (request.surpriseEvent) {
+                updateSurpriseEventProposal(request.conversationKey, request.surpriseEvent.id, {
+                    status: 'failed',
+                    error: '登入狀態已失效，重新解鎖後可再次開始。',
+                });
+            }
             finishChatRequest(request);
             handleAuthRequired();
             return;
@@ -10547,6 +11076,12 @@ const getResponse = async (
         const message = formatChatFailureMessage(diagnoseChatFailure(error, Boolean(request.room)));
 
         finishChatRequest(request, 'error');
+        if (request.surpriseEvent) {
+            updateSurpriseEventProposal(request.conversationKey, request.surpriseEvent.id, {
+                status: 'failed',
+                error: '角色暫時未能把事件接入目前場景，可以再試或換一張。',
+            });
+        }
         if (currentConversationKey === request.conversationKey) {
             showError(message);
             appendMessage({ text: `[系統] ${message}` }, 'system');
@@ -13342,6 +13877,9 @@ const setupEventListeners = () => {
     
     suggestionButton.addEventListener('click', () => showDisabledFeatureNotice('建議功能'));
     newSceneBtn.addEventListener('click', startNewScene);
+    surpriseEventBtn.addEventListener('click', () => {
+        void drawSurpriseEventCard();
+    });
     takePhotoBtn.addEventListener('click', () => {
         openPhotoPromptModal();
     });

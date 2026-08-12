@@ -197,6 +197,46 @@ export interface NpcPromotionProposal {
     createdAt: number;
 }
 
+export type RelationshipStage = 'new' | 'familiar' | 'close' | 'romantic' | 'devoted';
+
+export interface RelationshipState {
+    closeness: number;
+    trust: number;
+    romanticTension: number;
+    initiative: number;
+    stage: RelationshipStage;
+    updatedAt: number;
+}
+
+export type SurpriseEventCategory =
+    | 'idol_schedule'
+    | 'backstage'
+    | 'public_spotlight'
+    | 'secret_escape'
+    | 'unexpected_guest'
+    | 'celebration'
+    | 'travel'
+    | 'domestic'
+    | 'emotional_turn'
+    | 'rivalry'
+    | 'mystery'
+    | 'fantasy';
+
+export interface SurpriseEventProposal {
+    id: string;
+    title: string;
+    category: SurpriseEventCategory;
+    intensity: 'gentle' | 'playful' | 'dramatic' | 'heated';
+    hook: string;
+    setup: string;
+    openingInstruction: string;
+    involvedMemberIds: string[];
+    relationshipEffect: Pick<RelationshipState, 'closeness' | 'trust' | 'romanticTension' | 'initiative'>;
+    status: 'pending' | 'starting' | 'active' | 'completed' | 'declined' | 'failed';
+    createdAt: number;
+    error?: string;
+}
+
 export interface ImageGenerationMetadata {
     mode: 'generate' | 'edit';
     modelId?: string;
@@ -241,6 +281,7 @@ export interface Content {
     memoryProposal?: MemoryProposal;
     photoIntent?: PhotoIntentProposal;
     npcProposal?: NpcPromotionProposal;
+    surpriseEvent?: SurpriseEventProposal;
     contextBridge?: ChatContextBridge;
     roomSceneBeforeTurn?: ChatSceneSnapshot;
     legacy?: boolean;
@@ -312,6 +353,7 @@ export interface Persona {
     favoritePhotoPrompt?: string;
     publicIdentityEnabled?: boolean;
     publicIdentity?: PublicIdentity;
+    relationshipState?: RelationshipState;
 }
 
 export interface AllData {

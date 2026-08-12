@@ -1,4 +1,5 @@
 import { ChatMessage, ChatSegment, Content, Persona } from './managers.js';
+import { formatRelationshipStatePrompt } from './experienceEngine.js';
 import { ChatRoom, RoomMember, RoomSceneState } from './roomManager.js';
 import { VeniceJsonSchemaResponseFormat } from './venice.js';
 
@@ -64,6 +65,11 @@ export const trimTrailingUnansweredUserMessages = (history: ChatMessage[]) => {
     return completed;
 };
 
+export const groupNarrationUsesFirstPerson = (result: GroupGenerationResult) => result.segments.some(segment => (
+    segment.type === 'narration'
+    && (segment.text.includes('我') || /(?:^|[^\p{L}\p{N}])(?:I|me|my|mine)(?:[^\p{L}\p{N}]|$)/iu.test(segment.text))
+));
+
 const memberIdentityBlock = (member: RoomMember, isPresent: boolean) => {
     const persona = member.persona;
     const identity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
@@ -91,6 +97,7 @@ const memberIdentityBlock = (member: RoomMember, isPresent: boolean) => {
         ].join('\n') : '',
         soul ? `soul.md anchors:\n${soul}` : '',
         memories ? `memory.md excerpts:\n${memories}` : '',
+        formatRelationshipStatePrompt(persona),
     ].filter(Boolean).join('\n');
 };
 
@@ -117,6 +124,7 @@ export const buildGroupSystemPrompt = (room: ChatRoom) => {
             '- Only PRESENT members may perceive the current moment or speak. ABSENT members remain fixed characters but learn nothing until told later.',
             '- If the user directly addresses one present member, that member must answer. Other present members join only when naturally relevant.',
             '- Never write the user’s next words, action, emotion or consent.',
+            '- Narration is an external third-person camera. It must name the relevant character and must never use 我 / 我們 / 我哋 / I / me / my for any character or for the user. First-person pronouns are allowed only inside a clearly labelled character dialogue line.',
         ].join('\n'),
         `CURRENT SCENE:\nLocation: ${room.scene.location}\nReality layer: ${room.scene.realityLayer}\nPresent member IDs: ${room.scene.presentMemberIds.join(', ')}\nSummary: ${room.scene.summary}\nUnresolved: ${room.scene.unresolved.join('; ') || 'none'}`,
         sharedSoul ? `SHARED soul.md:\n${sharedSoul}` : '',
@@ -127,6 +135,8 @@ export const buildGroupSystemPrompt = (room: ChatRoom) => {
             '- First understand and answer the newest user turn. Never continue an older command after the user has moved on.',
             '- Keep each voice strongly distinct. Personality affects pacing, resistance, humour, word choice, action and vulnerability, not just adjectives.',
             '- Romance should grow through attention, trust, playful tension and concrete care. Do not make everyone instantly obedient, generically sweet, cruel, therapeutic or emotionally dependent.',
+            '- Give characters their own immediate wants and initiative. When natural, let someone make a concrete choice, suggest a plan, interrupt, or start the next small action instead of always waiting for the user or ending with a question.',
+            '- Pace attraction and dramatic tension in steps. Preserve gains in closeness, allow a charged moment to breathe, and transition naturally after an intense beat instead of abruptly resetting or endlessly escalating.',
             '- Normally write 5 to 10 alternating narration/dialogue lines for a substantial turn. A character may speak more than once before and after an action, and present members may answer, interrupt, tease or react to one another.',
             '- Include meaningful dialogue plus fresh action, expression, physical distance, sensory environment or a brief third-person reaction. Use enough detail to make the moment satisfying, but do not pad or repeat.',
             '- Let relevant present members speak and act. Do not force every member to speak on every turn, and do not create a detached novel chapter.',

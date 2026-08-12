@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
     buildGroupSystemPrompt,
     getGroupDisplaySegments,
+    groupNarrationUsesFirstPerson,
     parseGroupGeneration,
     selectLegacyGroupHistory,
     trimTrailingUnansweredUserMessages,
@@ -48,6 +49,27 @@ const createRoom = (): ChatRoom => ({
     createdAt: 1,
     updatedAt: 1,
     lastSummarizedUserMessageCount: 0,
+});
+
+test('rejects first-person ownership inside group narration', () => {
+    const room = createRoom();
+    const confused = parseGroupGeneration(
+        '<chat>（Jennie 避開壓在我手臂上的重量。）\nJennie：「我先接電話。」</chat>'
+        + '<scene>{"location":"living room","reality_layer":"physical","present_member_ids":["iu","jennie"],"summary":"phone rings","unresolved":[]}</scene>'
+        + '<npc_candidate>null</npc_candidate>',
+        room,
+        'iu',
+    );
+    assert.equal(groupNarrationUsesFirstPerson(confused), true);
+
+    const clear = parseGroupGeneration(
+        '<chat>（Jennie 避開壓在 IU 手臂上的重量。）\nJennie：「我先接電話。」</chat>'
+        + '<scene>{"location":"living room","reality_layer":"physical","present_member_ids":["iu","jennie"],"summary":"phone rings","unresolved":[]}</scene>'
+        + '<npc_candidate>null</npc_candidate>',
+        room,
+        'iu',
+    );
+    assert.equal(groupNarrationUsesFirstPerson(clear), false);
 });
 
 test('group prompt keeps immutable member and presence ledgers', () => {
