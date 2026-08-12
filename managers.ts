@@ -337,6 +337,14 @@ export interface PublicIdentity {
     verifiedAt: number;
 }
 
+export interface TimelineBranchInfo {
+    sourceConversationKey: string;
+    sourceMessageId: string;
+    sourceTitle: string;
+    createdAt: number;
+    omittedMessageCount?: number;
+}
+
 export interface Persona {
     name: string;
     emoji: string;
@@ -354,6 +362,8 @@ export interface Persona {
     publicIdentityEnabled?: boolean;
     publicIdentity?: PublicIdentity;
     relationshipState?: RelationshipState;
+    conversationLabel?: string;
+    timelineBranch?: TimelineBranchInfo;
 }
 
 export interface AllData {
@@ -930,10 +940,10 @@ export class MemoryManager {
         });
     }
     
-    setChatHistory(key: string, history: ChatMessage[]) {
+    setChatHistory(key: string, history: ChatMessage[], throwOnError = false) {
         this.ensureChatMessageMetadata(history);
         this.chatHistories[key] = history;
-        this.persistChatHistories();
+        this.persistChatHistories(throwOnError);
     }
 
     removeUserTurn(key: string, messageId: string) {

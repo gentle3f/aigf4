@@ -1,4 +1,4 @@
-import { ChatMessage, MemoryManager, Persona, PublicIdentity } from './managers.js';
+import { ChatMessage, MemoryManager, Persona, PublicIdentity, TimelineBranchInfo } from './managers.js';
 
 const ROOM_STORAGE_KEY = 'aigf4RoomsV2';
 const DELETED_ROOM_IDS_STORAGE_KEY = 'aigf4DeletedRoomIdsV1';
@@ -67,6 +67,7 @@ export interface ChatRoom {
     lastSummarizedUserMessageCount: number;
     legacySourcePersonaKey?: string;
     migrationVersion?: number;
+    timelineBranch?: TimelineBranchInfo;
 }
 
 export interface RoomExportData {

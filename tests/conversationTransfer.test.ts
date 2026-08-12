@@ -195,6 +195,14 @@ test('copied private persona and its memory files survive a manager reload', asy
         createdAt: 1,
         pinned: false,
     }];
+    copied.conversationLabel = 'Jennie · 分支 13/8 01:30';
+    copied.timelineBranch = {
+        sourceConversationKey: 'room-source',
+        sourceMessageId: 'message-source',
+        sourceTitle: 'Jennie',
+        createdAt: 10,
+        omittedMessageCount: 42,
+    };
 
     const key = await new MemoryManager().saveCustomPersonaCopy(copied);
     const restored = new MemoryManager().getPersona(key);
@@ -202,4 +210,6 @@ test('copied private persona and its memory files survive a manager reload', asy
     assert.equal(restored?.name, 'Jennie');
     assert.equal(restored?.avatarUrl, '/legacy-avatars/jennie.jpg');
     assert.equal(restored?.memories?.[0].title, '群組事件');
+    assert.equal(restored?.conversationLabel, 'Jennie · 分支 13/8 01:30');
+    assert.deepEqual(restored?.timelineBranch, copied.timelineBranch);
 });

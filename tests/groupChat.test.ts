@@ -288,10 +288,17 @@ test('room favorite photo prompt survives a manager reload', () => {
     ]);
     firstManager.updateRoom(room.id, editable => {
         editable.favoritePhotoPrompt = 'soft window light, candid phone photo';
+        editable.timelineBranch = {
+            sourceConversationKey: 'room-source',
+            sourceMessageId: 'message-source',
+            sourceTitle: 'Original room',
+            createdAt: 10,
+        };
     });
 
     const restored = new RoomManager().getRoom(room.id);
     assert.equal(restored?.favoritePhotoPrompt, 'soft window light, candid phone photo');
+    assert.equal(restored?.timelineBranch?.sourceMessageId, 'message-source');
 });
 
 test('deleting a room removes it after manager reload', () => {

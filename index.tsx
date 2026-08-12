@@ -723,6 +723,7 @@ let activeCharacterPhotoProposalId: string | null = null;
 let switchingCharacterPhotoProposalId: string | null = null;
 let pendingChatAttachments: Array<{ attachment: ChatAttachment; file: File; previewUrl?: string }> = [];
 const chatAttachmentObjectUrls = new Map<string, string>();
+let openMessageActionMenu: HTMLElement | null = null;
 let selectedMemoryMemberId: string | null = null;
 let selectedMemoryType: 'soul' | 'memory' = 'soul';
 let personaSettingsRoomTarget: { roomId: string; memberId: string } | null = null;
@@ -2877,7 +2878,10 @@ const deleteCustomPersona = async (key: string) => {
         if (currentPersonaKey === key && characterPhotoRequestController) {
             characterPhotoRequestController.abort();
         }
-        await deleteCharacterPhotoAssetsForHistory(history);
+        await Promise.all([
+            deleteCharacterPhotoAssetsForHistory(history, key),
+            deleteChatAttachmentAssetsForHistory(history, key),
+        ]);
         if (memoryManager.deleteCustomPersona(key)) {
             renderPersonaList();
         }
@@ -3134,7 +3138,9 @@ const renderPersonaList = () => {
         const isLegacyBackup = legacyKeys.has(key);
         conversations.push({
             key,
-            title: isLegacyBackup ? `${persona.name}（舊聊天）` : persona.name,
+            title: isLegacyBackup
+                ? `${persona.conversationLabel || persona.name}（舊聊天）`
+                : persona.conversationLabel || persona.name,
             preview: isLegacyBackup
                 ? `原始備份 · ${previewText(key, persona.description)}`
                 : previewText(key, persona.description),
@@ -6105,7 +6111,7 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
         activeRoomMemberId = null;
         currentPersonaKey = key;
         currentPersona = selectedPersona!;
-        chatHeaderName.textContent = currentPersona.name;
+        chatHeaderName.textContent = currentPersona.conversationLabel || currentPersona.name;
     }
 
     isGodModeActive = false;
@@ -6325,11 +6331,32 @@ const getContentImageUrl = async (content: Content) => {
     return content.imageAssetId ? getCharacterPhotoObjectUrl(content.imageAssetId) : null;
 };
 
-const deleteCharacterPhotoAssetsForHistory = async (history: ChatMessage[]) => {
+const collectReferencedPhotoAssetIds = (excludingConversationKey?: string) => new Set(
+    Object.entries(memoryManager.getAllChatHistories())
+        .filter(([key]) => key !== excludingConversationKey)
+        .flatMap(([, messages]) => messages
+            .map(message => message.content.imageAssetId)
+            .filter((assetId): assetId is string => Boolean(assetId))),
+);
+
+const collectReferencedAttachmentAssetIds = (excludingConversationKey?: string) => new Set(
+    Object.entries(memoryManager.getAllChatHistories())
+        .filter(([key]) => key !== excludingConversationKey)
+        .flatMap(([, messages]) => messages.flatMap(message => (
+            message.content.attachments?.map(attachment => attachment.assetId) || []
+        ))),
+);
+
+const deleteCharacterPhotoAssetsForHistory = async (
+    history: ChatMessage[],
+    excludingConversationKey?: string,
+) => {
+    const stillReferenced = collectReferencedPhotoAssetIds(excludingConversationKey);
     const assetIds = Array.from(new Set(history
         .map(message => message.content.imageAssetId)
         .filter((assetId): assetId is string => Boolean(assetId))));
     await Promise.all(assetIds.map(async assetId => {
+        if (stillReferenced.has(assetId)) return;
         const objectUrl = characterPhotoObjectUrls.get(assetId);
         if (objectUrl) URL.revokeObjectURL(objectUrl);
         characterPhotoObjectUrls.delete(assetId);
@@ -6338,9 +6365,13 @@ const deleteCharacterPhotoAssetsForHistory = async (history: ChatMessage[]) => {
 };
 
 const deleteConversationFromList = async (key: string, title: string, room?: ChatRoom) => {
-    const prompt = room
-        ? `確定要刪除群組「${title}」及其全部聊天記錄嗎？群組成員原本的一對一聊天不會受影響。此動作無法復原。`
-        : `確定要刪除與「${title}」的聊天記錄嗎？角色人格、頭像、soul.md 與 memory.md 會保留。`;
+    const persona = room ? null : memoryManager.getPersona(key);
+    const isTimelineBranch = Boolean(room?.timelineBranch || persona?.timelineBranch);
+    const prompt = isTimelineBranch
+        ? `確定要刪除時間線「${title}」嗎？原本的對話不會受影響。此動作無法復原。`
+        : room
+            ? `確定要刪除群組「${title}」及其全部聊天記錄嗎？群組成員原本的一對一聊天不會受影響。此動作無法復原。`
+            : `確定要刪除與「${title}」的聊天記錄嗎？角色人格、頭像、soul.md 與 memory.md 會保留。`;
     if (!confirm(prompt)) return;
 
     if (currentConversationKey === key) {
@@ -6349,13 +6380,16 @@ const deleteConversationFromList = async (key: string, title: string, room?: Cha
     }
     const history = memoryManager.peekChatHistory(key);
     await Promise.all([
-        deleteCharacterPhotoAssetsForHistory(history),
-        deleteChatAttachmentAssetsForHistory(history),
+        deleteCharacterPhotoAssetsForHistory(history, key),
+        deleteChatAttachmentAssetsForHistory(history, key),
     ]);
 
     if (room) {
         memoryManager.deleteChatHistory(key);
         roomManager.deleteRoom(key);
+        if (currentConversationKey === key) showSelectionView('replace');
+    } else if (isTimelineBranch && key.startsWith('custom_')) {
+        memoryManager.deleteCustomPersona(key);
         if (currentConversationKey === key) showSelectionView('replace');
     } else {
         memoryManager.clearChatHistory(key);
@@ -6364,11 +6398,16 @@ const deleteConversationFromList = async (key: string, title: string, room?: Cha
     renderPersonaList();
 };
 
-const deleteChatAttachmentAssetsForHistory = async (history: ChatMessage[]) => {
+const deleteChatAttachmentAssetsForHistory = async (
+    history: ChatMessage[],
+    excludingConversationKey?: string,
+) => {
+    const stillReferenced = collectReferencedAttachmentAssetIds(excludingConversationKey);
     const assetIds = Array.from(new Set(history.flatMap(message => (
         message.content.attachments?.map(attachment => attachment.assetId) || []
     ))));
     await Promise.all(assetIds.map(async assetId => {
+        if (stillReferenced.has(assetId)) return;
         const objectUrl = chatAttachmentObjectUrls.get(assetId);
         if (objectUrl) URL.revokeObjectURL(objectUrl);
         chatAttachmentObjectUrls.delete(assetId);
@@ -6376,7 +6415,161 @@ const deleteChatAttachmentAssetsForHistory = async (history: ChatMessage[]) => {
     }));
 };
 
+const branchMemoryEntriesAt = <T extends { sourceMessageIds?: string[] }>(
+    entries: T[] | undefined,
+    includedMessageIds: Set<string>,
+) => (entries || [])
+    .filter(entry => !entry.sourceMessageIds?.length
+        || entry.sourceMessageIds.every(messageId => includedMessageIds.has(messageId)))
+    .map(entry => cloneRoomSnapshot(entry));
+
+const formatTimelineBranchTitle = (sourceTitle: string, createdAt: number) => {
+    const stamp = new Intl.DateTimeFormat('zh-HK', {
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+    }).format(new Date(createdAt));
+    return `${sourceTitle} · 分支 ${stamp}`;
+};
+
+const TIMELINE_BRANCH_HISTORY_LIMIT = 160;
+
+const closeMessageActions = () => {
+    if (!openMessageActionMenu) return;
+    openMessageActionMenu.classList.add('hidden');
+    const trigger = openMessageActionMenu.parentElement?.querySelector<HTMLElement>('.message-recall-button');
+    trigger?.setAttribute('aria-expanded', 'false');
+    openMessageActionMenu = null;
+};
+
+document.addEventListener('click', event => {
+    if (openMessageActionMenu && !openMessageActionMenu.contains(event.target as Node)) {
+        closeMessageActions();
+    }
+});
+
+const createTimelineBranch = async (messageId: string) => {
+    closeMessageActions();
+    if (!currentConversationKey || !currentPersona) return;
+    if (activeChatRequest) {
+        alert('請先等待目前回覆完成，再建立時間線分支。');
+        return;
+    }
+
+    const sourceConversationKey = currentConversationKey;
+    const sourceRoom = roomManager.getRoom(sourceConversationKey) || null;
+    const sourcePersona = sourceRoom ? null : memoryManager.getPersona(sourceConversationKey) || currentPersona;
+    const history = memoryManager.getChatHistory(sourceConversationKey);
+    const branchPointIndex = history.findIndex(message => message.id === messageId && message.role === 'user');
+    if (branchPointIndex < 0) {
+        alert('找不到這則訊息，可能已經被移除。');
+        return;
+    }
+
+    const branchPoint = history[branchPointIndex];
+    const branchPointText = branchPoint.content.text || '';
+    const fullPrefix = history.slice(0, branchPointIndex);
+    const prefix = cloneRoomSnapshot(fullPrefix.slice(-TIMELINE_BRANCH_HISTORY_LIMIT));
+    const omittedMessageCount = Math.max(0, fullPrefix.length - prefix.length);
+    const includedMessageIds = new Set(fullPrefix
+        .map(message => message.id)
+        .filter((id): id is string => Boolean(id)));
+    const now = Date.now();
+    const sourceTitle = sourceRoom?.title
+        || sourcePersona?.conversationLabel
+        || sourcePersona?.name
+        || currentPersona.name;
+    const branchTitle = formatTimelineBranchTitle(sourceTitle, now);
+    const branchInfo = {
+        sourceConversationKey,
+        sourceMessageId: messageId,
+        sourceTitle,
+        createdAt: now,
+        omittedMessageCount: omittedMessageCount || undefined,
+    };
+    const marker: ChatMessage = {
+        id: crypto.randomUUID?.() || `branch-${now}-${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: now,
+        role: 'system',
+        content: {
+            text: [
+                `[時間線分支] 已從「${branchPointText.replace(/\s+/gu, ' ').trim().slice(0, 80) || '這則訊息'}」之前建立獨立分支；原對話保持不變。`,
+                omittedMessageCount > 0
+                    ? `為避免長對話重複佔用儲存空間，這裡顯示分支點前最近 ${prefix.length} 則訊息；更早內容仍在原對話，已整理的 soul.md 與 memory.md 亦已承接。`
+                    : '',
+            ].filter(Boolean).join('\n'),
+        },
+    };
+
+    let branchConversationKey: string | null = null;
+    let createdRoom = false;
+    try {
+        if (sourceRoom) {
+            const roomCopy = cloneRoomSnapshot(sourceRoom);
+            branchConversationKey = `room_branch_${now}_${Math.random().toString(36).slice(2, 9)}`;
+            roomCopy.id = branchConversationKey;
+            roomCopy.title = branchTitle;
+            roomCopy.description = `由「${sourceTitle}」建立的獨立時間線`;
+            roomCopy.timelineBranch = branchInfo;
+            roomCopy.createdAt = now;
+            roomCopy.updatedAt = now;
+            roomCopy.lastSummarizedUserMessageCount = prefix.filter(message => message.role === 'user').length;
+            roomCopy.scene = cloneRoomSnapshot(branchPoint.content.roomSceneBeforeTurn || sourceRoom.scene);
+            const validMemberIds = new Set(roomCopy.members.map(member => member.id));
+            roomCopy.scene.presentMemberIds = roomCopy.scene.presentMemberIds.filter(id => validMemberIds.has(id));
+            if (!roomCopy.scene.presentMemberIds.length) roomCopy.scene.presentMemberIds = [roomCopy.leadMemberId];
+            roomCopy.members.forEach(member => {
+                member.soul = branchMemoryEntriesAt(member.soul, includedMessageIds);
+                member.memories = branchMemoryEntriesAt(member.memories, includedMessageIds);
+                member.persona.soul = branchMemoryEntriesAt(member.persona.soul, includedMessageIds);
+                member.persona.memories = branchMemoryEntriesAt(member.persona.memories, includedMessageIds);
+            });
+            roomCopy.sharedSoul = branchMemoryEntriesAt(roomCopy.sharedSoul, includedMessageIds);
+            roomCopy.sharedMemories = branchMemoryEntriesAt(roomCopy.sharedMemories, includedMessageIds);
+            roomManager.saveRoom(roomCopy);
+            createdRoom = true;
+        } else if (sourcePersona) {
+            const personaCopy = cloneRoomSnapshot(sourcePersona);
+            personaCopy.conversationLabel = branchTitle;
+            personaCopy.timelineBranch = branchInfo;
+            personaCopy.soul = branchMemoryEntriesAt(personaCopy.soul, includedMessageIds);
+            personaCopy.memories = branchMemoryEntriesAt(personaCopy.memories, includedMessageIds);
+            personaCopy.lastMemorySummaryUserMessageCount = prefix.filter(message => message.role === 'user').length;
+            branchConversationKey = await memoryManager.saveCustomPersonaCopy(personaCopy);
+        }
+
+        if (!branchConversationKey) throw new Error('無法建立分支對話。');
+        memoryManager.setChatHistory(branchConversationKey, [...prefix, marker], true);
+        renderPersonaList();
+        startChat(branchConversationKey, null, 'push');
+        messageInput.value = branchPoint.content.attachments?.length
+            && branchPointText.trim() === '請查看附件。'
+            ? ''
+            : branchPointText;
+        resetMessageInput();
+        updateSendButtonState();
+        window.requestAnimationFrame(() => {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            if (window.matchMedia('(min-width: 769px)').matches) {
+                messageInput.focus();
+                messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+            }
+        });
+    } catch (error) {
+        if (branchConversationKey) {
+            memoryManager.deleteChatHistory(branchConversationKey);
+            if (createdRoom) roomManager.deleteRoom(branchConversationKey);
+            else memoryManager.deleteCustomPersona(branchConversationKey);
+        }
+        console.error('Unable to create timeline branch:', error);
+        alert(error instanceof Error ? `建立時間線分支失敗：${error.message}` : '建立時間線分支失敗。');
+    }
+};
+
 const recallUserMessage = async (messageId: string) => {
+    closeMessageActions();
     if (!currentConversationKey) return;
     const conversationKey = currentConversationKey;
     const history = memoryManager.getChatHistory(conversationKey);
@@ -7173,7 +7366,7 @@ const normalizedParticipantName = (value: string) => value
 
 const findStoredPersonaForNpc = (name: string, excludedKey?: string) => (
     Object.entries(memoryManager.getAllPersonas()).find(([key, persona]) => {
-        if (key === excludedKey || key === VENICE_ASSISTANT_PERSONA_KEY) return false;
+        if (key === excludedKey || key === VENICE_ASSISTANT_PERSONA_KEY || persona.timelineBranch) return false;
         const target = normalizedParticipantName(name);
         return normalizedParticipantName(persona.name) === target
             || normalizedParticipantName(persona.publicIdentity?.canonicalName || '') === target;
@@ -7870,15 +8063,57 @@ const appendMessage = (
             const recallButton = document.createElement('button');
             recallButton.type = 'button';
             recallButton.className = 'message-recall-button';
-            recallButton.title = '收回訊息';
-            recallButton.setAttribute('aria-label', '收回這則訊息');
+            recallButton.title = '訊息選項';
+            recallButton.setAttribute('aria-label', '開啟訊息選項');
+            recallButton.setAttribute('aria-haspopup', 'menu');
+            recallButton.setAttribute('aria-expanded', 'false');
             recallButton.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m7 10 5 5 5-5"></path></svg>';
-            recallButton.addEventListener('click', event => {
+
+            const actionMenu = document.createElement('div');
+            actionMenu.className = 'message-action-menu hidden';
+            actionMenu.setAttribute('role', 'menu');
+
+            const branchButton = document.createElement('button');
+            branchButton.type = 'button';
+            branchButton.className = 'message-action-item';
+            branchButton.setAttribute('role', 'menuitem');
+            branchButton.innerHTML = '<span class="message-action-icon">⑂</span><span><strong>從這句建立分支</strong><small>原對話保持不變</small></span>';
+            branchButton.addEventListener('click', event => {
+                event.preventDefault();
+                event.stopPropagation();
+                void createTimelineBranch(messageMeta.id!);
+            });
+
+            const recallAction = document.createElement('button');
+            recallAction.type = 'button';
+            recallAction.className = 'message-action-item is-danger';
+            recallAction.setAttribute('role', 'menuitem');
+            recallAction.innerHTML = '<span class="message-action-icon">↶</span><span><strong>收回訊息</strong><small>同時刪除這回合回覆</small></span>';
+            recallAction.addEventListener('click', event => {
                 event.preventDefault();
                 event.stopPropagation();
                 void recallUserMessage(messageMeta.id!);
             });
-            bubble.appendChild(recallButton);
+            actionMenu.append(branchButton, recallAction);
+
+            recallButton.addEventListener('click', event => {
+                event.preventDefault();
+                event.stopPropagation();
+                const shouldOpen = actionMenu.classList.contains('hidden');
+                closeMessageActions();
+                if (shouldOpen) {
+                    actionMenu.classList.remove('hidden');
+                    actionMenu.classList.remove('opens-up');
+                    recallButton.setAttribute('aria-expanded', 'true');
+                    openMessageActionMenu = actionMenu;
+                    window.requestAnimationFrame(() => {
+                        const menuRect = actionMenu.getBoundingClientRect();
+                        const containerRect = chatContainer.getBoundingClientRect();
+                        if (menuRect.bottom > containerRect.bottom - 8) actionMenu.classList.add('opens-up');
+                    });
+                }
+            });
+            bubble.append(recallButton, actionMenu);
         }
 
         messageWrapper.appendChild(bubble);
@@ -12413,6 +12648,7 @@ const collectParticipantTransferCandidates = () => {
         if (
             key === VENICE_ASSISTANT_PERSONA_KEY
             || persona.gender !== 'female'
+            || Boolean(persona.timelineBranch)
             || excludedKeys.has(key)
             || excludedIdentities.has(identity)
         ) return;
@@ -12425,7 +12661,7 @@ const collectParticipantTransferCandidates = () => {
         });
     });
 
-    roomManager.getRooms().forEach(room => {
+    roomManager.getRooms().filter(room => !room.timelineBranch).forEach(room => {
         room.members.forEach(member => {
             const sourcePersonaKey = member.privatePersonaKey || member.sourcePersonaKey;
             const sourcePersona = sourcePersonaKey ? memoryManager.getPersona(sourcePersonaKey) : undefined;
@@ -13160,7 +13396,12 @@ const renderCreateGroupMembers = () => {
     const targetRoom = groupModalTargetRoomId ? roomManager.getRoom(groupModalTargetRoomId) : null;
     const existingKeys = new Set(targetRoom?.members.map(member => member.sourcePersonaKey).filter(Boolean));
     Object.entries(memoryManager.getAllPersonas()).forEach(([key, persona]) => {
-        if (key === VENICE_ASSISTANT_PERSONA_KEY || persona.gender !== 'female' || existingKeys.has(key)) return;
+        if (
+            key === VENICE_ASSISTANT_PERSONA_KEY
+            || persona.gender !== 'female'
+            || persona.timelineBranch
+            || existingKeys.has(key)
+        ) return;
         const label = document.createElement('label');
         label.className = 'create-group-member-option';
         const checkbox = document.createElement('input');
@@ -13866,7 +14107,11 @@ const setupEventListeners = () => {
             const conversationKey = currentConversationKey;
             if (confirm(`確定要清除 ${currentRoom?.title || currentPersona.name} 的對話記錄嗎？`)) {
                 if (characterPhotoRequestController) characterPhotoRequestController.abort();
-                await deleteCharacterPhotoAssetsForHistory(memoryManager.getChatHistory(conversationKey));
+                const history = memoryManager.getChatHistory(conversationKey);
+                await Promise.all([
+                    deleteCharacterPhotoAssetsForHistory(history, conversationKey),
+                    deleteChatAttachmentAssetsForHistory(history, conversationKey),
+                ]);
                 memoryManager.clearChatHistory(conversationKey);
                 startChat(conversationKey);
             }

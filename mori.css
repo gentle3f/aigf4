@@ -674,6 +674,84 @@ body.app-body {
     stroke-width: 2;
 }
 
+.message-action-menu {
+    position: absolute;
+    top: 29px;
+    right: 3px;
+    z-index: 24;
+    display: flex;
+    width: 220px;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid rgba(84, 101, 111, 0.13);
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 8px 26px rgba(11, 20, 26, 0.2);
+    color: var(--mori-ink);
+    white-space: normal;
+}
+
+.message-action-menu.hidden {
+    display: none;
+}
+
+.message-action-menu.opens-up {
+    top: auto;
+    bottom: 29px;
+}
+
+.message-action-item {
+    display: grid;
+    grid-template-columns: 28px 1fr;
+    gap: 7px;
+    align-items: center;
+    padding: 10px 11px;
+    text-align: left;
+    background: #fff;
+}
+
+.message-action-item + .message-action-item {
+    border-top: 1px solid #edf0f2;
+}
+
+.message-action-item:hover,
+.message-action-item:focus-visible {
+    background: #f4f7f8;
+}
+
+.message-action-item:active {
+    transform: scale(0.985);
+    background: #e9edef;
+}
+
+.message-action-item span:last-child {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+}
+
+.message-action-item strong {
+    font-size: 0.86rem;
+    font-weight: 650;
+}
+
+.message-action-item small {
+    margin-top: 1px;
+    color: #667781;
+    font-size: 0.68rem;
+}
+
+.message-action-icon {
+    color: var(--mori-green-dark);
+    text-align: center;
+    font-size: 1.2rem;
+}
+
+.message-action-item.is-danger .message-action-icon,
+.message-action-item.is-danger strong {
+    color: #c74343;
+}
+
 .emoji-picker {
     position: absolute !important;
     right: 10px !important;
