@@ -3,7 +3,7 @@ type NpcHistoryMessage = {
     content: { text?: string };
 };
 
-const LATIN_NAME = "[A-Za-z][A-Za-z'’-]{1,24}(?:\\s+[A-Za-z][A-Za-z'’-]{1,24})?";
+const LATIN_NAME = "[\\p{Script=Latin}][\\p{Script=Latin}'’-]{1,24}(?:\\s+[\\p{Script=Latin}][\\p{Script=Latin}'’-]{1,24})?";
 const HAN_NAME = '[\\p{Script=Han}]{2,8}';
 const SHORT_HAN_NAME = '[\\p{Script=Han}]{2,4}';
 const NAME_CAPTURE = `(${LATIN_NAME}|${HAN_NAME})`;
@@ -139,8 +139,9 @@ export const collectEstablishedNpcNames = (
 };
 
 const hasNpcPromotionIntent = (text: string) => [
-    /(?:把|將|讓|叫|邀請|拉|加).{1,36}(?:加入|加進|拉進|邀請進|進入).{0,18}(?:這個|呢個|我們的|我哋個)?(?:聊天室|群組|對話|chat|group)/iu,
-    /(?:把|將|讓|叫|邀請|拉|加).{1,36}(?:加入|加進|拉進|邀請進|進入)(?:來|嚟|吧|啦|喇|先)?[。！？!?\s]*$/iu,
+    /(?:把|將|讓|叫|邀請|拉|加).{1,36}(?:加入|加進|加到|拉進|拉到|邀請進|邀請到|進入).{0,18}(?:這個|呢個|我們的|我哋個)?(?:聊天室|群組|對話|chat|group)/iu,
+    /(?:把|將|讓|叫|邀請|拉|加).{1,36}(?:加入|加進|加到|拉進|拉到|邀請進|邀請到|進入)(?:來|嚟|吧|啦|喇|先)?[。！？!?\s]*$/iu,
+    /(?:邀請|加|拉).{1,36}(?:到|入|進)\s*(?:這個|呢個|我們的|我哋個)?(?:聊天室|群組|對話|chat|group)/iu,
     /(?:聊天室|群組|group\s*chat|chatroom).{0,24}(?:加入|加進|拉進|邀請|add|invite)/iu,
     /\b(?:add|invite|bring)\b.{1,48}\b(?:to|into)\b.{0,18}\b(?:this\s+|our\s+)?(?:chat|group|chatroom)\b/iu,
     /^\s*(?:please\s+)?(?:add|invite)\s+\S+/iu,
@@ -157,8 +158,8 @@ export const inferNpcPromotionNames = (
         text.toLocaleLowerCase().includes(name.toLocaleLowerCase())
     ));
     const patterns = [
-        new RegExp(`(?:把|將|讓|叫|邀請)\\s*[「『"']?${NAME_CAPTURE}[」』"']?\\s*(?:加入|加進|拉進|邀請進|進入)`, 'giu'),
-        new RegExp(`(?:加入|加進|拉進|邀請)\\s*[「『"']?${NAME_CAPTURE}[」』"']?(?:\\s*(?:到|入|進))?\\s*(?:這個|呢個|我們的|我哋個)?(?:聊天室|群組|對話|chat|group)`, 'giu'),
+        new RegExp(`(?:把|將|讓|叫|邀請)\\s*[「『"']?${NAME_CAPTURE}[」』"']?\\s*(?:加入|加進|加到|拉進|拉到|邀請進|邀請到|進入)`, 'giu'),
+        new RegExp(`(?:加入|加進|加到|拉進|拉到|邀請|加)\\s*[「『"']?${NAME_CAPTURE}[」』"']?(?:\\s*(?:到|入|進))?\\s*(?:這個|呢個|我們的|我哋個)?(?:聊天室|群組|對話|chat|group)`, 'giu'),
         new RegExp(`\\b(?:add|invite|bring)\\s+(${LATIN_NAME})(?=\\s+(?:to|into)\\s+(?:this\\s+|our\\s+)?(?:chat|group|chatroom)\\b)`, 'giu'),
         new RegExp(`^\\s*(?:please\\s+)?(?:add|invite)\\s+(${LATIN_NAME})\\s*[.!！。]?\\s*$`, 'giu'),
     ];

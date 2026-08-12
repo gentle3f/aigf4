@@ -30,6 +30,8 @@ test('accepts labelled third-party speech without requiring fancy quotes', () =>
 
 test('only promotes an NPC when the user explicitly asks to add them to the chat', () => {
     assert.deepEqual(inferNpcPromotionNames('把 Jennie 加入這個聊天室', 'IU', ['Jennie']), ['Jennie']);
+    assert.deepEqual(inferNpcPromotionNames('把rose加到這個群組', 'Jennie', []), ['rose']);
+    assert.deepEqual(inferNpcPromotionNames('邀請 Rosé 到這個聊天室', 'Jennie', []), ['Rosé']);
     assert.deepEqual(inferNpcPromotionNames('add Irene to this chat', 'IU', ['Jennie', 'Irene']), ['Irene']);
     assert.deepEqual(inferNpcPromotionNames('把她加入群組啦', 'IU', ['Jennie']), ['Jennie']);
     assert.deepEqual(inferNpcPromotionNames('我們見到 Peter，一齊去打招呼', 'IU', ['Peter']), []);

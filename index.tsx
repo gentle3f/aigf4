@@ -7165,7 +7165,11 @@ const updateNpcProposal = (
     return found.message.content.npcProposal;
 };
 
-const normalizedParticipantName = (value: string) => value.trim().toLocaleLowerCase();
+const normalizedParticipantName = (value: string) => value
+    .trim()
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLocaleLowerCase();
 
 const findStoredPersonaForNpc = (name: string, excludedKey?: string) => (
     Object.entries(memoryManager.getAllPersonas()).find(([key, persona]) => {
@@ -7292,7 +7296,7 @@ const buildNpcMemberPersona = (
     ].filter(Boolean).join('\n');
 
     return {
-        name: storedPersona?.name || proposal.name,
+        name: storedPersona?.name || identity?.canonicalName || proposal.name,
         emoji: storedPersona?.emoji || (proposal.gender === 'male' ? '◆' : '🌼'),
         gender: storedPersona?.gender || proposal.gender,
         description: storedPersona?.description || observedDraft?.description || proposal.description,
@@ -11404,19 +11408,19 @@ const buildNpcObservationEvidence = (
         .slice(-NPC_OBSERVATION_EVIDENCE_LIMIT);
 };
 
-const createSingleChatNpcPromotionProposal = (
+const createExplicitNpcPromotionProposal = (
     conversationKey: string,
     persona: Persona,
     text: string,
 ): NonNullable<Content['npcProposal']> | null => {
-    if (currentRoom) return null;
     const history = memoryManager.peekChatHistory(conversationKey);
     const establishedNames = collectEstablishedNpcNames(history, persona.name, text);
     const name = inferNpcPromotionNames(text, persona.name, establishedNames)[0];
     if (!name) return null;
     const normalizedName = normalizedParticipantName(name);
-    const linkedRoom = roomManager.getRooms().find(room => room.legacySourcePersonaKey === conversationKey);
-    const alreadyFixed = linkedRoom?.members.some(member => (
+    const targetRoom = currentRoom
+        || roomManager.getRooms().find(room => room.legacySourcePersonaKey === conversationKey);
+    const alreadyFixed = targetRoom?.members.some(member => (
         normalizedParticipantName(member.persona.name) === normalizedName
         || normalizedParticipantName(member.persona.publicIdentity?.canonicalName || '') === normalizedName
     ));
@@ -11429,11 +11433,24 @@ const createSingleChatNpcPromotionProposal = (
     if (alreadyHandled) return null;
 
     const storedPersonaEntry = findStoredPersonaForNpc(name, conversationKey);
+    const contextualIdentityNames = (targetRoom?.members || [])
+        .flatMap(member => member.persona.publicIdentityEnabled && member.persona.publicIdentity
+            ? [member.persona.publicIdentity.canonicalName]
+            : [])
+        .filter(identityName => normalizedParticipantName(identityName) !== normalizedName)
+        .slice(0, 3);
     return {
         id: crypto.randomUUID?.() || `npc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         name: storedPersonaEntry?.[1].name || name,
         gender: storedPersonaEntry?.[1].gender || inferNpcPromotionGender(text),
-        description: buildNpcPromotionDescription(conversationKey, name, text, storedPersonaEntry?.[1]),
+        description: storedPersonaEntry
+            ? buildNpcPromotionDescription(conversationKey, name, text, storedPersonaEntry[1])
+            : targetRoom
+                ? `${name} 是由使用者明確邀請加入「${targetRoom.title}」的新固定成員。確認後會從目前場景及最近對話建立獨立人格、soul.md 與 memory.md。`
+                : buildNpcPromotionDescription(conversationKey, name, text),
+        publicFigureQuery: contextualIdentityNames.length > 0
+            ? `${name} ${contextualIdentityNames.join(' ')}`
+            : undefined,
         requestText: text,
         detectionSource: 'explicit',
         status: 'pending',
@@ -11625,11 +11642,10 @@ const sendMessage = async ({
     }
     if (
         !assistantMode
-        && !currentRoom
         && !characterPhotoRequest
         && attachmentBundle.attachments.length === 0
     ) {
-        const npcPromotion = createSingleChatNpcPromotionProposal(conversationKey, persona, userMessage);
+        const npcPromotion = createExplicitNpcPromotionProposal(conversationKey, persona, userMessage);
         if (npcPromotion) {
             const systemContent: Content = { npcProposal: npcPromotion };
             memoryManager.addMessage(conversationKey, 'system', systemContent);
