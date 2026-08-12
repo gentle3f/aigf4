@@ -41,6 +41,35 @@ export interface VeniceTextGenerationResult {
   finishReason?: string | null;
 }
 
+const STRUCTURED_OUTPUT_JSON_INSTRUCTION = 'Return only one valid JSON object matching the requested response schema.';
+
+const messageMentionsJson = (message: VeniceMessage) => {
+  if (typeof message.content === 'string') return /json/iu.test(message.content);
+  return message.content.some(part => part.type === 'text' && /json/iu.test(part.text));
+};
+
+export const ensureStructuredOutputJsonInstruction = (
+  messages: VeniceMessage[],
+  responseFormat?: VeniceJsonSchemaResponseFormat,
+): VeniceMessage[] => {
+  if (!responseFormat || messages.some(messageMentionsJson)) return messages;
+
+  const systemIndex = messages.findIndex(message => message.role === 'system');
+  if (systemIndex < 0) {
+    return [{ role: 'system', content: STRUCTURED_OUTPUT_JSON_INSTRUCTION }, ...messages];
+  }
+
+  return messages.map((message, index) => {
+    if (index !== systemIndex) return message;
+    return {
+      ...message,
+      content: typeof message.content === 'string'
+        ? `${message.content}\n\n${STRUCTURED_OUTPUT_JSON_INSTRUCTION}`
+        : [...message.content, { type: 'text' as const, text: STRUCTURED_OUTPUT_JSON_INSTRUCTION }],
+    };
+  });
+};
+
 interface VeniceChatChoice {
   message?: {
     content?: string | null;
@@ -100,30 +129,32 @@ export interface VeniceModelSummary {
 
 export const VENICE_AUTH_REQUIRED_ERROR = 'VENICE_AUTH_REQUIRED';
 
+const VITE_ENV = (import.meta.env || {}) as ImportMetaEnv;
+
 export const VENICE_API_BASE =
-  import.meta.env.VITE_VENICE_API_BASE || '/api/venice-chat';
+  VITE_ENV.VITE_VENICE_API_BASE || '/api/venice-chat';
 export const VENICE_MODELS_API_BASE =
-  import.meta.env.VITE_VENICE_MODELS_API_BASE ||
+  VITE_ENV.VITE_VENICE_MODELS_API_BASE ||
   (VENICE_API_BASE.startsWith('/') ? '/api/venice-models' : `${VENICE_API_BASE}/models`);
-export const VENICE_API_KEY = import.meta.env.DEV
-  ? import.meta.env.VITE_VENICE_API_KEY || ''
+export const VENICE_API_KEY = VITE_ENV.DEV
+  ? VITE_ENV.VITE_VENICE_API_KEY || ''
   : '';
 export const VENICE_CHAT_MODEL =
-  import.meta.env.VITE_VENICE_CHAT_MODEL || 'qwen-3-6-plus';
+  VITE_ENV.VITE_VENICE_CHAT_MODEL || 'qwen-3-6-plus';
 export const VENICE_CHAT_QUALITY_FALLBACK_MODEL =
-  import.meta.env.VITE_VENICE_CHAT_QUALITY_FALLBACK_MODEL || 'gemma-4-uncensored';
+  VITE_ENV.VITE_VENICE_CHAT_QUALITY_FALLBACK_MODEL || 'gemma-4-uncensored';
 export const VENICE_CC_MODEL =
-  import.meta.env.VITE_VENICE_CC_MODEL || 'qwen-3-6-plus';
+  VITE_ENV.VITE_VENICE_CC_MODEL || 'qwen-3-6-plus';
 export const VENICE_CHAT_FALLBACK_MODEL =
-  import.meta.env.VITE_VENICE_CHAT_FALLBACK_MODEL || 'venice-uncensored-1-2';
+  VITE_ENV.VITE_VENICE_CHAT_FALLBACK_MODEL || 'venice-uncensored-1-2';
 export const VENICE_GOD_MODEL =
-  import.meta.env.VITE_VENICE_GOD_MODEL || 'google-gemma-4-31b-it';
+  VITE_ENV.VITE_VENICE_GOD_MODEL || 'google-gemma-4-31b-it';
 export const VENICE_GOD_FALLBACK_MODEL =
-  import.meta.env.VITE_VENICE_GOD_FALLBACK_MODEL || 'zai-org-glm-4.7-flash';
+  VITE_ENV.VITE_VENICE_GOD_FALLBACK_MODEL || 'zai-org-glm-4.7-flash';
 export const VENICE_ASSISTANT_MODEL =
-  import.meta.env.VITE_VENICE_ASSISTANT_MODEL || 'venice-uncensored-1-2';
+  VITE_ENV.VITE_VENICE_ASSISTANT_MODEL || 'venice-uncensored-1-2';
 export const VENICE_VIDEO_PROMPT_MODEL =
-  import.meta.env.VITE_VENICE_VIDEO_PROMPT_MODEL || 'olafangensan-glm-4.7-flash-heretic';
+  VITE_ENV.VITE_VENICE_VIDEO_PROMPT_MODEL || 'olafangensan-glm-4.7-flash-heretic';
 
 const REQUEST_HEADERS = (): HeadersInit => {
   const headers: HeadersInit = {
@@ -206,6 +237,7 @@ export async function generateVeniceText(
   const endpoint = VENICE_API_BASE.startsWith('/')
     ? VENICE_API_BASE
     : `${VENICE_API_BASE}/chat/completions`;
+  const requestMessages = ensureStructuredOutputJsonInstruction(messages, responseFormat);
 
   const response = await fetchJson<VeniceChatResponse>(endpoint, {
     method: 'POST',
@@ -213,7 +245,7 @@ export async function generateVeniceText(
     signal,
     body: JSON.stringify({
       model,
-      messages,
+      messages: requestMessages,
       temperature,
       top_p: topP,
       repetition_penalty: repetitionPenalty,

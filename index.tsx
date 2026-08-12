@@ -7196,6 +7196,7 @@ const analyzeObservedNpcPersona = async (
                     'Create a vivid independent persona that can keep developing naturally and respond to user direction without becoming generic, instantly obedient or trapped replaying the sampled lines.',
                     'soul entries hold durable identity, voice, relationship anchors, values and boundaries. memory entries hold concrete events, promises, preferences and emotional moments already experienced.',
                     'Do not copy long dialogue verbatim. Write concise Traditional Chinese, while preserving Hong Kong Cantonese, Taiwan Mandarin or another established regional voice accurately when evidence supports it.',
+                    'Return only one valid JSON object that matches the requested response schema.',
                 ].join('\n'),
             },
             {
