@@ -488,8 +488,11 @@ const personaPublicIdentitySummary = document.getElementById('persona-public-ide
 const personaPublicIdentityVisual = document.getElementById('persona-public-identity-visual') as HTMLTextAreaElement;
 const personaPublicIdentitySource = document.getElementById('persona-public-identity-source') as HTMLAnchorElement;
 const recheckPublicIdentityBtn = document.getElementById('recheck-public-identity-btn') as HTMLButtonElement;
+const publicFigureCreateBtn = document.getElementById('public-figure-create-btn') as HTMLButtonElement;
 const mimicImportBtn = document.getElementById('mimic-import-btn') as HTMLButtonElement;
 const mimicImportModal = document.getElementById('mimic-import-modal')!;
+const mimicModalTitle = document.getElementById('mimic-modal-title')!;
+const mimicModalDescription = document.getElementById('mimic-modal-description')!;
 const closeMimicImportModal = document.getElementById('close-mimic-import-modal')!;
 const cancelMimicImportBtn = document.getElementById('cancel-mimic-import')!;
 const runMimicAnalysisBtn = document.getElementById('run-mimic-analysis') as HTMLButtonElement;
@@ -501,12 +504,15 @@ const pickMimicAvatarBtn = document.getElementById('pick-mimic-avatar-btn') as H
 const mimicAvatarPreview = document.getElementById('mimic-avatar-preview')!;
 const mimicAvatarStatus = document.getElementById('mimic-avatar-status')!;
 const mimicModeTranscriptBtn = document.getElementById('mimic-mode-transcript-btn') as HTMLButtonElement;
+const mimicModePublicBtn = document.getElementById('mimic-mode-public-btn') as HTMLButtonElement;
 const mimicModeManualBtn = document.getElementById('mimic-mode-manual-btn') as HTMLButtonElement;
 const mimicRandomCompleteBtn = document.getElementById('mimic-random-complete-btn') as HTMLButtonElement;
 const mimicNameInput = document.getElementById('mimic-name-input') as HTMLInputElement;
 const mimicPublicIdentityCheckbox = document.getElementById('mimic-public-identity-checkbox') as HTMLInputElement;
 const mimicPublicIdentityHint = document.getElementById('mimic-public-identity-hint')!;
 const mimicTranscriptSection = document.getElementById('mimic-transcript-section')!;
+const mimicPublicSection = document.getElementById('mimic-public-section')!;
+const mimicPublicSourceSummary = document.getElementById('mimic-public-source-summary')!;
 const mimicManualSection = document.getElementById('mimic-manual-section')!;
 const mimicManualRandomBtn = document.getElementById('mimic-manual-random-btn') as HTMLButtonElement;
 const mimicOccupationInput = document.getElementById('mimic-occupation-input') as HTMLInputElement;
@@ -670,6 +676,8 @@ let mimicAvatarDataUrl: string | null = null;
 let mimicDraftPersona: MimicPersonaDraft | null = null;
 let isMimicAnalysisRunning = false;
 let mimicBuildMode: MimicBuildMode = 'transcript';
+let mimicPublicIdentityResolution: PublicIdentityResolution | null = null;
+let mimicPublicIdentityQuery = '';
 let publicIdentityCandidates: PublicIdentityCandidate[] = [];
 let selectedPublicIdentityCandidate: PublicIdentityCandidate | null = null;
 let publicIdentityMedia: PublicIdentityMedia[] = [];
@@ -814,7 +822,7 @@ type AppHistoryState =
     | { view: 'chat'; conversationKey: string; personaKey?: string }
     | { view: 'image' }
     | { view: 'video' };
-type MimicBuildMode = 'transcript' | 'manual';
+type MimicBuildMode = 'transcript' | 'public' | 'manual';
 type ChatMode = 'character' | 'assistant' | 'god' | 'photo' | 'event';
 type ActiveChatRequest = {
     id: number;
@@ -930,9 +938,16 @@ type ManualPersonaSeed = {
     notes: string;
 };
 
+type PublicPersonaSeed = {
+    displayName: string;
+    notes: string;
+    resolution: PublicIdentityResolution;
+};
+
 type PublicIdentityResolution = {
     identity: PublicIdentity;
     avatarUrl?: string;
+    candidate?: PublicIdentityCandidate;
 };
 
 type TranscriptReadResult = {
@@ -1109,21 +1124,48 @@ const applyMimicModeButtonState = (button: HTMLButtonElement, active: boolean) =
 
 const updateMimicModeUI = () => {
     const isTranscriptMode = mimicBuildMode === 'transcript';
+    const isPublicMode = mimicBuildMode === 'public';
+    const isManualMode = mimicBuildMode === 'manual';
     mimicTranscriptSection.classList.toggle('hidden', !isTranscriptMode);
-    mimicManualSection.classList.toggle('hidden', isTranscriptMode);
+    mimicPublicSection.classList.toggle('hidden', !isPublicMode);
+    mimicManualSection.classList.toggle('hidden', !isManualMode);
     applyMimicModeButtonState(mimicModeTranscriptBtn, isTranscriptMode);
-    applyMimicModeButtonState(mimicModeManualBtn, !isTranscriptMode);
-    runMimicAnalysisBtn.textContent = isTranscriptMode ? '開始分析' : '生成角色草稿';
-    mimicNotesLabel.textContent = isTranscriptMode ? '補充要求（分析後再疊加）' : '補充要求 / 想要互動';
+    applyMimicModeButtonState(mimicModePublicBtn, isPublicMode);
+    applyMimicModeButtonState(mimicModeManualBtn, isManualMode);
+    mimicModalTitle.textContent = isPublicMode ? '搜尋公眾人物' : '新增角色';
+    mimicModalDescription.textContent = isPublicMode
+        ? '輸入名字、確認正確 Wikipedia 身份，再檢查 AI 根據公開資料整理的人格草稿。'
+        : '你可以從聊天紀錄分析、搜尋公眾人物，或手動指定完整設定，再生成可編輯的新角色。';
+    runMimicAnalysisBtn.textContent = isTranscriptMode
+        ? '開始分析'
+        : isPublicMode ? '搜尋並產生草稿' : '生成角色草稿';
+    mimicNotesLabel.textContent = isTranscriptMode
+        ? '補充要求（分析後再疊加）'
+        : isPublicMode ? '可選：你想調整的互動方向' : '補充要求 / 想要互動';
     mimicNotesInput.placeholder = isTranscriptMode
         ? '例如：保留她原本的害羞和台灣口氣，但更願意聽我的命令；不要把香港和台灣語感混在一起。'
-        : '例如：請保留她原本的公眾形象，但私下對我更偏心；慢熱、會嘴硬一下，不要太快變成制式情話。';
+        : isPublicMode
+            ? '例如：保留她的公眾形象與原有節奏，但私下對我較放鬆；不要太快變成制式情話。'
+            : '例如：請保留她原本的公眾形象，但私下對我更偏心；慢熱、會嘴硬一下，不要太快變成制式情話。';
+    mimicResultEmpty.textContent = isPublicMode
+        ? '確認正確人物後，這裡會顯示 AI 依 Wikipedia 身份資料與公開形象推斷的人格、日常狀態、語氣及戀愛互動草稿。所有欄位都可在儲存前修改。'
+        : '這裡會先顯示 AI 抓到的原始人格、行為習慣、語氣節奏、地區語感和被要求時的反應，讓你先確認像不像本人，再往下微調成戀愛版角色。';
+
+    if (isPublicMode) {
+        mimicPublicIdentityCheckbox.checked = true;
+        mimicPublicIdentityCheckbox.disabled = true;
+        mimicPublicIdentityHint.textContent = '此模式會先讓你確認正確 Wikipedia 條目，再建立可編輯的人格草稿。';
+    } else {
+        mimicPublicIdentityCheckbox.disabled = false;
+    }
 
     if (!isMimicAnalysisRunning) {
         setMimicAnalysisStatus(
             isTranscriptMode
                 ? '選好檔案後就可以開始分析。'
-                : '填好名字後就能直接生成角色草稿；沒有靈感時可先按「隨機角色設定」。',
+                : isPublicMode
+                    ? '輸入公眾人物名字後，按「搜尋並產生草稿」。'
+                    : '填好名字後就能直接生成角色草稿；沒有靈感時可先按「隨機角色設定」。',
         );
     }
 };
@@ -1131,6 +1173,11 @@ const updateMimicModeUI = () => {
 const setMimicBuildMode = (mode: MimicBuildMode) => {
     mimicBuildMode = mode;
     mimicDraftPersona = null;
+    if (mode !== 'public') {
+        mimicPublicIdentityResolution = null;
+        mimicPublicIdentityQuery = '';
+        mimicPublicSourceSummary.textContent = '尚未確認身份。按下「搜尋並產生草稿」後會開啟搜尋結果。';
+    }
     resetMimicDraftEditors();
     saveMimicPersonaBtn.disabled = true;
     updateMimicModeUI();
@@ -1168,9 +1215,12 @@ const getManualPersonaSeed = (): ManualPersonaSeed => ({
 });
 
 const renderMimicAvatarPreview = () => {
-    if (mimicAvatarDataUrl) {
-        mimicAvatarPreview.innerHTML = `<img src="${mimicAvatarDataUrl}" alt="Mimic avatar" class="h-full w-full object-cover">`;
-        mimicAvatarStatus.textContent = '已選擇頭像，儲存後會直接套用。';
+    const avatarUrl = mimicAvatarDataUrl || mimicPublicIdentityResolution?.avatarUrl;
+    if (avatarUrl) {
+        mimicAvatarPreview.innerHTML = `<img src="${avatarUrl}" alt="角色頭像" class="h-full w-full object-cover">`;
+        mimicAvatarStatus.textContent = mimicAvatarDataUrl
+            ? '已選擇自訂頭像，儲存後會直接套用。'
+            : '已選擇 Wikipedia 代表圖片；也可以換成自己的頭像。';
         return;
     }
 
@@ -1254,6 +1304,8 @@ const resetMimicImportState = () => {
     mimicDraftPersona = null;
     isMimicAnalysisRunning = false;
     mimicBuildMode = 'transcript';
+    mimicPublicIdentityResolution = null;
+    mimicPublicIdentityQuery = '';
     mimicNameInput.value = '';
     mimicPublicIdentityCheckbox.checked = false;
     mimicPublicIdentityHint.textContent = '儲存新角色前會先搜尋並讓你確認身份，也可為虛構角色選擇代表圖片。';
@@ -1265,6 +1317,7 @@ const resetMimicImportState = () => {
     mimicAvatarInput.value = '';
     mimicTranscriptStatus.textContent = '尚未選擇檔案。支援 `.txt`、`.md`、`.json`、`.log`、`.csv`、`.zip`。';
     mimicTranscriptMeta.textContent = '長紀錄會先辨識聊天格式與說話者，再自動切段分析，最後合成成一個角色草稿。';
+    mimicPublicSourceSummary.textContent = '尚未確認身份。按下「搜尋並產生草稿」後會開啟搜尋結果。';
     renderMimicAvatarPreview();
     resetMimicDraftEditors();
     updateMimicModeUI();
@@ -1289,6 +1342,7 @@ const setMimicBusyState = (isBusy: boolean) => {
     pickMimicTranscriptBtn.disabled = isBusy;
     pickMimicAvatarBtn.disabled = isBusy;
     mimicModeTranscriptBtn.disabled = isBusy;
+    mimicModePublicBtn.disabled = isBusy;
     mimicModeManualBtn.disabled = isBusy;
     mimicRandomCompleteBtn.disabled = isBusy;
     mimicManualRandomBtn.disabled = isBusy;
@@ -2420,6 +2474,7 @@ const confirmSelectedPublicIdentity = async () => {
         closePublicIdentityResolution({
             identity,
             avatarUrl: selectedPublicIdentityMedia?.thumbnailUrl,
+            candidate,
         });
     } catch (error) {
         const message = error instanceof Error ? error.message : '身份資料整理失敗。';
@@ -2558,6 +2613,71 @@ const buildManualPersonaSynthesisPrompt = (seed: ManualPersonaSeed) => {
     return sections.filter(Boolean).join('\n\n');
 };
 
+const buildPublicPersonaFallbackAnalysis = (seed: PublicPersonaSeed): MimicAnalysisSummary => {
+    const sourceSummary = seed.resolution.identity.summary || seed.resolution.candidate?.extract || '公開資料有限';
+    return {
+        personality: `依公開資料與公眾形象推斷：${sourceSummary}`,
+        behavior: sourceSummary,
+        usualSelf: `以「${seed.resolution.identity.canonicalName}」的公開身份、工作與已知經歷作為日常狀態基礎。`,
+        withUserSelf: seed.notes || '戀愛互動層屬角色模擬，可較公開場合放鬆、親近，但仍保留辨識度。',
+        romanceStyle: '以公眾形象為核心，再自然延伸成慢慢建立信任與親密感的戀愛互動。',
+        tone: '依已確認身份與公開形象推斷；沒有可靠資料的語氣特徵不會當成事實。',
+        regionality: `依 Wikipedia 條目所示的國家、地區及語言背景處理，不混淆香港、台灣、中國大陸、韓國、日本等文化語感。`,
+        commandResponse: seed.notes || '會理解並配合使用者的要求，但先以角色本身的節奏、態度與情緒作出自然反應。',
+    };
+};
+
+const buildPublicPersonaSynthesisPrompt = (seed: PublicPersonaSeed) => {
+    const { identity, candidate } = seed.resolution;
+    const sourceProfile = candidate?.extract?.trim().slice(0, 7000) || identity.summary;
+    return [
+        'You create an editable romance-chat character draft for one user-confirmed public identity.',
+        `User display name: ${seed.displayName}`,
+        `Confirmed canonical identity: ${identity.canonicalName}`,
+        `Identity type: ${identity.kind}`,
+        `Wikipedia title: ${identity.sourceTitle}`,
+        `Wikipedia language: ${identity.sourceLanguage}`,
+        candidate?.description ? `Public description: ${candidate.description}` : '',
+        `Verified public summary: ${identity.summary}`,
+        `Wikipedia introduction:\n${sourceProfile}`,
+        `Source: ${identity.sourceUrl}`,
+        seed.notes ? `User-requested interaction adjustments:\n${seed.notes}` : '',
+        [
+            'Research and truthfulness rules:',
+            '- Treat the confirmed Wikipedia identity and supplied public material as the factual anchor.',
+            '- Separate documented facts from careful interpretation of the public-facing image. Never present inferred private personality, private relationships, secrets, diagnoses, or rumours as fact.',
+            '- For a real person, build a recognizable public-image simulation from profession, cultural background, career context, public manner and broadly known presentation. Personality and speaking style must be worded as an AI interpretation for this fictional chat character.',
+            '- For a fictional character, preserve canonical background, temperament, speech rhythm, world and original-medium identity where supported by the source.',
+            '- Keep nationality, region and language identity precise. Never merge Hong Kong, Taiwan and Mainland China, or flatten Korean and Japanese identities into generic East Asian traits.',
+            '- Do not invent exact catchphrases or claim to reproduce private speech. Create a natural Traditional Chinese conversational voice that remains compatible with the person\'s known cultural background.',
+            '- Avoid a generic celebrity, idol or flirt template. Give the character distinctive priorities, emotional pacing, habits, boundaries, humour and reactions grounded in the confirmed identity.',
+        ].join('\n'),
+        [
+            'Romance-chat adaptation rules:',
+            '- The final app character is an adult woman and is an explicitly fictionalized conversational simulation, not a claim about the real person\'s private feelings.',
+            '- Preserve the recognizable public persona first, then add a private relationship layer that can gradually become warmer, more trusting, affectionate and romantically responsive toward the user.',
+            '- The character should generally follow the user\'s direction, but react through her own confidence, shyness, wit, habits, pride, tenderness and pacing instead of complying like a blank assistant.',
+            '- She must sustain normal, fluent long-form conversation, react to the newest message, avoid repetitive loops and continue scenes coherently.',
+            '- Write every output field in natural Traditional Chinese. Do not output JSON, markdown headings or assistant commentary.',
+        ].join('\n'),
+        [
+            'Return only these XML tags:',
+            '<personality>2 to 4 concise sentences: core public-facing personality interpretation.</personality>',
+            '<behavior>2 to 4 concise sentences: public habits, work rhythm and likely reactions.</behavior>',
+            '<usual_self>2 to 4 concise sentences: ordinary public or daily self.</usual_self>',
+            '<with_user_self>2 to 4 concise sentences: fictionalized private self with the user.</with_user_self>',
+            '<romance_style>2 to 4 concise sentences: romance pacing, affection, teasing, jealousy and emotional safety.</romance_style>',
+            '<tone>2 to 4 concise sentences: wording, rhythm and emotional temperature.</tone>',
+            '<regionality>Precise cultural, language and regional guidance.</regionality>',
+            '<command_response>How she responds when the user asks, guides or pushes.</command_response>',
+            '<description>One concise character-list description.</description>',
+            '<prompt>A detailed, durable persona prompt containing factual identity, public persona interpretation, distinctive behavior, voice, regional identity, romance progression, command response and anti-repetition guidance.</prompt>',
+            '<greeting>A natural first greeting in character, without claiming a real private relationship already exists.</greeting>',
+            '<memory>Short internal notes preserving identity facts, public-image interpretation, cultural voice and relationship pacing.</memory>',
+        ].join('\n'),
+    ].filter(Boolean).join('\n\n');
+};
+
 const analyzeTranscriptChunk = async (
     chunk: string,
     targetName: string,
@@ -2623,6 +2743,73 @@ const runManualPersonaDraftGeneration = async () => {
     mimicResultPanel.classList.remove('hidden');
     saveMimicPersonaBtn.disabled = false;
     setMimicAnalysisStatus('角色草稿已生成，你可以先微調再儲存。', 'success');
+};
+
+const runPublicPersonaDraftGeneration = async () => {
+    const displayName = mimicNameInput.value.trim();
+    if (!displayName) {
+        throw new Error('請先輸入公眾人物名字。');
+    }
+
+    let resolution = mimicPublicIdentityQuery === displayName
+        ? mimicPublicIdentityResolution
+        : null;
+    if (!resolution) {
+        setMimicAnalysisStatus('正在搜尋 Wikipedia，請先確認正確人物...');
+        resolution = await requestPublicIdentityResolution(displayName);
+    }
+    if (!resolution) {
+        setMimicAnalysisStatus('身份確認已取消；尚未產生角色草稿。');
+        return;
+    }
+
+    mimicPublicIdentityResolution = resolution;
+    mimicPublicIdentityQuery = displayName;
+    mimicPublicIdentityCheckbox.checked = true;
+    mimicOccupationInput.value = resolution.candidate?.description || getPublicIdentityKindLabel(resolution.identity.kind);
+    mimicBackgroundInput.value = resolution.identity.summary;
+    mimicPublicSourceSummary.textContent = [
+        `已確認：${resolution.identity.canonicalName}`,
+        resolution.candidate?.description || resolution.identity.summary,
+        `來源：${resolution.identity.sourceTitle}`,
+    ].filter(Boolean).join('｜');
+    renderMimicAvatarPreview();
+
+    const seed: PublicPersonaSeed = {
+        displayName,
+        notes: mimicNotesInput.value.trim(),
+        resolution,
+    };
+    setMimicAnalysisStatus(`正在研究「${resolution.identity.canonicalName}」的公開形象並產生人格草稿...`);
+    const fallbackAnalysis = buildPublicPersonaFallbackAnalysis(seed);
+    const response = await runMimicModelCall(
+        [
+            { role: 'system', content: buildPublicPersonaSynthesisPrompt(seed) },
+            {
+                role: 'user',
+                content: '請根據上面的已確認公開資料，產生完整、鮮明、可長期對話的人格草稿。所有未證實的性格只能作為公眾形象推斷。',
+            },
+        ],
+        1300,
+    );
+    const draft = parseMimicPersonaDraftV2(response, fallbackAnalysis);
+    if (!draft) {
+        throw new Error('身份已確認，但這次沒有成功組出完整人格草稿，請再按一次重試。');
+    }
+
+    mimicDraftPersona = draft;
+    renderMimicAnalysisPreviewV2(
+        draft.analysis,
+        `來源：${resolution.identity.sourceTitle}（${resolution.identity.sourceLanguage.toUpperCase()} Wikipedia）｜身份：${resolution.identity.canonicalName}｜以下性格與語氣為 AI 依公開形象推斷，可在儲存前修改`,
+    );
+    mimicDescriptionEditor.value = draft.description;
+    mimicPromptEditor.value = draft.prompt;
+    mimicGreetingEditor.value = draft.greeting;
+    mimicMemoryEditor.value = draft.memory;
+    mimicResultEmpty.classList.add('hidden');
+    mimicResultPanel.classList.remove('hidden');
+    saveMimicPersonaBtn.disabled = false;
+    setMimicAnalysisStatus('人格草稿已完成。請先檢查右側內容；不符合的部分可直接修改，再儲存角色。', 'success');
 };
 
 const runMimicTranscriptAnalysis = async () => {
@@ -2818,19 +3005,23 @@ const saveMimicPersona = async () => {
         throw new Error('角色簡介、人格 Prompt、開場問候都需要有內容。');
     }
 
-    let publicIdentityResolution: PublicIdentityResolution | null = null;
+    let publicIdentityResolution = mimicPublicIdentityResolution;
     if (mimicPublicIdentityCheckbox.checked) {
-        mimicPublicIdentityHint.textContent = '正在搜尋公開身份，請在確認視窗選擇正確對象。';
-        const query = [
-            name,
-            mimicOccupationInput.value.trim(),
-            mimicBackgroundInput.value.trim(),
-        ].filter(Boolean).join(' ');
-        publicIdentityResolution = await requestPublicIdentityResolution(query);
         if (!publicIdentityResolution) {
-            mimicPublicIdentityHint.textContent = '身份確認已取消；角色尚未儲存。';
-            return false;
+            mimicPublicIdentityHint.textContent = '正在搜尋公開身份，請在確認視窗選擇正確對象。';
+            const query = [
+                name,
+                mimicOccupationInput.value.trim(),
+                mimicBackgroundInput.value.trim(),
+            ].filter(Boolean).join(' ');
+            publicIdentityResolution = await requestPublicIdentityResolution(query);
+            if (!publicIdentityResolution) {
+                mimicPublicIdentityHint.textContent = '身份確認已取消；角色尚未儲存。';
+                return false;
+            }
         }
+    } else {
+        publicIdentityResolution = null;
     }
 
     const key = memoryManager.saveCustomPersona({
@@ -2856,7 +3047,7 @@ const saveMimicPersona = async () => {
         prompt,
         greeting,
         memory,
-        avatarUrl: publicIdentityResolution?.avatarUrl || mimicAvatarDataUrl,
+        avatarUrl: mimicAvatarDataUrl || publicIdentityResolution?.avatarUrl,
         publicIdentityEnabled: Boolean(publicIdentityResolution),
         publicIdentity: publicIdentityResolution?.identity,
     });
@@ -3462,6 +3653,8 @@ const runMimicAnalysisFromModal = async () => {
     try {
         if (mimicBuildMode === 'manual') {
             await runManualPersonaDraftGeneration();
+        } else if (mimicBuildMode === 'public') {
+            await runPublicPersonaDraftGeneration();
         } else {
             await runMimicTranscriptAnalysisV2();
         }
@@ -14015,6 +14208,7 @@ const setupEventListeners = () => {
         }
     });
     
+    publicFigureCreateBtn.addEventListener('click', () => openMimicImportModal('public'));
     createPersonaBtn.addEventListener('click', () => openMimicImportModal('manual'));
     randomRecruitBtn.addEventListener('click', () => {
         void randomlyRecruitNewPersona();
@@ -14074,6 +14268,7 @@ const setupEventListeners = () => {
     uploadZipBtn.addEventListener('click', () => zipUploadInput.click());
     zipUploadInput.addEventListener('change', (e) => fileManager.handleZipUpload(e));
     mimicModeTranscriptBtn.addEventListener('click', () => setMimicBuildMode('transcript'));
+    mimicModePublicBtn.addEventListener('click', () => setMimicBuildMode('public'));
     mimicModeManualBtn.addEventListener('click', () => setMimicBuildMode('manual'));
     mimicRandomCompleteBtn.addEventListener('click', () => {
         hideMimicImportModalView();
@@ -14084,6 +14279,29 @@ const setupEventListeners = () => {
     pickMimicAvatarBtn.addEventListener('click', () => mimicAvatarInput.click());
     mimicTranscriptInput.addEventListener('change', handleMimicTranscriptUpload);
     mimicAvatarInput.addEventListener('change', handleMimicAvatarUpload);
+    mimicNameInput.addEventListener('input', () => {
+        if (
+            mimicBuildMode !== 'public'
+            || !mimicPublicIdentityResolution
+            || mimicNameInput.value.trim() === mimicPublicIdentityQuery
+        ) {
+            return;
+        }
+        mimicPublicIdentityResolution = null;
+        mimicPublicIdentityQuery = '';
+        mimicDraftPersona = null;
+        mimicPublicSourceSummary.textContent = '名字已變更；請重新搜尋並確認正確身份。';
+        resetMimicDraftEditors();
+        renderMimicAvatarPreview();
+        saveMimicPersonaBtn.disabled = true;
+        setMimicAnalysisStatus('名字已變更，請重新搜尋並產生人格草稿。');
+    });
+    mimicNameInput.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && mimicBuildMode === 'public' && !isMimicAnalysisRunning) {
+            event.preventDefault();
+            void runMimicAnalysisFromModal();
+        }
+    });
     closeMimicImportModal.addEventListener('click', hideMimicImportModalView);
     cancelMimicImportBtn.addEventListener('click', hideMimicImportModalView);
     runMimicAnalysisBtn.addEventListener('click', () => {

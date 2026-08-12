@@ -85,6 +85,7 @@
             </main>
             <p id="random-recruit-status" class="hidden random-recruit-status" role="status" aria-live="polite"></p>
             <div id="new-chat-menu" class="new-chat-menu hidden">
+                <button id="public-figure-create-btn" type="button"><span>⌕</span>搜尋公眾人物</button>
                 <button id="mimic-import-btn" type="button"><span>⇧</span>從聊天紀錄建立</button>
                 <button id="create-persona-btn" type="button"><span>✎</span>手動建立角色</button>
                 <button id="random-recruit-btn" type="button"><span>✦</span>隨機生成角色</button>
@@ -1012,8 +1013,8 @@
         <div class="bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-full max-w-4xl mx-4 max-h-[92vh] flex flex-col">
             <div class="p-5 border-b border-gray-700 flex justify-between items-start gap-4">
                 <div>
-                    <h2 class="text-2xl font-bold text-white">新增角色</h2>
-                    <p class="text-sm text-gray-400 mt-1">你可以從聊天紀錄分析，也可以直接手動指定名字、職業、背景、人格與互動風格，再生成可編輯的新角色。</p>
+                    <h2 id="mimic-modal-title" class="text-2xl font-bold text-white">新增角色</h2>
+                    <p id="mimic-modal-description" class="text-sm text-gray-400 mt-1">你可以從聊天紀錄分析、搜尋公眾人物，或手動指定完整設定，再生成可編輯的新角色。</p>
                 </div>
                 <button id="close-mimic-import-modal" class="text-gray-400 hover:text-gray-200">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
@@ -1022,6 +1023,7 @@
             <div class="p-5 overflow-y-auto space-y-5">
                 <div class="flex flex-wrap gap-3">
                     <button id="mimic-mode-transcript-btn" type="button" class="px-4 py-2 rounded-full bg-sky-500 text-white text-sm font-semibold">從聊天紀錄分析</button>
+                    <button id="mimic-mode-public-btn" type="button" class="px-4 py-2 rounded-full bg-gray-700 text-gray-200 text-sm font-semibold hover:bg-gray-600">只輸入公眾人物名字</button>
                     <button id="mimic-mode-manual-btn" type="button" class="px-4 py-2 rounded-full bg-gray-700 text-gray-200 text-sm font-semibold hover:bg-gray-600">手動建立 / 真人代入</button>
                     <button id="mimic-random-complete-btn" type="button" class="px-4 py-2 rounded-full bg-teal-500 text-white text-sm font-semibold hover:bg-teal-600">一鍵隨機角色＋頭像</button>
                 </div>
@@ -1054,6 +1056,13 @@
                                 <button id="pick-mimic-transcript-btn" class="px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-600 text-white text-sm font-medium">選擇聊天紀錄</button>
                                 <p id="mimic-transcript-status" class="text-sm text-gray-300">尚未選擇檔案。支援 `.txt`、`.md`、`.json`、`.log`、`.csv`、`.zip`。</p>
                                 <p id="mimic-transcript-meta" class="text-xs text-gray-500">長紀錄會先辨識聊天格式與說話者，再自動切段分析，最後合成成一個角色草稿。</p>
+                            </div>
+                        </div>
+                        <div id="mimic-public-section" class="hidden">
+                            <div class="rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-4 space-y-3">
+                                <p class="text-sm font-semibold text-cyan-100">只需輸入名字，其餘交給 AI</p>
+                                <p class="text-xs leading-6 text-gray-300">系統會先搜尋 Wikipedia 讓你確認正確人物，再依公開身份、經歷與公眾形象整理人格、說話方式、背景、開場白及記憶草稿。</p>
+                                <p id="mimic-public-source-summary" class="text-xs leading-6 text-cyan-200">尚未確認身份。按下「搜尋並產生草稿」後會開啟搜尋結果。</p>
                             </div>
                         </div>
                         <div>

@@ -50,7 +50,7 @@ const searchLanguage = async (language, query) => {
     wbptterms: 'description',
     exintro: '1',
     explaintext: '1',
-    exsentences: '4',
+    exchars: '3600',
     redirects: '1',
   });
   return (data.query?.pages || [])
