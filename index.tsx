@@ -108,6 +108,11 @@ import {
     replyHasNpcSpeech,
 } from "./npcDialogue.js";
 import {
+    buildFallbackObservedNpcPersonaDraft,
+    ObservedNpcPersonaDraft,
+    parseObservedNpcPersonaDraft,
+} from "./observedNpcPersona.js";
+import {
     cleanGeneratedPhotoPrompt,
     FAVORITE_PHOTO_PROMPT_MAX_LENGTH,
     normalizeFavoritePhotoPrompt,
@@ -7171,129 +7176,105 @@ const findStoredPersonaForNpc = (name: string, excludedKey?: string) => (
     })
 );
 
-type ObservedNpcPersonaDraft = {
-    description: string;
-    prompt: string;
-    greeting: string;
-    soul: PersonaMemoryEntry[];
-    memories: PersonaMemoryEntry[];
-};
-
 const analyzeObservedNpcPersona = async (
     proposal: NonNullable<Content['npcProposal']>,
     mainPersona: Persona,
-): Promise<ObservedNpcPersonaDraft | null> => {
-    if (proposal.detectionSource !== 'observed' || !proposal.evidence?.trim()) return null;
-    const result = await generateVeniceText({
-        model: VENICE_CHAT_MODEL,
-        messages: [
-            {
-                role: 'system',
-                content: [
-                    `Analyze the recurring adult character "${proposal.name}" from a private fictional romance conversation.`,
-                    `The original main character is "${mainPersona.name}" and the user is a separate person. Never merge either of them into ${proposal.name}.`,
-                    'Infer only patterns supported by the transcript: personality, initiative, resistance, humour, emotional rhythm, regional language, relationship position, established knowledge and recurring behaviour.',
-                    'Create a vivid independent persona that can keep developing naturally and respond to user direction without becoming generic, instantly obedient or trapped replaying the sampled lines.',
-                    'soul entries hold durable identity, voice, relationship anchors, values and boundaries. memory entries hold concrete events, promises, preferences and emotional moments already experienced.',
-                    'Do not copy long dialogue verbatim. Write concise Traditional Chinese, while preserving Hong Kong Cantonese, Taiwan Mandarin or another established regional voice accurately when evidence supports it.',
-                    'Return only one valid JSON object that matches the requested response schema.',
-                ].join('\n'),
-            },
-            {
-                role: 'user',
-                content: `Observed conversation evidence for ${proposal.name}:\n\n${proposal.evidence.slice(-10000)}`,
-            },
-        ],
-        responseFormat: {
-            type: 'json_schema',
-            json_schema: {
-                name: 'observed_npc_persona',
-                strict: true,
-                schema: {
-                    type: 'object',
-                    additionalProperties: false,
-                    required: ['description', 'persona_prompt', 'greeting', 'soul', 'memories'],
-                    properties: {
-                        description: { type: 'string' },
-                        persona_prompt: { type: 'string' },
-                        greeting: { type: 'string' },
-                        soul: {
-                            type: 'array',
-                            minItems: 2,
-                            maxItems: 6,
-                            items: {
-                                type: 'object',
-                                additionalProperties: false,
-                                required: ['kind', 'title', 'summary'],
-                                properties: {
-                                    kind: { type: 'string', enum: ['core', 'relationship', 'vulnerability', 'promise', 'preference', 'boundary'] },
-                                    title: { type: 'string' },
-                                    summary: { type: 'string' },
+    identity?: PublicIdentity,
+): Promise<ObservedNpcPersonaDraft> => {
+    const liveEvidence = currentConversationKey
+        ? buildNpcObservationEvidence(currentConversationKey, proposal.name)
+        : '';
+    const evidence = [proposal.evidence, liveEvidence]
+        .filter((value): value is string => Boolean(value?.trim()))
+        .join('\n\n')
+        .slice(-NPC_OBSERVATION_EVIDENCE_LIMIT);
+    const fallback = buildFallbackObservedNpcPersonaDraft({
+        proposal,
+        mainPersonaName: mainPersona.name,
+        identity,
+        evidence,
+    });
+    if (proposal.detectionSource !== 'observed' || evidence.length < 20) return fallback;
+
+    const models = buildStrictReviewModelRoute(chatModelSettings, false);
+    for (const model of models) {
+        try {
+            const result = await generateChatTextWithTimeout({
+                model,
+                messages: [
+                    {
+                        role: 'system',
+                        content: [
+                            `Analyze the recurring adult character "${proposal.name}" from a private fictional romance conversation.`,
+                            `The original main character is "${mainPersona.name}" and the user is a separate person. Never merge either of them into ${proposal.name}.`,
+                            identity ? `Confirmed public identity: ${identity.canonicalName}. ${identity.summary}` : '',
+                            'Infer only patterns supported by the transcript: personality, initiative, resistance, humour, emotional rhythm, regional language, relationship position, established knowledge and recurring behaviour.',
+                            'Create a vivid independent persona that can keep developing naturally and respond to user direction without becoming generic, instantly obedient or trapped replaying the sampled lines.',
+                            'soul entries hold durable identity, voice, relationship anchors, values and boundaries. memory entries hold concrete events, promises, preferences and emotional moments already experienced.',
+                            'Do not copy long dialogue verbatim. Write concise Traditional Chinese, while preserving Hong Kong Cantonese, Taiwan Mandarin or another established regional voice accurately when evidence supports it.',
+                            'Return only one valid JSON object that matches the requested response schema.',
+                        ].filter(Boolean).join('\n'),
+                    },
+                    {
+                        role: 'user',
+                        content: `Observed conversation evidence for ${proposal.name}:\n\n${evidence}`,
+                    },
+                ],
+                responseFormat: {
+                    type: 'json_schema',
+                    json_schema: {
+                        name: 'observed_npc_persona',
+                        strict: true,
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            required: ['description', 'persona_prompt', 'greeting', 'soul', 'memories'],
+                            properties: {
+                                description: { type: 'string' },
+                                persona_prompt: { type: 'string' },
+                                greeting: { type: 'string' },
+                                soul: {
+                                    type: 'array', minItems: 2, maxItems: 6,
+                                    items: {
+                                        type: 'object', additionalProperties: false,
+                                        required: ['kind', 'title', 'summary'],
+                                        properties: {
+                                            kind: { type: 'string', enum: ['core', 'relationship', 'vulnerability', 'promise', 'preference', 'boundary'] },
+                                            title: { type: 'string' }, summary: { type: 'string' },
+                                        },
+                                    },
                                 },
-                            },
-                        },
-                        memories: {
-                            type: 'array',
-                            minItems: 1,
-                            maxItems: 8,
-                            items: {
-                                type: 'object',
-                                additionalProperties: false,
-                                required: ['kind', 'title', 'summary'],
-                                properties: {
-                                    kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
-                                    title: { type: 'string' },
-                                    summary: { type: 'string' },
+                                memories: {
+                                    type: 'array', minItems: 1, maxItems: 8,
+                                    items: {
+                                        type: 'object', additionalProperties: false,
+                                        required: ['kind', 'title', 'summary'],
+                                        properties: {
+                                            kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
+                                            title: { type: 'string' }, summary: { type: 'string' },
+                                        },
+                                    },
                                 },
                             },
                         },
                     },
                 },
-            },
-        },
-        temperature: 0.25,
-        topP: 0.85,
-        repetitionPenalty: 1.04,
-    });
-    const parsed = JSON.parse(
-        result.text.replace(/^\s*```(?:json)?\s*/iu, '').replace(/\s*```\s*$/u, '').trim(),
-    ) as {
-        description?: string;
-        persona_prompt?: string;
-        greeting?: string;
-        soul?: Array<{ kind?: PersonaMemoryEntry['kind']; title?: string; summary?: string }>;
-        memories?: Array<{ kind?: PersonaMemoryEntry['kind']; title?: string; summary?: string }>;
-    };
-    const description = parsed.description?.trim();
-    const prompt = parsed.persona_prompt?.trim();
-    const greeting = parsed.greeting?.trim();
-    if (!description || !prompt || !greeting) return null;
-
-    const validKinds = new Set<PersonaMemoryEntry['kind']>([
-        'core', 'relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary',
-    ]);
-    const createEntries = (
-        entries: Array<{ kind?: PersonaMemoryEntry['kind']; title?: string; summary?: string }> | undefined,
-        pinned: boolean,
-        prefix: string,
-    ) => (entries || []).flatMap((entry, index) => {
-        if (!entry.kind || !validKinds.has(entry.kind) || !entry.title?.trim() || !entry.summary?.trim()) return [];
-        return [{
-            id: `${prefix}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
-            kind: entry.kind,
-            title: entry.title.trim(),
-            summary: entry.summary.trim(),
-            createdAt: Date.now(),
-            pinned,
-        } satisfies PersonaMemoryEntry];
-    });
-    return {
-        description,
-        prompt,
-        greeting,
-        soul: createEntries(parsed.soul, true, 'npc-soul'),
-        memories: createEntries(parsed.memories, false, 'npc-memory'),
-    };
+                temperature: 0.25,
+                topP: 0.85,
+                repetitionPenalty: 1.04,
+            }, 20_000);
+            const parsed = parseObservedNpcPersonaDraft(result.text, fallback);
+            if (parsed) return parsed;
+        } catch (error) {
+            console.warn('[aigf4 observed NPC analysis retry]', {
+                name: proposal.name,
+                model,
+                reason: error instanceof Error ? error.message : String(error),
+            });
+        }
+    }
+    console.warn('[aigf4 observed NPC analysis fallback]', { name: proposal.name });
+    return fallback;
 };
 
 const buildNpcMemberPersona = (
@@ -7410,11 +7391,8 @@ const addNpcProposalToRoom = async (
     const storedPersonaEntry = findStoredPersonaForNpc(proposal.name, sourcePersonaKey);
     const observedDraft = storedPersonaEntry
         ? null
-        : await analyzeObservedNpcPersona(proposal, sourcePersona);
+        : await analyzeObservedNpcPersona(proposal, sourcePersona, identityResolution?.identity);
     if (currentConversationKey !== conversationKey) return;
-    if (proposal.detectionSource === 'observed' && !storedPersonaEntry && !observedDraft) {
-        throw new Error(`未能完成 ${proposal.name} 的人格與記憶分析，請稍後再試。`);
-    }
     const enrichedProposal = observedDraft
         ? { ...proposal, description: observedDraft.description }
         : proposal;
