@@ -56,3 +56,20 @@ test('one-to-one soul.md and memory.md entries survive reload and export as mark
     assert.match(Object.values(markdown).join('\n'), /重要承諾/u);
     assert.match(Object.values(markdown).join('\n'), /雨夜談心/u);
 });
+
+test('auto memory entries and checkpoint are persisted together', () => {
+    installLocalStorage();
+    const manager = new MemoryManager();
+
+    const added = manager.applyPersonaMemorySummary('cc', [{
+        kind: 'preference',
+        title: '喜歡橙汁',
+        summary: '使用者早餐偏好飲橙汁。',
+    }], 24, 2);
+
+    assert.equal(added, 1);
+    const restored = new MemoryManager().getPersona('cc');
+    assert.equal(restored?.memories?.at(-1)?.title, '喜歡橙汁');
+    assert.equal(restored?.lastMemorySummaryUserMessageCount, 24);
+    assert.equal(restored?.memorySummaryVersion, 2);
+});

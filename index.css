@@ -1308,6 +1308,24 @@ body.app-body {
     text-align: center;
 }
 
+.auto-memory-status {
+    display: grid;
+    gap: 4px;
+    margin: 4px 0 10px;
+    border: 1px solid rgba(0, 168, 132, 0.24);
+    border-radius: 9px;
+    padding: 11px 12px;
+    color: var(--wa-muted);
+    background: rgba(0, 168, 132, 0.08);
+    font-size: 0.76rem;
+    line-height: 1.45;
+}
+
+.auto-memory-status strong {
+    color: var(--wa-green-deep);
+    font-size: 0.8rem;
+}
+
 .memory-card {
     margin-bottom: 10px;
     border-radius: 8px;

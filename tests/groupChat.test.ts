@@ -301,6 +301,34 @@ test('room favorite photo prompt survives a manager reload', () => {
     assert.equal(restored?.timelineBranch?.sourceMessageId, 'message-source');
 });
 
+test('group auto memory entries and checkpoint survive reload together', () => {
+    const storage = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: {
+            getItem: (key: string) => storage.get(key) || null,
+            setItem: (key: string, value: string) => storage.set(key, value),
+            removeItem: (key: string) => storage.delete(key),
+        },
+    });
+    const manager = new RoomManager();
+    const room = manager.saveRoom(createRoom());
+
+    const added = manager.applyEpisodicMemorySummary(room.id, [{
+        kind: 'promise',
+        title: '早餐約定',
+        summary: 'IU 答應明早和使用者一起吃早餐。',
+        participants: ['iu'],
+    }], 24, 2);
+
+    assert.equal(added, 1);
+    const restored = new RoomManager().getRoom(room.id);
+    assert.equal(restored?.sharedMemories.at(-1)?.title, '早餐約定');
+    assert.equal(restored?.members.find(item => item.id === 'iu')?.memories.at(-1)?.title, '早餐約定');
+    assert.equal(restored?.lastSummarizedUserMessageCount, 24);
+    assert.equal(restored?.memorySummaryVersion, 2);
+});
+
 test('deleting a room removes it after manager reload', () => {
     const storage = new Map<string, string>();
     Object.defineProperty(globalThis, 'localStorage', {

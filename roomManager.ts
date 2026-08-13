@@ -1,4 +1,5 @@
 import { ChatMessage, MemoryManager, Persona, PublicIdentity, TimelineBranchInfo } from './managers.js';
+import { AUTO_MEMORY_SUMMARY_VERSION } from './autoMemory.js';
 
 const ROOM_STORAGE_KEY = 'aigf4RoomsV2';
 const DELETED_ROOM_IDS_STORAGE_KEY = 'aigf4DeletedRoomIdsV1';
@@ -65,6 +66,7 @@ export interface ChatRoom {
     createdAt: number;
     updatedAt: number;
     lastSummarizedUserMessageCount: number;
+    memorySummaryVersion?: number;
     legacySourcePersonaKey?: string;
     migrationVersion?: number;
     timelineBranch?: TimelineBranchInfo;
@@ -470,6 +472,7 @@ export class RoomManager {
             createdAt: now,
             updatedAt: now,
             lastSummarizedUserMessageCount: 0,
+            memorySummaryVersion: AUTO_MEMORY_SUMMARY_VERSION,
         };
         this.rooms[room.id] = room;
         this.persist();
@@ -539,6 +542,46 @@ export class RoomManager {
                 room.sharedMemories.push(created);
             });
         });
+    }
+
+    applyEpisodicMemorySummary(
+        roomId: string,
+        entries: Array<Omit<RoomMemoryEntry, 'id' | 'createdAt' | 'pinned'>>,
+        userMessageCount: number,
+        summaryVersion: number,
+    ) {
+        const room = this.rooms[roomId];
+        if (!room) return 0;
+        const previous = cloneRoom(room);
+        const known = new Set(room.sharedMemories.map(item => item.summary.trim().toLocaleLowerCase()));
+        let added = 0;
+        entries.forEach(entry => {
+            const normalized = entry.summary.trim().toLocaleLowerCase();
+            if (!normalized || known.has(normalized)) return;
+            known.add(normalized);
+            const created: RoomMemoryEntry = {
+                ...entry,
+                id: createId('memory'),
+                createdAt: Date.now(),
+                pinned: false,
+            };
+            entry.participants.forEach(memberId => {
+                const member = room.members.find(item => item.id === memberId);
+                if (member) member.memories.push(cloneRoom(created));
+            });
+            room.sharedMemories.push(created);
+            added += 1;
+        });
+        room.lastSummarizedUserMessageCount = userMessageCount;
+        room.memorySummaryVersion = summaryVersion;
+        room.updatedAt = Date.now();
+        try {
+            this.persist();
+            return added;
+        } catch (error) {
+            this.rooms[roomId] = previous;
+            throw error;
+        }
     }
 
     deleteMemory(roomId: string, memberId: string, memoryId: string, type: 'soul' | 'memory') {
@@ -666,6 +709,7 @@ export class RoomManager {
             createdAt: now,
             updatedAt: now,
             lastSummarizedUserMessageCount: 0,
+            memorySummaryVersion: AUTO_MEMORY_SUMMARY_VERSION,
             legacySourcePersonaKey: iuPersonaKey,
             migrationVersion: IU_GROUP_MIGRATION_VERSION,
         };

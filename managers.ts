@@ -1,6 +1,7 @@
 // managers.ts
 import { personas as initialPersonas, ccV3Persona } from "./personas.tsx";
 import { deletePersonaAvatar, loadPersonaAvatars, savePersonaAvatar } from './avatarStore.js';
+import { AUTO_MEMORY_SUMMARY_VERSION } from './autoMemory.js';
 
 // --- Constants ---
 export const DIARY_CHECKPOINT = '[DIARY_CHECKPOINT]';
@@ -358,6 +359,7 @@ export interface Persona {
     soul?: PersonaMemoryEntry[];
     memories?: PersonaMemoryEntry[];
     lastMemorySummaryUserMessageCount?: number;
+    memorySummaryVersion?: number;
     favoritePhotoPrompt?: string;
     publicIdentityEnabled?: boolean;
     publicIdentity?: PublicIdentity;
@@ -430,6 +432,7 @@ export class MemoryManager {
                     JSON.stringify(currentPersona.soul || []) !== JSON.stringify(originalPersona.soul || []) ||
                     JSON.stringify(currentPersona.memories || []) !== JSON.stringify(originalPersona.memories || []) ||
                     Number(currentPersona.lastMemorySummaryUserMessageCount || 0) !== Number(originalPersona.lastMemorySummaryUserMessageCount || 0) ||
+                    Number(currentPersona.memorySummaryVersion || 0) !== Number(originalPersona.memorySummaryVersion || 0) ||
                     currentPersona.favoritePhotoPrompt !== originalPersona.favoritePhotoPrompt ||
                     Boolean(currentPersona.publicIdentityEnabled) !== Boolean(originalPersona.publicIdentityEnabled) ||
                     JSON.stringify(currentPersona.publicIdentity || null) !== JSON.stringify(originalPersona.publicIdentity || null)
@@ -760,6 +763,7 @@ export class MemoryManager {
             soul: [],
             memories: [],
             lastMemorySummaryUserMessageCount: 0,
+            memorySummaryVersion: AUTO_MEMORY_SUMMARY_VERSION,
             publicIdentityEnabled: Boolean(personaData.publicIdentityEnabled),
             publicIdentity: personaData.publicIdentity,
         };
@@ -779,6 +783,7 @@ export class MemoryManager {
             soul: copy.soul || [],
             memories: copy.memories || [],
             lastMemorySummaryUserMessageCount: Number(copy.lastMemorySummaryUserMessageCount || 0),
+            memorySummaryVersion: Number(copy.memorySummaryVersion || 0),
         };
 
         try {
@@ -880,6 +885,47 @@ export class MemoryManager {
         target.push(created);
         this.persistModifiedPersonas();
         return created;
+    }
+
+    applyPersonaMemorySummary(
+        key: string,
+        entries: Array<Omit<PersonaMemoryEntry, 'id' | 'createdAt' | 'pinned'>>,
+        userMessageCount: number,
+        summaryVersion: number,
+    ) {
+        const persona = this.personas[key];
+        if (!persona) return 0;
+        const previousMemories = structuredClone(persona.memories || []);
+        const previousCount = persona.lastMemorySummaryUserMessageCount;
+        const previousVersion = persona.memorySummaryVersion;
+        const target = (persona.memories ||= []);
+        const known = new Set(target.map(item => item.summary.trim().toLocaleLowerCase()));
+        let added = 0;
+        entries.forEach(entry => {
+            const normalized = entry.summary.trim().toLocaleLowerCase();
+            if (!normalized || known.has(normalized)) return;
+            known.add(normalized);
+            target.push({
+                ...entry,
+                id: crypto.randomUUID?.() || `memory-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+                title: entry.title.trim(),
+                summary: entry.summary.trim(),
+                createdAt: Date.now(),
+                pinned: false,
+            });
+            added += 1;
+        });
+        persona.lastMemorySummaryUserMessageCount = userMessageCount;
+        persona.memorySummaryVersion = summaryVersion;
+        try {
+            this.persistModifiedPersonas(true);
+            return added;
+        } catch (error) {
+            persona.memories = previousMemories;
+            persona.lastMemorySummaryUserMessageCount = previousCount;
+            persona.memorySummaryVersion = previousVersion;
+            throw error;
+        }
     }
 
     updatePersonaMemory(

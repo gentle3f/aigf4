@@ -83,6 +83,12 @@ import {
     cloneRoomSnapshot,
 } from "./roomManager.js";
 import {
+    AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES,
+    AUTO_MEMORY_SUMMARY_VERSION,
+    parsePersonaAutoMemoryResponse,
+    parseRoomAutoMemoryResponse,
+} from "./autoMemory.js";
+import {
     deleteChatAttachment,
     getChatAttachmentBlob,
     saveChatAttachment,
@@ -790,6 +796,7 @@ const ASSISTANT_HISTORY_MESSAGE_LIMIT = 60;
 const ASSISTANT_HISTORY_CHAR_BUDGET = 36000;
 const GOD_MODE_HISTORY_LIMIT = 10;
 const ROOM_MEMORY_SUMMARY_TURN_INTERVAL = 24;
+const AUTO_MEMORY_MODEL_TIMEOUT_MS = 30_000;
 const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 2_500_000;
 const MAX_CHAT_IMAGE_EDGE = 1600;
 const CHAT_MAX_AUTO_CONTINUES = 2;
@@ -11504,13 +11511,54 @@ const getResponse = async (
     }
 };
 
+async function generateValidatedAutoMemory<T>(
+    messages: VeniceMessage[],
+    responseFormat: NonNullable<Parameters<typeof generateVeniceText>[0]['responseFormat']>,
+    parse: (text: string) => T | null,
+): Promise<T> {
+    const models = Array.from(new Set([
+        chatModelSettings.qualityFallback,
+        chatModelSettings.emergencyFallback,
+        chatModelSettings.primary,
+        DEFAULT_CHAT_MODEL_SETTINGS.qualityFallback,
+        DEFAULT_CHAT_MODEL_SETTINGS.emergencyFallback,
+        DEFAULT_CHAT_MODEL_SETTINGS.primary,
+    ].filter(Boolean)));
+    let lastError: Error | null = null;
+    for (const model of models) {
+        try {
+            const result = await generateChatTextWithTimeout({
+                model,
+                messages,
+                maxCompletionTokens: 900,
+                temperature: 0.2,
+                topP: 0.85,
+                repetitionPenalty: 1.04,
+                stop: [],
+                responseFormat,
+            }, AUTO_MEMORY_MODEL_TIMEOUT_MS);
+            const parsed = parse(result.text);
+            if (parsed === null) {
+                throw new Error('Memory model returned an invalid JSON envelope.');
+            }
+            return parsed;
+        } catch (error) {
+            lastError = error instanceof Error ? error : new Error(String(error));
+        }
+    }
+    throw lastError || new Error('No memory summary model was available.');
+}
+
 const maybeSummarizeRoomMemory = async (roomId: string, force = false) => {
     const room = roomManager.getRoom(roomId);
     if (!room || roomSummaryInFlight.has(roomId)) return;
     const history = memoryManager.peekChatHistory(roomId);
     const userMessageCount = history.filter(message => message.role === 'user').length;
-    if (!force && userMessageCount - room.lastSummarizedUserMessageCount < ROOM_MEMORY_SUMMARY_TURN_INTERVAL) return;
-    if (userMessageCount <= room.lastSummarizedUserMessageCount) return;
+    const lastSummarized = Number(room.lastSummarizedUserMessageCount || 0);
+    const needsRecovery = Number(room.memorySummaryVersion || 0) < AUTO_MEMORY_SUMMARY_VERSION
+        && userMessageCount >= AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES;
+    if (!force && !needsRecovery && userMessageCount - lastSummarized < ROOM_MEMORY_SUMMARY_TURN_INTERVAL) return;
+    if (!needsRecovery && userMessageCount <= lastSummarized) return;
     roomSummaryInFlight.add(roomId);
     try {
         const transcript = history
@@ -11522,9 +11570,14 @@ const maybeSummarizeRoomMemory = async (roomId: string, force = false) => {
             .filter(Boolean)
             .join('\n\n');
         const memberLedger = room.members.map(member => `${member.id}=${member.persona.name}`).join(', ');
-        const result = await generateVeniceText({
-            model: VENICE_CHAT_MODEL,
-            messages: [
+        const participantAliases = new Map<string, string>();
+        room.members.forEach(member => {
+            [member.id, member.persona.name, member.persona.publicIdentity?.canonicalName]
+                .filter((value): value is string => Boolean(value?.trim()))
+                .forEach(value => participantAliases.set(value.trim().toLocaleLowerCase(), member.id));
+        });
+        const memories = await generateValidatedAutoMemory(
+            [
                 {
                     role: 'system',
                     content: [
@@ -11537,7 +11590,7 @@ const maybeSummarizeRoomMemory = async (roomId: string, force = false) => {
                 },
                 { role: 'user', content: transcript },
             ],
-            responseFormat: {
+            {
                 type: 'json_schema',
                 json_schema: {
                     name: 'room_memory_update',
@@ -11566,38 +11619,22 @@ const maybeSummarizeRoomMemory = async (roomId: string, force = false) => {
                     },
                 },
             },
-            temperature: 0.2,
-            topP: 0.85,
-            repetitionPenalty: 1.04,
-        });
-        const parsed = JSON.parse(result.text.replace(/^\s*```(?:json)?|```\s*$/giu, '').trim()) as {
-            memories?: Array<{
-                kind?: RoomMemoryEntry['kind'];
-                title?: string;
-                summary?: string;
-                participants?: string[];
-            }>;
-        };
-        const validIds = new Set(room.members.map(member => member.id));
-        const memories = (parsed.memories || []).flatMap(memory => {
-            const participants = (memory.participants || []).filter(id => validIds.has(id));
-            if (!memory.kind || !memory.title?.trim() || !memory.summary?.trim() || participants.length === 0) return [];
-            return [{
-                kind: memory.kind,
-                title: memory.title.trim(),
-                summary: memory.summary.trim(),
-                participants,
-            }];
-        });
-        if (memories.length > 0) roomManager.addEpisodicMemories(roomId, memories);
-        roomManager.updateRoom(roomId, editableRoom => {
-            editableRoom.lastSummarizedUserMessageCount = userMessageCount;
-        });
+            text => parseRoomAutoMemoryResponse(text, participantAliases),
+        );
+        roomManager.applyEpisodicMemorySummary(
+            roomId,
+            memories,
+            userMessageCount,
+            AUTO_MEMORY_SUMMARY_VERSION,
+        );
         if (currentRoom?.id === roomId) refreshCurrentRoom();
     } catch (error) {
         console.warn('Background room memory summary skipped:', error);
     } finally {
         roomSummaryInFlight.delete(roomId);
+        if (!roomMemoryModal.classList.contains('hidden') && currentRoom?.id === roomId) {
+            renderRoomMemory();
+        }
     }
 };
 
@@ -11607,8 +11644,10 @@ const maybeSummarizePersonaMemory = async (personaKey: string, force = false) =>
     const history = memoryManager.peekChatHistory(personaKey);
     const userMessageCount = history.filter(message => message.role === 'user').length;
     const lastSummarized = Number(persona.lastMemorySummaryUserMessageCount || 0);
-    if (!force && userMessageCount - lastSummarized < ROOM_MEMORY_SUMMARY_TURN_INTERVAL) return;
-    if (userMessageCount <= lastSummarized) return;
+    const needsRecovery = Number(persona.memorySummaryVersion || 0) < AUTO_MEMORY_SUMMARY_VERSION
+        && userMessageCount >= AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES;
+    if (!force && !needsRecovery && userMessageCount - lastSummarized < ROOM_MEMORY_SUMMARY_TURN_INTERVAL) return;
+    if (!needsRecovery && userMessageCount <= lastSummarized) return;
     personaSummaryInFlight.add(personaKey);
     try {
         const transcript = history
@@ -11621,9 +11660,8 @@ const maybeSummarizePersonaMemory = async (personaKey: string, force = false) =>
             .slice(-24)
             .map(entry => `- ${entry.title}: ${entry.summary}`)
             .join('\n');
-        const result = await generateVeniceText({
-            model: VENICE_CHAT_MODEL,
-            messages: [
+        const memories = await generateValidatedAutoMemory(
+            [
                 {
                     role: 'system',
                     content: [
@@ -11636,7 +11674,7 @@ const maybeSummarizePersonaMemory = async (personaKey: string, force = false) =>
                 },
                 { role: 'user', content: transcript },
             ],
-            responseFormat: {
+            {
                 type: 'json_schema',
                 json_schema: {
                     name: 'persona_memory_update',
@@ -11664,30 +11702,21 @@ const maybeSummarizePersonaMemory = async (personaKey: string, force = false) =>
                     },
                 },
             },
-            temperature: 0.2,
-            topP: 0.85,
-            repetitionPenalty: 1.04,
-        });
-        const parsed = JSON.parse(result.text.replace(/^\s*```(?:json)?|```\s*$/giu, '').trim()) as {
-            memories?: Array<{
-                kind?: PersonaMemoryEntry['kind'];
-                title?: string;
-                summary?: string;
-            }>;
-        };
-        (parsed.memories || []).forEach(memory => {
-            if (!memory.kind || !memory.title?.trim() || !memory.summary?.trim()) return;
-            memoryManager.addPersonaMemory(personaKey, 'memory', {
-                kind: memory.kind,
-                title: memory.title.trim(),
-                summary: memory.summary.trim(),
-            });
-        });
-        memoryManager.updatePersona(personaKey, { lastMemorySummaryUserMessageCount: userMessageCount });
+            parsePersonaAutoMemoryResponse,
+        );
+        memoryManager.applyPersonaMemorySummary(
+            personaKey,
+            memories,
+            userMessageCount,
+            AUTO_MEMORY_SUMMARY_VERSION,
+        );
     } catch (error) {
         console.warn('Background persona memory summary skipped:', error);
     } finally {
         personaSummaryInFlight.delete(personaKey);
+        if (!roomMemoryModal.classList.contains('hidden') && !currentRoom && currentPersonaKey === personaKey) {
+            renderRoomMemory();
+        }
     }
 };
 
@@ -13445,6 +13474,36 @@ const renderRoomMemory = () => {
     roomMemoryList.innerHTML = '';
     const member = room?.members.find(item => item.id === selectedMemoryMemberId);
     if (room && !member) return;
+
+    if (selectedMemoryType === 'memory') {
+        const conversationKey = room?.id || personaKey || '';
+        const totalUserMessages = memoryManager.peekChatHistory(conversationKey)
+            .filter(message => message.role === 'user').length;
+        const lastSummarized = room
+            ? Number(room.lastSummarizedUserMessageCount || 0)
+            : Number(persona?.lastMemorySummaryUserMessageCount || 0);
+        const summaryVersion = room
+            ? Number(room.memorySummaryVersion || 0)
+            : Number(persona?.memorySummaryVersion || 0);
+        const inFlight = room ? roomSummaryInFlight.has(room.id) : Boolean(personaKey && personaSummaryInFlight.has(personaKey));
+        const needsRecovery = summaryVersion < AUTO_MEMORY_SUMMARY_VERSION
+            && totalUserMessages >= AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES;
+        const remaining = Math.max(0, ROOM_MEMORY_SUMMARY_TURN_INTERVAL - (totalUserMessages - lastSummarized));
+        const status = document.createElement('div');
+        status.className = 'auto-memory-status';
+        const title = document.createElement('strong');
+        title.textContent = inFlight ? '正在自動整理記憶' : '自動記憶運作中';
+        const detail = document.createElement('span');
+        detail.textContent = inFlight
+            ? '完成後會直接寫入 memory.md。'
+            : needsRecovery
+                ? '偵測到舊版漏存的 checkpoint；下一次角色成功回覆後會自動補抓最近重要內容。'
+                : remaining === 0 && totalUserMessages > lastSummarized
+                    ? '已到整理門檻，下一次角色成功回覆後會更新。'
+                    : `已處理至第 ${Math.min(lastSummarized, totalUserMessages)} / ${totalUserMessages} 則使用者訊息；再 ${remaining} 則自動整理。`;
+        status.append(title, detail);
+        roomMemoryList.appendChild(status);
+    }
 
     const addButton = document.createElement('button');
     addButton.type = 'button';
