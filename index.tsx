@@ -782,6 +782,11 @@ let videoLastProgressIndex = -1;
 let isRandomRecruiting = false;
 const roomSummaryInFlight = new Set<string>();
 const personaSummaryInFlight = new Set<string>();
+let manualMemoryUpdateNotice: {
+    conversationKey: string;
+    tone: 'running' | 'success' | 'error';
+    text: string;
+} | null = null;
 let chatSearchMatches: HTMLElement[] = [];
 let chatSearchMatchIndex = -1;
 
@@ -796,6 +801,7 @@ const ASSISTANT_HISTORY_MESSAGE_LIMIT = 60;
 const ASSISTANT_HISTORY_CHAR_BUDGET = 36000;
 const GOD_MODE_HISTORY_LIMIT = 10;
 const ROOM_MEMORY_SUMMARY_TURN_INTERVAL = 24;
+const AUTO_MEMORY_RECENT_MESSAGE_LIMIT = 48;
 const AUTO_MEMORY_MODEL_TIMEOUT_MS = 30_000;
 const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 2_500_000;
 const MAX_CHAT_IMAGE_EDGE = 1600;
@@ -11549,27 +11555,45 @@ async function generateValidatedAutoMemory<T>(
     throw lastError || new Error('No memory summary model was available.');
 }
 
-const maybeSummarizeRoomMemory = async (roomId: string, force = false) => {
+type MemorySummaryRunResult =
+    | { status: 'success'; added: number }
+    | { status: 'skipped'; reason: 'not-found' | 'busy' | 'no-history' | 'threshold' }
+    | { status: 'error'; message: string };
+
+const maybeSummarizeRoomMemory = async (
+    roomId: string,
+    force = false,
+): Promise<MemorySummaryRunResult> => {
     const room = roomManager.getRoom(roomId);
-    if (!room || roomSummaryInFlight.has(roomId)) return;
+    if (!room) return { status: 'skipped', reason: 'not-found' };
+    if (roomSummaryInFlight.has(roomId)) return { status: 'skipped', reason: 'busy' };
     const history = memoryManager.peekChatHistory(roomId);
     const userMessageCount = history.filter(message => message.role === 'user').length;
+    if (userMessageCount === 0) return { status: 'skipped', reason: 'no-history' };
     const lastSummarized = Number(room.lastSummarizedUserMessageCount || 0);
     const needsRecovery = Number(room.memorySummaryVersion || 0) < AUTO_MEMORY_SUMMARY_VERSION
         && userMessageCount >= AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES;
-    if (!force && !needsRecovery && userMessageCount - lastSummarized < ROOM_MEMORY_SUMMARY_TURN_INTERVAL) return;
-    if (!needsRecovery && userMessageCount <= lastSummarized) return;
+    if (!force && !needsRecovery && userMessageCount - lastSummarized < ROOM_MEMORY_SUMMARY_TURN_INTERVAL) {
+        return { status: 'skipped', reason: 'threshold' };
+    }
+    if (!force && !needsRecovery && userMessageCount <= lastSummarized) {
+        return { status: 'skipped', reason: 'threshold' };
+    }
     roomSummaryInFlight.add(roomId);
     try {
         const transcript = history
             .filter(message => message.role === 'user' || message.role === 'model')
-            .slice(-48)
+            .slice(-AUTO_MEMORY_RECENT_MESSAGE_LIMIT)
             .map(message => message.role === 'user'
                 ? `[USER] ${message.content.text || ''}`
                 : contentToGroupHistoryText(message.content, room))
             .filter(Boolean)
             .join('\n\n');
         const memberLedger = room.members.map(member => `${member.id}=${member.persona.name}`).join(', ');
+        const existing = room.sharedMemories
+            .slice(-36)
+            .map(entry => `- ${entry.title}: ${entry.summary}`)
+            .join('\n');
         const participantAliases = new Map<string, string>();
         room.members.forEach(member => {
             [member.id, member.persona.name, member.persona.publicIdentity?.canonicalName]
@@ -11586,7 +11610,8 @@ const maybeSummarizeRoomMemory = async (roomId: string, force = false) => {
                         'Keep only events, promises, boundaries, preferences, relationship changes and user vulnerability that will improve future continuity.',
                         'Do not copy graphic wording or transient physical choreography. Preserve emotional meaning, trust and boundaries accurately.',
                         'Only include members who were present or directly involved. Return 1 to 6 concise memories in Traditional Chinese.',
-                    ].join('\n'),
+                        existing ? `Already stored memory.md entries; do not repeat or paraphrase them:\n${existing}` : '',
+                    ].filter(Boolean).join('\n'),
                 },
                 { role: 'user', content: transcript },
             ],
@@ -11621,15 +11646,20 @@ const maybeSummarizeRoomMemory = async (roomId: string, force = false) => {
             },
             text => parseRoomAutoMemoryResponse(text, participantAliases),
         );
-        roomManager.applyEpisodicMemorySummary(
+        const added = roomManager.applyEpisodicMemorySummary(
             roomId,
             memories,
             userMessageCount,
             AUTO_MEMORY_SUMMARY_VERSION,
         );
         if (currentRoom?.id === roomId) refreshCurrentRoom();
+        return { status: 'success', added };
     } catch (error) {
         console.warn('Background room memory summary skipped:', error);
+        return {
+            status: 'error',
+            message: error instanceof Error ? error.message : 'Unknown memory update error.',
+        };
     } finally {
         roomSummaryInFlight.delete(roomId);
         if (!roomMemoryModal.classList.contains('hidden') && currentRoom?.id === roomId) {
@@ -11638,21 +11668,30 @@ const maybeSummarizeRoomMemory = async (roomId: string, force = false) => {
     }
 };
 
-const maybeSummarizePersonaMemory = async (personaKey: string, force = false) => {
+const maybeSummarizePersonaMemory = async (
+    personaKey: string,
+    force = false,
+): Promise<MemorySummaryRunResult> => {
     const persona = memoryManager.getPersona(personaKey);
-    if (!persona || isAssistantPersonaKey(personaKey) || personaSummaryInFlight.has(personaKey)) return;
+    if (!persona || isAssistantPersonaKey(personaKey)) return { status: 'skipped', reason: 'not-found' };
+    if (personaSummaryInFlight.has(personaKey)) return { status: 'skipped', reason: 'busy' };
     const history = memoryManager.peekChatHistory(personaKey);
     const userMessageCount = history.filter(message => message.role === 'user').length;
+    if (userMessageCount === 0) return { status: 'skipped', reason: 'no-history' };
     const lastSummarized = Number(persona.lastMemorySummaryUserMessageCount || 0);
     const needsRecovery = Number(persona.memorySummaryVersion || 0) < AUTO_MEMORY_SUMMARY_VERSION
         && userMessageCount >= AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES;
-    if (!force && !needsRecovery && userMessageCount - lastSummarized < ROOM_MEMORY_SUMMARY_TURN_INTERVAL) return;
-    if (!needsRecovery && userMessageCount <= lastSummarized) return;
+    if (!force && !needsRecovery && userMessageCount - lastSummarized < ROOM_MEMORY_SUMMARY_TURN_INTERVAL) {
+        return { status: 'skipped', reason: 'threshold' };
+    }
+    if (!force && !needsRecovery && userMessageCount <= lastSummarized) {
+        return { status: 'skipped', reason: 'threshold' };
+    }
     personaSummaryInFlight.add(personaKey);
     try {
         const transcript = history
             .filter(message => message.role === 'user' || message.role === 'model')
-            .slice(-48)
+            .slice(-AUTO_MEMORY_RECENT_MESSAGE_LIMIT)
             .map(message => `${message.role === 'user' ? '[USER]' : `[${persona.name}]`} ${message.content.text || ''}`)
             .filter(Boolean)
             .join('\n\n');
@@ -11669,7 +11708,7 @@ const maybeSummarizePersonaMemory = async (personaKey: string, force = false) =>
                         'Keep only events, promises, boundaries, preferences, relationship changes and user vulnerability that will improve future continuity.',
                         'Do not copy transient choreography or summarize routine small talk. Preserve emotional meaning, trust and boundaries accurately.',
                         'Return 1 to 6 concise, non-duplicate memories in Traditional Chinese.',
-                        existing ? `Already stored memory.md entries; do not repeat them:\n${existing}` : '',
+                        existing ? `Already stored memory.md entries; do not repeat or paraphrase them:\n${existing}` : '',
                     ].filter(Boolean).join('\n'),
                 },
                 { role: 'user', content: transcript },
@@ -11704,14 +11743,19 @@ const maybeSummarizePersonaMemory = async (personaKey: string, force = false) =>
             },
             parsePersonaAutoMemoryResponse,
         );
-        memoryManager.applyPersonaMemorySummary(
+        const added = memoryManager.applyPersonaMemorySummary(
             personaKey,
             memories,
             userMessageCount,
             AUTO_MEMORY_SUMMARY_VERSION,
         );
+        return { status: 'success', added };
     } catch (error) {
         console.warn('Background persona memory summary skipped:', error);
+        return {
+            status: 'error',
+            message: error instanceof Error ? error.message : 'Unknown memory update error.',
+        };
     } finally {
         personaSummaryInFlight.delete(personaKey);
         if (!roomMemoryModal.classList.contains('hidden') && !currentRoom && currentPersonaKey === personaKey) {
@@ -13501,7 +13545,59 @@ const renderRoomMemory = () => {
                 : remaining === 0 && totalUserMessages > lastSummarized
                     ? '已到整理門檻，下一次角色成功回覆後會更新。'
                     : `已處理至第 ${Math.min(lastSummarized, totalUserMessages)} / ${totalUserMessages} 則使用者訊息；再 ${remaining} 則自動整理。`;
-        status.append(title, detail);
+        const manualButton = document.createElement('button');
+        manualButton.type = 'button';
+        manualButton.className = 'manual-memory-update-button';
+        manualButton.disabled = inFlight || totalUserMessages === 0;
+        manualButton.textContent = inFlight
+            ? '正在整理…'
+            : `立即整理最近 ${AUTO_MEMORY_RECENT_MESSAGE_LIMIT} 則`;
+        manualButton.addEventListener('click', async () => {
+            manualMemoryUpdateNotice = {
+                conversationKey,
+                tone: 'running',
+                text: `正在讀取最近 ${AUTO_MEMORY_RECENT_MESSAGE_LIMIT} 則有效對話並更新 memory.md…`,
+            };
+            renderRoomMemory();
+            const result = room
+                ? await maybeSummarizeRoomMemory(room.id, true)
+                : personaKey
+                    ? await maybeSummarizePersonaMemory(personaKey, true)
+                    : { status: 'skipped', reason: 'not-found' } as const;
+            if (result.status === 'success') {
+                manualMemoryUpdateNotice = {
+                    conversationKey,
+                    tone: 'success',
+                    text: result.added > 0
+                        ? `整理完成，已新增 ${result.added} 項重要記憶。`
+                        : '整理完成；最近對話沒有新的重要內容需要加入，現有記憶未被重複寫入。',
+                };
+            } else if (result.status === 'error') {
+                if (result.message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
+                manualMemoryUpdateNotice = {
+                    conversationKey,
+                    tone: 'error',
+                    text: `整理失敗：${sanitizeChatFailureDetail(result.message).slice(0, 180)}`,
+                };
+            } else {
+                const skippedReason = result.reason === 'busy'
+                    ? '另一個記憶整理工作仍在進行。'
+                    : result.reason === 'no-history'
+                        ? '目前沒有足夠對話可以整理。'
+                        : result.reason === 'threshold'
+                            ? '尚未到自動整理門檻。'
+                            : '目前聊天室已不存在。';
+                manualMemoryUpdateNotice = { conversationKey, tone: 'error', text: skippedReason };
+            }
+            renderRoomMemory();
+        });
+        status.append(title, detail, manualButton);
+        if (manualMemoryUpdateNotice?.conversationKey === conversationKey) {
+            const notice = document.createElement('span');
+            notice.className = `manual-memory-update-notice is-${manualMemoryUpdateNotice.tone}`;
+            notice.textContent = manualMemoryUpdateNotice.text;
+            status.appendChild(notice);
+        }
         roomMemoryList.appendChild(status);
     }
 

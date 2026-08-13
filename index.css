@@ -1326,6 +1326,45 @@ body.app-body {
     font-size: 0.8rem;
 }
 
+.manual-memory-update-button {
+    justify-self: start;
+    margin-top: 5px;
+    border-radius: 999px;
+    padding: 7px 12px;
+    color: white;
+    background: var(--wa-green);
+    font-size: 0.75rem;
+    font-weight: 750;
+    transition: transform 120ms ease, background 120ms ease;
+}
+
+.manual-memory-update-button:active:not(:disabled) {
+    transform: scale(0.97);
+    background: var(--wa-green-deep);
+}
+
+.manual-memory-update-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.manual-memory-update-notice {
+    margin-top: 3px;
+    font-weight: 650;
+}
+
+.manual-memory-update-notice.is-running {
+    color: #087f6b;
+}
+
+.manual-memory-update-notice.is-success {
+    color: #087f23;
+}
+
+.manual-memory-update-notice.is-error {
+    color: #c62828;
+}
+
 .memory-card {
     margin-bottom: 10px;
     border-radius: 8px;
