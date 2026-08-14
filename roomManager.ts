@@ -343,18 +343,32 @@ export class RoomManager {
         return { version: 2, rooms: cloneRoom(Object.values(this.rooms)) };
     }
 
-    importData(data: unknown) {
+    importData(data: unknown, replaceExisting = false) {
         if (!data || typeof data !== 'object') return;
         const roomData = data as Partial<RoomExportData>;
         if (!Array.isArray(roomData.rooms)) return;
-        roomData.rooms.forEach(room => {
-            if (room?.id) {
-                this.rooms[room.id] = cloneRoom(room);
-                this.deletedRoomIds.delete(room.id);
+        const previousRooms = cloneRoom(this.rooms);
+        const previousDeletedRoomIds = new Set(this.deletedRoomIds);
+        try {
+            if (replaceExisting) {
+                this.rooms = {};
+                this.deletedRoomIds.clear();
             }
-        });
-        this.persist();
-        this.persistDeletedRoomIds();
+            roomData.rooms.forEach(room => {
+                if (room?.id) {
+                    this.rooms[room.id] = cloneRoom(room);
+                    this.deletedRoomIds.delete(room.id);
+                }
+            });
+            this.persist();
+            this.persistDeletedRoomIds();
+        } catch (error) {
+            this.rooms = previousRooms;
+            this.deletedRoomIds = previousDeletedRoomIds;
+            this.persist();
+            this.persistDeletedRoomIds();
+            throw error;
+        }
     }
 
     getRooms() {

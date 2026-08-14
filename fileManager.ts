@@ -1,6 +1,10 @@
 // fileManager.ts
 import { MemoryManager, ChatMessage, Interest } from './managers.js';
-import { getCharacterPhotoBlob, saveCharacterPhotoAsset } from './photoStore.js';
+import {
+    getCharacterPhotoBlob,
+    listCharacterPhotoAssets,
+    saveCharacterPhotoAsset,
+} from './photoStore.js';
 import { RoomManager } from './roomManager.js';
 import { getChatAttachmentBlob, saveChatAttachment } from './chatMediaStore.js';
 
@@ -47,6 +51,7 @@ export interface BackupMediaSummary {
     referencedPhotos: number;
     embeddedPhotos: number;
     migratedLegacyPhotos: number;
+    recoveredOrphanPhotos: number;
     unavailablePhotos: number;
 }
 
@@ -255,6 +260,31 @@ export class FileManager {
         };
     }
 
+    private prepareReplacementImport(rawData: any): PreparedImport {
+        const histories = rawData?.chatHistories && typeof rawData.chatHistories === 'object'
+            ? rawData.chatHistories as Record<string, ChatMessage[]>
+            : {};
+        const roomIds = Array.isArray(rawData?.rooms?.rooms)
+            ? rawData.rooms.rooms.map((room: any) => String(room?.id || '')).filter(Boolean)
+            : [];
+        const sourceKeys = new Set([
+            ...Object.keys(rawData?.customPersonas || {}),
+            ...Object.keys(histories),
+            ...roomIds,
+        ]);
+        return {
+            data: rawData,
+            keyMap: new Map([...sourceKeys].map(key => [key, key])),
+            skippedSourceKeys: new Set(),
+            summary: {
+                importedMessages: Object.values(histories)
+                    .reduce((total, history) => total + (Array.isArray(history) ? history.length : 0), 0),
+                renamedConflicts: 0,
+                skippedDuplicates: 0,
+            },
+        };
+    }
+
     private createExportSafeRooms(roomId?: string) {
         if (!this.roomManager) return undefined;
         const exported = this.roomManager.exportData();
@@ -374,6 +404,7 @@ export class FileManager {
             referencedPhotos: 0,
             embeddedPhotos: 0,
             migratedLegacyPhotos: 0,
+            recoveredOrphanPhotos: 0,
             unavailablePhotos: 0,
         };
         if (!folder) return summary;
@@ -439,6 +470,39 @@ export class FileManager {
 
                 content.imageAssetId = assetId;
                 delete content.imageUrl;
+            }
+        }
+
+        // A photo blob is saved before its chat message. If localStorage is full,
+        // the blob survives in IndexedDB while its message disappears on reload.
+        // Preserve and re-index those orphaned assets in the archive copy only.
+        if (typeof indexedDB !== 'undefined') {
+            const storedAssets = await listCharacterPhotoAssets();
+            for (const asset of storedAssets) {
+                if (!asset?.id || exportedIds.has(asset.id) || !asset.blob?.size) continue;
+                const personaKey = asset.personaKey === 'custom_seed_cc' && this.memoryManager.getPersona('cc')
+                    ? 'cc'
+                    : asset.personaKey || 'recovered-photos';
+                const encodedPersonaKey = encodeURIComponent(personaKey);
+                folder.file(`${encodedPersonaKey}/${asset.id}.${photoExtension(asset.blob.type)}`, asset.blob);
+                exportedIds.add(asset.id);
+                summary.embeddedPhotos += 1;
+                summary.recoveredOrphanPhotos += 1;
+
+                const history = (chatHistories[personaKey] ||= []);
+                if (!history.some(message => message.content.imageAssetId === asset.id)) {
+                    history.push({
+                        id: `recovered-${asset.id}`,
+                        createdAt: asset.createdAt || Date.now(),
+                        role: 'model',
+                        content: {
+                            text: '從本機照片庫救回的舊照片',
+                            imageAssetId: asset.id,
+                            imagePrompt: asset.prompt || '',
+                            legacy: true,
+                        },
+                    });
+                }
             }
         }
 
@@ -756,7 +820,7 @@ export class FileManager {
         }
     }
 
-    private async restoreLoadedZip(zip: any) {
+    private async restoreLoadedZip(zip: any, replaceExisting = false) {
         const allDataFile = zip.file("all_data.json");
         if (allDataFile) {
             const allDataString = await allDataFile.async("string");
@@ -773,10 +837,12 @@ export class FileManager {
                 delete rawAllData.stories;
             }
 
-            const prepared = this.prepareMergeSafeImport(rawAllData);
+            const prepared = replaceExisting
+                ? this.prepareReplacementImport(rawAllData)
+                : this.prepareMergeSafeImport(rawAllData);
             const allData = prepared.data;
-            this.memoryManager.loadAllData(allData);
-            this.roomManager?.importData(allData.rooms);
+            this.memoryManager.loadAllData(allData, replaceExisting);
+            this.roomManager?.importData(allData.rooms, replaceExisting);
 
             const avatarFolder = zip.folder("avatars");
             if (avatarFolder) {
@@ -786,9 +852,9 @@ export class FileManager {
                     if (prepared.skippedSourceKeys.has(sourceKey)) return;
                     const key = prepared.keyMap.get(sourceKey) || sourceKey;
                     if (this.memoryManager.getPersona(key) && !fileEntry.dir) {
-                        avatarPromises.push(fileEntry.async("base64").then((base64: string) => {
+                        avatarPromises.push(fileEntry.async("base64").then(async (base64: string) => {
                             const mimeType = fileEntry.name.endsWith('png') ? 'image/png' : 'image/jpeg';
-                            this.memoryManager.updatePersona(key, { avatarUrl: `data:${mimeType};base64,${base64}` });
+                            await this.memoryManager.setPersonaAvatar(key, `data:${mimeType};base64,${base64}`);
                         }));
                     }
                 });
@@ -843,13 +909,13 @@ export class FileManager {
         throw new Error("ZIP 檔案中找不到有效的對話紀錄檔 (all_data.json 或 history.json)");
     }
 
-    async restoreAllDataArchive(blob: Blob, askForConfirmation = true) {
+    async restoreAllDataArchive(blob: Blob, askForConfirmation = true, replaceExisting = false) {
         if (askForConfirmation && !window.confirm(
             '將以安全合併方式匯入：不會刪除現有聊天室；若同一角色已有不同內容，匯入資料會另存為備份副本。要繼續嗎？',
         )) return false;
 
         const zip = await JSZip.loadAsync(blob);
-        await this.restoreLoadedZip(zip);
+        await this.restoreLoadedZip(zip, replaceExisting);
         return true;
     }
 

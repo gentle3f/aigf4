@@ -1711,6 +1711,14 @@ body.app-body {
     font-size: 0.75rem !important;
 }
 
+.cloud-backup-scan-result {
+    min-height: 18px;
+    margin: 10px 0 0 !important;
+    color: #075e54 !important;
+    font-size: 0.76rem !important;
+    line-height: 1.55 !important;
+}
+
 .cloud-backup-toggle {
     display: flex;
     align-items: center;

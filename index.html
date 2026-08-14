@@ -1283,6 +1283,13 @@
                     <span class="cloud-backup-progress-track"><span id="cloud-backup-progress-bar"></span></span>
                 </div>
 
+                <section class="cloud-backup-card">
+                    <div class="wa-section-heading"><h3>本機照片救援</h3></div>
+                    <p>直接掃描這部裝置的私人照片資料庫，包括已失去聊天索引但仍存在的照片；掃描不會上傳或刪除任何檔案。</p>
+                    <button id="scan-local-photo-vault" type="button" class="wa-secondary-button">掃描本機照片庫</button>
+                    <p id="local-photo-vault-result" class="cloud-backup-scan-result" aria-live="polite"></p>
+                </section>
+
                 <section id="cloud-backup-setup" class="cloud-backup-card hidden">
                     <div class="wa-section-heading"><h3>首次設定</h3></div>
                     <p>請建立一個只有你知道的復原密碼。新手機需要它解密；請存入密碼管理器，不要使用目前的短密碼 `0557`。</p>

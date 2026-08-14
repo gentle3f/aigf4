@@ -4,7 +4,7 @@ import { requireAuthenticatedRequest } from './_auth.js';
 const BACKUP_PREFIX = 'wetapp-backups/v1/';
 const VAULT_ID_PATTERN = /^[a-zA-Z0-9_-]{43}$/u;
 const BACKUP_PATH_PATTERN = /^wetapp-backups\/v1\/[a-zA-Z0-9_-]{43}\/\d{13}-[a-z0-9-]{8,64}\.wetbackup$/u;
-const RETAINED_BACKUPS = 3;
+const RETAINED_BACKUPS = 10;
 const RETAINED_SIZE_BUDGET = 900 * 1024 * 1024;
 
 const listBackups = async (vaultId) => {

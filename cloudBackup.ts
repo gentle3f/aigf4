@@ -548,7 +548,7 @@ export class CloudBackupManager {
                 percent => this.progress('restoring', '正在解密及驗證…', 10 + Math.round(percent * 0.6)),
             );
             this.progress('restoring', '正在安全合併資料…', 75);
-            await this.fileManager.restoreAllDataArchive(archive, false);
+            await this.fileManager.restoreAllDataArchive(archive, false, true);
             await saveLocalKey(localKey!.key, localKey!.salt, vaultId, localKey!.iterations);
             const fingerprint = await fingerprintLocalState();
             this.updateState({

@@ -37,6 +37,7 @@ test('legacy character photo URLs are embedded once and rewritten as portable as
         referencedPhotos: 2,
         embeddedPhotos: 1,
         migratedLegacyPhotos: 1,
+        recoveredOrphanPhotos: 0,
         unavailablePhotos: 0,
     });
     assert.equal(files.size, 1);

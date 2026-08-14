@@ -663,14 +663,24 @@ export class MemoryManager {
         return changed;
     }
     
-    loadAllData(data: AllData) {
+    loadAllData(data: AllData, replaceExisting = false) {
         const snapshot = {
             personas: JSON.parse(JSON.stringify(this.personas)) as { [key: string]: Persona },
             chatHistories: JSON.parse(JSON.stringify(this.chatHistories)) as { [key: string]: ChatMessage[] },
             diaries: JSON.parse(JSON.stringify(this.diaries)) as { [key: string]: DiaryEntry[] },
             interests: JSON.parse(JSON.stringify(this.interests)) as { [key: string]: Interest[] },
+            privateAvatarKeys: new Set(this.privateAvatarKeys),
+            customPersonaCounter: this.customPersonaCounter,
         };
         try {
+            if (replaceExisting) {
+                this.personas = structuredClone(initialPersonas);
+                this.chatHistories = {};
+                this.diaries = {};
+                this.interests = {};
+                this.privateAvatarKeys.clear();
+                this.customPersonaCounter = 0;
+            }
             if (data.customPersonas) {
                 Object.assign(this.personas, data.customPersonas);
             }
@@ -692,6 +702,8 @@ export class MemoryManager {
             this.chatHistories = snapshot.chatHistories;
             this.diaries = snapshot.diaries;
             this.interests = snapshot.interests;
+            this.privateAvatarKeys = snapshot.privateAvatarKeys;
+            this.customPersonaCounter = snapshot.customPersonaCounter;
             this.persistModifiedPersonas();
             this.persistChatHistories();
             throw new Error('瀏覽器儲存空間不足或資料無法完整寫入；本次匯入已取消，原有資料保持不變。');

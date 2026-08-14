@@ -69,6 +69,7 @@ import { createRandomAdultFemalePersona } from "./randomPersona.js";
 import {
     deleteCharacterPhotoAsset,
     getCharacterPhotoBlob,
+    listCharacterPhotoAssets,
     saveCharacterPhotoAsset,
 } from "./photoStore.js";
 import {
@@ -209,6 +210,8 @@ const cloudBackupProgress = document.getElementById('cloud-backup-progress')!;
 const cloudBackupProgressText = document.getElementById('cloud-backup-progress-text')!;
 const cloudBackupProgressPercent = document.getElementById('cloud-backup-progress-percent')!;
 const cloudBackupProgressBar = document.getElementById('cloud-backup-progress-bar') as HTMLElement;
+const scanLocalPhotoVaultBtn = document.getElementById('scan-local-photo-vault') as HTMLButtonElement;
+const localPhotoVaultResult = document.getElementById('local-photo-vault-result')!;
 const cloudBackupSetup = document.getElementById('cloud-backup-setup')!;
 const cloudBackupPassword = document.getElementById('cloud-backup-password') as HTMLInputElement;
 const cloudBackupPasswordConfirm = document.getElementById('cloud-backup-password-confirm') as HTMLInputElement;
@@ -729,7 +732,9 @@ let albumPhotos: {
     imageAssetId?: string;
     caption: string;
     prompt: string;
-    historyIndex: number;
+    historyIndex: number | null;
+    createdAt: number;
+    recoveredFromStore?: boolean;
     content: Content;
 }[] = [];
 let albumAttachments: ChatAttachment[] = [];
@@ -4061,6 +4066,7 @@ const setCloudBackupBusy = (busy: boolean) => {
         cloudRestoreLatestBtn,
         refreshCloudBackupsBtn,
         deleteCloudBackupsBtn,
+        scanLocalPhotoVaultBtn,
     ].forEach(button => { button.disabled = busy; });
     cloudBackupAutoToggle.disabled = busy;
 };
@@ -4173,12 +4179,46 @@ async function refreshCloudBackupView(fetchRemote = true) {
     renderCloudBackupState();
 }
 
+async function scanLocalPhotoVault(showWorking = true) {
+    if (showWorking) localPhotoVaultResult.textContent = '正在掃描本機照片庫…';
+    scanLocalPhotoVaultBtn.disabled = true;
+    try {
+        const assets = await listCharacterPhotoAssets();
+        const referencedIds = new Set(
+            Object.values(memoryManager.getAllChatHistories())
+                .flatMap(history => history.map(message => message.content.imageAssetId))
+                .filter((assetId): assetId is string => Boolean(assetId)),
+        );
+        const orphanAssets = assets.filter(asset => !referencedIds.has(asset.id));
+        const ccKeys = new Set([
+            'cc',
+            'custom_seed_cc',
+            ...Object.entries(memoryManager.getAllPersonas())
+                .filter(([, persona]) => persona.name.trim().toLocaleLowerCase() === 'cc')
+                .map(([key]) => key),
+        ]);
+        const ccAssets = assets.filter(asset => ccKeys.has(asset.personaKey));
+        const ccOrphans = ccAssets.filter(asset => !referencedIds.has(asset.id));
+        localPhotoVaultResult.textContent = [
+            `找到 ${assets.length} 張實體照片`,
+            `${orphanAssets.length} 張失去聊天索引`,
+            `Cc 共 ${ccAssets.length} 張（其中 ${ccOrphans.length} 張待救回）`,
+            '待救回照片現在會直接顯示在所屬聊天室的「媒體」相簿，下一次備份亦會完整打包。',
+        ].join('；');
+    } catch (error) {
+        localPhotoVaultResult.textContent = `掃描失敗：${error instanceof Error ? error.message : '無法讀取本機照片資料庫'}`;
+    } finally {
+        scanLocalPhotoVaultBtn.disabled = cloudBackupBusy;
+    }
+}
+
 const openCloudBackup = () => {
     cloudBackupSetupError.textContent = '';
     cloudRestoreError.textContent = '';
     cloudBackupModal.classList.remove('hidden');
     homeMenu.classList.add('hidden');
     void refreshCloudBackupView(true);
+    void scanLocalPhotoVault(false);
 };
 
 const closeCloudBackup = () => cloudBackupModal.classList.add('hidden');
@@ -12859,6 +12899,7 @@ function updateAlbumState() {
             caption: msg.content.text || '',
             prompt: msg.content.imagePrompt || msg.content.text || '',
             historyIndex: msg.historyIndex,
+            createdAt: msg.createdAt || msg.historyIndex,
             content: msg.content,
         }));
     albumAttachments = history.flatMap(message => message.content.attachments || []);
@@ -12868,6 +12909,41 @@ function updateAlbumState() {
     albumSelectAll.checked = false;
     selectedPhotoIndices.clear();
     showMainAlbumButtons();
+}
+
+async function mergeStoredPhotosIntoAlbum(conversationKey: string) {
+    const persona = memoryManager.getPersona(conversationKey);
+    const isCcConversation = persona?.name.trim().toLocaleLowerCase() === 'cc';
+    const storedAssets = isCcConversation
+        ? (await listCharacterPhotoAssets()).filter(asset => (
+            asset.personaKey === conversationKey
+            || asset.personaKey === 'cc'
+            || asset.personaKey === 'custom_seed_cc'
+        ))
+        : await listCharacterPhotoAssets(conversationKey);
+    if (currentConversationKey !== conversationKey) return;
+
+    const knownAssetIds = new Set(albumPhotos.map(photo => photo.imageAssetId).filter(Boolean));
+    storedAssets.forEach(asset => {
+        if (!asset.id || knownAssetIds.has(asset.id)) return;
+        const content: Content = {
+            text: '從本機照片庫救回的舊照片',
+            imageAssetId: asset.id,
+            imagePrompt: asset.prompt || '',
+            legacy: true,
+        };
+        albumPhotos.push({
+            imageAssetId: asset.id,
+            caption: content.text || '',
+            prompt: asset.prompt || '',
+            historyIndex: null,
+            createdAt: asset.createdAt || 0,
+            recoveredFromStore: true,
+            content,
+        });
+        knownAssetIds.add(asset.id);
+    });
+    albumPhotos.sort((left, right) => left.createdAt - right.createdAt);
 }
 
 function renderAlbum() {
@@ -13021,18 +13097,21 @@ async function deleteSelectedPhotos() {
     if (selectedPhotoIndices.size === 0 || !currentConversationKey) return;
     
     // Get the history indices of the photos to be deleted
-    const historyIndicesToDelete = new Set(
-        Array.from(selectedPhotoIndices).map(photoIndex => albumPhotos[photoIndex].historyIndex)
+    const historyIndicesToDelete = new Set<number>(
+        Array.from(selectedPhotoIndices)
+            .map(photoIndex => albumPhotos[photoIndex].historyIndex)
+            .filter((historyIndex): historyIndex is number => historyIndex !== null)
     );
     const assetIdsToDelete = Array.from(selectedPhotoIndices)
         .map(photoIndex => albumPhotos[photoIndex].imageAssetId)
         .filter((assetId): assetId is string => Boolean(assetId));
 
     // Filter the chat history, keeping only messages whose index is NOT in the deletion set
-    const currentHistory = memoryManager.getChatHistory(currentConversationKey);
-    const newHistory = currentHistory.filter((_, index) => !historyIndicesToDelete.has(index));
-    
-    memoryManager.setChatHistory(currentConversationKey, newHistory);
+    if (historyIndicesToDelete.size > 0) {
+        const currentHistory = memoryManager.getChatHistory(currentConversationKey);
+        const newHistory = currentHistory.filter((_, index) => !historyIndicesToDelete.has(index));
+        memoryManager.setChatHistory(currentConversationKey, newHistory);
+    }
     await Promise.all(assetIdsToDelete.map(async assetId => {
         const objectUrl = characterPhotoObjectUrls.get(assetId);
         if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -13052,10 +13131,18 @@ async function deleteSelectedPhotos() {
 
 
 
-function openAlbumModal() {
+async function openAlbumModal() {
     updateAlbumState();
-    renderAlbum();
     albumModal.classList.remove('hidden');
+    renderAlbum();
+    if (!currentConversationKey) return;
+    const conversationKey = currentConversationKey;
+    try {
+        await mergeStoredPhotosIntoAlbum(conversationKey);
+        if (currentConversationKey === conversationKey && !albumModal.classList.contains('hidden')) renderAlbum();
+    } catch (error) {
+        console.warn('Unable to scan the local character photo vault:', error);
+    }
 }
 function closeAlbumModal() {
     albumModal.classList.add('hidden');
@@ -14926,6 +15013,7 @@ const setupEventListeners = () => {
         if (latest) void restoreCloudBackupVersion(latest);
     });
     refreshCloudBackupsBtn.addEventListener('click', () => void refreshCloudBackupView(true));
+    scanLocalPhotoVaultBtn.addEventListener('click', () => void scanLocalPhotoVault());
     cloudBackupAutoToggle.addEventListener('change', () => {
         cloudBackupManager.setEnabled(cloudBackupAutoToggle.checked);
         renderCloudBackupState();

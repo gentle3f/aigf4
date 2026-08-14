@@ -76,6 +76,13 @@ export const getCharacterPhotoAsset = async (id: string) => {
     return runPhotoStoreRequest<CharacterPhotoAsset | undefined>('readonly', store => store.get(id));
 };
 
+export const listCharacterPhotoAssets = async (personaKey?: string) => {
+    const assets = await runPhotoStoreRequest<CharacterPhotoAsset[]>('readonly', store => store.getAll());
+    return assets
+        .filter(asset => !personaKey || asset.personaKey === personaKey)
+        .sort((left, right) => left.createdAt - right.createdAt);
+};
+
 export const getCharacterPhotoBlob = async (id: string) => {
     const asset = await getCharacterPhotoAsset(id);
     return asset?.blob || null;
