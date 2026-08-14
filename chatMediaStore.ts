@@ -1,3 +1,5 @@
+import { notifyLocalCloudChange } from './cloudSyncEvents.js';
+
 const DATABASE_NAME = 'aigf4-private-chat';
 const DATABASE_VERSION = 1;
 const ATTACHMENT_STORE = 'attachments';
@@ -55,6 +57,7 @@ export const saveChatAttachment = async (attachment: StoredChatAttachment) => {
     } catch {
         // Storage persistence is best-effort and may require browser permission.
     }
+    notifyLocalCloudChange('media');
     return attachment.id;
 };
 
@@ -68,16 +71,18 @@ export const getChatAttachmentBlob = async (id: string) => (
 
 export const deleteChatAttachment = async (id: string) => {
     await runRequest('readwrite', store => store.delete(id));
+    notifyLocalCloudChange('media');
 };
 
-export const listChatAttachments = async (conversationKey: string) => {
+export const listChatAttachments = async (conversationKey?: string) => {
     const database = await openDatabase();
     return new Promise<StoredChatAttachment[]>((resolve, reject) => {
         const transaction = database.transaction(ATTACHMENT_STORE, 'readonly');
-        const index = transaction.objectStore(ATTACHMENT_STORE).index('conversationKey');
-        const request = index.getAll(conversationKey);
+        const store = transaction.objectStore(ATTACHMENT_STORE);
+        const request = conversationKey
+            ? store.index('conversationKey').getAll(conversationKey)
+            : store.getAll();
         request.onsuccess = () => resolve(request.result || []);
         request.onerror = () => reject(request.error || new Error('Unable to list private attachments.'));
     });
 };
-

@@ -1,3 +1,5 @@
+import { notifyLocalCloudChange } from './cloudSyncEvents.js';
+
 const DATABASE_NAME = 'aigf4-media';
 const DATABASE_VERSION = 1;
 const PHOTO_STORE_NAME = 'characterPhotos';
@@ -69,6 +71,7 @@ export const requestPersistentPhotoStorage = () => {
 export const saveCharacterPhotoAsset = async (asset: CharacterPhotoAsset) => {
     await runPhotoStoreRequest('readwrite', store => store.put(asset));
     void requestPersistentPhotoStorage();
+    notifyLocalCloudChange('media');
     return asset.id;
 };
 
@@ -90,4 +93,5 @@ export const getCharacterPhotoBlob = async (id: string) => {
 
 export const deleteCharacterPhotoAsset = async (id: string) => {
     await runPhotoStoreRequest('readwrite', store => store.delete(id));
+    notifyLocalCloudChange('media');
 };

@@ -1,8 +1,10 @@
+import { notifyLocalCloudChange } from './cloudSyncEvents.js';
+
 const DATABASE_NAME = 'aigf4-private-avatars';
 const DATABASE_VERSION = 1;
 const AVATAR_STORE = 'avatars';
 
-interface StoredPersonaAvatar {
+export interface StoredPersonaAvatar {
     personaKey: string;
     blob: Blob;
     updatedAt: number;
@@ -79,6 +81,7 @@ export const savePersonaAvatar = async (personaKey: string, dataUrl: string) => 
         blob,
         updatedAt: Date.now(),
     } satisfies StoredPersonaAvatar));
+    notifyLocalCloudChange('media');
 
     try {
         await navigator.storage?.persist?.();
@@ -87,8 +90,17 @@ export const savePersonaAvatar = async (personaKey: string, dataUrl: string) => 
     }
 };
 
+export const savePersonaAvatarBlob = async (personaKey: string, blob: Blob, updatedAt = Date.now()) => {
+    if (!blob.type.startsWith('image/')) {
+        throw new Error('Only image avatars can be saved in private avatar storage.');
+    }
+    await runRequest('readwrite', store => store.put({ personaKey, blob, updatedAt } satisfies StoredPersonaAvatar));
+    notifyLocalCloudChange('media');
+};
+
 export const deletePersonaAvatar = async (personaKey: string) => {
     await runRequest('readwrite', store => store.delete(personaKey));
+    notifyLocalCloudChange('media');
 };
 
 export const loadPersonaAvatars = async () => {
@@ -98,3 +110,7 @@ export const loadPersonaAvatars = async () => {
     )));
     return Object.fromEntries(entries) as Record<string, string>;
 };
+
+export const listPersonaAvatarAssets = async () => (
+    runRequest<StoredPersonaAvatar[]>('readonly', store => store.getAll())
+);

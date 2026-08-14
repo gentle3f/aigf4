@@ -1,5 +1,6 @@
 import { ChatContextBridge, ChatMessage, MemoryManager, Persona, PublicIdentity, TimelineBranchInfo } from './managers.js';
 import { AUTO_MEMORY_SUMMARY_VERSION } from './autoMemory.js';
+import { notifyLocalCloudChange } from './cloudSyncEvents.js';
 
 const ROOM_STORAGE_KEY = 'aigf4RoomsV2';
 const DELETED_ROOM_IDS_STORAGE_KEY = 'aigf4DeletedRoomIdsV1';
@@ -337,6 +338,7 @@ export class RoomManager {
 
     private persist() {
         localStorage.setItem(ROOM_STORAGE_KEY, JSON.stringify(this.exportData()));
+        notifyLocalCloudChange('rooms');
     }
 
     exportData(): RoomExportData {

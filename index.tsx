@@ -23,6 +23,10 @@ import {
     CloudBackupManager,
     CloudBackupProgress,
 } from "./cloudBackup.js";
+import {
+    SupabaseCloudSyncManager,
+    SupabaseCloudSyncState,
+} from './supabaseCloudSync.js';
 import { coreInstruction, VENICE_ASSISTANT_PERSONA_KEY } from "./personas.tsx";
 import {
     cleanVeniceAssistantReply,
@@ -199,6 +203,7 @@ const homeSearchToggle = document.getElementById('home-search-toggle') as HTMLBu
 const homeMenuToggle = document.getElementById('home-menu-toggle') as HTMLButtonElement;
 const homeMenu = document.getElementById('home-menu')!;
 const homeChatModelSettingsBtn = document.getElementById('home-chat-model-settings') as HTMLButtonElement;
+const homeLiveCloudBtn = document.getElementById('home-live-cloud') as HTMLButtonElement;
 const homeCloudBackupBtn = document.getElementById('home-cloud-backup') as HTMLButtonElement;
 const homeExportAll = document.getElementById('home-export-all') as HTMLButtonElement;
 const cloudBackupModal = document.getElementById('cloud-backup-modal')!;
@@ -230,6 +235,24 @@ const cloudBackupVersionList = document.getElementById('cloud-backup-version-lis
 const refreshCloudBackupsBtn = document.getElementById('refresh-cloud-backups') as HTMLButtonElement;
 const cloudBackupDanger = document.getElementById('cloud-backup-danger')!;
 const deleteCloudBackupsBtn = document.getElementById('delete-cloud-backups') as HTMLButtonElement;
+const supabaseCloudModal = document.getElementById('supabase-cloud-modal')!;
+const closeSupabaseCloudBtn = document.getElementById('close-supabase-cloud') as HTMLButtonElement;
+const supabaseCloudStatusIcon = document.getElementById('supabase-cloud-status-icon')!;
+const supabaseCloudStatusTitle = document.getElementById('supabase-cloud-status-title')!;
+const supabaseCloudStatusDetail = document.getElementById('supabase-cloud-status-detail')!;
+const supabaseCloudProgress = document.getElementById('supabase-cloud-progress')!;
+const supabaseCloudProgressText = document.getElementById('supabase-cloud-progress-text')!;
+const supabaseCloudProgressPercent = document.getElementById('supabase-cloud-progress-percent')!;
+const supabaseCloudProgressBar = document.getElementById('supabase-cloud-progress-bar') as HTMLElement;
+const supabaseCloudLogin = document.getElementById('supabase-cloud-login')!;
+const supabaseCloudEmail = document.getElementById('supabase-cloud-email') as HTMLInputElement;
+const supabaseCloudError = document.getElementById('supabase-cloud-error')!;
+const supabaseCloudSendLink = document.getElementById('supabase-cloud-send-link') as HTMLButtonElement;
+const supabaseCloudControls = document.getElementById('supabase-cloud-controls')!;
+const supabaseCloudAccount = document.getElementById('supabase-cloud-account')!;
+const supabaseCloudSyncNow = document.getElementById('supabase-cloud-sync-now') as HTMLButtonElement;
+const supabaseCloudReload = document.getElementById('supabase-cloud-reload') as HTMLButtonElement;
+const supabaseCloudSignOut = document.getElementById('supabase-cloud-sign-out') as HTMLButtonElement;
 const newChatFab = document.getElementById('new-chat-fab') as HTMLButtonElement;
 const newChatMenu = document.getElementById('new-chat-menu')!;
 const createGroupRoomBtn = document.getElementById('create-group-room-btn') as HTMLButtonElement;
@@ -678,6 +701,21 @@ const cloudBackupManager = new CloudBackupManager(fileManager, {
     onProgress: progress => renderCloudBackupProgress(progress),
     onStateChange: () => {
         if (!cloudBackupModal.classList.contains('hidden')) void refreshCloudBackupView(false);
+    },
+});
+
+const supabaseCloudSyncManager = new SupabaseCloudSyncManager(memoryManager, roomManager, {
+    onStateChange: state => renderSupabaseCloudState(state),
+    onRemoteApplied: () => {
+        roomManager.ensureIuGroupRoom(memoryManager);
+        renderPersonaList();
+        if (currentConversationKey) {
+            const draft = messageInput.value;
+            startChat(currentConversationKey, null, 'skip');
+            messageInput.value = draft;
+            resetMessageInput();
+            updateSendButtonState();
+        }
     },
 });
 
@@ -4222,6 +4260,99 @@ const openCloudBackup = () => {
 };
 
 const closeCloudBackup = () => cloudBackupModal.classList.add('hidden');
+
+const formatLiveCloudTime = (timestamp?: number) => timestamp
+    ? new Intl.DateTimeFormat('zh-HK', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+    }).format(new Date(timestamp))
+    : '';
+
+function renderSupabaseCloudState(state: SupabaseCloudSyncState) {
+    const busy = ['sending_link', 'connecting', 'pulling', 'pushing'].includes(state.phase);
+    const signedIn = Boolean(state.email);
+    const titles: Record<SupabaseCloudSyncState['phase'], string> = {
+        unconfigured: '即時雲端尚未設定',
+        signed_out: '尚未登入即時雲端',
+        sending_link: '正在傳送登入連結',
+        connecting: '正在連接私人雲端',
+        pulling: '正在下載最新資料',
+        pushing: '正在上傳本機變更',
+        synced: '即時雲端已同步',
+        offline: '目前使用離線快取',
+        error: '即時雲端需要處理',
+    };
+    supabaseCloudStatusTitle.textContent = titles[state.phase];
+    supabaseCloudStatusDetail.textContent = state.lastSyncAt && state.phase === 'synced'
+        ? `${state.detail} 最近同步：${formatLiveCloudTime(state.lastSyncAt)}`
+        : state.detail;
+    supabaseCloudStatusIcon.className = 'cloud-backup-status-icon';
+    if (state.phase === 'error') {
+        supabaseCloudStatusIcon.textContent = '!';
+        supabaseCloudStatusIcon.classList.add('is-error');
+    } else if (state.phase === 'synced') {
+        supabaseCloudStatusIcon.textContent = '✓';
+    } else if (state.phase === 'pulling') {
+        supabaseCloudStatusIcon.textContent = '↓';
+        supabaseCloudStatusIcon.classList.add('is-warning');
+    } else if (state.phase === 'pushing') {
+        supabaseCloudStatusIcon.textContent = '↑';
+        supabaseCloudStatusIcon.classList.add('is-warning');
+    } else {
+        supabaseCloudStatusIcon.textContent = '↥';
+        supabaseCloudStatusIcon.classList.add('is-warning');
+    }
+
+    supabaseCloudLogin.classList.toggle('hidden', signedIn);
+    supabaseCloudControls.classList.toggle('hidden', !signedIn);
+    supabaseCloudAccount.textContent = state.email || '';
+    supabaseCloudError.textContent = state.phase === 'error' ? state.detail : '';
+    supabaseCloudSendLink.disabled = busy || !state.configured;
+    supabaseCloudSyncNow.disabled = busy;
+    supabaseCloudReload.disabled = busy;
+    supabaseCloudSignOut.disabled = busy;
+    supabaseCloudProgress.classList.toggle('hidden', !busy);
+    supabaseCloudProgressText.textContent = state.detail;
+    supabaseCloudProgressPercent.textContent = typeof state.progress === 'number' ? `${state.progress}%` : '';
+    supabaseCloudProgressBar.style.width = `${state.progress ?? (busy ? 12 : 0)}%`;
+}
+
+const openSupabaseCloud = () => {
+    homeMenu.classList.add('hidden');
+    supabaseCloudEmail.value = supabaseCloudSyncManager.getOwnerEmail();
+    renderSupabaseCloudState(supabaseCloudSyncManager.getState());
+    supabaseCloudModal.classList.remove('hidden');
+};
+
+const closeSupabaseCloud = () => supabaseCloudModal.classList.add('hidden');
+
+const sendSupabaseMagicLink = async () => {
+    supabaseCloudError.textContent = '';
+    try {
+        await supabaseCloudSyncManager.sendMagicLink(supabaseCloudEmail.value);
+    } catch (error) {
+        supabaseCloudError.textContent = error instanceof Error ? error.message : '未能傳送登入連結。';
+    }
+};
+
+const syncSupabaseCloudNow = async () => {
+    try {
+        await supabaseCloudSyncManager.syncNow();
+    } catch (error) {
+        supabaseCloudError.textContent = error instanceof Error ? error.message : '同步失敗。';
+    }
+};
+
+const reloadSupabaseCloud = async () => {
+    if (!confirm('會先上傳尚未同步的本機變更，再重新載入雲端最新資料。繼續嗎？')) return;
+    try {
+        await supabaseCloudSyncManager.reloadFromCloud();
+    } catch (error) {
+        supabaseCloudError.textContent = error instanceof Error ? error.message : '重新載入失敗。';
+    }
+};
 
 const setupCloudBackup = async () => {
     cloudBackupSetupError.textContent = '';
@@ -8906,6 +9037,7 @@ const refreshAuthSession = async (): Promise<boolean> => {
 const submitUnlock = async () => {
     if (!USES_VENICE_PROXY_AUTH) {
         setUnlockedState(true);
+        void supabaseCloudSyncManager.start();
         return;
     }
 
@@ -8935,6 +9067,7 @@ const submitUnlock = async () => {
         }
 
         setUnlockedState(true);
+        void supabaseCloudSyncManager.start();
         if (pendingVideoJob) void resumePendingVideoJob('auto');
     } catch (error) {
         setUnlockedState(false);
@@ -15000,6 +15133,15 @@ const setupEventListeners = () => {
         newChatMenu.classList.add('hidden');
     });
     homeChatModelSettingsBtn.addEventListener('click', () => openChatModelSettings('global'));
+    homeLiveCloudBtn.addEventListener('click', openSupabaseCloud);
+    closeSupabaseCloudBtn.addEventListener('click', closeSupabaseCloud);
+    supabaseCloudModal.addEventListener('click', event => {
+        if (event.target === supabaseCloudModal) closeSupabaseCloud();
+    });
+    supabaseCloudSendLink.addEventListener('click', () => void sendSupabaseMagicLink());
+    supabaseCloudSyncNow.addEventListener('click', () => void syncSupabaseCloudNow());
+    supabaseCloudReload.addEventListener('click', () => void reloadSupabaseCloud());
+    supabaseCloudSignOut.addEventListener('click', () => void supabaseCloudSyncManager.signOut());
     homeCloudBackupBtn.addEventListener('click', openCloudBackup);
     closeCloudBackupBtn.addEventListener('click', closeCloudBackup);
     cloudBackupModal.addEventListener('click', event => {
@@ -15665,7 +15807,10 @@ const init = async () => {
     }
     setVideoStudioBusy(false);
     const unlocked = await refreshAuthSession();
-    if (unlocked && pendingVideoJob) void resumePendingVideoJob('auto');
+    if (unlocked) {
+        await supabaseCloudSyncManager.start();
+        if (pendingVideoJob) void resumePendingVideoJob('auto');
+    }
 };
 
 void init();

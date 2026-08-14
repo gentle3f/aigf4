@@ -1704,6 +1704,34 @@ body.app-body {
     transition: width 180ms ease;
 }
 
+#supabase-cloud-progress-bar {
+    display: block;
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--mori-green);
+    transition: width 180ms ease;
+}
+
+.cloud-sync-sign-out {
+    width: 100%;
+    margin-top: 12px;
+    padding: 10px;
+    border: 0;
+    color: #8d2f2f;
+    background: transparent;
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.cloud-sync-sign-out:active {
+    background: #fff1f1;
+}
+
+.cloud-sync-note {
+    border-left: 3px solid var(--mori-green);
+}
+
 .cloud-backup-error {
     min-height: 18px;
     margin: -3px 0 9px !important;

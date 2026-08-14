@@ -2,6 +2,7 @@
 import { personas as initialPersonas, ccV3Persona } from "./personas.tsx";
 import { deletePersonaAvatar, loadPersonaAvatars, savePersonaAvatar } from './avatarStore.js';
 import { AUTO_MEMORY_SUMMARY_VERSION } from './autoMemory.js';
+import { notifyLocalCloudChange } from './cloudSyncEvents.js';
 
 // --- Constants ---
 export const DIARY_CHECKPOINT = '[DIARY_CHECKPOINT]';
@@ -614,6 +615,7 @@ export class MemoryManager {
                 ]),
             );
             localStorage.setItem('customPersonas', JSON.stringify(persistablePersonas));
+            notifyLocalCloudChange('state');
         } catch (error) {
             console.error('Failed to save custom personas:', error);
             if (throwOnError) throw error;
@@ -642,6 +644,7 @@ export class MemoryManager {
     private persistChatHistories(throwOnError = false) {
         try {
             localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(this.chatHistories));
+            notifyLocalCloudChange('messages');
         } catch (error) {
             console.error('Failed to save chat histories:', error);
             if (throwOnError) throw error;

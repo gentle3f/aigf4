@@ -54,6 +54,7 @@
             </header>
             <div id="home-menu" class="wa-popover hidden">
                 <button id="home-chat-model-settings" type="button">聊天模型設定</button>
+                <button id="home-live-cloud" type="button">即時雲端</button>
                 <button id="home-cloud-backup" type="button">雲端備份</button>
                 <button id="upload-zip-btn" type="button">匯入聊天備份</button>
                 <button id="home-export-all" type="button">匯出所有資料</button>
@@ -1325,6 +1326,50 @@
 
                 <section id="cloud-backup-danger" class="cloud-backup-danger hidden">
                     <button id="delete-cloud-backups" type="button">刪除所有雲端備份及本機金鑰</button>
+                </section>
+            </div>
+        </section>
+    </div>
+
+    <!-- Supabase live cloud -->
+    <div id="supabase-cloud-modal" class="hidden wa-modal-backdrop">
+        <section class="wa-sheet cloud-backup-sheet" role="dialog" aria-modal="true" aria-labelledby="supabase-cloud-title">
+            <header class="wa-sheet-header">
+                <button id="close-supabase-cloud" class="wa-icon-button" type="button" aria-label="關閉"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m6 6 12 12M18 6 6 18"></path></svg></button>
+                <div><p class="wa-sheet-kicker">LIVE CLOUD</p><h2 id="supabase-cloud-title">即時私人雲端</h2></div>
+            </header>
+            <div class="wa-sheet-scroll cloud-backup-scroll">
+                <section class="cloud-backup-status-card">
+                    <span id="supabase-cloud-status-icon" class="cloud-backup-status-icon is-warning" aria-hidden="true">↥</span>
+                    <div><strong id="supabase-cloud-status-title">正在檢查登入…</strong><small id="supabase-cloud-status-detail">角色、記憶、訊息及私人媒體會在裝置之間同步。</small></div>
+                </section>
+
+                <div id="supabase-cloud-progress" class="hidden cloud-backup-progress" role="status" aria-live="polite">
+                    <div><span id="supabase-cloud-progress-text">正在同步…</span><span id="supabase-cloud-progress-percent"></span></div>
+                    <span class="cloud-backup-progress-track"><span id="supabase-cloud-progress-bar"></span></span>
+                </div>
+
+                <section id="supabase-cloud-login" class="cloud-backup-card">
+                    <div class="wa-section-heading"><h3>擁有人登入</h3></div>
+                    <p>登入連結只會寄到已設定的擁有人信箱。第一次連線會把這部裝置的完整資料建立到雲端；之後的新裝置會自動下載。</p>
+                    <label class="wa-field-label">電郵<input id="supabase-cloud-email" type="email" autocomplete="email" readonly></label>
+                    <p id="supabase-cloud-error" class="cloud-backup-error" aria-live="polite"></p>
+                    <button id="supabase-cloud-send-link" type="button" class="wa-primary-button">傳送安全登入連結</button>
+                </section>
+
+                <section id="supabase-cloud-controls" class="cloud-backup-card hidden">
+                    <div class="wa-section-heading"><h3>已連接</h3><span id="supabase-cloud-account"></span></div>
+                    <p>本機仍會保留離線快取；重新連線後自動補傳。原有的加密雲端備份會繼續保留作災難復原。</p>
+                    <div class="cloud-backup-action-grid">
+                        <button id="supabase-cloud-sync-now" type="button" class="wa-primary-button">立即同步</button>
+                        <button id="supabase-cloud-reload" type="button" class="wa-secondary-button">重新載入雲端</button>
+                    </div>
+                    <button id="supabase-cloud-sign-out" type="button" class="cloud-sync-sign-out">登出這部裝置</button>
+                </section>
+
+                <section class="cloud-backup-card cloud-sync-note">
+                    <div class="wa-section-heading"><h3>資料保護</h3></div>
+                    <p>資料庫與 Storage 均為私人空間，只有此擁有人帳戶可以讀寫。不要刪除原有加密備份，兩套機制用途不同。</p>
                 </section>
             </div>
         </section>

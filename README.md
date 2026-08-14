@@ -32,13 +32,21 @@ environment variables in Vercel:
 
 The browser never receives `VENICE_API_KEY` in proxy mode.
 
+## Supabase live cloud
+
+- Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` for browser access.
+- Apply `supabase/migrations/20260815000000_wetapp_cloud_sync.sql` once to create the owner-only RLS policies, private Storage bucket, and Realtime publication.
+- The first signed-in device uploads the initial cloud copy when the project is empty. Later devices download that copy before starting live sync.
+- Chat messages sync as individual rows. Character photos, attachments, persona avatars, and room-member avatars sync as private Storage objects instead of JSON/base64 data.
+- IndexedDB remains the offline cache and outbox. The encrypted Vercel Blob backup remains a separate disaster-recovery layer.
+
 ## Character chat
 
 - Default and imported characters use `qwen-3-6-plus` for stronger multi-speaker continuity.
 - Invalid, repetitive, or malformed replies retry automatically before using the configured fallbacks.
 - Named third parties can speak in the current scene without taking over the active character or user identity.
 - The home and chat screens use a WhatsApp-style conversation layout with search, emoji, private attachments, per-chat media, and mobile back navigation.
-- A fixed group room can store up to 8 character identities, with up to 4 physically present in one scene.
+- A fixed group room can store up to 8 character identities, with up to 5 physically present in one scene.
 - Newly introduced recurring people are offered as explicit fixed-member candidates; public identities can be confirmed through the existing Wikipedia-backed resolver before joining.
 - Group members keep separate persona, presence, `soul.md`, and `memory.md` records. Automatic episodic summaries run every 24 user turns without rewriting the original chat.
 - Writing that something must be remembered forever opens a confirmation card before it enters permanent memory.
