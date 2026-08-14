@@ -4146,7 +4146,11 @@ const renderCloudBackupState = () => {
     } else if (state.lastBackupAt && hasRemoteBackup) {
         cloudBackupStatusIcon.textContent = '✓';
         cloudBackupStatusTitle.textContent = state.enabled ? '自動備份已開啟' : '雲端備份已暫停';
-        cloudBackupStatusDetail.textContent = `最近備份：${formatCloudBackupTime(state.lastBackupAt)} · ${formatCloudBackupBytes(state.lastBackupSize)}`;
+        cloudBackupStatusDetail.textContent = [
+            `最近備份：${formatCloudBackupTime(state.lastBackupAt)}`,
+            formatCloudBackupBytes(state.lastBackupSize),
+            typeof state.lastBackupPhotoCount === 'number' ? `聊天相片 ${state.lastBackupPhotoCount} 張` : '',
+        ].filter(Boolean).join(' · ');
     } else if (cloudBackupHasLocalKey) {
         cloudBackupStatusIcon.textContent = '↑';
         cloudBackupStatusIcon.classList.add('is-warning');
@@ -15546,6 +15550,13 @@ const setupEventListeners = () => {
 // --- Initialization ---
 const init = async () => {
     syncBrowserViewState(HOME_HISTORY_STATE, 'replace');
+    conversationSearchInput.value = '';
+    window.addEventListener('pageshow', () => {
+        if (/^-\d{7,}$/u.test(conversationSearchInput.value.trim())) {
+            conversationSearchInput.value = '';
+            renderPersonaList();
+        }
+    });
     initializeImageSeedControls();
     try {
         await memoryManager.restorePrivateAvatars();

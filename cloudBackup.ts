@@ -12,6 +12,7 @@ const CLOUD_KEY_STORE = 'keys';
 const CLOUD_KEY_RECORD_ID = 'active';
 const AUTO_CHECK_INTERVAL_MS = 60 * 1000;
 const AUTO_BACKUP_MIN_INTERVAL_MS = 15 * 60 * 1000;
+const BACKUP_CONTENT_VERSION = 4;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -41,6 +42,8 @@ export interface CloudBackupState {
     lastBackupAt?: number;
     lastBackupSize?: number;
     lastBackupPathname?: string;
+    lastBackupPhotoCount?: number;
+    lastBackupMigratedPhotoCount?: number;
     lastFingerprint?: string;
     lastError?: string;
 }
@@ -335,6 +338,8 @@ const readState = (): CloudBackupState => {
             lastBackupAt: parsed.lastBackupAt,
             lastBackupSize: parsed.lastBackupSize,
             lastBackupPathname: parsed.lastBackupPathname,
+            lastBackupPhotoCount: parsed.lastBackupPhotoCount,
+            lastBackupMigratedPhotoCount: parsed.lastBackupMigratedPhotoCount,
             lastFingerprint: parsed.lastFingerprint,
             lastError: parsed.lastError,
         };
@@ -351,7 +356,10 @@ export const fingerprintLocalState = async () => {
     const keys = Object.keys(localStorage)
         .filter(key => key !== CLOUD_STATE_STORAGE_KEY)
         .sort();
-    const serialized = keys.map(key => `${key}\u0000${localStorage.getItem(key) || ''}`).join('\u0001');
+    const serialized = [
+        `backup-content-version:${BACKUP_CONTENT_VERSION}`,
+        ...keys.map(key => `${key}\u0000${localStorage.getItem(key) || ''}`),
+    ].join('\u0001');
     const digest = await crypto.subtle.digest('SHA-256', encoder.encode(serialized));
     return bytesToBase64(new Uint8Array(digest));
 };
@@ -449,6 +457,7 @@ export class CloudBackupManager {
         try {
             this.progress('packing', '正在整理完整資料…');
             const archive = await this.fileManager.createAllDataArchive();
+            const mediaSummary = this.fileManager.getLastBackupMediaSummary();
             this.progress('encrypting', '正在本機加密…', 0);
             const encrypted = await encryptCloudBackup(
                 archive,
@@ -480,10 +489,18 @@ export class CloudBackupManager {
                 lastBackupAt: createdAt,
                 lastBackupSize: encrypted.size,
                 lastBackupPathname: result.pathname,
+                lastBackupPhotoCount: mediaSummary?.embeddedPhotos,
+                lastBackupMigratedPhotoCount: mediaSummary?.migratedLegacyPhotos,
                 lastFingerprint: fingerprint,
                 lastError: undefined,
             });
-            this.progress('success', '雲端備份完成。', 100);
+            this.progress(
+                'success',
+                mediaSummary
+                    ? `雲端備份完成，已收錄 ${mediaSummary.embeddedPhotos} 張聊天相片。`
+                    : '雲端備份完成。',
+                100,
+            );
         } catch (error) {
             const message = error instanceof Error ? error.message : '雲端備份失敗。';
             this.updateState({ lastError: message });
@@ -574,6 +591,8 @@ export class CloudBackupManager {
             lastBackupAt: undefined,
             lastBackupSize: undefined,
             lastBackupPathname: undefined,
+            lastBackupPhotoCount: undefined,
+            lastBackupMigratedPhotoCount: undefined,
             lastFingerprint: undefined,
             lastError: undefined,
         });

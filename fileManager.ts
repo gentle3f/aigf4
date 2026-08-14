@@ -43,6 +43,21 @@ interface UIElements {
     downloadImagesBtn: HTMLButtonElement;
 }
 
+export interface BackupMediaSummary {
+    referencedPhotos: number;
+    embeddedPhotos: number;
+    migratedLegacyPhotos: number;
+    unavailablePhotos: number;
+}
+
+const photoExtension = (mimeType: string) => ({
+    'image/avif': 'avif',
+    'image/gif': 'gif',
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+} as Record<string, string>)[mimeType.toLowerCase()] || 'img';
+
 /**
  * Manages all file-related operations like saving, loading, and downloading.
  */
@@ -51,6 +66,7 @@ export class FileManager {
     private callbacks: FileManagerCallbacks;
     private ui: UIElements;
     private roomManager?: RoomManager;
+    private lastBackupMediaSummary: BackupMediaSummary | null = null;
 
     constructor(
         memoryManager: MemoryManager,
@@ -228,6 +244,10 @@ export class FileManager {
         };
     }
 
+    getLastBackupMediaSummary() {
+        return this.lastBackupMediaSummary ? { ...this.lastBackupMediaSummary } : null;
+    }
+
     private createExportSafePersona(persona: any) {
         if (!persona) {
             return persona;
@@ -320,26 +340,81 @@ export class FileManager {
     private async addCharacterPhotosToZip(
         zip: any,
         chatHistories: { [key: string]: ChatMessage[] },
-    ) {
+    ): Promise<BackupMediaSummary> {
         const folder = zip.folder('photos');
-        if (!folder) return;
+        const summary: BackupMediaSummary = {
+            referencedPhotos: 0,
+            embeddedPhotos: 0,
+            migratedLegacyPhotos: 0,
+            unavailablePhotos: 0,
+        };
+        if (!folder) return summary;
 
         const exportedIds = new Set<string>();
-        const tasks: Promise<void>[] = [];
-        Object.entries(chatHistories).forEach(([personaKey, history]) => {
-            history.forEach(message => {
-                const assetId = message.content.imageAssetId;
-                if (!assetId || exportedIds.has(assetId)) return;
+        const legacyIdsByUrl = new Map<string, string>();
+        let legacySequence = 0;
+
+        for (const [personaKey, history] of Object.entries(chatHistories)) {
+            for (const message of history) {
+                const content = message?.content;
+                const imageUrl = content?.imageUrl?.trim();
+                const originalAssetId = content?.imageAssetId?.trim();
+                if (!imageUrl && !originalAssetId) continue;
+                summary.referencedPhotos += 1;
+
+                const reusedLegacyId = imageUrl ? legacyIdsByUrl.get(imageUrl) : undefined;
+                let assetId = originalAssetId || reusedLegacyId;
+                if (assetId && exportedIds.has(assetId)) {
+                    content.imageAssetId = assetId;
+                    delete content.imageUrl;
+                    continue;
+                }
+
+                let blob: Blob | null = null;
+                if (originalAssetId) {
+                    try {
+                        blob = await getCharacterPhotoBlob(originalAssetId);
+                    } catch (error) {
+                        console.warn('Unable to read a stored character photo while backing up.', error);
+                    }
+                }
+
+                let migratedFromLegacyUrl = false;
+                if (!blob && imageUrl) {
+                    try {
+                        const response = await fetch(imageUrl, { cache: 'force-cache' });
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                        const fetched = await response.blob();
+                        if (!fetched.size) throw new Error('Empty image');
+                        blob = fetched;
+                        migratedFromLegacyUrl = true;
+                    } catch (error) {
+                        console.warn('Unable to embed a legacy character photo while backing up.', error);
+                    }
+                }
+
+                if (!blob?.size) {
+                    summary.unavailablePhotos += 1;
+                    continue;
+                }
+
+                if (!assetId) {
+                    legacySequence += 1;
+                    assetId = `legacy-photo-${Date.now()}-${legacySequence}-${Math.random().toString(36).slice(2, 8)}`;
+                }
+                const encodedPersonaKey = encodeURIComponent(personaKey);
+                folder.file(`${encodedPersonaKey}/${assetId}.${photoExtension(blob.type)}`, blob);
                 exportedIds.add(assetId);
-                tasks.push((async () => {
-                    const blob = await getCharacterPhotoBlob(assetId);
-                    if (!blob) return;
-                    const extension = blob.type.split('/')[1] || 'webp';
-                    folder.file(`${personaKey}/${assetId}.${extension}`, blob);
-                })());
-            });
-        });
-        await Promise.all(tasks);
+                summary.embeddedPhotos += 1;
+                if (migratedFromLegacyUrl) summary.migratedLegacyPhotos += 1;
+                if (imageUrl) legacyIdsByUrl.set(imageUrl, assetId);
+
+                content.imageAssetId = assetId;
+                delete content.imageUrl;
+            }
+        }
+
+        return summary;
     }
 
     private async restoreCharacterPhotosFromZip(
@@ -363,7 +438,13 @@ export class FileManager {
             if (fileEntry.dir) return;
             const pathParts = relativePath.split('/').filter(Boolean);
             if (pathParts.length < 2) return;
-            const personaKey = keyMap.get(pathParts[0]) || pathParts[0];
+            let archivedPersonaKey = pathParts[0];
+            try {
+                archivedPersonaKey = decodeURIComponent(archivedPersonaKey);
+            } catch {
+                // Older archives used the raw conversation key.
+            }
+            const personaKey = keyMap.get(archivedPersonaKey) || archivedPersonaKey;
             const fileName = pathParts[pathParts.length - 1];
             const assetId = fileName.replace(/\.[^.]+$/u, '');
             tasks.push(fileEntry.async('blob').then((blob: Blob) => saveCharacterPhotoAsset({
@@ -455,6 +536,7 @@ export class FileManager {
 
     async saveCurrentChat(personaKey: string, personaName: string) {
         const chatHistory = this.memoryManager.getChatHistory(personaKey);
+        const exportChatHistory = structuredClone(chatHistory);
         const persona = this.memoryManager.getPersona(personaKey);
         const room = this.roomManager?.getRoom(personaKey);
         const diaries = this.memoryManager.getDiaryEntries(personaKey);
@@ -467,15 +549,14 @@ export class FileManager {
 
         const zip = new JSZip();
         const saveData: { [key: string]: any } = {
-            chatHistories: { [personaKey]: chatHistory },
+            backupFormatVersion: 4,
+            createdAt: Date.now(),
+            chatHistories: { [personaKey]: exportChatHistory },
             diaries: { [personaKey]: diaries },
             interests: { [personaKey]: interests },
             customPersonas: persona ? { [personaKey]: this.createExportSafePersona(persona) } : {},
             rooms: room ? this.createExportSafeRooms(room.id) : undefined,
         };
-
-        // Using all_data.json to be consistent with the new format
-        zip.file("all_data.json", JSON.stringify(saveData, null, 2));
 
         const avatarUrl = persona?.avatarUrl;
         if (avatarUrl && avatarUrl.startsWith('data:image')) {
@@ -487,9 +568,13 @@ export class FileManager {
 
         await this.addRoomAvatarsToZip(zip, room?.id);
 
-        await this.addCharacterPhotosToZip(zip, { [personaKey]: chatHistory });
-        await this.addChatAttachmentsToZip(zip, { [personaKey]: chatHistory });
+        const mediaSummary = await this.addCharacterPhotosToZip(zip, { [personaKey]: exportChatHistory });
+        if (mediaSummary.unavailablePhotos > 0) {
+            throw new Error(`有 ${mediaSummary.unavailablePhotos} 張聊天相片無法讀取，未建立不完整匯出檔。`);
+        }
+        await this.addChatAttachmentsToZip(zip, { [personaKey]: exportChatHistory });
         this.addMemoryMarkdownToZip(zip, room?.id, room ? undefined : personaKey);
+        zip.file("all_data.json", JSON.stringify({ ...saveData, mediaSummary }, null, 2));
 
         zip.generateAsync({
             type: "blob",
@@ -508,6 +593,7 @@ export class FileManager {
 
     async createAllDataArchive() {
         const allChatHistories = this.memoryManager.getAllChatHistories();
+        const exportChatHistories = structuredClone(allChatHistories);
         const personasToSave = this.memoryManager.getModifiedAndCustomPersonas();
         const allDiaries = this.memoryManager.getAllDiaryEntries();
         const allInterests = this.memoryManager.getAllInterests();
@@ -522,17 +608,15 @@ export class FileManager {
         );
 
         const saveData = {
-            backupFormatVersion: 3,
+            backupFormatVersion: 4,
             createdAt: Date.now(),
-            chatHistories: allChatHistories,
+            chatHistories: exportChatHistories,
             customPersonas: exportSafePersonas,
             diaries: allDiaries,
             interests: allInterests,
             rooms: this.createExportSafeRooms(),
             appSettings: this.getExportedAppSettings(),
         };
-
-        zip.file("all_data.json", JSON.stringify(saveData, null, 2));
 
         const avatarFolder = zip.folder("avatars");
         if (avatarFolder) {
@@ -555,9 +639,17 @@ export class FileManager {
 
         await this.addRoomAvatarsToZip(zip);
 
-        await this.addCharacterPhotosToZip(zip, allChatHistories);
-        await this.addChatAttachmentsToZip(zip, allChatHistories);
+        const mediaSummary = await this.addCharacterPhotosToZip(zip, exportChatHistories);
+        this.lastBackupMediaSummary = { ...mediaSummary };
+        if (mediaSummary.unavailablePhotos > 0) {
+            throw new Error(
+                `有 ${mediaSummary.unavailablePhotos} 張聊天相片無法讀取，因此沒有建立不完整備份。`
+                + '請在原裝置保持連線、逐張打開媒體庫相片後再試。',
+            );
+        }
+        await this.addChatAttachmentsToZip(zip, exportChatHistories);
         this.addMemoryMarkdownToZip(zip);
+        zip.file("all_data.json", JSON.stringify({ ...saveData, mediaSummary }, null, 2));
 
         return zip.generateAsync({
             type: "blob",
