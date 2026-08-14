@@ -1672,6 +1672,32 @@ body.app-body {
     font-weight: 700;
 }
 
+#supabase-cloud-password-login,
+.cloud-sync-recovery-button {
+    width: 100%;
+}
+
+.cloud-sync-recovery-button {
+    margin-top: 9px;
+}
+
+.cloud-sync-password-section {
+    margin-top: 16px;
+    padding-top: 15px;
+    border-top: 1px solid var(--mori-line);
+}
+
+.cloud-sync-password-section > p {
+    margin: -2px 0 12px;
+    color: #516068;
+    font-size: 0.76rem;
+    line-height: 1.55;
+}
+
+.cloud-sync-password-section .wa-secondary-button {
+    width: 100%;
+}
+
 .cloud-backup-progress {
     padding: 12px 14px;
     border-radius: 10px;

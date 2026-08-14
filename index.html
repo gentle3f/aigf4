@@ -1351,10 +1351,12 @@
 
                 <section id="supabase-cloud-login" class="cloud-backup-card">
                     <div class="wa-section-heading"><h3>擁有人登入</h3></div>
-                    <p>登入連結只會寄到已設定的擁有人信箱。第一次連線會把這部裝置的完整資料建立到雲端；之後的新裝置會自動下載。</p>
+                    <p>新裝置可直接用雲端密碼登入，並先下載已建立的雲端資料。一次性電郵連結只用於首次設定或忘記密碼。</p>
                     <label class="wa-field-label">電郵<input id="supabase-cloud-email" type="email" autocomplete="email" readonly></label>
+                    <label class="wa-field-label">雲端密碼<input id="supabase-cloud-password" type="password" autocomplete="current-password" enterkeyhint="go"></label>
                     <p id="supabase-cloud-error" class="cloud-backup-error" aria-live="polite"></p>
-                    <button id="supabase-cloud-send-link" type="button" class="wa-primary-button">傳送安全登入連結</button>
+                    <button id="supabase-cloud-password-login" type="button" class="wa-primary-button">用密碼登入</button>
+                    <button id="supabase-cloud-send-link" type="button" class="wa-secondary-button cloud-sync-recovery-button">首次設定／忘記密碼：寄登入連結</button>
                 </section>
 
                 <section id="supabase-cloud-controls" class="cloud-backup-card hidden">
@@ -1363,6 +1365,14 @@
                     <div class="cloud-backup-action-grid">
                         <button id="supabase-cloud-sync-now" type="button" class="wa-primary-button">立即同步</button>
                         <button id="supabase-cloud-reload" type="button" class="wa-secondary-button">重新載入雲端</button>
+                    </div>
+                    <div class="cloud-sync-password-section">
+                        <div class="wa-section-heading"><h3>裝置登入密碼</h3></div>
+                        <p>在目前已登入的手機設定一次；日後即使更換裝置，也可直接用電郵及密碼登入。</p>
+                        <label class="wa-field-label">新密碼（至少 8 個字元）<input id="supabase-cloud-new-password" type="password" autocomplete="new-password"></label>
+                        <label class="wa-field-label">再次輸入<input id="supabase-cloud-new-password-confirm" type="password" autocomplete="new-password"></label>
+                        <p id="supabase-cloud-controls-error" class="cloud-backup-error" aria-live="polite"></p>
+                        <button id="supabase-cloud-set-password" type="button" class="wa-secondary-button">設定／更改雲端密碼</button>
                     </div>
                     <button id="supabase-cloud-sign-out" type="button" class="cloud-sync-sign-out">登出這部裝置</button>
                 </section>

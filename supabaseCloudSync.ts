@@ -15,6 +15,7 @@ const CONVERSATION_INDEX_KEY = 'wetappCloudConversationIndexV1';
 const MEDIA_INDEX_KEY = 'wetappCloudMediaIndexV1';
 const PENDING_KEY = 'wetappCloudPendingV1';
 const LAST_SYNC_KEY = 'wetappCloudLastSyncAtV1';
+const SYNCED_USER_ID_KEY = 'wetappCloudSyncedUserIdV1';
 const APP_SETTING_KEYS = [
     'veniceAssistantModel',
     'aigf4ChatModelSettingsV1',
@@ -249,6 +250,41 @@ export class SupabaseCloudSyncManager {
         this.setState('signed_out', `登入連結已寄到 ${OWNER_EMAIL}，請在同一裝置開啟。`);
     }
 
+    async signInWithPassword(email: string, password: string) {
+        if (!this.client) throw new Error('Supabase 尚未設定。');
+        const normalized = email.trim().toLocaleLowerCase();
+        if (normalized !== OWNER_EMAIL) throw new Error('這個雲端空間只接受已設定的擁有人帳戶。');
+        if (!password) throw new Error('請輸入雲端密碼。');
+        this.setState('connecting', '正在以密碼登入…');
+        const { data, error } = await this.client.auth.signInWithPassword({
+            email: normalized,
+            password,
+        });
+        if (error) {
+            const message = /invalid login credentials/iu.test(error.message)
+                ? '電郵或雲端密碼不正確。'
+                : error.message;
+            this.setState('signed_out', message);
+            throw new Error(message);
+        }
+        await this.applySession(data.session);
+    }
+
+    async setPassword(password: string) {
+        if (!this.client || !this.session) throw new Error('請先登入 Supabase 雲端。');
+        if (password.length < 8) throw new Error('雲端密碼至少需要 8 個字元。');
+        this.setState('connecting', '正在設定雲端密碼…');
+        const { error } = await this.client.auth.updateUser({ password });
+        if (error) {
+            this.setState('error', error.message);
+            throw error;
+        }
+        this.setState('synced', '雲端密碼已設定；新裝置可直接用密碼登入。', {
+            lastSyncAt: this.state.lastSyncAt,
+            progress: 100,
+        });
+    }
+
     async signOut() {
         if (!this.client) return;
         await this.client.auth.signOut();
@@ -349,16 +385,21 @@ export class SupabaseCloudSyncManager {
         if (!this.client || !this.session) return;
         try {
             const [{ data: remoteState, error: stateError }, { count, error: countError }] = await Promise.all([
-                this.client.from('wetapp_state').select('revision,updated_at').maybeSingle(),
+                this.client.from('wetapp_state').select('revision,updated_at,source_device_id').maybeSingle(),
                 this.client.from('wetapp_messages').select('message_id', { count: 'exact', head: true }),
             ]);
             if (stateError) throw stateError;
             if (countError) throw countError;
             const cloudIsEmpty = !remoteState && !count;
-            if (cloudIsEmpty || localStorage.getItem(PENDING_KEY) === 'true') {
+            const deviceHasSynced = localStorage.getItem(SYNCED_USER_ID_KEY) === this.session.user.id
+                || remoteState?.source_device_id === this.deviceId;
+            const hasPendingChanges = localStorage.getItem(PENDING_KEY) === 'true';
+            if (cloudIsEmpty || (deviceHasSynced && hasPendingChanges)) {
                 localStorage.setItem(PENDING_KEY, 'true');
                 await this.pushLocalToCloud(true);
             } else {
+                // An unknown device must accept the established cloud copy before it can upload.
+                localStorage.removeItem(PENDING_KEY);
                 await this.pullCloudToLocal();
             }
         } catch (error) {
@@ -891,6 +932,7 @@ export class SupabaseCloudSyncManager {
     private markSynced(detail: string) {
         const lastSyncAt = Date.now();
         localStorage.setItem(LAST_SYNC_KEY, String(lastSyncAt));
+        if (this.session) localStorage.setItem(SYNCED_USER_ID_KEY, this.session.user.id);
         this.setState('synced', detail, { lastSyncAt, progress: 100 });
     }
 

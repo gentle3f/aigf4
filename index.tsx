@@ -246,12 +246,18 @@ const supabaseCloudProgressPercent = document.getElementById('supabase-cloud-pro
 const supabaseCloudProgressBar = document.getElementById('supabase-cloud-progress-bar') as HTMLElement;
 const supabaseCloudLogin = document.getElementById('supabase-cloud-login')!;
 const supabaseCloudEmail = document.getElementById('supabase-cloud-email') as HTMLInputElement;
+const supabaseCloudPassword = document.getElementById('supabase-cloud-password') as HTMLInputElement;
 const supabaseCloudError = document.getElementById('supabase-cloud-error')!;
+const supabaseCloudPasswordLogin = document.getElementById('supabase-cloud-password-login') as HTMLButtonElement;
 const supabaseCloudSendLink = document.getElementById('supabase-cloud-send-link') as HTMLButtonElement;
 const supabaseCloudControls = document.getElementById('supabase-cloud-controls')!;
 const supabaseCloudAccount = document.getElementById('supabase-cloud-account')!;
 const supabaseCloudSyncNow = document.getElementById('supabase-cloud-sync-now') as HTMLButtonElement;
 const supabaseCloudReload = document.getElementById('supabase-cloud-reload') as HTMLButtonElement;
+const supabaseCloudNewPassword = document.getElementById('supabase-cloud-new-password') as HTMLInputElement;
+const supabaseCloudNewPasswordConfirm = document.getElementById('supabase-cloud-new-password-confirm') as HTMLInputElement;
+const supabaseCloudControlsError = document.getElementById('supabase-cloud-controls-error')!;
+const supabaseCloudSetPassword = document.getElementById('supabase-cloud-set-password') as HTMLButtonElement;
 const supabaseCloudSignOut = document.getElementById('supabase-cloud-sign-out') as HTMLButtonElement;
 const newChatFab = document.getElementById('new-chat-fab') as HTMLButtonElement;
 const newChatMenu = document.getElementById('new-chat-menu')!;
@@ -4309,9 +4315,11 @@ function renderSupabaseCloudState(state: SupabaseCloudSyncState) {
     supabaseCloudControls.classList.toggle('hidden', !signedIn);
     supabaseCloudAccount.textContent = state.email || '';
     supabaseCloudError.textContent = state.phase === 'error' ? state.detail : '';
+    supabaseCloudPasswordLogin.disabled = busy || !state.configured;
     supabaseCloudSendLink.disabled = busy || !state.configured;
     supabaseCloudSyncNow.disabled = busy;
     supabaseCloudReload.disabled = busy;
+    supabaseCloudSetPassword.disabled = busy;
     supabaseCloudSignOut.disabled = busy;
     supabaseCloudProgress.classList.toggle('hidden', !busy);
     supabaseCloudProgressText.textContent = state.detail;
@@ -4328,12 +4336,47 @@ const openSupabaseCloud = () => {
 
 const closeSupabaseCloud = () => supabaseCloudModal.classList.add('hidden');
 
+const signInSupabaseCloudWithPassword = async () => {
+    supabaseCloudError.textContent = '';
+    try {
+        await supabaseCloudSyncManager.signInWithPassword(
+            supabaseCloudEmail.value,
+            supabaseCloudPassword.value,
+        );
+        supabaseCloudPassword.value = '';
+    } catch (error) {
+        supabaseCloudError.textContent = error instanceof Error ? error.message : '密碼登入失敗。';
+    }
+};
+
 const sendSupabaseMagicLink = async () => {
     supabaseCloudError.textContent = '';
     try {
         await supabaseCloudSyncManager.sendMagicLink(supabaseCloudEmail.value);
     } catch (error) {
         supabaseCloudError.textContent = error instanceof Error ? error.message : '未能傳送登入連結。';
+    }
+};
+
+const setSupabaseCloudPassword = async () => {
+    supabaseCloudControlsError.textContent = '';
+    const password = supabaseCloudNewPassword.value;
+    if (password.length < 8) {
+        supabaseCloudControlsError.textContent = '雲端密碼至少需要 8 個字元。';
+        supabaseCloudNewPassword.focus();
+        return;
+    }
+    if (password !== supabaseCloudNewPasswordConfirm.value) {
+        supabaseCloudControlsError.textContent = '兩次輸入的雲端密碼不同。';
+        supabaseCloudNewPasswordConfirm.focus();
+        return;
+    }
+    try {
+        await supabaseCloudSyncManager.setPassword(password);
+        supabaseCloudNewPassword.value = '';
+        supabaseCloudNewPasswordConfirm.value = '';
+    } catch (error) {
+        supabaseCloudControlsError.textContent = error instanceof Error ? error.message : '未能設定雲端密碼。';
     }
 };
 
@@ -15138,9 +15181,17 @@ const setupEventListeners = () => {
     supabaseCloudModal.addEventListener('click', event => {
         if (event.target === supabaseCloudModal) closeSupabaseCloud();
     });
+    supabaseCloudPasswordLogin.addEventListener('click', () => void signInSupabaseCloudWithPassword());
+    supabaseCloudPassword.addEventListener('keydown', event => {
+        if (event.key === 'Enter') void signInSupabaseCloudWithPassword();
+    });
     supabaseCloudSendLink.addEventListener('click', () => void sendSupabaseMagicLink());
     supabaseCloudSyncNow.addEventListener('click', () => void syncSupabaseCloudNow());
     supabaseCloudReload.addEventListener('click', () => void reloadSupabaseCloud());
+    supabaseCloudSetPassword.addEventListener('click', () => void setSupabaseCloudPassword());
+    supabaseCloudNewPasswordConfirm.addEventListener('keydown', event => {
+        if (event.key === 'Enter') void setSupabaseCloudPassword();
+    });
     supabaseCloudSignOut.addEventListener('click', () => void supabaseCloudSyncManager.signOut());
     homeCloudBackupBtn.addEventListener('click', openCloudBackup);
     closeCloudBackupBtn.addEventListener('click', closeCloudBackup);
