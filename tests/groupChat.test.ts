@@ -9,7 +9,13 @@ import {
     trimTrailingUnansweredUserMessages,
 } from '../groupChat.js';
 import { ChatMessage, Content, MemoryManager } from '../managers.js';
-import { ChatRoom, cloneRoomSnapshot, RoomManager, RoomMember } from '../roomManager.js';
+import {
+    ChatRoom,
+    cloneRoomSnapshot,
+    ROOM_PRESENT_MEMBER_LIMIT,
+    RoomManager,
+    RoomMember,
+} from '../roomManager.js';
 
 const member = (id: string, name: string): RoomMember => ({
     id,
@@ -130,6 +136,27 @@ test('group parser preserves separate speakers and scene state', () => {
     assert.deepEqual(parsed.segments.map(segment => segment.speakerId).filter(Boolean), ['iu', 'jennie']);
     assert.equal(parsed.scene.presentMemberIds.join(','), 'iu,jennie');
     assert.equal(parsed.npcCandidate?.gender, 'female');
+});
+
+test('group rooms preserve five active members in scene state', () => {
+    const room = createRoom();
+    room.members.push(member('rose', 'Rose'), member('lisa', 'Lisa'));
+    room.scene.presentMemberIds = room.members.map(item => item.id);
+
+    const parsed = parseGroupGeneration(JSON.stringify({
+        segments: [{ type: 'dialogue', speaker_id: 'iu', text: 'Everyone is here.' }],
+        scene: {
+            location: 'living room',
+            reality_layer: 'physical',
+            present_member_ids: ['iu', 'jennie', 'irene', 'rose', 'lisa'],
+            summary: 'All five members remain present.',
+            unresolved: [],
+        },
+        npc_candidate: null,
+    }), room);
+
+    assert.equal(ROOM_PRESENT_MEMBER_LIMIT, 5);
+    assert.deepEqual(parsed.scene.presentMemberIds, ['iu', 'jennie', 'irene', 'rose', 'lisa']);
 });
 
 test('group parser accepts Venice legacy messages and sender_id fields', () => {

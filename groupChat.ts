@@ -1,6 +1,6 @@
 import { ChatMessage, ChatSegment, Content, Persona } from './managers.js';
 import { formatRelationshipStatePrompt } from './experienceEngine.js';
-import { ChatRoom, RoomMember, RoomSceneState } from './roomManager.js';
+import { ChatRoom, ROOM_PRESENT_MEMBER_LIMIT, RoomMember, RoomSceneState } from './roomManager.js';
 import { VeniceJsonSchemaResponseFormat } from './venice.js';
 
 export interface GroupNpcCandidate {
@@ -189,7 +189,11 @@ export const GROUP_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
                     properties: {
                         location: { type: 'string' },
                         reality_layer: { type: 'string', enum: ['physical', 'texting', 'imagined'] },
-                        present_member_ids: { type: 'array', maxItems: 4, items: { type: 'string' } },
+                        present_member_ids: {
+                            type: 'array',
+                            maxItems: ROOM_PRESENT_MEMBER_LIMIT,
+                            items: { type: 'string' },
+                        },
                         summary: { type: 'string' },
                         unresolved: { type: 'array', maxItems: 6, items: { type: 'string' } },
                     },
@@ -587,7 +591,7 @@ export const parseGroupGeneration = (
         : room.scene.presentMemberIds;
     const requestedIds = requestedMemberIds
         .filter(id => knownIds.has(id))
-        .slice(0, 4);
+        .slice(0, ROOM_PRESENT_MEMBER_LIMIT);
     const unresolved = Array.isArray(sceneData?.unresolved)
         ? sceneData.unresolved
         : Array.isArray(room.scene.unresolved) ? room.scene.unresolved : [];
