@@ -5,6 +5,7 @@ import {
     parseSurpriseEventProposal,
     relationshipStageFor,
     surpriseEventMatchesCategory,
+    surpriseEventMatchesContentMode,
     surpriseEventsAreTooSimilar,
 } from '../experienceEngine.js';
 
@@ -23,6 +24,42 @@ test('parses an event while filtering invented room member IDs', () => {
     assert.deepEqual(parsed?.involvedMemberIds, ['iu']);
     assert.equal(parsed?.category, 'backstage');
     assert.equal(parsed?.relationshipEffect.romanticTension, 4);
+});
+
+test('preserves all five selected surprise-event participants', () => {
+    const memberIds = ['iu', 'jennie', 'irene', 'rose', 'lisa'];
+    const parsed = parseSurpriseEventProposal(JSON.stringify({
+        title: '五人的邀請',
+        category: 'celebration',
+        intensity: 'playful',
+        hook: '五人準備了一份驚喜禮物。',
+        setup: '她們用一個私下慶祝安排邀請你加入。',
+        opening_instruction: '讓五人各自參與，但不要替使用者答應。',
+        involved_member_ids: memberIds,
+        relationship_effect: { closeness: 2, trust: 1, romantic_tension: 2, initiative: 2 },
+    }), memberIds, 'iu');
+
+    assert.deepEqual(parsed?.involvedMemberIds, memberIds);
+});
+
+test('distinguishes explicit 18+ cards from non-sexual cards', () => {
+    const nsfwCard = {
+        title: '成人限定挑戰',
+        hook: '她拿出一件成人情趣用品。',
+        setup: '一場明確的 18+ 性挑戰正等待你的決定。',
+        openingInstruction: '保持 NSFW 成人情境，但不要替使用者答應。',
+    };
+    const ordinaryCard = {
+        title: '後台密室',
+        hook: '演出後收到一封匿名邀請。',
+        setup: '她們決定一起找出寄件人。',
+        openingInstruction: '從第一條線索開始。',
+    };
+
+    assert.equal(surpriseEventMatchesContentMode(nsfwCard, 'nsfw'), true);
+    assert.equal(surpriseEventMatchesContentMode(nsfwCard, 'non-sexual'), false);
+    assert.equal(surpriseEventMatchesContentMode(ordinaryCard, 'non-sexual'), true);
+    assert.equal(surpriseEventMatchesContentMode(ordinaryCard, 'nsfw'), false);
 });
 
 test('detects renamed versions of the same event', () => {

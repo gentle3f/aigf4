@@ -13,6 +13,7 @@ import {
     PersonaMemoryEntry,
     POLICY_VIOLATION,
     PublicIdentity,
+    SurpriseEventContentMode,
     SurpriseEventProposal,
     cleanAiResponse,
 } from "./managers.js";
@@ -145,6 +146,7 @@ import {
     getSurpriseEventIntensityLabel,
     parseSurpriseEventProposal,
     surpriseEventMatchesCategory,
+    surpriseEventMatchesContentMode,
     surpriseEventsAreTooSimilar,
     SURPRISE_EVENT_CATEGORY_GUIDES,
     SURPRISE_EVENT_RESPONSE_FORMAT,
@@ -221,6 +223,14 @@ const suggestionContainer = document.getElementById('suggestion-container')!;
 const newSceneBtn = document.getElementById('new-scene-btn') as HTMLButtonElement;
 const takePhotoBtn = document.getElementById('take-photo-btn') as HTMLButtonElement;
 const surpriseEventBtn = document.getElementById('surprise-event-btn') as HTMLButtonElement;
+const surpriseEventOptionsModal = document.getElementById('surprise-event-options-modal')!;
+const closeSurpriseEventOptionsBtn = document.getElementById('close-surprise-event-options') as HTMLButtonElement;
+const cancelSurpriseEventOptionsBtn = document.getElementById('cancel-surprise-event-options') as HTMLButtonElement;
+const confirmSurpriseEventOptionsBtn = document.getElementById('confirm-surprise-event-options') as HTMLButtonElement;
+const surpriseEventSelectAll = document.getElementById('surprise-event-select-all') as HTMLInputElement;
+const surpriseEventMemberCount = document.getElementById('surprise-event-member-count')!;
+const surpriseEventMemberList = document.getElementById('surprise-event-member-list')!;
+const surpriseEventOptionsError = document.getElementById('surprise-event-options-error')!;
 const roomInfoBtn = document.getElementById('room-info-btn') as HTMLButtonElement;
 const dmRoomMemberBtn = document.getElementById('dm-room-member-btn') as HTMLButtonElement;
 const inviteCharacterBtn = document.getElementById('invite-character-btn') as HTMLButtonElement;
@@ -780,6 +790,7 @@ let isVideoRequestRunning = false;
 let pendingVideoJob: PersistedVideoJob | null = null;
 let videoLastProgressIndex = -1;
 let isRandomRecruiting = false;
+let surpriseEventReplacingProposalId: string | null = null;
 const roomSummaryInFlight = new Set<string>();
 const personaSummaryInFlight = new Set<string>();
 let manualMemoryUpdateNotice: {
@@ -808,6 +819,36 @@ const MAX_CHAT_IMAGE_EDGE = 1600;
 const CHAT_MAX_AUTO_CONTINUES = 2;
 const CHAT_MODEL_ATTEMPT_TIMEOUT_MS = 45_000;
 const SURPRISE_EVENT_ATTEMPT_TIMEOUT_MS = 15_000;
+const NSFW_SURPRISE_EVENT_DIRECTIONS = [
+    {
+        prompt: 'a private adult seduction challenge with a concrete dare, clear roles and immediate sexual tension',
+        fallbackPremise: '一張寫明成人規則的私密挑戰卡被放到你面前，第一個挑戰要求其中一人主動提出清楚的性邀請。',
+    },
+    {
+        prompt: 'a consensual adult role-play premise with specific identities, a private setting and a clear first move',
+        fallbackPremise: '她們準備了一個只限成年人的角色扮演設定，身份、場地與第一個性挑戰都已寫好，只等待你決定是否開始。',
+    },
+    {
+        prompt: 'an after-work or after-performance private release where one selected character initiates a clearly sexual proposition',
+        fallbackPremise: '工作或演出結束後的私人空檔裡，其中一人不再掩飾慾望，向你提出一個具體的成人邀請。',
+    },
+    {
+        prompt: 'a playful adult power-exchange game with an explicit rule, a concrete reward or consequence, and room for the user to choose',
+        fallbackPremise: '一場成人主導權遊戲訂下了清楚規則、獎勵與後果，但由你決定接受、拒絕或改寫第一條規則。',
+    },
+    {
+        prompt: 'a multi-character adult attention or jealousy game in which every selected character has a distinct active role',
+        fallbackPremise: '幾位參與者把原本的爭寵變成明確的成人遊戲，每人提出不同的性挑戰，等你選擇先回應誰。',
+    },
+    {
+        prompt: 'a risky-but-private adult encounter with a concrete interruption risk, time limit or need for secrecy',
+        fallbackPremise: '一段有限時或可能被打斷的私人空檔，令她們直接提出一個必須立刻決定是否開始的成人性冒險。',
+    },
+    {
+        prompt: 'the discovery or gifting of a clearly adult intimate item that creates a specific sexual challenge',
+        fallbackPremise: '一件明確的成人情趣用品意外出現，附帶的使用規則把它變成一個尚未開始的具體性挑戰。',
+    },
+] as const;
 const CHAT_MODEL_TIMEOUT_ERROR = 'CHAT_MODEL_TIMEOUT';
 const SCENE_END_MARKER = '[SCENE END]';
 const SCENE_START_LABEL = '--- 新場景開始 ---';
@@ -837,6 +878,10 @@ type AppHistoryState =
     | { view: 'video' };
 type MimicBuildMode = 'transcript' | 'public' | 'manual';
 type ChatMode = 'character' | 'assistant' | 'god' | 'photo' | 'event';
+type SurpriseEventDrawOptions = {
+    contentMode: SurpriseEventContentMode;
+    participantIds: string[];
+};
 type ActiveChatRequest = {
     id: number;
     personaKey: string;
@@ -8070,10 +8115,13 @@ const createSurpriseEventCard = (proposal: SurpriseEventProposal) => {
     const badges = document.createElement('div');
     badges.className = 'surprise-event-badges';
     [
+        proposal.contentMode === 'nsfw'
+            ? '18+ / NSFW'
+            : proposal.contentMode === 'non-sexual' ? '非 18+' : '',
         getSurpriseEventCategoryLabel(proposal.category),
         getSurpriseEventIntensityLabel(proposal.intensity),
         ...getSurpriseEventParticipantNames(proposal),
-    ].forEach(label => {
+    ].filter(Boolean).forEach(label => {
         const badge = document.createElement('span');
         badge.textContent = label;
         badges.appendChild(badge);
@@ -8104,7 +8152,7 @@ const createSurpriseEventCard = (proposal: SurpriseEventProposal) => {
         const redraw = document.createElement('button');
         redraw.type = 'button';
         redraw.textContent = '換一張';
-        redraw.addEventListener('click', () => void drawSurpriseEventCard(proposal.id));
+        redraw.addEventListener('click', () => openSurpriseEventOptions(proposal.id));
         const decline = document.createElement('button');
         decline.type = 'button';
         decline.textContent = '暫時不要';
@@ -10973,6 +11021,109 @@ function findSurpriseEventMessage(conversationKey: string, proposalId: string) {
     return messageIndex >= 0 ? { history, messageIndex, message: history[messageIndex] } : null;
 }
 
+const getSurpriseEventSelectableMembers = () => {
+    if (currentRoom) {
+        const presentIds = new Set(currentRoom.scene.presentMemberIds);
+        return currentRoom.members
+            .filter(member => presentIds.has(member.id))
+            .map(member => ({ id: member.id, persona: resolveRoomMemberAvatarPersona(member) }));
+    }
+    return currentPersona && currentPersonaKey
+        ? [{ id: currentPersonaKey, persona: currentPersona }]
+        : [];
+};
+
+const syncSurpriseEventMemberSelection = () => {
+    const inputs = Array.from(
+        surpriseEventMemberList.querySelectorAll<HTMLInputElement>('input[data-surprise-event-member-id]'),
+    );
+    const selectedCount = inputs.filter(input => input.checked).length;
+    surpriseEventSelectAll.checked = inputs.length > 0 && selectedCount === inputs.length;
+    surpriseEventSelectAll.indeterminate = selectedCount > 0 && selectedCount < inputs.length;
+    surpriseEventMemberCount.textContent = `${selectedCount} / ${inputs.length}`;
+    confirmSurpriseEventOptionsBtn.disabled = selectedCount === 0;
+    surpriseEventOptionsError.textContent = selectedCount === 0 ? '請至少選擇一位參與角色。' : '';
+};
+
+const renderSurpriseEventMemberOptions = (preferredIds: string[]) => {
+    const members = getSurpriseEventSelectableMembers();
+    const availableIds = new Set(members.map(member => member.id));
+    const selectedIds = new Set(preferredIds.filter(id => availableIds.has(id)));
+    if (selectedIds.size === 0) members.forEach(member => selectedIds.add(member.id));
+    surpriseEventMemberList.innerHTML = '';
+    members.forEach(({ id, persona }) => {
+        const label = document.createElement('label');
+        label.className = 'surprise-event-member-option';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = selectedIds.has(id);
+        checkbox.dataset.surpriseEventMemberId = id;
+        checkbox.addEventListener('change', syncSurpriseEventMemberSelection);
+        const avatar = document.createElement('span');
+        avatar.className = 'room-member-avatar';
+        if (persona.avatarUrl && !persona.avatarUrl.startsWith('generating_')) {
+            const image = document.createElement('img');
+            image.src = persona.avatarUrl;
+            image.alt = persona.name;
+            avatar.appendChild(image);
+        } else {
+            avatar.textContent = persona.emoji || '?';
+        }
+        const copy = document.createElement('span');
+        copy.className = 'surprise-event-member-copy';
+        const name = document.createElement('strong');
+        name.textContent = persona.name;
+        const status = document.createElement('small');
+        status.textContent = '目前在場';
+        copy.append(name, status);
+        label.append(checkbox, avatar, copy);
+        surpriseEventMemberList.appendChild(label);
+    });
+    syncSurpriseEventMemberSelection();
+};
+
+function closeSurpriseEventOptions() {
+    surpriseEventOptionsModal.classList.add('hidden');
+    surpriseEventReplacingProposalId = null;
+    surpriseEventOptionsError.textContent = '';
+}
+
+function openSurpriseEventOptions(replacingProposalId?: string) {
+    if (USES_VENICE_PROXY_AUTH && !isUnlocked) {
+        handleAuthRequired('請先輸入密碼後再抽取事件牌。');
+        return;
+    }
+    if (activeChatRequest || !currentPersona || !currentPersonaKey || !currentConversationKey || isGodModeActive) return;
+    const existing = replacingProposalId
+        ? findSurpriseEventMessage(currentConversationKey, replacingProposalId)?.message.content.surpriseEvent
+        : undefined;
+    surpriseEventReplacingProposalId = replacingProposalId || null;
+    const mode = existing?.contentMode || 'non-sexual';
+    surpriseEventOptionsModal
+        .querySelectorAll<HTMLInputElement>('input[name="surprise-event-content-mode"]')
+        .forEach(input => { input.checked = input.value === mode; });
+    renderSurpriseEventMemberOptions(existing?.involvedMemberIds || []);
+    surpriseEventOptionsError.textContent = '';
+    moreOptionsMenu.classList.add('hidden');
+    surpriseEventOptionsModal.classList.remove('hidden');
+}
+
+function confirmSurpriseEventOptions() {
+    const contentMode = surpriseEventOptionsModal
+        .querySelector<HTMLInputElement>('input[name="surprise-event-content-mode"]:checked')
+        ?.value as SurpriseEventContentMode | undefined;
+    const participantIds = Array.from(
+        surpriseEventMemberList.querySelectorAll<HTMLInputElement>('input[data-surprise-event-member-id]:checked'),
+    ).map(input => input.dataset.surpriseEventMemberId!).filter(Boolean);
+    if (!contentMode || participantIds.length === 0) {
+        surpriseEventOptionsError.textContent = '請選擇事件類型及至少一位參與角色。';
+        return;
+    }
+    const replacingProposalId = surpriseEventReplacingProposalId || undefined;
+    closeSurpriseEventOptions();
+    void drawSurpriseEventCard({ contentMode, participantIds }, replacingProposalId);
+}
+
 function updateSurpriseEventProposal(
     conversationKey: string,
     proposalId: string,
@@ -11010,7 +11161,7 @@ function refreshSurpriseEventCard(proposalId: string) {
     currentCard.replaceWith(createSurpriseEventCard(proposal));
 }
 
-const buildSurpriseEventMemberContext = (request: ActiveChatRequest) => {
+const buildSurpriseEventMemberContext = (request: ActiveChatRequest, selectedMemberIds: string[]) => {
     const compactEventText = (value: string | undefined, limit: number) => (
         value?.replace(/\s+/gu, ' ').trim().slice(0, limit) || ''
     );
@@ -11026,13 +11177,13 @@ const buildSurpriseEventMemberContext = (request: ActiveChatRequest) => {
         ].filter(Boolean).join('\n');
     }
 
-    const present = new Set(request.room.scene.presentMemberIds);
-    return request.room.members.map(member => {
+    const selected = new Set(selectedMemberIds);
+    return request.room.members.filter(member => selected.has(member.id)).map(member => {
         const identity = member.persona.publicIdentityEnabled ? member.persona.publicIdentity : undefined;
         return [
             `MEMBER ID: ${member.id}`,
             `Name: ${member.persona.name}`,
-            `Presence: ${present.has(member.id) ? 'PRESENT' : 'ABSENT'}`,
+            'Participation: SELECTED FOR THIS EVENT',
             `Identity / occupation: ${compactEventText(member.persona.description, 500)}`,
             identity ? `Confirmed public identity: ${identity.canonicalName}. ${compactEventText(identity.summary, 650)}` : '',
             `Personality and voice: ${compactEventText(member.persona.prompt, 1800)}`,
@@ -11041,21 +11192,28 @@ const buildSurpriseEventMemberContext = (request: ActiveChatRequest) => {
     }).join('\n\n---\n\n');
 };
 
-const generateSurpriseEvent = async (request: ActiveChatRequest): Promise<SurpriseEventProposal> => {
+const generateSurpriseEvent = async (
+    request: ActiveChatRequest,
+    options: SurpriseEventDrawOptions,
+): Promise<SurpriseEventProposal> => {
     const history = memoryManager.getChatHistory(request.conversationKey);
     const recentEvents = collectRecentSurpriseEvents(history, 8);
-    const validMemberIds = request.room
+    const availableMemberIds = request.room
         ? request.room.scene.presentMemberIds
         : [request.personaKey];
+    const availableMemberIdSet = new Set(availableMemberIds);
+    const validMemberIds = Array.from(new Set(options.participantIds))
+        .filter(id => availableMemberIdSet.has(id));
+    if (validMemberIds.length === 0) throw new Error('No selected surprise-event participant is still present.');
     const fallbackMemberId = request.room
-        ? request.room.scene.presentMemberIds.includes(request.roomMemberId || '')
+        ? validMemberIds.includes(request.roomMemberId || '')
             ? request.roomMemberId!
-            : request.room.scene.presentMemberIds[0]
+            : validMemberIds[0]
         : request.personaKey;
     const recentEventLedger = recentEvents.length > 0
         ? recentEvents.map(event => `- ${event.category} | ${event.title} | ${event.hook}`).join('\n')
         : '- none';
-    const identityLedger = buildSurpriseEventMemberContext(request);
+    const identityLedger = buildSurpriseEventMemberContext(request, validMemberIds);
     const idolLike = /歌手|偶像|藝人|演員|舞台|音樂|團體|idol|singer|actress|performer|k-pop/iu.test(identityLedger);
     const categoryPool = (idolLike
         ? ['backstage', 'idol_schedule', 'public_spotlight', 'secret_escape', 'unexpected_guest', 'celebration', 'travel', 'emotional_turn', 'rivalry', 'mystery']
@@ -11064,6 +11222,23 @@ const generateSurpriseEvent = async (request: ActiveChatRequest): Promise<Surpri
     const freshCategoryPool = categoryPool.filter(category => !recentlyUsedCategories.has(category));
     const selectableCategories = freshCategoryPool.length > 0 ? freshCategoryPool : categoryPool;
     const targetCategory = selectableCategories[Math.floor(Math.random() * selectableCategories.length)];
+    const nsfwDirection = NSFW_SURPRISE_EVENT_DIRECTIONS[
+        Math.floor(Math.random() * NSFW_SURPRISE_EVENT_DIRECTIONS.length)
+    ];
+    const contentModeRules = options.contentMode === 'nsfw'
+        ? [
+            'CONTENT MODE: EXPLICIT ADULT 18+ / NSFW.',
+            'Create an unmistakably sexual adult event, not merely romance, flirting, kissing, cuddling or vague "intimacy".',
+            `MANDATORY RANDOM NSFW DIRECTION: ${nsfwDirection.prompt}. Turn this direction into one specific, coherent premise that fits the live context and selected characters.`,
+            'State the exact adult situation, location or opportunity, each selected character’s distinct initiative, and the unresolved first sexual beat. Do not jump to completion.',
+            'Treat every selected participant and the user as an adult in this fictional conversation. Keep the event consensual and leave the user free to accept, refuse or redirect it.',
+            'Do not censor, euphemize or silently downgrade the card into a non-sexual event.',
+        ]
+        : [
+            'CONTENT MODE: NON-SEXUAL / NOT NSFW.',
+            'The event may be romantic, funny, dramatic, mysterious or emotionally charged, but it must contain no nudity, sexual act, erotic role-play, sexual toy or explicit sexual proposition.',
+            'Do not drift into an adult sexual event even if the recent conversation contains sexual material.',
+        ];
     const sceneContext = request.room
         ? `Location: ${request.room.scene.location}\nReality layer: ${request.room.scene.realityLayer}\nPresent member IDs: ${request.room.scene.presentMemberIds.join(', ')}\nCurrent summary: ${request.room.scene.summary}\nUnresolved: ${request.room.scene.unresolved.join('; ') || 'none'}`
         : 'Infer the live location, reality layer, participants and unfinished beat from the recent completed conversation. Do not contradict it.';
@@ -11079,7 +11254,10 @@ const generateSurpriseEvent = async (request: ActiveChatRequest): Promise<Surpri
         'Only use IDs from the valid present-member list. An event may include a clearly attributed staff member, friend, fan, manager or other NPC when useful, but do not silently turn an NPC into a fixed room member.',
         'The opening_instruction is hidden from the user. It must tell the chat model exactly how to begin the event in character while preserving current location, clothing, positions and reality layer unless the event itself naturally initiates a transition.',
         'Write title, hook and setup in natural Traditional Chinese. Return only the requested JSON.',
-        `VALID PRESENT MEMBER IDS: ${validMemberIds.join(', ')}`,
+        ...contentModeRules,
+        `SELECTED PARTICIPANT IDS: ${validMemberIds.join(', ')}`,
+        'The involved_member_ids array must contain every selected participant ID exactly once and no other fixed member. Every selected character must have a meaningful role in the event.',
+        'Unselected fixed room members must not speak, act, or become part of this event card.',
         `MANDATORY FRESH CATEGORY: ${targetCategory}. The returned category must equal this exactly.`,
         `MANDATORY CATEGORY PROOF: ${SURPRISE_EVENT_CATEGORY_GUIDES[targetCategory]} If the setup does not visibly contain this proof, discard it and invent another event.`,
         `CURRENT SCENE:\n${sceneContext}`,
@@ -11107,7 +11285,10 @@ const generateSurpriseEvent = async (request: ActiveChatRequest): Promise<Surpri
                         request.persona,
                         request.room,
                     ), 14000, 14),
-                    { role: 'user', content: 'Create exactly one new event card now. Do not continue the conversation itself.' },
+                    {
+                        role: 'user',
+                        content: `Create exactly one ${options.contentMode === 'nsfw' ? 'explicit 18+ / NSFW' : 'non-sexual'} event card now for all selected participants. Do not continue the conversation itself.`,
+                    },
                 ],
                 temperature: 0.96,
                 topP: 0.97,
@@ -11116,10 +11297,15 @@ const generateSurpriseEvent = async (request: ActiveChatRequest): Promise<Surpri
                 signal: request.controller.signal,
             }, SURPRISE_EVENT_ATTEMPT_TIMEOUT_MS);
             const draft = parseSurpriseEventProposal(result.text, validMemberIds, fallbackMemberId);
+            const draftParticipantIds = new Set(draft?.involvedMemberIds || []);
+            const hasExactParticipants = draftParticipantIds.size === validMemberIds.length
+                && validMemberIds.every(id => draftParticipantIds.has(id));
             if (
                 !draft
+                || !hasExactParticipants
                 || draft.category !== targetCategory
                 || !surpriseEventMatchesCategory(draft)
+                || !surpriseEventMatchesContentMode(draft, options.contentMode)
                 || recentEvents.some(previous => surpriseEventsAreTooSimilar(previous, draft))
             ) {
                 throw new Error(`Repeated or invalid surprise event from ${model}.`);
@@ -11130,6 +11316,7 @@ const generateSurpriseEvent = async (request: ActiveChatRequest): Promise<Surpri
             draft.openingInstruction = normalizeTraditionalChineseLeaks(draft.openingInstruction);
             return {
                 ...draft,
+                contentMode: options.contentMode,
                 id: crypto.randomUUID?.() || `event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                 status: 'pending',
                 createdAt: Date.now(),
@@ -11151,15 +11338,45 @@ const generateSurpriseEvent = async (request: ActiveChatRequest): Promise<Surpri
         targetCategory,
         validMemberIds,
     );
+    const participantNames = request.room
+        ? validMemberIds
+            .map(id => request.room?.members.find(member => member.id === id)?.persona.name)
+            .filter((name): name is string => Boolean(name))
+        : [request.persona.name];
+    const participantLabel = participantNames.join('、');
+    const modeAwareFallback = options.contentMode === 'nsfw'
+        ? {
+            ...fallback,
+            title: `成人限定：${fallback.title}`,
+            hook: nsfwDirection.fallbackPremise,
+            setup: `${fallback.setup} 這次由 ${participantLabel} 共同把它變成明確的 18+／NSFW 成人事件；每位參與者都有不同的主動角色，而第一個性行動仍等待你的選擇。`,
+            openingInstruction: `${fallback.openingInstruction} 必須按以下成人方向具體展開：${nsfwDirection.fallbackPremise} 保持明確的 18+／NSFW 性情境，不要降級成普通曖昧，也不要替使用者同意或完成整個事件。`,
+            intensity: 'heated' as const,
+            involvedMemberIds: validMemberIds,
+            relationshipEffect: {
+                ...fallback.relationshipEffect,
+                romanticTension: Math.max(5, fallback.relationshipEffect.romanticTension),
+                initiative: Math.max(3, fallback.relationshipEffect.initiative),
+            },
+        }
+        : {
+            ...fallback,
+            involvedMemberIds: validMemberIds,
+            openingInstruction: `${fallback.openingInstruction} 本事件必須保持非 18+，不要加入裸體、性行為、情趣用品或露骨性邀請。`,
+        };
     return {
-        ...fallback,
+        ...modeAwareFallback,
+        contentMode: options.contentMode,
         id: crypto.randomUUID?.() || `event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         status: 'pending',
         createdAt: Date.now(),
     };
 };
 
-async function drawSurpriseEventCard(replacingProposalId?: string) {
+async function drawSurpriseEventCard(
+    options: SurpriseEventDrawOptions,
+    replacingProposalId?: string,
+) {
     if (USES_VENICE_PROXY_AUTH && !isUnlocked) {
         handleAuthRequired('請先輸入密碼後再抽取事件牌。');
         return;
@@ -11173,7 +11390,7 @@ async function drawSurpriseEventCard(replacingProposalId?: string) {
     moreOptionsMenu.classList.add('hidden');
     const request = beginChatRequest(currentPersonaKey, currentPersona, 'event', conversationKey);
     try {
-        const proposal = await generateSurpriseEvent(request);
+        const proposal = await generateSurpriseEvent(request, options);
         if (!isActiveChatRequest(request)) return;
         const content: Content = { surpriseEvent: proposal };
         memoryManager.addMessage(conversationKey, 'system', content);
@@ -11211,8 +11428,12 @@ const buildSurpriseEventDirectorCue = (proposal: SurpriseEventProposal, room?: C
         `Event: ${proposal.title}`,
         `Hook: ${proposal.hook}`,
         `Setup: ${proposal.setup}`,
+        `Content mode: ${proposal.contentMode === 'nsfw'
+            ? 'EXPLICIT ADULT 18+ / NSFW'
+            : proposal.contentMode === 'non-sexual' ? 'NON-SEXUAL / NOT NSFW' : 'FOLLOW THE EXISTING CARD'}`,
         `Primary participating characters: ${participantNames}`,
         `Direction: ${proposal.openingInstruction}`,
+        'Only the listed primary participating characters may actively initiate or speak in the event opening. Other fixed room members remain in the background unless the user explicitly brings them in.',
         'Begin the event now as a seamless continuation of the current conversation. Let the relevant character take the first concrete initiative, preserve exact current continuity, and leave the consequential choice or response to the user. Do not summarize the card, announce an event, explain rules, or complete the whole plot in one response.',
     ].join('\n');
 };
@@ -14175,6 +14396,18 @@ const setupEventListeners = () => {
     createGroupRoomBtn.addEventListener('click', () => openCreateGroup());
     closeCreateGroupBtn.addEventListener('click', closeCreateGroup);
     confirmCreateGroupBtn.addEventListener('click', confirmCreateGroup);
+    closeSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
+    cancelSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
+    confirmSurpriseEventOptionsBtn.addEventListener('click', confirmSurpriseEventOptions);
+    surpriseEventSelectAll.addEventListener('change', () => {
+        surpriseEventMemberList
+            .querySelectorAll<HTMLInputElement>('input[data-surprise-event-member-id]')
+            .forEach(input => { input.checked = surpriseEventSelectAll.checked; });
+        syncSurpriseEventMemberSelection();
+    });
+    surpriseEventOptionsModal.addEventListener('click', event => {
+        if (event.target === surpriseEventOptionsModal) closeSurpriseEventOptions();
+    });
     closeParticipantActionBtn.addEventListener('click', closeParticipantAction);
     participantActionModal.addEventListener('click', event => {
         if (event.target === participantActionModal) closeParticipantAction();
@@ -14495,7 +14728,7 @@ const setupEventListeners = () => {
     suggestionButton.addEventListener('click', () => showDisabledFeatureNotice('建議功能'));
     newSceneBtn.addEventListener('click', startNewScene);
     surpriseEventBtn.addEventListener('click', () => {
-        void drawSurpriseEventCard();
+        openSurpriseEventOptions();
     });
     takePhotoBtn.addEventListener('click', () => {
         openPhotoPromptModal();

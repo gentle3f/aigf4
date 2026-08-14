@@ -223,6 +223,8 @@ export type SurpriseEventCategory =
     | 'mystery'
     | 'fantasy';
 
+export type SurpriseEventContentMode = 'nsfw' | 'non-sexual';
+
 export interface SurpriseEventProposal {
     id: string;
     title: string;
@@ -232,6 +234,7 @@ export interface SurpriseEventProposal {
     setup: string;
     openingInstruction: string;
     involvedMemberIds: string[];
+    contentMode?: SurpriseEventContentMode;
     relationshipEffect: Pick<RelationshipState, 'closeness' | 'trust' | 'romanticTension' | 'initiative'>;
     status: 'pending' | 'starting' | 'active' | 'completed' | 'declined' | 'failed';
     createdAt: number;

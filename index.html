@@ -1343,6 +1343,43 @@
         </section>
     </div>
 
+    <div id="surprise-event-options-modal" class="hidden wa-modal-backdrop">
+        <section class="wa-sheet surprise-event-options-sheet" role="dialog" aria-modal="true" aria-labelledby="surprise-event-options-title">
+            <header class="wa-sheet-header">
+                <button id="close-surprise-event-options" class="wa-icon-button" type="button" aria-label="關閉"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m6 6 12 12M18 6 6 18"></path></svg></button>
+                <div><p class="wa-sheet-kicker">SURPRISE EVENT</p><h2 id="surprise-event-options-title">抽取驚喜事件牌</h2></div>
+            </header>
+            <div class="wa-sheet-scroll surprise-event-options-scroll">
+                <section>
+                    <div class="wa-section-heading"><h3>事件類型</h3></div>
+                    <div class="surprise-event-mode-grid">
+                        <label class="surprise-event-mode-option">
+                            <input type="radio" name="surprise-event-content-mode" value="nsfw">
+                            <span><strong>18+／NSFW</strong><small>隨機產生一個明確、具體的成人事件方向，不會只停留在曖昧。</small></span>
+                        </label>
+                        <label class="surprise-event-mode-option">
+                            <input type="radio" name="surprise-event-content-mode" value="non-sexual" checked>
+                            <span><strong>非 18+</strong><small>浪漫、日常、工作、懸疑或戲劇事件，明確排除性內容。</small></span>
+                        </label>
+                    </div>
+                </section>
+                <section>
+                    <div class="wa-section-heading"><h3>參與角色</h3><span id="surprise-event-member-count"></span></div>
+                    <label class="surprise-event-select-all">
+                        <input id="surprise-event-select-all" type="checkbox" checked>
+                        <span><strong>全部在場角色</strong><small>取消後可逐一選擇</small></span>
+                    </label>
+                    <div id="surprise-event-member-list" class="surprise-event-member-list"></div>
+                    <p id="surprise-event-options-error" class="surprise-event-options-error" aria-live="polite"></p>
+                </section>
+            </div>
+            <footer class="wa-sheet-footer surprise-event-options-footer">
+                <button id="cancel-surprise-event-options" type="button" class="wa-secondary-button">取消</button>
+                <button id="confirm-surprise-event-options" type="button" class="wa-primary-button">開始抽牌</button>
+            </footer>
+        </section>
+    </div>
+
     <div id="participant-action-modal" class="hidden wa-modal-backdrop">
         <section class="wa-sheet" role="dialog" aria-modal="true" aria-labelledby="participant-action-title">
             <header class="wa-sheet-header">

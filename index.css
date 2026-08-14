@@ -966,6 +966,102 @@ body.app-body {
         linear-gradient(145deg, #f8fffc 0%, #effbf6 100%);
 }
 
+.surprise-event-options-scroll {
+    display: grid;
+    gap: 20px;
+}
+
+.surprise-event-mode-grid,
+.surprise-event-member-list {
+    display: grid;
+    gap: 8px;
+}
+
+.surprise-event-mode-option,
+.surprise-event-select-all,
+.surprise-event-member-option {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    border: 1px solid var(--wa-line);
+    border-radius: 10px;
+    padding: 11px 12px;
+    background: white;
+    transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.surprise-event-mode-option:has(input:checked),
+.surprise-event-select-all:has(input:checked),
+.surprise-event-member-option:has(input:checked) {
+    border-color: var(--wa-green);
+    background: #effcf7;
+}
+
+.surprise-event-mode-option:active,
+.surprise-event-select-all:active,
+.surprise-event-member-option:active {
+    transform: scale(0.99);
+}
+
+.surprise-event-mode-option input,
+.surprise-event-select-all input,
+.surprise-event-member-option input {
+    flex: 0 0 auto;
+    accent-color: var(--wa-green);
+}
+
+.surprise-event-mode-option span,
+.surprise-event-select-all span,
+.surprise-event-member-option .surprise-event-member-copy {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+
+.surprise-event-mode-option strong,
+.surprise-event-select-all strong,
+.surprise-event-member-option strong {
+    color: var(--wa-ink);
+    font-size: 0.86rem;
+}
+
+.surprise-event-mode-option small,
+.surprise-event-select-all small,
+.surprise-event-member-option small {
+    overflow: hidden;
+    color: var(--wa-muted);
+    font-size: 0.72rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.surprise-event-select-all {
+    margin-bottom: 8px;
+}
+
+.surprise-event-member-option .room-member-avatar {
+    width: 38px;
+    height: 38px;
+    flex: 0 0 38px;
+}
+
+.surprise-event-options-error {
+    min-height: 18px;
+    margin-top: 8px;
+    color: #c62828;
+    font-size: 0.75rem;
+    font-weight: 650;
+}
+
+.surprise-event-options-footer {
+    display: flex;
+    gap: 10px;
+}
+
+.surprise-event-options-footer .wa-primary-button {
+    flex: 1;
+}
+
 @keyframes surprise-event-spin {
     to { transform: rotate(360deg); }
 }

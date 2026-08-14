@@ -4,8 +4,10 @@ import type {
     RelationshipStage,
     RelationshipState,
     SurpriseEventCategory,
+    SurpriseEventContentMode,
     SurpriseEventProposal,
 } from './managers.js';
+import { ROOM_PRESENT_MEMBER_LIMIT } from './roomManager.js';
 import type { VeniceJsonSchemaResponseFormat } from './venice.js';
 
 export const SURPRISE_EVENT_CATEGORIES: SurpriseEventCategory[] = [
@@ -63,7 +65,12 @@ export const SURPRISE_EVENT_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
                 hook: { type: 'string' },
                 setup: { type: 'string' },
                 opening_instruction: { type: 'string' },
-                involved_member_ids: { type: 'array', minItems: 1, maxItems: 4, items: { type: 'string' } },
+                involved_member_ids: {
+                    type: 'array',
+                    minItems: 1,
+                    maxItems: ROOM_PRESENT_MEMBER_LIMIT,
+                    items: { type: 'string' },
+                },
                 relationship_effect: {
                     type: 'object',
                     additionalProperties: false,
@@ -183,7 +190,7 @@ export const parseSurpriseEventProposal = (
         const involvedMemberIds = Array.from(new Set(
             (Array.isArray(parsed.involved_member_ids) ? parsed.involved_member_ids : [])
                 .filter((id): id is string => typeof id === 'string' && validIds.has(id)),
-        )).slice(0, 4);
+        )).slice(0, ROOM_PRESENT_MEMBER_LIMIT);
         if (involvedMemberIds.length === 0 && validIds.has(fallbackMemberId)) involvedMemberIds.push(fallbackMemberId);
         if (involvedMemberIds.length === 0) return null;
         const effect = parsed.relationship_effect && typeof parsed.relationship_effect === 'object'
@@ -217,6 +224,18 @@ const normalizedWords = (value: string) => value
 
 const eventText = (event: Pick<SurpriseEventProposal, 'title' | 'hook' | 'setup'>) =>
     `${event.title}\n${event.hook}\n${event.setup}`;
+
+const EXPLICIT_ADULT_EVENT_SIGNAL = /18\+|nsfw|成人情趣|性愛|性交|性行為|情慾|慾望|裸體|全裸|脫衣|內衣|口交|乳房|陰莖|陰蒂|陰道|肛交|高潮|體位|情趣用品|束縛|調教/iu;
+
+export const surpriseEventMatchesContentMode = (
+    event: Pick<SurpriseEventProposal, 'title' | 'hook' | 'setup' | 'openingInstruction'>,
+    mode: SurpriseEventContentMode,
+) => {
+    const text = `${eventText(event)}\n${event.openingInstruction}`;
+    return mode === 'nsfw'
+        ? EXPLICIT_ADULT_EVENT_SIGNAL.test(text)
+        : !EXPLICIT_ADULT_EVENT_SIGNAL.test(text);
+};
 
 const EVENT_CATEGORY_EVIDENCE: Record<SurpriseEventCategory, RegExp> = {
     idol_schedule: /行程|通告|工作安排|彩排|綵排|錄音|錄影|拍攝|演出|舞台|經紀|趕場|直播|節目|回歸|音樂/iu,
@@ -337,8 +356,8 @@ export const createFallbackSurpriseEvent = (
     return {
         ...templates[category],
         category,
-        involvedMemberIds: Array.from(new Set(involvedMemberIds.filter(Boolean))).slice(0, 4).length > 0
-            ? Array.from(new Set(involvedMemberIds.filter(Boolean))).slice(0, 4)
+        involvedMemberIds: Array.from(new Set(involvedMemberIds.filter(Boolean))).slice(0, ROOM_PRESENT_MEMBER_LIMIT).length > 0
+            ? Array.from(new Set(involvedMemberIds.filter(Boolean))).slice(0, ROOM_PRESENT_MEMBER_LIMIT)
             : [memberId],
         relationshipEffect: { closeness: 2, trust: 1, romanticTension: 2, initiative: 2 },
     };
