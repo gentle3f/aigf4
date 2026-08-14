@@ -20,6 +20,9 @@ const ignoredNameSet = (personaName: string) => new Set([
     '大家', '同學', '朋友', '同事', '老師', '醫生', '女生', '女仔', '男人', '女人',
     '主人', '用戶', '場景', '環境', '地點', '時間', '內心', '心聲', '鏡頭', '描述',
     '動作', '旁人', '路人',
+    '好美', '很美', '真美', '太美', '漂亮', '美麗', '好靚', '真靚', '太靚',
+    '好可愛', '真可愛', '太可愛', '好性感', '真性感', '太性感', '靚女', '美女',
+    '寶貝', '寶寶', '親愛的', '老婆', '女神', '姐姐', '妹妹', '傻瓜', '笨蛋',
     '我朋友', '我的朋友', '我同學', '我的同學', '我同事', '我的同事',
     '朋友叫', '同學叫', '同事叫', '閨蜜叫',
     '這是', '呢個', '呢位', '你好', '哈囉', '使用者', '旁白', '系統', '角色',
@@ -35,6 +38,8 @@ const uniqueValidNames = (values: string[], personaName: string) => {
         if (!name || name.length < 2 || name.length > 40 || ignored.has(name.toLocaleLowerCase())) return;
         if (/^[\p{Script=Han}]+$/u.test(name)) {
             if (/^[你我佢她他它這呢那請想可唔不怎點讓叫等跟同向對和]/u.test(name)) return;
+            if (/^(?:好|很|真|太|超|勁|極|幾|多|咁|挺|蠻|非常|十分)[\p{Script=Han}]{1,7}$/u.test(name)) return;
+            if (/^(?:漂亮|美麗|可愛|性感|迷人|靚女|美女|寶貝|寶寶|親愛的?|老婆|女神|姐姐|妹妹|傻瓜|笨蛋)(?:呀|啊|喔|哦|啦|呢)?$/u.test(name)) return;
             if (/[的嘅]/u.test(name)) return;
             if (/^(?:最好|最佳|真正|唯一|正確|錯誤|其他|上一|下一)/u.test(name)) return;
             if (/(?:選擇|決定|方法|做法|答案|問題|事情|東西|原因|結果|機會|想法|意思|地方|時候|感覺|情況|安排)$/u.test(name)) return;
@@ -57,13 +62,59 @@ export const extractDirectNpcNames = (text: string, personaName: string) => {
         new RegExp(`(?:介紹|introduce)\\s*[「『"']?(${LATIN_NAME})`, 'giu'),
         new RegExp(`(?:朋友|同學|同事|閨蜜|friend|classmate|colleague)[^。！？!?\\n]{0,18}(?:叫做|名叫|叫|named|called)\\s*[「『"']?${NAME_CAPTURE}`, 'giu'),
         new RegExp(`(?:同|跟|向|問|找|搵|對住?|和)\\s*[「『"']?${NAME_CAPTURE}[」』"']?\\s*(?:講|說|問|傾|打招呼|say|ask|talk|speak|reply|answer)`, 'giu'),
-        new RegExp(`(?:^|[。！？!?\\n])\\s*${NAME_CAPTURE}\\s*[,，:：]\\s*(?:你|妳|可唔可以|可以|點|怎|想|要|請|唔該|can|could|would|what|how|please)`, 'gimu'),
+        new RegExp(`(?:^|[。！？!?\\n])\\s*(${LATIN_NAME})\\s*[,，:：]\\s*(?:you|can|could|would|what|how|please)`, 'gimu'),
     ];
     patterns.forEach(pattern => {
         for (const match of text.matchAll(pattern)) candidates.push(match[1]);
     });
     return uniqueValidNames(candidates, personaName);
 };
+
+const ADDRESS_PREFIX_PATTERN = /(?:^|[。！？!?\n])\s*([\p{Script=Han}]{2,16})\s*[,，:：]\s*(?=(?:你|妳|可唔可以|可以|點|怎|想|要|請|唔該|會|能|有冇|有沒有|係咪|是不是))/gimu;
+
+const extractAddressPrefixCandidates = (text: string) => {
+    const candidates: string[] = [];
+    for (const match of text.matchAll(ADDRESS_PREFIX_PATTERN)) {
+        const name = normalizeName(match[1]);
+        if (name && !candidates.some(item => item.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+            candidates.push(name);
+        }
+    }
+    return candidates;
+};
+
+export const isUnconfirmedAddressPrefixName = (
+    name: string,
+    userText: string,
+    personaName: string,
+    establishedNpcNames: string[] = [],
+) => {
+    const normalized = normalizeName(name).toLocaleLowerCase();
+    if (!normalized || !extractAddressPrefixCandidates(userText).some(candidate => (
+        candidate.toLocaleLowerCase() === normalized
+    ))) return false;
+
+    const confirmed = [
+        personaName,
+        ...establishedNpcNames,
+        ...extractDirectNpcNames(userText, personaName),
+    ].map(candidate => normalizeName(candidate).toLocaleLowerCase());
+    return !confirmed.includes(normalized);
+};
+
+export const replyHasUnconfirmedAddressLabel = (
+    reply: string,
+    userText: string,
+    personaName: string,
+    establishedNpcNames: string[] = [],
+) => extractAddressPrefixCandidates(userText).some(candidate => {
+    if (!isUnconfirmedAddressPrefixName(candidate, userText, personaName, establishedNpcNames)) return false;
+    const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    return new RegExp(
+        `(?:^|\\n|[）)。！？!?])\\s*(?:\\*{0,2})?(?:\\[)?${escaped}(?:\\])?(?:\\*{0,2})?(?:\\s*[:：]|\\s*(?=[（(]))`,
+        'iu',
+    ).test(reply);
+});
 
 const extractAttributedNpcNames = (text: string, personaName: string) => {
     const candidates: string[] = [];
@@ -88,11 +139,30 @@ export const collectObservedNpcCandidates = (
     minimumModelTurns = 3,
 ) => {
     const observations = new Map<string, ObservedNpcCandidate>();
+    const establishedNames: string[] = [];
+    const rejectedNames = new Set<string>();
+    let latestUserText = '';
     history.slice(-48).forEach((message, index) => {
-        if (message.role !== 'model' || !message.content.text?.trim()) return;
-        const names = new Set(extractAttributedNpcNames(message.content.text, personaName));
+        const text = message.content.text?.trim();
+        if (!text || message.role === 'system') return;
+        if (message.role === 'user') {
+            latestUserText = text;
+            extractDirectNpcNames(text, personaName).forEach(name => {
+                const key = name.toLocaleLowerCase();
+                rejectedNames.delete(key);
+                if (!establishedNames.some(item => item.toLocaleLowerCase() === key)) establishedNames.push(name);
+            });
+            return;
+        }
+        const names = new Set(extractAttributedNpcNames(text, personaName));
         names.forEach(name => {
             const key = name.toLocaleLowerCase();
+            if (rejectedNames.has(key) && !establishedNames.some(item => item.toLocaleLowerCase() === key)) return;
+            if (isUnconfirmedAddressPrefixName(name, latestUserText, personaName, establishedNames)) {
+                rejectedNames.add(key);
+                return;
+            }
+            if (!establishedNames.some(item => item.toLocaleLowerCase() === key)) establishedNames.push(name);
             const existing = observations.get(key);
             if (existing) {
                 existing.modelTurnCount += 1;
@@ -119,6 +189,8 @@ export const collectEstablishedNpcNames = (
     limit = 6,
 ) => {
     const ordered: string[] = [];
+    const rejectedNames = new Set<string>();
+    let latestUserText = '';
     const remember = (name: string) => {
         const normalized = name.toLocaleLowerCase();
         const previous = ordered.findIndex(item => item.toLocaleLowerCase() === normalized);
@@ -129,10 +201,23 @@ export const collectEstablishedNpcNames = (
     history.slice(-48).forEach(message => {
         const text = message.content.text?.trim();
         if (!text || message.role === 'system') return;
-        const names = message.role === 'user'
-            ? extractDirectNpcNames(text, personaName)
-            : extractAttributedNpcNames(text, personaName);
-        names.forEach(remember);
+        if (message.role === 'user') {
+            latestUserText = text;
+            extractDirectNpcNames(text, personaName).forEach(name => {
+                rejectedNames.delete(name.toLocaleLowerCase());
+                remember(name);
+            });
+            return;
+        }
+        extractAttributedNpcNames(text, personaName).forEach(name => {
+            const key = name.toLocaleLowerCase();
+            if (rejectedNames.has(key) && !ordered.some(item => item.toLocaleLowerCase() === key)) return;
+            if (isUnconfirmedAddressPrefixName(name, latestUserText, personaName, ordered)) {
+                rejectedNames.add(key);
+                return;
+            }
+            remember(name);
+        });
     });
     extractDirectNpcNames(latestUserMessage, personaName).forEach(remember);
     return ordered.slice(-limit);
@@ -186,6 +271,16 @@ export const inferNpcSpeakersForTurn = (
     establishedNpcNames: string[],
 ) => {
     const direct = extractDirectNpcNames(latestUserMessage, personaName);
+    establishedNpcNames.forEach(name => {
+        const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+        const directlyAddressed = new RegExp(
+            `(?:^|[。！？!?\\n])\\s*${escaped}\\s*[,，:：]?\\s*(?:你|妳|可唔可以|可以|點|怎|想|要|請|唔該|會|能|有冇|有沒有|係咪|是不是|you|can|could|would|what|how|please)`,
+            'iu',
+        ).test(latestUserMessage);
+        if (directlyAddressed && !direct.some(candidate => (
+            candidate.toLocaleLowerCase() === name.toLocaleLowerCase()
+        ))) direct.push(name);
+    });
     if (direct.length > 0) return direct;
     const asksThirdPartyToSpeak = /(?:叫|讓|請|想聽|輪到|由|等).{0,8}(?:她|他|佢|對方).{0,10}(?:講|說|答|回答|回應|reply|answer|speak)|(?:她|他|佢).{0,8}(?:會點講|怎麼說|點答|答|講|說|回答|回應|開口)|what\s+(?:does|would)\s+(?:she|he|they)\s+say/iu.test(latestUserMessage);
     return asksThirdPartyToSpeak && establishedNpcNames.length > 0
@@ -202,6 +297,16 @@ export const replyHasNpcSpeech = (reply: string, npcNames: string[]) => npcNames
     );
     return directLabel.test(reply) || narratedSpeech.test(reply);
 });
+
+const NON_PERSON_ATTRIBUTED_LABEL = /(?:^|\n|[）)])\s*(?:\[)?(好美|很美|真美|太美|漂亮|美麗|好靚|真靚|太靚|好可愛|真可愛|太可愛|好性感|真性感|太性感|靚女|美女|寶貝|寶寶|親愛的|老婆|女神|姐姐|妹妹|傻瓜|笨蛋)(?:\])?\s*[:：]/giu;
+
+export const replyHasNonPersonNpcLabel = (reply: string, activePersonaName: string) => {
+    const activeName = normalizeName(activePersonaName).toLocaleLowerCase();
+    for (const match of reply.matchAll(NON_PERSON_ATTRIBUTED_LABEL)) {
+        if (normalizeName(match[1]).toLocaleLowerCase() !== activeName) return true;
+    }
+    return false;
+};
 
 export const buildNpcContinuityRequirement = (npcNames: string[]) => npcNames.length === 0
     ? ''

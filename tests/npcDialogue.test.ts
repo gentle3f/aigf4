@@ -8,6 +8,8 @@ import {
     inferNpcPromotionNames,
     inferNpcSpeakersForTurn,
     replyHasNpcSpeech,
+    replyHasNonPersonNpcLabel,
+    replyHasUnconfirmedAddressLabel,
 } from '../npcDialogue.js';
 
 test('detects a friend introduced and greeted in natural mixed-language chat', () => {
@@ -48,6 +50,64 @@ test('does not mistake an opinion after 這是 for a person name', () => {
     assert.deepEqual(inferIntroducedNpcNames('這是最好的選擇。', 'IU'), []);
     assert.deepEqual(inferIntroducedNpcNames('這是最佳決定！', 'IU'), []);
     assert.deepEqual(inferIntroducedNpcNames('呢個係正確方法。', 'IU'), []);
+});
+
+test('does not turn compliments or pet names into NPCs', () => {
+    const compliments = [
+        '好美，你能讓我看清楚你嗎？',
+        '好靚，你可唔可以行近少少？',
+        '太可愛，你再笑一次俾我睇。',
+        '漂亮啊，你望一望鏡頭。',
+        '寶貝，你今日想去邊？',
+        '多謝招待，你家裏沒其他人吧？',
+        '放心，你可以完全信任我。',
+        '今晚氣氛真好，你想坐近一點嗎？',
+    ];
+    compliments.forEach(message => {
+        assert.deepEqual(extractDirectNpcNames(message, 'IU'), []);
+        assert.deepEqual(inferNpcSpeakersForTurn(message, 'IU', []), []);
+    });
+    assert.deepEqual(collectEstablishedNpcNames([
+        { role: 'user', content: { text: '好美，你能讓我看清楚你嗎？' } },
+        { role: 'model', content: { text: '好美：「我就在這裡。」\nIU：「看著我就好。」' } },
+    ], 'IU'), []);
+    assert.deepEqual(collectObservedNpcCandidates([
+        { role: 'model', content: { text: '好美：「第一句。」' } },
+        { role: 'model', content: { text: '好美：「第二句。」' } },
+        { role: 'model', content: { text: '好美：「第三句。」' } },
+    ], 'IU'), []);
+    assert.equal(replyHasNonPersonNpcLabel('IU：「你在稱讚我嗎？」\n好美：「我也在這裡。」', 'IU'), true);
+    assert.equal(replyHasNonPersonNpcLabel('好美：「這是角色本人的正常標籤。」', '好美'), false);
+    assert.equal(replyHasUnconfirmedAddressLabel(
+        'IU：「謝謝你。」\n多謝招待：「不用客氣。」',
+        '多謝招待，你家裏沒其他人吧？',
+        'IU',
+    ), true);
+    assert.equal(replyHasUnconfirmedAddressLabel(
+        '放心（走進房間）：「我也來了。」',
+        '放心，你可以完全信任我。',
+        'IU',
+    ), true);
+    assert.equal(replyHasUnconfirmedAddressLabel(
+        '小美：「可以，我來回答。」',
+        '小美，你可以回答我嗎？',
+        'IU',
+        ['小美'],
+    ), false);
+    assert.deepEqual(inferNpcSpeakersForTurn('小美，你可以回答我嗎？', 'IU', ['小美']), ['小美']);
+});
+
+test('does not persist arbitrary sentence prefixes as NPC memory', () => {
+    const history = [
+        { role: 'user' as const, content: { text: '多謝招待，你家裏沒其他人吧？' } },
+        { role: 'model' as const, content: { text: '多謝招待：「我一直都在。」\nIU：「家裡沒有其他人。」' } },
+        { role: 'user' as const, content: { text: '你再說清楚一點。' } },
+        { role: 'model' as const, content: { text: '多謝招待：「第二次說話。」\nIU：「我在回答你。」' } },
+        { role: 'user' as const, content: { text: '繼續。' } },
+        { role: 'model' as const, content: { text: '多謝招待：「第三次說話。」\nIU：「不要理會那個錯誤標籤。」' } },
+    ];
+    assert.deepEqual(collectEstablishedNpcNames(history, 'IU'), []);
+    assert.deepEqual(collectObservedNpcCandidates(history, 'IU'), []);
 });
 
 test('still recognises clear direct person introductions', () => {

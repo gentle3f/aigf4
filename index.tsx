@@ -112,7 +112,10 @@ import {
     extractDirectNpcNames,
     inferNpcPromotionNames,
     inferNpcSpeakersForTurn,
+    isUnconfirmedAddressPrefixName,
     replyHasNpcSpeech,
+    replyHasNonPersonNpcLabel,
+    replyHasUnconfirmedAddressLabel,
 } from "./npcDialogue.js";
 import {
     buildFallbackObservedNpcPersonaDraft,
@@ -9057,6 +9060,7 @@ const buildImmediateTurnOwnershipRequirement = (
         referencedNpcNames.length > 0
             ? `- Distinct named NPCs in this turn: ${referencedNpcNames.join(', ')}. 他 / 她 / 佢 / they refers to the nearest matching named NPC unless the sentence clearly says otherwise.`
             : '- Keep every previously established third party separate; resolve pronouns from the nearest clear named participant.',
+        `- Punctuation never creates a participant. Any ordinary clause, reaction, compliment, pet name or phrase before a comma addresses ${personaName}; it is not a person name. A third party exists only when explicitly introduced or greeted by name, or already present in the established participant list.`,
         '- Preserve who currently holds each object and who performs each action. Do not move an object into the active character’s bag or hand before the user gives it to them.',
         '- Never write or label a new spoken line for the user. Reply only as the active character and any relevant NPCs.',
     ].join('\n');
@@ -9188,6 +9192,10 @@ const getRecentChatMessages = (
     }
     const sourceHistory = completedHistory.slice(activeSceneStart);
     const historyMessages: VeniceMessage[] = [];
+    const confirmedHistoryNpcNames = !assistantMode && !room
+        ? collectEstablishedNpcNames(sourceHistory, persona?.name || '')
+        : [];
+    let previousUserText = '';
 
     sourceHistory.forEach(message => {
         const rawText = message.role === 'system' && message.content.contextBridge
@@ -9196,7 +9204,21 @@ const getRecentChatMessages = (
                 ? contentToGroupHistoryText(message.content, room).trim()
                 : message.content.text?.trim();
         const isContaminated = !rawText
-            || (message.role !== 'system' && (/\[PERSONA_UPDATE:/i.test(rawText) || /^THINK\b/i.test(rawText)));
+            || (message.role !== 'system' && (/\[PERSONA_UPDATE:/i.test(rawText) || /^THINK\b/i.test(rawText)))
+            || (
+                message.role === 'model'
+                && !assistantMode
+                && !room
+                && (
+                    replyHasNonPersonNpcLabel(rawText, persona?.name || '')
+                    || replyHasUnconfirmedAddressLabel(
+                        rawText,
+                        previousUserText,
+                        persona?.name || '',
+                        confirmedHistoryNpcNames,
+                    )
+                )
+            );
         if (isContaminated) {
             if (message.role === 'model' && historyMessages.at(-1)?.role === 'user') {
                 historyMessages.pop();
@@ -9230,6 +9252,7 @@ const getRecentChatMessages = (
                         : 'assistant',
             content: text,
         });
+        if (message.role === 'user') previousUserText = rawText;
     });
 
     if (latestUserMessage && historyMessages.length > 0) {
@@ -9859,6 +9882,16 @@ const runConversationGeneration = async (
                     cleanedText = await polishCcReply(request, cleanedText);
                 }
 
+                if (!assistantMode && replyHasUnconfirmedAddressLabel(
+                    cleanedText,
+                    latestUserMessage,
+                    request.persona.name,
+                    establishedNpcNames,
+                )) {
+                    failedCandidate = cleanedText;
+                    throw new Error(`Invented speaker from user phrase by ${model}.`);
+                }
+
                 if (
                     addressedNpcNames.length > 0
                     && !replyContainsAttributedNpcSpeech(cleanedText, addressedNpcNames)
@@ -10443,6 +10476,14 @@ const runRoomConversationGeneration = async (
                 const parsed = normalizeGroupGenerationTraditional(
                     parseGroupGeneration(result.text, request.room, fallbackMemberId),
                 );
+                if (parsed.npcCandidate && isUnconfirmedAddressPrefixName(
+                    parsed.npcCandidate.name,
+                    latestUserMessage,
+                    request.persona.name,
+                    request.room.members.map(member => member.persona.name),
+                )) {
+                    parsed.npcCandidate = undefined;
+                }
                 if (groupNarrationUsesFirstPerson(parsed)) {
                     // This is a quality signal for the strict reviewer, not a fatal transport error.
                     // Rejecting here can exhaust every model even when the turn is otherwise usable.
@@ -10643,6 +10684,12 @@ const strictReviewSingleReply = async (
         !revision
         || isInvalidVeniceChatReply(revision)
         || replyBreaksSpeakerOwnership(revision)
+        || replyHasUnconfirmedAddressLabel(
+            revision,
+            latestUserMessage,
+            request.persona.name,
+            establishedNpcNames,
+        )
         || !validNpcSpeech
         || (repeats && !userExplicitlyRequestsContinuation(latestUserMessage))
         || lengthRatio < 0.62

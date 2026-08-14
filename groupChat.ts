@@ -123,6 +123,7 @@ export const buildGroupSystemPrompt = (room: ChatRoom) => {
             '- Never merge identities, memories, careers, nationalities, body positions, dialogue or pronouns between members.',
             '- Only PRESENT members may perceive the current moment or speak. ABSENT members remain fixed characters but learn nothing until told later.',
             '- If the user directly addresses one present member, that member must answer. Other present members join only when naturally relevant.',
+            '- Punctuation never creates a participant. An ordinary clause, reaction, compliment, pet name or phrase before a comma is not a person name. A new participant exists only when the user explicitly introduces or greets them by name; otherwise use only the fixed member ledger.',
             '- Never write the user’s next words, action, emotion or consent.',
             '- Narration is an external third-person camera. It must name the relevant character and must never use 我 / 我們 / 我哋 / I / me / my for any character or for the user. First-person pronouns are allowed only inside a clearly labelled character dialogue line.',
         ].join('\n'),
