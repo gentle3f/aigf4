@@ -432,6 +432,49 @@ test('upgrading a one-to-one chat to a room carries its soul and episodic memory
     assert.deepEqual(room.members[0].soul[0].participants, [room.members[0].id]);
 });
 
+test('replacing a room member keeps the group slot but adopts private continuity', () => {
+    const storage = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: {
+            getItem: (key: string) => storage.get(key) || null,
+            setItem: (key: string, value: string) => storage.set(key, value),
+        },
+    });
+    const manager = new RoomManager();
+    const created = manager.createRoom('BLACKPINK', [
+        { sourcePersonaKey: 'jennie', persona: member('jennie', 'Jennie').persona },
+        { sourcePersonaKey: 'rose-old', persona: member('rose-old', 'Rose').persona },
+    ]);
+    const oldRose = created.members[1];
+    const privateRose = member('temporary-private-id', 'Rose');
+    privateRose.sourcePersonaKey = 'rose-private';
+    privateRose.privatePersonaKey = 'rose-private';
+    privateRose.privateContinuityImportedUserMessageCount = 8;
+    privateRose.persona.prompt = 'Rose remembers the private trip.';
+    privateRose.memories = [{
+        id: 'private-memory',
+        kind: 'relationship',
+        title: '私訊旅程',
+        summary: 'Rose 與使用者單獨外出後建立了新的默契。',
+        participants: [privateRose.id],
+        createdAt: 10,
+        pinned: false,
+    }];
+
+    manager.replaceMember(created.id, oldRose.id, privateRose);
+
+    const replaced = new RoomManager().getRoom(created.id)!;
+    const returnedRose = replaced.members.find(item => item.id === oldRose.id)!;
+    assert.equal(returnedRose.sourcePersonaKey, 'rose-private');
+    assert.equal(returnedRose.privatePersonaKey, 'rose-private');
+    assert.equal(returnedRose.privateContinuityImportedUserMessageCount, 8);
+    assert.equal(returnedRose.persona.prompt, 'Rose remembers the private trip.');
+    assert.equal(returnedRose.memories[0].title, '私訊旅程');
+    assert.deepEqual(returnedRose.memories[0].participants, [oldRose.id]);
+    assert.ok(replaced.scene.presentMemberIds.includes(oldRose.id));
+});
+
 test('curated IU group exists even before a legacy IU chat is imported', () => {
     const storage = new Map<string, string>();
     Object.defineProperty(globalThis, 'localStorage', {

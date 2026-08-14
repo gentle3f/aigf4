@@ -13139,6 +13139,9 @@ interface ParticipantTransferCandidate {
     sourceLabel: string;
     originRoomId?: string;
     originMemberId?: string;
+    targetRoomId?: string;
+    replaceMemberId?: string;
+    privateUserTurnCount?: number;
 }
 
 const participantIdentityFingerprint = (persona: Persona) => (
@@ -13175,10 +13178,55 @@ const collectParticipantTransferCandidates = () => {
     } else if (currentPersona && currentPersonaKey) {
         excludedKeys.add(currentPersonaKey);
         excludedIdentities.add(participantIdentityFingerprint(currentPersona));
+        roomManager.getRooms().filter(room => !room.timelineBranch).forEach(room => {
+            const linkedMember = room.members.find(member => member.privatePersonaKey === currentPersonaKey);
+            if (!linkedMember) return;
+            const privateUserTurnCount = memoryManager.peekChatHistory(currentPersonaKey!)
+                .filter(message => message.role === 'user').length;
+            if (privateUserTurnCount <= Number(linkedMember.privateContinuityImportedUserMessageCount || 0)) return;
+            const candidateId = `return:${room.id}:${linkedMember.id}:${currentPersonaKey}`;
+            candidates.set(candidateId, {
+                id: candidateId,
+                persona: cloneRoomSnapshot(currentPersona!),
+                sourcePersonaKey: currentPersonaKey!,
+                sourceLabel: `帶著目前私訊記憶回到「${room.title}」並取代舊版本`,
+                targetRoomId: room.id,
+                replaceMemberId: linkedMember.id,
+                privateUserTurnCount,
+            });
+        });
     }
 
     Object.entries(memoryManager.getAllPersonas()).forEach(([key, persona]) => {
         const identity = participantIdentityFingerprint(persona);
+        const replaceableMember = currentRoom?.members.find(member => (
+            member.privatePersonaKey === key
+            && participantIdentityFingerprint(member.persona) === identity
+        ));
+        const privateUserTurnCount = replaceableMember
+            ? memoryManager.peekChatHistory(key).filter(message => message.role === 'user').length
+            : 0;
+        const importedUserTurnCount = Number(
+            replaceableMember?.privateContinuityImportedUserMessageCount || 0,
+        );
+        if (
+            replaceableMember
+            && privateUserTurnCount > importedUserTurnCount
+            && key !== VENICE_ASSISTANT_PERSONA_KEY
+            && persona.gender === 'female'
+            && !persona.timelineBranch
+        ) {
+            const candidateId = `replace:${currentRoom!.id}:${replaceableMember.id}:${key}`;
+            candidates.set(candidateId, {
+                id: candidateId,
+                persona: cloneRoomSnapshot(persona),
+                sourcePersonaKey: key,
+                sourceLabel: `私訊版本 · ${privateUserTurnCount} 個對話回合 · 將取代群組舊版本`,
+                replaceMemberId: replaceableMember.id,
+                privateUserTurnCount,
+            });
+            return;
+        }
         if (
             key === VENICE_ASSISTANT_PERSONA_KEY
             || persona.gender !== 'female'
@@ -13192,6 +13240,8 @@ const collectParticipantTransferCandidates = () => {
             persona: cloneRoomSnapshot(persona),
             sourcePersonaKey: key,
             sourceLabel: memoryManager.peekChatHistory(key).length > 0 ? '來自私人聊天' : '現有角色',
+            privateUserTurnCount: memoryManager.peekChatHistory(key)
+                .filter(message => message.role === 'user').length,
         });
     });
 
@@ -13229,9 +13279,12 @@ const collectParticipantTransferCandidates = () => {
     ));
 };
 
-const createTransferredRoomMember = (candidate: ParticipantTransferCandidate): RoomMember => {
+const createTransferredRoomMember = (
+    candidate: ParticipantTransferCandidate,
+    fixedMemberId?: string,
+): RoomMember => {
     const joinedAt = Date.now();
-    const memberId = `member_${joinedAt}_${Math.random().toString(36).slice(2, 8)}`;
+    const memberId = fixedMemberId || `member_${joinedAt}_${Math.random().toString(36).slice(2, 8)}`;
     const persona = cloneRoomSnapshot(candidate.persona);
     const toRoomMemory = (entry: PersonaMemoryEntry, pinned: boolean): RoomMemoryEntry => ({
         ...cloneRoomSnapshot(entry),
@@ -13243,6 +13296,7 @@ const createTransferredRoomMember = (candidate: ParticipantTransferCandidate): R
         id: memberId,
         sourcePersonaKey: candidate.sourcePersonaKey,
         privatePersonaKey: candidate.sourcePersonaKey,
+        privateContinuityImportedUserMessageCount: candidate.privateUserTurnCount,
         persona,
         joinedAt,
         soul: (persona.soul || []).map(entry => toRoomMemory(entry, true)),
@@ -13273,7 +13327,12 @@ const resolveRoomMemberPrivatePersonaKey = async (room: ChatRoom, member: RoomMe
         || (!protectedIuArchive ? member.sourcePersonaKey : undefined);
     if (existingKey && memoryManager.getPersona(existingKey)) {
         if (member.privatePersonaKey !== existingKey) {
-            roomManager.updateMember(room.id, member.id, { privatePersonaKey: existingKey });
+            const existingUserTurns = memoryManager.peekChatHistory(existingKey)
+                .filter(message => message.role === 'user').length;
+            roomManager.updateMember(room.id, member.id, {
+                privatePersonaKey: existingKey,
+                privateContinuityImportedUserMessageCount: existingUserTurns,
+            });
         }
         return existingKey;
     }
@@ -13282,7 +13341,10 @@ const resolveRoomMemberPrivatePersonaKey = async (room: ChatRoom, member: RoomMe
         ? memoryManager.getPersona(member.sourcePersonaKey)
         : undefined;
     const personaKey = await memoryManager.saveCustomPersonaCopy(roomMemberToPersona(member, sourcePersona));
-    roomManager.updateMember(room.id, member.id, { privatePersonaKey: personaKey });
+    roomManager.updateMember(room.id, member.id, {
+        privatePersonaKey: personaKey,
+        privateContinuityImportedUserMessageCount: 0,
+    });
     return personaKey;
 };
 
@@ -13335,14 +13397,101 @@ const openPrivateChatForRoomMember = async (roomId: string, memberId: string) =>
     startChat(personaKey);
 };
 
-const inviteParticipantCandidate = (candidate: ParticipantTransferCandidate) => {
+const replaceRoomMemberWithPrivateCandidate = async (
+    room: ChatRoom,
+    candidate: ParticipantTransferCandidate,
+) => {
+    if (!candidate.replaceMemberId || !candidate.sourcePersonaKey) return;
+    const oldMember = room.members.find(member => member.id === candidate.replaceMemberId);
+    if (!oldMember) throw new Error('群組中的舊角色版本已不存在。');
+    const wasPresent = room.scene.presentMemberIds.includes(oldMember.id);
+    if (!wasPresent && room.scene.presentMemberIds.length >= ROOM_PRESENT_MEMBER_LIMIT) {
+        alert(`目前已有 ${ROOM_PRESENT_MEMBER_LIMIT} 位角色在場，請先請一位角色離場。`);
+        return;
+    }
+    if (!confirm(
+        `以私訊中的 ${candidate.persona.name} 取代群組內的舊版本？\n\n`
+        + '私訊聊天會完整保留；群組舊訊息也不會刪除，但往後會使用私訊版的人格、soul.md 與 memory.md。',
+    )) return;
+
+    const privatePersonaKey = candidate.sourcePersonaKey;
+    const memoryUpdate = await maybeSummarizePersonaMemory(privatePersonaKey, true);
+    const privatePersona = memoryManager.getPersona(privatePersonaKey);
+    if (!privatePersona) throw new Error('找不到要帶回群組的私訊角色。');
+    const privateHistory = memoryManager.peekChatHistory(privatePersonaKey);
+    const replacement = createTransferredRoomMember({
+        ...candidate,
+        persona: cloneRoomSnapshot(privatePersona),
+    }, oldMember.id);
+    const bridge = buildContextBridge({
+        kind: 'member_returned',
+        sourceConversationKey: privatePersonaKey,
+        sourceTitle: `${privatePersona.name} 的私訊`,
+        history: privateHistory,
+        targetMemberName: privatePersona.name,
+        summaryOverride: [
+            `${privatePersona.name} 的獨立私訊版本已取代群組中的舊版本並回到聊天室。`,
+            '她保留私訊中建立的關係、承諾、經歷與情感發展；群組其他成員只會從現在開始接觸這個版本。',
+            memoryUpdate.status === 'error'
+                ? '自動記憶整理暫時失敗，因此先以現有 memory.md 與近期私訊內容承接。'
+                : '',
+        ].filter(Boolean).join(' '),
+    });
+
+    roomManager.replaceMember(room.id, oldMember.id, replacement);
+    if (!wasPresent) {
+        roomManager.setPresentMembers(room.id, [...room.scene.presentMemberIds, oldMember.id]);
+    }
+    roomManager.addSoulMemory(room.id, [oldMember.id], {
+        kind: 'core',
+        title: '私訊分支回歸界線',
+        summary: [
+            `${privatePersona.name} 是從獨立私訊回歸的版本。`,
+            '她保留建立私訊時承接的群組背景，以及其後在私訊中親自經歷的事情。',
+            '她不會自動繼承舊群組版本在兩條對話分開後新增的個人經歷；其他成員可在回歸後把需要知道的事情告訴她。',
+        ].join(''),
+        participants: [oldMember.id],
+        roleplayOnly: true,
+    });
+    roomManager.updateRoom(room.id, editableRoom => {
+        editableRoom.scene.summary = (
+            `${editableRoom.scene.summary} 群組中的舊 ${oldMember.persona.name} 已離開，`
+            + `承接獨立私訊經歷的 ${privatePersona.name} 現已回到聊天室。`
+        ).slice(-1500);
+    });
+    roomManager.addEpisodicMemories(room.id, [{
+        kind: 'event',
+        title: `${privatePersona.name} 帶著私訊經歷回到群組`,
+        summary: bridge.summary,
+        participants: [oldMember.id],
+    }]);
+    appendContextBridge(room.id, bridge);
+
+    participantActionModal.classList.add('hidden');
+    roomInfoModal.classList.add('hidden');
+    renderPersonaList();
+    startChat(room.id, null, currentConversationKey === room.id ? 'skip' : 'push');
+};
+
+const inviteParticipantCandidate = async (candidate: ParticipantTransferCandidate) => {
     if (!currentConversationKey || !currentPersona || activeChatRequest) return;
     const sourceConversationKey = currentConversationKey;
     const sourceRoom = currentRoom ? roomManager.getRoom(currentRoom.id) || currentRoom : null;
     const sourceTitle = sourceRoom?.title || currentPersona.name;
     const sourceHistory = memoryManager.getChatHistory(sourceConversationKey);
 
+    if (candidate.targetRoomId && candidate.replaceMemberId) {
+        const targetRoom = roomManager.getRoom(candidate.targetRoomId);
+        if (!targetRoom) throw new Error('原本的群組已不存在。');
+        await replaceRoomMemberWithPrivateCandidate(targetRoom, candidate);
+        return;
+    }
+
     if (sourceRoom) {
+        if (candidate.replaceMemberId) {
+            await replaceRoomMemberWithPrivateCandidate(sourceRoom, candidate);
+            return;
+        }
         if (sourceRoom.members.length >= ROOM_MEMBER_LIMIT) {
             alert(`每個群組最多 ${ROOM_MEMBER_LIMIT} 位角色。`);
             return;
@@ -13523,13 +13672,15 @@ const openParticipantAction = (mode: 'dm' | 'invite' | 'leave') => {
     if (mode === 'invite') {
         participantActionTitle.textContent = '邀請角色加入';
         participantActionSummary.textContent = currentRoom
-            ? '選擇其他聊天中的角色；她會加入目前群組並先讀取必要的近期情境。'
-            : '選擇另一位角色；目前私訊會保留為備份，並延續成新的群組聊天室。';
+            ? '可邀請其他角色；若群組成員已有獨立私訊版本，也可用私訊版安全取代舊版本。'
+            : '可邀請另一位角色建立新群組；若這是由群組分出的私訊，也可帶著新記憶回到原群組。';
         collectParticipantTransferCandidates().forEach(candidate => {
             appendParticipantActionRow(
                 candidate.persona,
                 candidate.sourceLabel,
-                '邀請',
+                candidate.targetRoomId
+                    ? '回到群組'
+                    : candidate.replaceMemberId ? '取代舊版本' : '邀請',
                 () => inviteParticipantCandidate(candidate),
             );
         });

@@ -36,6 +36,7 @@ export interface RoomMember {
     id: string;
     sourcePersonaKey?: string;
     privatePersonaKey?: string;
+    privateContinuityImportedUserMessageCount?: number;
     persona: Persona;
     joinedAt: number;
     soul: RoomMemoryEntry[];
@@ -500,6 +501,26 @@ export class RoomManager {
             if (room.scene.presentMemberIds.length < ROOM_PRESENT_MEMBER_LIMIT) {
                 room.scene.presentMemberIds.push(member.id);
             }
+        });
+    }
+
+    replaceMember(roomId: string, memberId: string, replacement: RoomMember) {
+        return this.updateRoom(roomId, room => {
+            const memberIndex = room.members.findIndex(member => member.id === memberId);
+            if (memberIndex < 0) throw new Error('找不到要取代的群組成員。');
+
+            const replacementSnapshot = cloneRoom(replacement);
+            const temporaryId = replacementSnapshot.id;
+            replacementSnapshot.id = memberId;
+            replacementSnapshot.soul = replacementSnapshot.soul.map(entry => ({
+                ...entry,
+                participants: entry.participants.map(id => id === temporaryId ? memberId : id),
+            }));
+            replacementSnapshot.memories = replacementSnapshot.memories.map(entry => ({
+                ...entry,
+                participants: entry.participants.map(id => id === temporaryId ? memberId : id),
+            }));
+            room.members[memberIndex] = replacementSnapshot;
         });
     }
 
