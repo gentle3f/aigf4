@@ -132,6 +132,28 @@ export class FileManager {
         const sameValue = (incoming: unknown, current: unknown) => (
             incoming === undefined || JSON.stringify(incoming) === JSON.stringify(current)
         );
+        const withoutPortablePhotoReference = (message: ChatMessage) => {
+            const content = { ...message.content };
+            delete content.imageUrl;
+            delete content.imageAssetId;
+            return { ...message, content };
+        };
+        const isPortablePhotoUpgrade = (incoming: ChatMessage[] | undefined, current: ChatMessage[] | undefined) => {
+            if (!Array.isArray(incoming) || !Array.isArray(current) || incoming.length !== current.length) return false;
+            let upgradedPhoto = false;
+            const sameConversation = incoming.every((message, index) => {
+                const currentMessage = current[index];
+                if (!currentMessage) return false;
+                if (
+                    message.content.imageAssetId
+                    && currentMessage.content.imageUrl
+                    && !currentMessage.content.imageAssetId
+                ) upgradedPhoto = true;
+                return JSON.stringify(withoutPortablePhotoReference(message))
+                    === JSON.stringify(withoutPortablePhotoReference(currentMessage));
+            });
+            return sameConversation && upgradedPhoto;
+        };
         const createUniqueKey = (sourceKey: string, isRoom: boolean) => {
             const safeKey = sourceKey.replace(/[^a-zA-Z0-9_-]+/gu, '_').slice(0, 48) || 'data';
             const prefix = isRoom ? 'room_import' : 'custom_import';
@@ -152,6 +174,12 @@ export class FileManager {
                 || this.roomManager?.getRoom(sourceKey)
             );
             if (!hasCurrentPayload) {
+                keyMap.set(sourceKey, sourceKey);
+                usedKeys.add(sourceKey);
+                return;
+            }
+
+            if (!isRoom && isPortablePhotoUpgrade(importedHistories[sourceKey], currentHistories[sourceKey])) {
                 keyMap.set(sourceKey, sourceKey);
                 usedKeys.add(sourceKey);
                 return;

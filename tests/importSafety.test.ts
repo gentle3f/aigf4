@@ -19,10 +19,10 @@ const existingHistory: ChatMessage[] = [
     { id: 'two', role: 'user', content: { text: 'newer local message' } },
 ];
 
-const createFileManager = () => {
+const createFileManager = (currentHistory = existingHistory) => {
     const memoryManager = {
         getModifiedAndCustomPersonas: () => ({ custom_iu: persona }),
-        getAllChatHistories: () => ({ custom_iu: existingHistory }),
+        getAllChatHistories: () => ({ custom_iu: currentHistory }),
         getAllDiaryEntries: () => ({}),
         getAllInterests: () => ({}),
         getAllPersonas: () => ({ custom_iu: persona }),
@@ -78,6 +78,26 @@ test('safe import renames conflicting history instead of overwriting the local r
     assert.equal(prepared.summary.renamedConflicts, 1);
     assert.equal(prepared.data.chatHistories[targetKey!], importedHistory);
     assert.deepEqual(existingHistory.map(message => message.id), ['one', 'two']);
+});
+
+test('portable photo upgrades replace stale URL references without duplicating the conversation', () => {
+    const currentHistory: ChatMessage[] = [
+        { id: 'photo-message', role: 'model', content: { text: 'photo', imageUrl: 'https://expired.example/photo.webp' } },
+    ];
+    const importedHistory: ChatMessage[] = [
+        { id: 'photo-message', role: 'model', content: { text: 'photo', imageAssetId: 'portable-photo-1' } },
+    ];
+    const prepared = createFileManager(currentHistory).prepareMergeSafeImport({
+        customPersonas: { custom_iu: { ...persona, avatarUrl: null } },
+        chatHistories: { custom_iu: importedHistory },
+        diaries: {},
+        interests: {},
+    });
+
+    assert.equal(prepared.keyMap.get('custom_iu'), 'custom_iu');
+    assert.equal(prepared.summary.renamedConflicts, 0);
+    assert.equal(prepared.summary.skippedDuplicates, 0);
+    assert.equal(prepared.data.chatHistories.custom_iu[0].content.imageAssetId, 'portable-photo-1');
 });
 
 test('storage failure rolls back the whole import instead of leaving partial data', () => {
