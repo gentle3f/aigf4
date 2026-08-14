@@ -6,6 +6,20 @@ import { getChatAttachmentBlob, saveChatAttachment } from './chatMediaStore.js';
 
 declare var JSZip: any;
 
+const EXPORTED_APP_SETTING_KEYS = [
+    'veniceAssistantModel',
+    'aigf4ChatModelSettingsV1',
+    'veniceImageGenerateModel',
+    'veniceImageEditModel',
+    'veniceImageAdultConfirmed',
+    'veniceImageSeed',
+    'veniceImageSeedLocked',
+    'veniceVideoImageModel',
+    'veniceVideoTextModel',
+    'veniceVideoAdultConfirmed',
+    'aigf4RandomPersonaVariationsV2',
+];
+
 interface FileManagerCallbacks {
     onSingleChatRestored: (key: string, history: ChatMessage[]) => void;
     onAllDataRestored: (summary: ImportSummary) => void;
@@ -229,6 +243,21 @@ export class FileManager {
         }
 
         return { ...persona };
+    }
+
+    private getExportedAppSettings() {
+        return Object.fromEntries(EXPORTED_APP_SETTING_KEYS.flatMap(key => {
+            const value = localStorage.getItem(key);
+            return value === null ? [] : [[key, value]];
+        }));
+    }
+
+    private restoreAppSettings(value: unknown) {
+        if (!value || typeof value !== 'object') return;
+        const settings = value as Record<string, unknown>;
+        EXPORTED_APP_SETTING_KEYS.forEach(key => {
+            if (typeof settings[key] === 'string') localStorage.setItem(key, settings[key]);
+        });
     }
 
     private async addRoomAvatarsToZip(zip: any, roomId?: string) {
@@ -477,67 +506,73 @@ export class FileManager {
         });
     }
 
-    async saveAllChats() {
+    async createAllDataArchive() {
         const allChatHistories = this.memoryManager.getAllChatHistories();
         const personasToSave = this.memoryManager.getModifiedAndCustomPersonas();
         const allDiaries = this.memoryManager.getAllDiaryEntries();
         const allInterests = this.memoryManager.getAllInterests();
 
         if (Object.keys(allChatHistories).length === 0 && Object.keys(personasToSave).length === 0) {
-            alert("沒有任何對話或自訂/修改過的角色可以儲存！");
-            return;
+            throw new Error('沒有任何對話或自訂/修改過的角色可以備份。');
         }
 
+        const zip = new JSZip();
+        const exportSafePersonas = Object.fromEntries(
+            Object.entries(personasToSave).map(([key, persona]) => [key, this.createExportSafePersona(persona)]),
+        );
+
+        const saveData = {
+            backupFormatVersion: 3,
+            createdAt: Date.now(),
+            chatHistories: allChatHistories,
+            customPersonas: exportSafePersonas,
+            diaries: allDiaries,
+            interests: allInterests,
+            rooms: this.createExportSafeRooms(),
+            appSettings: this.getExportedAppSettings(),
+        };
+
+        zip.file("all_data.json", JSON.stringify(saveData, null, 2));
+
+        const avatarFolder = zip.folder("avatars");
+        if (avatarFolder) {
+            const avatarPromises = [];
+            const allPersonas = this.memoryManager.getAllPersonas();
+            for (const key in allPersonas) {
+                const persona = allPersonas[key];
+                if (persona.avatarUrl && persona.avatarUrl.startsWith('data:image')) {
+                    const promise = fetch(persona.avatarUrl)
+                        .then(res => res.blob())
+                        .then(blob => {
+                            const extension = blob.type.split('/')[1] || 'png';
+                            avatarFolder.file(`${key}.${extension}`, blob);
+                        });
+                    avatarPromises.push(promise);
+                }
+            }
+            await Promise.all(avatarPromises);
+        }
+
+        await this.addRoomAvatarsToZip(zip);
+
+        await this.addCharacterPhotosToZip(zip, allChatHistories);
+        await this.addChatAttachmentsToZip(zip, allChatHistories);
+        this.addMemoryMarkdownToZip(zip);
+
+        return zip.generateAsync({
+            type: "blob",
+            compression: "DEFLATE",
+            compressionOptions: { level: 6 },
+        }) as Promise<Blob>;
+    }
+
+    async saveAllChats() {
         const originalText = this.ui.downloadAllChatsBtn.textContent;
         this.ui.downloadAllChatsBtn.disabled = true;
         this.ui.downloadAllChatsBtn.textContent = '打包中...';
 
         try {
-            const zip = new JSZip();
-            const exportSafePersonas = Object.fromEntries(
-                Object.entries(personasToSave).map(([key, persona]) => [key, this.createExportSafePersona(persona)]),
-            );
-
-            const saveData = {
-                chatHistories: allChatHistories,
-                customPersonas: exportSafePersonas,
-                diaries: allDiaries,
-                interests: allInterests,
-                rooms: this.createExportSafeRooms(),
-            };
-
-            zip.file("all_data.json", JSON.stringify(saveData, null, 2));
-
-            const avatarFolder = zip.folder("avatars");
-            if (avatarFolder) {
-                const avatarPromises = [];
-                const allPersonas = this.memoryManager.getAllPersonas();
-                for (const key in allPersonas) {
-                    const persona = allPersonas[key];
-                    if (persona.avatarUrl && persona.avatarUrl.startsWith('data:image')) {
-                        const promise = fetch(persona.avatarUrl)
-                            .then(res => res.blob())
-                            .then(blob => {
-                                const extension = blob.type.split('/')[1] || 'png';
-                                avatarFolder.file(`${key}.${extension}`, blob);
-                            });
-                        avatarPromises.push(promise);
-                    }
-                }
-                await Promise.all(avatarPromises);
-            }
-
-            await this.addRoomAvatarsToZip(zip);
-
-            await this.addCharacterPhotosToZip(zip, allChatHistories);
-            await this.addChatAttachmentsToZip(zip, allChatHistories);
-            this.addMemoryMarkdownToZip(zip);
-
-            const content = await zip.generateAsync({
-                type: "blob",
-                compression: "DEFLATE",
-                compressionOptions: { level: 6 },
-            });
+            const content = await this.createAllDataArchive();
             const link = document.createElement('a');
             link.href = URL.createObjectURL(content);
             const timestamp = new Date().getTime();
@@ -545,7 +580,6 @@ export class FileManager {
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
-
         } catch (error) {
             console.error("儲存所有對話錯誤:", error);
             alert(`儲存失敗: ${error}`);
@@ -602,121 +636,115 @@ export class FileManager {
         }
     }
 
+    private async restoreLoadedZip(zip: any) {
+        const allDataFile = zip.file("all_data.json");
+        if (allDataFile) {
+            const allDataString = await allDataFile.async("string");
+            const rawAllData = JSON.parse(allDataString);
+
+            if (rawAllData.stories && !rawAllData.diaries) {
+                rawAllData.diaries = {};
+                for (const key in rawAllData.stories) {
+                    rawAllData.diaries[key] = rawAllData.stories[key].map((content: string, index: number) => ({
+                        title: `導入的章節 ${index + 1}`,
+                        content,
+                    }));
+                }
+                delete rawAllData.stories;
+            }
+
+            const prepared = this.prepareMergeSafeImport(rawAllData);
+            const allData = prepared.data;
+            this.memoryManager.loadAllData(allData);
+            this.roomManager?.importData(allData.rooms);
+
+            const avatarFolder = zip.folder("avatars");
+            if (avatarFolder) {
+                const avatarPromises: Promise<void>[] = [];
+                avatarFolder.forEach((relativePath: string, fileEntry: any) => {
+                    const sourceKey = relativePath.split('.')[0];
+                    if (prepared.skippedSourceKeys.has(sourceKey)) return;
+                    const key = prepared.keyMap.get(sourceKey) || sourceKey;
+                    if (this.memoryManager.getPersona(key) && !fileEntry.dir) {
+                        avatarPromises.push(fileEntry.async("base64").then((base64: string) => {
+                            const mimeType = fileEntry.name.endsWith('png') ? 'image/png' : 'image/jpeg';
+                            this.memoryManager.updatePersona(key, { avatarUrl: `data:${mimeType};base64,${base64}` });
+                        }));
+                    }
+                });
+                await Promise.all(avatarPromises);
+            }
+
+            await this.restoreRoomAvatarsFromZip(zip, prepared.keyMap, prepared.skippedSourceKeys);
+            await this.restoreCharacterPhotosFromZip(zip, prepared.keyMap);
+            await this.restoreChatAttachmentsFromZip(zip, prepared.keyMap);
+            this.restoreAppSettings(rawAllData.appSettings);
+            this.callbacks.onAllDataRestored(prepared.summary);
+            return;
+        }
+
+        const historyFile = zip.file("history.json");
+        if (historyFile) {
+            const historyString = await historyFile.async("string");
+            if (!historyString.trim()) throw new Error("history.json 檔案是空的");
+
+            const historyData = JSON.parse(historyString);
+            const { personaKey, history, personaData } = historyData;
+            const dataToLoad: any = {
+                customPersonas: personaData ? { [personaKey]: personaData } : {},
+                chatHistories: { [personaKey]: history },
+                diaries: historyData.stories || {},
+                interests: historyData.interests || {},
+            };
+            const prepared = this.prepareMergeSafeImport(dataToLoad);
+            const mappedPersonaKey = prepared.keyMap.get(personaKey) || personaKey;
+            const mappedHistory = prepared.data.chatHistories[mappedPersonaKey]
+                || this.memoryManager.peekChatHistory(mappedPersonaKey);
+            this.memoryManager.loadAllData(prepared.data);
+
+            if (!mappedPersonaKey || !this.memoryManager.getPersona(mappedPersonaKey)) {
+                throw new Error("無效的角色鍵值或角色資料遺失");
+            }
+            if (!Array.isArray(history)) throw new Error("對話歷史格式錯誤");
+
+            const avatarFile = zip.file("avatar.png");
+            if (avatarFile && !prepared.skippedSourceKeys.has(personaKey)) {
+                const base64 = await avatarFile.async("base64");
+                this.memoryManager.updatePersona(mappedPersonaKey, { avatarUrl: `data:image/png;base64,${base64}` });
+            }
+
+            await this.restoreRoomAvatarsFromZip(zip, prepared.keyMap, prepared.skippedSourceKeys);
+            await this.restoreCharacterPhotosFromZip(zip, prepared.keyMap);
+            await this.restoreChatAttachmentsFromZip(zip, prepared.keyMap);
+            this.callbacks.onSingleChatRestored(mappedPersonaKey, mappedHistory);
+            return;
+        }
+
+        throw new Error("ZIP 檔案中找不到有效的對話紀錄檔 (all_data.json 或 history.json)");
+    }
+
+    async restoreAllDataArchive(blob: Blob, askForConfirmation = true) {
+        if (askForConfirmation && !window.confirm(
+            '將以安全合併方式匯入：不會刪除現有聊天室；若同一角色已有不同內容，匯入資料會另存為備份副本。要繼續嗎？',
+        )) return false;
+
+        const zip = await JSZip.loadAsync(blob);
+        await this.restoreLoadedZip(zip);
+        return true;
+    }
+
     async handleZipUpload(event: Event) {
-        const file = (event.target as HTMLInputElement).files?.[0];
+        const input = event.target as HTMLInputElement;
+        const file = input.files?.[0];
         if (!file) return;
 
         try {
-            const shouldContinue = window.confirm(
-                '將以安全合併方式匯入：不會刪除現有聊天室；若同一角色已有不同內容，匯入資料會另存為備份副本。要繼續嗎？',
-            );
-            if (!shouldContinue) return;
-            const zip = await JSZip.loadAsync(file);
-            
-            // Prefer the new "all data" format
-            const allDataFile = zip.file("all_data.json");
-            if (allDataFile) {
-                const allDataString = await allDataFile.async("string");
-                const rawAllData = JSON.parse(allDataString);
-
-                // Quick migration for old 'stories' format to 'diaries'
-                if (rawAllData.stories && !rawAllData.diaries) {
-                    rawAllData.diaries = {};
-                    for (const key in rawAllData.stories) {
-                        rawAllData.diaries[key] = rawAllData.stories[key].map((content: string, index: number) => ({
-                            title: `導入的章節 ${index + 1}`,
-                            content: content,
-                        }));
-                    }
-                    delete rawAllData.stories;
-                }
-
-                const prepared = this.prepareMergeSafeImport(rawAllData);
-                const allData = prepared.data;
-                this.memoryManager.loadAllData(allData);
-                this.roomManager?.importData(allData.rooms);
-
-                const avatarFolder = zip.folder("avatars");
-                if (avatarFolder) {
-                    const avatarPromises: Promise<void>[] = [];
-                    avatarFolder.forEach((relativePath, fileEntry) => {
-                        const sourceKey = relativePath.split('.')[0];
-                        if (prepared.skippedSourceKeys.has(sourceKey)) return;
-                        const key = prepared.keyMap.get(sourceKey) || sourceKey;
-                        if (this.memoryManager.getPersona(key) && !fileEntry.dir) {
-                            const promise = fileEntry.async("base64").then(base64 => {
-                                const mimeType = fileEntry.name.endsWith('png') ? 'image/png' : 'image/jpeg';
-                                this.memoryManager.updatePersona(key, { avatarUrl: `data:${mimeType};base64,${base64}` });
-                            });
-                            avatarPromises.push(promise);
-                        }
-                    });
-                    await Promise.all(avatarPromises);
-                }
-
-                await this.restoreRoomAvatarsFromZip(zip, prepared.keyMap, prepared.skippedSourceKeys);
-                await this.restoreCharacterPhotosFromZip(zip, prepared.keyMap);
-                await this.restoreChatAttachmentsFromZip(zip, prepared.keyMap);
-                
-                this.callbacks.onAllDataRestored(prepared.summary);
-                return;
-            }
-
-            // Fallback to old single chat format (history.json)
-            const historyFile = zip.file("history.json");
-            if (historyFile) {
-                const historyString = await historyFile.async("string");
-                if (!historyString.trim()) throw new Error("history.json 檔案是空的");
-
-                const historyData = JSON.parse(historyString);
-                const { personaKey, history, personaData } = historyData;
-
-                // Create a structure compatible with `loadAllData`
-                const dataToLoad: any = {
-                    customPersonas: personaData ? { [personaKey]: personaData } : {},
-                    chatHistories: { [personaKey]: history },
-                    diaries: {},
-                    interests: {},
-                };
-
-                 if (historyData.stories) {
-                     dataToLoad.diaries = historyData.stories;
-                 }
-                 if (historyData.interests) {
-                    dataToLoad.interests = historyData.interests;
-                 }
-
-
-                const prepared = this.prepareMergeSafeImport(dataToLoad);
-                const mappedPersonaKey = prepared.keyMap.get(personaKey) || personaKey;
-                const mappedHistory = prepared.data.chatHistories[mappedPersonaKey]
-                    || this.memoryManager.peekChatHistory(mappedPersonaKey);
-                this.memoryManager.loadAllData(prepared.data);
-
-                if (!mappedPersonaKey || !this.memoryManager.getPersona(mappedPersonaKey)) throw new Error("無效的角色鍵值或角色資料遺失");
-                if (!Array.isArray(history)) throw new Error("對話歷史格式錯誤");
-
-                const avatarFile = zip.file("avatar.png");
-                if (avatarFile && !prepared.skippedSourceKeys.has(personaKey)) {
-                    const base64 = await avatarFile.async("base64");
-                    this.memoryManager.updatePersona(mappedPersonaKey, { avatarUrl: `data:image/png;base64,${base64}` });
-                }
-
-                await this.restoreRoomAvatarsFromZip(zip, prepared.keyMap, prepared.skippedSourceKeys);
-                await this.restoreCharacterPhotosFromZip(zip, prepared.keyMap);
-                await this.restoreChatAttachmentsFromZip(zip, prepared.keyMap);
-
-                this.callbacks.onSingleChatRestored(mappedPersonaKey, mappedHistory);
-                return;
-            }
-
-            throw new Error("ZIP 檔案中找不到有效的對話紀錄檔 (all_data.json 或 history.json)");
-
+            await this.restoreAllDataArchive(file);
         } catch (error) {
             alert(`讀取檔案失敗: ${error}`);
             console.error("ZIP 上傳錯誤:", error);
         } finally {
-            (event.target as HTMLInputElement).value = '';
+            input.value = '';
         }
     }
 }

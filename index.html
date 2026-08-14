@@ -54,6 +54,7 @@
             </header>
             <div id="home-menu" class="wa-popover hidden">
                 <button id="home-chat-model-settings" type="button">聊天模型設定</button>
+                <button id="home-cloud-backup" type="button">雲端備份</button>
                 <button id="upload-zip-btn" type="button">匯入聊天備份</button>
                 <button id="home-export-all" type="button">匯出所有資料</button>
             </div>
@@ -1262,6 +1263,64 @@
                 </div>
             </div>
         </div>
+    </div>
+
+    <!-- Encrypted cloud backup -->
+    <div id="cloud-backup-modal" class="hidden wa-modal-backdrop">
+        <section class="wa-sheet cloud-backup-sheet" role="dialog" aria-modal="true" aria-labelledby="cloud-backup-title">
+            <header class="wa-sheet-header">
+                <button id="close-cloud-backup" class="wa-icon-button" type="button" aria-label="關閉"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m6 6 12 12M18 6 6 18"></path></svg></button>
+                <div><p class="wa-sheet-kicker">PRIVATE CLOUD</p><h2 id="cloud-backup-title">加密雲端備份</h2></div>
+            </header>
+            <div class="wa-sheet-scroll cloud-backup-scroll">
+                <section class="cloud-backup-status-card">
+                    <span id="cloud-backup-status-icon" class="cloud-backup-status-icon" aria-hidden="true">✓</span>
+                    <div><strong id="cloud-backup-status-title">正在檢查備份…</strong><small id="cloud-backup-status-detail">資料會先在這部裝置加密，Vercel 只保存密文。</small></div>
+                </section>
+
+                <div id="cloud-backup-progress" class="hidden cloud-backup-progress" role="status" aria-live="polite">
+                    <div><span id="cloud-backup-progress-text">正在準備…</span><span id="cloud-backup-progress-percent"></span></div>
+                    <span class="cloud-backup-progress-track"><span id="cloud-backup-progress-bar"></span></span>
+                </div>
+
+                <section id="cloud-backup-setup" class="cloud-backup-card hidden">
+                    <div class="wa-section-heading"><h3>首次設定</h3></div>
+                    <p>請建立一個只有你知道的復原密碼。新手機需要它解密；請存入密碼管理器，不要使用目前的短密碼 `0557`。</p>
+                    <label class="wa-field-label">復原密碼<input id="cloud-backup-password" type="password" autocomplete="new-password" placeholder="至少 12 個字元"></label>
+                    <label class="wa-field-label">再次輸入<input id="cloud-backup-password-confirm" type="password" autocomplete="new-password" placeholder="再次輸入復原密碼"></label>
+                    <p id="cloud-backup-setup-error" class="cloud-backup-error" aria-live="polite"></p>
+                    <button id="enable-cloud-backup" type="button" class="wa-primary-button">加密並建立第一個備份</button>
+                </section>
+
+                <section id="cloud-backup-recovery" class="cloud-backup-card hidden">
+                    <div class="wa-section-heading"><h3>從雲端復原</h3></div>
+                    <p>如果你曾在另一部裝置建立備份，輸入原本的復原密碼即可找到並安全合併所有資料。</p>
+                    <label class="wa-field-label">復原密碼<input id="cloud-restore-password" type="password" autocomplete="current-password" placeholder="輸入原本的復原密碼"></label>
+                    <p id="cloud-restore-error" class="cloud-backup-error" aria-live="polite"></p>
+                    <button id="restore-cloud-with-password" type="button" class="wa-primary-button">解密並還原最新備份</button>
+                </section>
+
+                <section id="cloud-backup-controls" class="cloud-backup-card hidden">
+                    <label class="cloud-backup-toggle">
+                        <span><strong>自動備份</strong><small>網站開啟且資料有變更時，定期更新加密備份。</small></span>
+                        <input id="cloud-backup-auto-toggle" type="checkbox"><i aria-hidden="true"></i>
+                    </label>
+                    <div class="cloud-backup-action-grid">
+                        <button id="cloud-backup-now" type="button" class="wa-primary-button">立即備份</button>
+                        <button id="cloud-restore-latest" type="button" class="wa-secondary-button">還原最新版本</button>
+                    </div>
+                </section>
+
+                <section id="cloud-backup-versions-section" class="cloud-backup-card hidden">
+                    <div class="wa-section-heading"><h3>雲端版本</h3><button id="refresh-cloud-backups" type="button">重新整理</button></div>
+                    <div id="cloud-backup-version-list" class="cloud-backup-version-list"></div>
+                </section>
+
+                <section id="cloud-backup-danger" class="cloud-backup-danger hidden">
+                    <button id="delete-cloud-backups" type="button">刪除所有雲端備份及本機金鑰</button>
+                </section>
+            </div>
+        </section>
     </div>
 
     <!-- Room information and fixed-member controls -->
