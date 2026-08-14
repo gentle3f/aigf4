@@ -516,6 +516,7 @@ export class CloudBackupManager {
     }
 
     private async performRestore(backup: CloudBackupListItem, passphrase?: string) {
+        const autoBackupWasEnabled = this.state.enabled;
         try {
             let localKey = await loadLocalKey();
             const vaultId = passphrase
@@ -547,12 +548,12 @@ export class CloudBackupManager {
                 localKey!.key,
                 percent => this.progress('restoring', '正在解密及驗證…', 10 + Math.round(percent * 0.6)),
             );
-            this.progress('restoring', '正在安全合併資料…', 75);
+            this.progress('restoring', '正在替換這部裝置的本機副本…', 75);
             await this.fileManager.restoreAllDataArchive(archive, false, true);
             await saveLocalKey(localKey!.key, localKey!.salt, vaultId, localKey!.iterations);
             const fingerprint = await fingerprintLocalState();
             this.updateState({
-                enabled: true,
+                enabled: autoBackupWasEnabled,
                 vaultId,
                 lastBackupAt: new Date(backup.uploadedAt).getTime(),
                 lastBackupSize: backup.size,

@@ -4259,7 +4259,7 @@ const setupCloudBackup = async () => {
 
 async function restoreCloudBackupVersion(backup: CloudBackupListItem, password?: string) {
     if (!confirm(
-        `還原 ${formatCloudBackupTime(backup.uploadedAt)} 的備份？\n\n現有資料不會刪除；不同內容會安全合併或另存為備份副本。`,
+        `以 ${formatCloudBackupTime(backup.uploadedAt)} 的完整雲端備份取代這部裝置的本機副本？\n\n雲端版本不會被修改；自動備份會維持目前的開關狀態。`,
     )) return;
     cloudRestoreError.textContent = '';
     setCloudBackupBusy(true);
