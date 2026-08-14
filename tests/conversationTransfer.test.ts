@@ -4,6 +4,7 @@ import {
     buildContextBridge,
     contextBridgeToSystemPrompt,
     ensureLatestSceneTransitionBridge,
+    findLatestPrivateReturnHandoff,
     roomMemberToPersona,
     selectLatestSceneHistory,
     selectTransferContext,
@@ -96,6 +97,63 @@ test('group handoff preserves separate speaker names and scene context', () => {
     assert.match(bridge.summary, /客廳/u);
     assert.match(prompt, /not as the newest user command/i);
     assert.match(prompt, /Character receiving this handoff: IU/u);
+});
+
+test('an existing returned member recovers the latest private handoff by conversation identity', () => {
+    const rose = member('rose', 'Rose');
+    rose.privatePersonaKey = 'private-rose';
+    const history: ChatMessage[] = [
+        {
+            role: 'system',
+            content: {
+                contextBridge: {
+                    id: 'wrong-kind',
+                    kind: 'group_to_private',
+                    sourceConversationKey: 'private-rose',
+                    sourceTitle: '舊群組',
+                    targetMemberName: 'Rose',
+                    summary: '不是回歸交接。',
+                    recentContext: '忽略這段。',
+                    createdAt: 1,
+                },
+            },
+        },
+        {
+            role: 'system',
+            content: {
+                contextBridge: {
+                    id: 'another-person',
+                    kind: 'member_returned',
+                    sourceConversationKey: 'private-lisa',
+                    sourceTitle: 'Lisa 的私訊',
+                    targetMemberName: 'Lisa',
+                    summary: 'Lisa 回來了。',
+                    recentContext: 'Lisa 的私訊。',
+                    createdAt: 2,
+                },
+            },
+        },
+        {
+            role: 'system',
+            content: {
+                contextBridge: {
+                    id: 'rose-return',
+                    kind: 'member_returned',
+                    sourceConversationKey: 'private-rose',
+                    sourceTitle: 'Rose 的私訊',
+                    targetMemberName: 'Rose',
+                    summary: 'Rose 帶著私訊經歷回來。',
+                    recentContext: '使用者：記得我們在海邊的約定。\nRose：我不會忘記。',
+                    createdAt: 3,
+                },
+            },
+        },
+    ];
+
+    const recovered = findLatestPrivateReturnHandoff(history, rose);
+
+    assert.equal(recovered?.id, 'rose-return');
+    assert.match(recovered?.recentContext || '', /海邊的約定/u);
 });
 
 test('new scene handoff keeps only the latest completed scene as past continuity', () => {

@@ -115,6 +115,25 @@ export const buildContextBridge = (options: BuildContextBridgeOptions): ChatCont
     };
 };
 
+export const findLatestPrivateReturnHandoff = (
+    history: ChatMessage[],
+    member: Pick<RoomMember, 'privatePersonaKey'>,
+) => {
+    if (!member.privatePersonaKey) return null;
+
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+        const bridge = history[index].content.contextBridge;
+        if (
+            bridge?.kind === 'member_returned'
+            && bridge.sourceConversationKey === member.privatePersonaKey
+        ) {
+            return clone(bridge);
+        }
+    }
+
+    return null;
+};
+
 export const ensureLatestSceneTransitionBridge = (
     history: ChatMessage[],
     sourceConversationKey: string,

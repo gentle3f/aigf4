@@ -88,6 +88,27 @@ test('group prompt keeps immutable member and presence ledgers', () => {
     assert.match(prompt, /Do not return a JSON response object/i);
 });
 
+test('group prompt pins returned private context to its owner', () => {
+    const room = createRoom();
+    room.members[1].privateContinuityHandoff = {
+        id: 'return-context',
+        kind: 'member_returned',
+        sourceConversationKey: 'jennie-private',
+        sourceTitle: 'Jennie 的私訊',
+        targetMemberName: 'Jennie',
+        summary: 'Jennie 與使用者在私訊中約定一起去海邊。',
+        recentContext: '使用者：海邊的事不要忘記。\nJennie：我記住了。',
+        createdAt: 2,
+    };
+
+    const prompt = buildGroupSystemPrompt(room);
+
+    assert.match(prompt, /PRIVATE RETURN CONTINUITY FOR Jennie/u);
+    assert.match(prompt, /海邊的事不要忘記/u);
+    assert.match(prompt, /Only Jennie and the user initially know/u);
+    assert.match(prompt, /never ask the user to repeat/u);
+});
+
 test('group parser accepts the reliable transcript envelope and scene metadata', () => {
     const parsed = parseGroupGeneration([
         '<chat>',
@@ -451,6 +472,16 @@ test('replacing a room member keeps the group slot but adopts private continuity
     privateRose.sourcePersonaKey = 'rose-private';
     privateRose.privatePersonaKey = 'rose-private';
     privateRose.privateContinuityImportedUserMessageCount = 8;
+    privateRose.privateContinuityHandoff = {
+        id: 'private-handoff',
+        kind: 'member_returned',
+        sourceConversationKey: 'rose-private',
+        sourceTitle: 'Rose 的私訊',
+        targetMemberName: 'Rose',
+        summary: 'Rose 記得兩人在私訊中的秘密旅行。',
+        recentContext: '使用者：記得我們在海邊的約定嗎？\nRose：我當然記得。',
+        createdAt: 11,
+    };
     privateRose.persona.prompt = 'Rose remembers the private trip.';
     privateRose.memories = [{
         id: 'private-memory',
@@ -469,6 +500,7 @@ test('replacing a room member keeps the group slot but adopts private continuity
     assert.equal(returnedRose.sourcePersonaKey, 'rose-private');
     assert.equal(returnedRose.privatePersonaKey, 'rose-private');
     assert.equal(returnedRose.privateContinuityImportedUserMessageCount, 8);
+    assert.match(returnedRose.privateContinuityHandoff?.recentContext || '', /海邊的約定/u);
     assert.equal(returnedRose.persona.prompt, 'Rose remembers the private trip.');
     assert.equal(returnedRose.memories[0].title, '私訊旅程');
     assert.deepEqual(returnedRose.memories[0].participants, [oldRose.id]);

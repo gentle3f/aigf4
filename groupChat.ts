@@ -82,6 +82,17 @@ const memberIdentityBlock = (member: RoomMember, isPresent: boolean) => {
         .slice(-18)
         .map(entry => `- ${entry.title}: ${compact(entry.summary, 360)}`)
         .join('\n');
+    const privateHandoff = member.privateContinuityHandoff;
+    const privateHandoffBlock = privateHandoff ? [
+        `PRIVATE RETURN CONTINUITY FOR ${persona.name} — AUTHORITATIVE AND EXCLUSIVE:`,
+        `Source: ${privateHandoff.sourceTitle}`,
+        `Durable handoff summary: ${compact(privateHandoff.summary, 1500)}`,
+        privateHandoff.recentContext.trim()
+            ? `Recent private turns ${persona.name} personally remembers (oldest to newest):\n${privateHandoff.recentContext.trim().slice(-4200)}`
+            : '',
+        `${persona.name} must remember and naturally act from these private events whenever the user refers to them; never ask the user to repeat facts already shown here.`,
+        `Only ${persona.name} and the user initially know these private details. Other room members do not know them unless the user or ${persona.name} reveals them after returning.`,
+    ].filter(Boolean).join('\n') : '';
 
     return [
         `MEMBER ID: ${member.id}`,
@@ -97,6 +108,7 @@ const memberIdentityBlock = (member: RoomMember, isPresent: boolean) => {
         ].join('\n') : '',
         soul ? `soul.md anchors:\n${soul}` : '',
         memories ? `memory.md excerpts:\n${memories}` : '',
+        privateHandoffBlock,
         formatRelationshipStatePrompt(persona),
     ].filter(Boolean).join('\n');
 };

@@ -159,6 +159,7 @@ import {
     contextBridgeDisplayText,
     contextBridgeToSystemPrompt,
     ensureLatestSceneTransitionBridge,
+    findLatestPrivateReturnHandoff,
     roomMemberToPersona,
     selectLatestSceneHistory,
 } from "./conversationTransfer.js";
@@ -6329,10 +6330,35 @@ const startLegacyChat = (key: string, restoredHistory: any[] | null = null, hist
     syncBrowserViewState({ view: 'chat', conversationKey: key, personaKey: key }, historyMode);
 };
 
+const restoreRoomPrivateContinuityHandoffs = (room: ChatRoom, history: ChatMessage[]) => {
+    const missingHandoffs = new Map<string, ChatContextBridge>();
+    room.members.forEach(member => {
+        if (member.privateContinuityHandoff) return;
+        const handoff = findLatestPrivateReturnHandoff(history, member);
+        if (handoff) missingHandoffs.set(member.id, handoff);
+    });
+    if (missingHandoffs.size === 0) return room;
+
+    return roomManager.updateRoom(room.id, editableRoom => {
+        editableRoom.members.forEach(member => {
+            const handoff = missingHandoffs.get(member.id);
+            if (handoff && !member.privateContinuityHandoff) {
+                member.privateContinuityHandoff = cloneRoomSnapshot(handoff);
+            }
+        });
+    }) || room;
+};
+
 const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
     cancelActiveChatRequest();
     closeChatSearch();
-    const room = roomManager.getRoom(key) || null;
+    const storedRoom = roomManager.getRoom(key) || null;
+    const room = storedRoom
+        ? restoreRoomPrivateContinuityHandoffs(
+            storedRoom,
+            restoredHistory || memoryManager.peekChatHistory(key),
+        )
+        : null;
     const selectedPersona = memoryManager.getPersona(key);
 
     if (!room && (!selectedPersona || (key !== VENICE_ASSISTANT_PERSONA_KEY && selectedPersona.gender !== 'female'))) {
@@ -13437,6 +13463,7 @@ const replaceRoomMemberWithPrivateCandidate = async (
                 : '',
         ].filter(Boolean).join(' '),
     });
+    replacement.privateContinuityHandoff = cloneRoomSnapshot(bridge);
 
     roomManager.replaceMember(room.id, oldMember.id, replacement);
     if (!wasPresent) {

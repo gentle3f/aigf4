@@ -1,4 +1,4 @@
-import { ChatMessage, MemoryManager, Persona, PublicIdentity, TimelineBranchInfo } from './managers.js';
+import { ChatContextBridge, ChatMessage, MemoryManager, Persona, PublicIdentity, TimelineBranchInfo } from './managers.js';
 import { AUTO_MEMORY_SUMMARY_VERSION } from './autoMemory.js';
 
 const ROOM_STORAGE_KEY = 'aigf4RoomsV2';
@@ -37,6 +37,7 @@ export interface RoomMember {
     sourcePersonaKey?: string;
     privatePersonaKey?: string;
     privateContinuityImportedUserMessageCount?: number;
+    privateContinuityHandoff?: ChatContextBridge;
     persona: Persona;
     joinedAt: number;
     soul: RoomMemoryEntry[];
