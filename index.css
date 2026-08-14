@@ -1663,6 +1663,17 @@ body.photo-viewer-open {
         radial-gradient(circle at bottom left, rgba(192, 38, 211, 0.12), transparent 42%);
 }
 
+.auth-autofill-anchor {
+    position: fixed;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    border: 0;
+    clip-path: inset(50%);
+    overflow: hidden;
+    white-space: nowrap;
+}
+
 .auth-eyebrow {
     display: inline-flex;
     align-items: center;

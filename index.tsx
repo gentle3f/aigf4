@@ -199,6 +199,7 @@ const chatView = document.getElementById('chat-view')!;
 const aiAssistantList = document.getElementById('ai-assistant-list')!;
 const femalePersonaList = document.getElementById('female-persona-list')!;
 const conversationSearchInput = document.getElementById('conversation-search-input') as HTMLInputElement;
+let conversationSearchUserActivated = false;
 const homeSearchToggle = document.getElementById('home-search-toggle') as HTMLButtonElement;
 const homeMenuToggle = document.getElementById('home-menu-toggle') as HTMLButtonElement;
 const homeMenu = document.getElementById('home-menu')!;
@@ -245,6 +246,7 @@ const supabaseCloudProgressText = document.getElementById('supabase-cloud-progre
 const supabaseCloudProgressPercent = document.getElementById('supabase-cloud-progress-percent')!;
 const supabaseCloudProgressBar = document.getElementById('supabase-cloud-progress-bar') as HTMLElement;
 const supabaseCloudLogin = document.getElementById('supabase-cloud-login')!;
+const supabaseCloudLoginForm = document.getElementById('supabase-cloud-login-form') as HTMLFormElement;
 const supabaseCloudEmail = document.getElementById('supabase-cloud-email') as HTMLInputElement;
 const supabaseCloudPassword = document.getElementById('supabase-cloud-password') as HTMLInputElement;
 const supabaseCloudError = document.getElementById('supabase-cloud-error')!;
@@ -9018,6 +9020,7 @@ const setUnlockedState = (unlocked: boolean) => {
     if (!USES_VENICE_PROXY_AUTH) {
         authGate.classList.add('hidden');
         appShell.classList.remove('app-shell-locked');
+        guardConversationSearchFromAutofill();
         updateSendButtonState();
         updateVideoPromptOptimizerButton();
         updateVideoGenerateButton();
@@ -9030,6 +9033,7 @@ const setUnlockedState = (unlocked: boolean) => {
     if (unlocked) {
         authPasswordInput.value = '';
         hideAuthError();
+        guardConversationSearchFromAutofill();
     } else {
         window.setTimeout(() => authPasswordInput.focus(), 40);
     }
@@ -15139,6 +15143,24 @@ const generatePhotoFromPrompt = async () => {
 };
 
 // --- Event Listeners ---
+const activateConversationSearch = () => {
+    if (!conversationSearchUserActivated && conversationSearchInput.value) {
+        conversationSearchInput.value = '';
+        renderPersonaList();
+    }
+    conversationSearchUserActivated = true;
+};
+
+const guardConversationSearchFromAutofill = () => {
+    conversationSearchUserActivated = false;
+    const clearPassiveAutofill = () => {
+        if (conversationSearchUserActivated || !conversationSearchInput.value) return;
+        conversationSearchInput.value = '';
+        renderPersonaList();
+    };
+    [0, 250, 1000, 2500].forEach(delay => window.setTimeout(clearPassiveAutofill, delay));
+};
+
 const setupEventListeners = () => {
     authForm.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -15168,7 +15190,12 @@ const setupEventListeners = () => {
     });
     chatSearchPrev.addEventListener('click', () => focusChatSearchMatch(chatSearchMatchIndex - 1));
     chatSearchNext.addEventListener('click', () => focusChatSearchMatch(chatSearchMatchIndex + 1));
-    homeSearchToggle.addEventListener('click', () => conversationSearchInput.focus());
+    homeSearchToggle.addEventListener('click', () => {
+        activateConversationSearch();
+        conversationSearchInput.focus();
+    });
+    conversationSearchInput.addEventListener('pointerdown', activateConversationSearch);
+    conversationSearchInput.addEventListener('keydown', activateConversationSearch);
     conversationSearchInput.addEventListener('input', renderPersonaList);
     homeMenuToggle.addEventListener('click', event => {
         event.stopPropagation();
@@ -15181,9 +15208,9 @@ const setupEventListeners = () => {
     supabaseCloudModal.addEventListener('click', event => {
         if (event.target === supabaseCloudModal) closeSupabaseCloud();
     });
-    supabaseCloudPasswordLogin.addEventListener('click', () => void signInSupabaseCloudWithPassword());
-    supabaseCloudPassword.addEventListener('keydown', event => {
-        if (event.key === 'Enter') void signInSupabaseCloudWithPassword();
+    supabaseCloudLoginForm.addEventListener('submit', event => {
+        event.preventDefault();
+        void signInSupabaseCloudWithPassword();
     });
     supabaseCloudSendLink.addEventListener('click', () => void sendSupabaseMagicLink());
     supabaseCloudSyncNow.addEventListener('click', () => void syncSupabaseCloudNow());
@@ -15832,12 +15859,8 @@ const setupEventListeners = () => {
 const init = async () => {
     syncBrowserViewState(HOME_HISTORY_STATE, 'replace');
     conversationSearchInput.value = '';
-    window.addEventListener('pageshow', () => {
-        if (/^-\d{7,}$/u.test(conversationSearchInput.value.trim())) {
-            conversationSearchInput.value = '';
-            renderPersonaList();
-        }
-    });
+    guardConversationSearchFromAutofill();
+    window.addEventListener('pageshow', guardConversationSearchFromAutofill);
     initializeImageSeedControls();
     try {
         await memoryManager.restorePrivateAvatars();

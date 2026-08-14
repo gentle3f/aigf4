@@ -17,10 +17,11 @@
             <p class="auth-eyebrow">Private Preview</p>
             <h1 class="mt-3 text-3xl font-black tracking-tight">Wetapp</h1>
             <p class="mt-3 text-sm leading-6 text-slate-300">這個私人版本暫時先鎖住，輸入密碼後才可進入工作空間。</p>
-            <form id="auth-form" class="mt-6 space-y-4">
+            <form id="auth-form" class="mt-6 space-y-4" autocomplete="on">
+                <input id="auth-username-anchor" class="auth-autofill-anchor" name="username" type="text" value="wetapp-owner" autocomplete="username" tabindex="-1" aria-hidden="true">
                 <div>
                     <label for="auth-password-input" class="mb-2 block text-sm font-medium text-slate-200">密碼</label>
-                    <input id="auth-password-input" type="password" inputmode="numeric" autocomplete="current-password" class="auth-input w-full rounded-2xl border border-white/10 bg-slate-950/90 px-4 py-3 text-lg tracking-[0.2em] text-white outline-none" placeholder="請輸入密碼">
+                    <input id="auth-password-input" name="password" type="password" inputmode="numeric" autocomplete="current-password" class="auth-input w-full rounded-2xl border border-white/10 bg-slate-950/90 px-4 py-3 text-lg tracking-[0.2em] text-white outline-none" placeholder="請輸入密碼">
                 </div>
                 <p id="auth-error" class="hidden rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200"></p>
                 <button id="auth-submit-button" type="submit" class="flex w-full items-center justify-center gap-3 rounded-2xl bg-yellow-400 px-4 py-3 text-base font-bold text-slate-950 transition hover:bg-yellow-300">
@@ -61,7 +62,7 @@
             </div>
             <div class="conversation-search-wrap">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
-                <input id="conversation-search-input" name="wetapp-conversation-search" type="search" placeholder="搜尋或開始新對話" autocomplete="off" autocorrect="off" spellcheck="false">
+                <input id="conversation-search-input" name="wetapp_search_query" type="search" role="searchbox" placeholder="搜尋或開始新對話" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-form-type="other" data-1p-ignore="true" data-lpignore="true">
             </div>
             <main class="conversation-scroll flex-1 min-h-0 overflow-y-auto">
                 <section class="pinned-conversations" aria-label="固定工具">
@@ -153,7 +154,7 @@
                 <button id="chat-search-close" type="button" class="wa-icon-button" aria-label="關閉搜尋" title="關閉搜尋">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m6 6 12 12M18 6 6 18"></path></svg>
                 </button>
-                <input id="chat-search-input" type="search" placeholder="搜尋這個聊天室" autocomplete="off">
+                <input id="chat-search-input" name="wetapp_chat_search_query" type="search" role="searchbox" placeholder="搜尋這個聊天室" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-form-type="other" data-1p-ignore="true" data-lpignore="true">
                 <span id="chat-search-count" aria-live="polite">0 / 0</span>
                 <button id="chat-search-prev" type="button" class="wa-icon-button" aria-label="上一個結果" title="上一個結果">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m7 14 5-5 5 5"></path></svg>
@@ -1303,7 +1304,7 @@
                 <section id="cloud-backup-recovery" class="cloud-backup-card hidden">
                     <div class="wa-section-heading"><h3>從雲端復原</h3></div>
                     <p>如果你曾在另一部裝置建立備份，輸入原本的復原密碼即可找到並安全合併所有資料。</p>
-                    <label class="wa-field-label">復原密碼<input id="cloud-restore-password" type="password" autocomplete="current-password" placeholder="輸入原本的復原密碼"></label>
+                    <label class="wa-field-label">復原密碼<input id="cloud-restore-password" type="password" autocomplete="off" data-form-type="other" data-1p-ignore="true" data-lpignore="true" placeholder="輸入原本的復原密碼"></label>
                     <p id="cloud-restore-error" class="cloud-backup-error" aria-live="polite"></p>
                     <button id="restore-cloud-with-password" type="button" class="wa-primary-button">解密並還原最新備份</button>
                 </section>
@@ -1352,10 +1353,12 @@
                 <section id="supabase-cloud-login" class="cloud-backup-card">
                     <div class="wa-section-heading"><h3>擁有人登入</h3></div>
                     <p>新裝置可直接用雲端密碼登入，並先下載已建立的雲端資料。一次性電郵連結只用於首次設定或忘記密碼。</p>
-                    <label class="wa-field-label">電郵<input id="supabase-cloud-email" type="email" autocomplete="email" readonly></label>
-                    <label class="wa-field-label">雲端密碼<input id="supabase-cloud-password" type="password" autocomplete="current-password" enterkeyhint="go"></label>
-                    <p id="supabase-cloud-error" class="cloud-backup-error" aria-live="polite"></p>
-                    <button id="supabase-cloud-password-login" type="button" class="wa-primary-button">用密碼登入</button>
+                    <form id="supabase-cloud-login-form" autocomplete="on">
+                        <label class="wa-field-label">電郵<input id="supabase-cloud-email" name="username" type="email" autocomplete="username" readonly></label>
+                        <label class="wa-field-label">雲端密碼<input id="supabase-cloud-password" name="password" type="password" autocomplete="current-password" enterkeyhint="go"></label>
+                        <p id="supabase-cloud-error" class="cloud-backup-error" aria-live="polite"></p>
+                        <button id="supabase-cloud-password-login" type="submit" class="wa-primary-button">用密碼登入</button>
+                    </form>
                     <button id="supabase-cloud-send-link" type="button" class="wa-secondary-button cloud-sync-recovery-button">首次設定／忘記密碼：寄登入連結</button>
                 </section>
 
