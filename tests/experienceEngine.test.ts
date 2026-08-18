@@ -3,11 +3,13 @@ import test from 'node:test';
 import {
     advanceRelationshipState,
     buildFallbackSurpriseEventMemberRoles,
+    buildFallbackSurpriseShowMemberRoles,
     parseSurpriseEventProposal,
     relationshipStageFor,
     surpriseEventHasPlayableStructure,
     surpriseEventMatchesCategory,
     surpriseEventMatchesContentMode,
+    surpriseEventReadsLikeInteractiveShow,
     surpriseEventsAreTooSimilar,
 } from '../experienceEngine.js';
 
@@ -75,6 +77,36 @@ test('builds distinct playable fallback roles for all five participants', () => 
     assert.equal(roles.length, 5);
     assert.equal(new Set(roles.map(role => role.firstMove)).size, 5);
     assert.equal(surpriseEventHasPlayableStructure(event, participants.map(item => item.id)), true);
+});
+
+test('builds a live show cast instead of assigning planning jobs', () => {
+    const participants = ['irene', 'seulgi', 'yeri', 'wendy', 'joy']
+        .map(id => ({ id, name: id.toUpperCase() }));
+    const memberRoles = buildFallbackSurpriseShowMemberRoles(participants);
+    const event = {
+        title: '18+ 節目：午夜挑戰',
+        hook: '所有參與者進入同一個成人互動節目。',
+        setup: '第一回合的挑戰卡已經放在舞台中央，節目現在開始。',
+        memberRoles,
+    };
+
+    assert.equal(memberRoles.length, 5);
+    assert.equal(new Set(memberRoles.map(role => role.firstMove)).size, 5);
+    assert.equal(surpriseEventReadsLikeInteractiveShow(event), true);
+    assert.equal(memberRoles.some(role => /確認時間|路線|處理.*風險|重新協調/u.test(role.firstMove)), false);
+});
+
+test('rejects an event card that is only a planning outline', () => {
+    assert.equal(surpriseEventReadsLikeInteractiveShow({
+        title: '今晚的安排',
+        hook: '大家正在討論稍後要做甚麼。',
+        setup: '先確認時間與地點，再決定是否開始。',
+        memberRoles: [{
+            memberId: 'irene',
+            objective: '確認時間、地點與現實限制',
+            firstMove: 'Irene 先確認行程並處理可能中斷的風險。',
+        }],
+    }), false);
 });
 
 test('distinguishes explicit 18+ cards from non-sexual cards', () => {

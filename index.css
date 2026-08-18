@@ -872,6 +872,17 @@ body.app-body {
     content: '';
 }
 
+.surprise-event-show-card {
+    border-color: rgba(166, 74, 52, 0.28);
+    background:
+        radial-gradient(circle at 92% 6%, rgba(241, 173, 77, 0.25), transparent 34%),
+        linear-gradient(145deg, #fffaf3 0%, #fff4e9 100%);
+}
+
+.surprise-event-show-card::before {
+    background: linear-gradient(180deg, #f3b51b, #d45843, #00a884);
+}
+
 .surprise-event-eyebrow,
 .surprise-event-badges,
 .surprise-event-progress {
@@ -927,6 +938,44 @@ body.app-body {
 .surprise-event-card .surprise-event-setup {
     margin-top: 6px;
     color: #56645f;
+}
+
+.surprise-event-cast,
+.surprise-event-program {
+    margin-top: 10px;
+    border-radius: 10px;
+}
+
+.surprise-event-cast {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 5px 10px;
+    align-items: baseline;
+    padding: 9px 11px;
+    background: rgba(255, 255, 255, 0.72);
+}
+
+.surprise-event-cast strong,
+.surprise-event-program > strong {
+    color: #8b452f;
+    font-size: 0.7rem;
+    letter-spacing: 0.05em;
+}
+
+.surprise-event-cast span {
+    color: #263b35;
+    font-size: 0.78rem;
+    font-weight: 750;
+}
+
+.surprise-event-program {
+    padding: 11px;
+    border: 1px solid rgba(166, 74, 52, 0.14);
+    background: rgba(255, 255, 255, 0.62);
+}
+
+.surprise-event-program .surprise-event-hook {
+    margin-top: 6px;
 }
 
 .surprise-event-role-section,

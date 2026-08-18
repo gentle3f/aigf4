@@ -381,6 +381,41 @@ export const buildFallbackSurpriseEventMemberRoles = (
     }));
 };
 
+const FALLBACK_SHOW_ROLE_OBJECTIVES = [
+    '擔任開場主持並啟動第一回合',
+    '率先進行第一項成人挑戰',
+    '把同一回合推進到加碼階段',
+    '揭開本回合的隱藏規則',
+    '收束開場並把關鍵選擇交給你',
+] as const;
+
+const FALLBACK_SHOW_FIRST_MOVES = [
+    '走到節目中央，直接宣布第一回合並抽出開場題目',
+    '接過第一張挑戰卡，當場選擇自己的參賽方式',
+    '按下加碼燈，將本回合難度提升一級並點名下一位',
+    '打開隱藏規則卡，把意外條件加入正在進行的回合',
+    '拿起最終選擇牌，請你決定本回合的開始順序',
+] as const;
+
+export const buildFallbackSurpriseShowMemberRoles = (
+    participants: Array<{ id: string; name: string }>,
+): SurpriseEventMemberRole[] => participants.slice(0, ROOM_PRESENT_MEMBER_LIMIT).map((participant, index) => ({
+    memberId: participant.id,
+    objective: FALLBACK_SHOW_ROLE_OBJECTIVES[index] || `以 ${participant.name} 的風格參與本回合`,
+    firstMove: `${participant.name}${FALLBACK_SHOW_FIRST_MOVES[index] || FALLBACK_SHOW_FIRST_MOVES.at(-1)}。`,
+}));
+
+const INTERACTIVE_SHOW_EVIDENCE = /節目|回合|挑戰|遊戲|賽制|主持|參賽|表演|舞台|抽牌|卡牌|show|round|challenge|game/iu;
+const META_PLANNING_MOVE = /確認(?:時間|地點|限制)|提出(?:一個)?(?:不同|可執行)?(?:的)?方向|處理.{0,8}風險|整理分歧|重新協調|集合方式|路線|行程|準備工作/iu;
+
+export const surpriseEventReadsLikeInteractiveShow = (
+    event: Pick<SurpriseEventProposal, 'title' | 'hook' | 'setup' | 'memberRoles'>,
+) => (
+    INTERACTIVE_SHOW_EVIDENCE.test(`${event.title}\n${event.hook}\n${event.setup}`)
+    && Boolean(event.memberRoles?.length)
+    && event.memberRoles!.every(role => !META_PLANNING_MOVE.test(`${role.objective}\n${role.firstMove}`))
+);
+
 const eventText = (event: Pick<SurpriseEventProposal, 'title' | 'hook' | 'setup'>) =>
     `${event.title}\n${event.hook}\n${event.setup}`;
 
