@@ -12,7 +12,41 @@ import {
     surpriseEventMatchesContentMode,
     surpriseEventReadsLikeInteractiveShow,
     surpriseEventsAreTooSimilar,
+    SURPRISE_EVENT_RESPONSE_FORMAT,
 } from '../experienceEngine.js';
+
+test('keeps local room identity data out of the model response schema', () => {
+    const schema = SURPRISE_EVENT_RESPONSE_FORMAT.json_schema.schema as {
+        required: string[];
+        properties: Record<string, unknown>;
+    };
+    assert.equal(schema.required.includes('involved_member_ids'), false);
+    assert.equal(schema.required.includes('member_roles'), false);
+    assert.equal('involved_member_ids' in schema.properties, false);
+    assert.equal('member_roles' in schema.properties, false);
+    assert.equal(schema.required.includes('activities'), true);
+});
+
+test('parses prompt-level JSON even when a model wraps it in commentary', () => {
+    const parsed = parseSurpriseEventProposal(`Here is the requested JSON:\n\`\`\`json\n${JSON.stringify({
+        title: '即場互動節目',
+        category: 'backstage',
+        intensity: 'playful',
+        hook: '表演結束後，後台的第一回合立即開始。',
+        setup: '五位參與者已站到舞台中央，按抽籤順序完成挑戰。',
+        opening_instruction: '直接抽出第一張卡，不要替使用者作決定。',
+        activities: [
+            '所有參與者輪流抽取題目卡，依次朗讀並立即回答。',
+            '每人進行六十秒限時表演，其餘參與者即場評分。',
+            '得分最低者使用加碼卡，由使用者決定保留或交換。',
+        ],
+        user_choice: '你要指定誰先抽卡，還是交給現場抽籤？',
+        relationship_effect: { closeness: 2, trust: 1, romantic_tension: 3, initiative: 2 },
+    })}\n\`\`\`\nReady.` , ['iu'], 'iu');
+
+    assert.equal(parsed?.title, '即場互動節目');
+    assert.equal(parsed ? surpriseEventHasSpecificActivities(parsed) : false, true);
+});
 
 test('parses an event while filtering invented room member IDs', () => {
     const parsed = parseSurpriseEventProposal(JSON.stringify({

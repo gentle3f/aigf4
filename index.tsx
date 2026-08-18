@@ -140,6 +140,7 @@ import {
 } from "./photoPromptPreference.js";
 import {
     buildCharacterModelRoute,
+    buildSurpriseEventModelRoute,
     buildStrictReviewModelRoute,
     CHAT_MODEL_SETTINGS_STORAGE_KEY,
     normalizeChatModelSettings,
@@ -925,7 +926,7 @@ const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 2_500_000;
 const MAX_CHAT_IMAGE_EDGE = 1600;
 const CHAT_MAX_AUTO_CONTINUES = 2;
 const CHAT_MODEL_ATTEMPT_TIMEOUT_MS = 45_000;
-const SURPRISE_EVENT_ATTEMPT_TIMEOUT_MS = 30_000;
+const SURPRISE_EVENT_ATTEMPT_TIMEOUT_MS = 45_000;
 const NSFW_SURPRISE_EVENT_DIRECTIONS = [
     {
         prompt: 'a private adult seduction challenge with a concrete dare, clear roles and immediate sexual tension',
@@ -12093,21 +12094,16 @@ const generateSurpriseEvent = async (
         'A surprise must contain one specific catalyst that changes the current moment: an interruption, deadline, discovery, secret, mistake, invitation, public/private conflict, unexpected person, or emotionally risky choice.',
         'Reject routine waking up, ordinary meals, generic dates, generic rain, merely discussing an existing plan, or “they spend time together” unless a genuinely new concrete twist transforms it.',
         'Never puppet the user, decide the user agrees, resolve the central tension, skip directly to the ending, reset the current relationship, or replay a completed scene.',
-        'Only use IDs from the valid present-member list. An event may include a clearly attributed staff member, friend, fan, manager or other NPC when useful, but do not silently turn an NPC into a fixed room member.',
+        'An event may include a clearly attributed staff member, friend, fan, manager or other NPC when useful, but do not silently turn an NPC into a fixed room member.',
         'The opening_instruction is hidden from the user. It must tell the chat model exactly how to begin the event in character while preserving current location, clothing, positions and reality layer unless the event itself naturally initiates a transition.',
-        'Write title, hook, setup, activities, every member role, user_choice and opening_instruction in natural Traditional Chinese. Return only the requested JSON.',
+        'Write title, hook, setup, activities, user_choice and opening_instruction in natural Traditional Chinese. Return only the requested JSON.',
         ...contentModeRules,
-        `SELECTED PARTICIPANT IDS: ${validMemberIds.join(', ')}`,
-        'The involved_member_ids array must contain every selected participant ID exactly once and no other fixed member.',
-        'member_roles is hidden director data and must contain exactly one entry for every selected participant ID and no others. objective is that character’s distinct in-scene role; first_move is the first concrete, visible action or attributed line she performs immediately after start.',
-        options.contentMode === 'nsfw'
-            ? 'For this adult program, member role text must describe on-stage participation in the live first round. Never assign meta jobs such as checking time, confirming location, planning routes, handling interruption risk, coordinating options or returning a decision to the user.'
-            : '',
-        'Every first_move must be different, immediately playable and tied to the same causal event. Never write generic filler such as “joins in”, “has a role”, “reacts according to personality”, or “waits for the user”.',
+        `SELECTED PARTICIPANTS (fixed by the app): ${participants.map(participant => participant.name).join(', ')}. Include every one of them in the same event. Do not return participant IDs or hidden member-role data; the app supplies those locally.`,
         'activities must contain 3 to 5 different concrete activities in execution order. Every item must name an observable action, who acts or how participants rotate, any card/prop/timer/pairing involved, and how that item ends.',
         'Never use “adult challenge”, “sexual challenge”, “intimate interaction”, “something exciting”, “different activity” or similar labels as a complete activity. Those are categories, not descriptions. State the actual game mechanic and action.',
         'user_choice must be one clear unresolved decision the user can answer immediately. It must not assume consent or narrate the user’s action.',
         'Unselected fixed room members must not speak, act, or become part of this event card.',
+        'OUTPUT CONTRACT: return one JSON object only, with exactly these keys and no Markdown: {"title":"...","category":"...","intensity":"gentle|playful|dramatic|heated","hook":"...","setup":"...","opening_instruction":"...","activities":["...","...","..."],"user_choice":"...","relationship_effect":{"closeness":2,"trust":1,"romantic_tension":3,"initiative":2}}.',
         `ALLOWED FRESH CATEGORIES: ${allowedCategories.join(', ')}. Choose exactly one category from this list.`,
         options.contentMode === 'nsfw'
             ? 'The category is only a flavor tag. The interactive adult-show format and first round take priority over category logistics.'
@@ -12117,11 +12113,7 @@ const generateSurpriseEvent = async (
         `RECENT EVENT CARDS THAT MUST NOT BE REPEATED OR MERELY RENAMED:\n${recentEventLedger}`,
     ].join('\n\n');
 
-    const models = Array.from(new Set([
-        chatModelSettings.qualityFallback,
-        chatModelSettings.primary,
-        chatModelSettings.emergencyFallback,
-    ].filter(Boolean)));
+    const models = buildSurpriseEventModelRoute(chatModelSettings);
     for (let index = 0; index < models.length; index += 1) {
         const model = models[index];
         applyChatRuntimeState(index === 0 ? 'generating' : 'retrying', index === 0 ? '正在抽取驚喜事件...' : '正在換一種靈感...');
@@ -12145,7 +12137,9 @@ const generateSurpriseEvent = async (
                 temperature: 0.78,
                 topP: 0.9,
                 repetitionPenalty: 1.12,
-                responseFormat: SURPRISE_EVENT_RESPONSE_FORMAT,
+                responseFormat: /venice-uncensored-1-2/iu.test(model)
+                    ? SURPRISE_EVENT_RESPONSE_FORMAT
+                    : undefined,
                 signal: request.controller.signal,
             }, SURPRISE_EVENT_ATTEMPT_TIMEOUT_MS);
             const draft = parseSurpriseEventProposal(result.text, validMemberIds, fallbackMemberId);
@@ -12153,16 +12147,17 @@ const generateSurpriseEvent = async (
                 draft.involvedMemberIds = [...validMemberIds];
                 if (!allowedCategories.includes(draft.category)) draft.category = fallbackCategory;
                 if (options.contentMode === 'nsfw') {
+                    if (!/^18\+/iu.test(draft.title)) draft.title = `18+ 節目：${draft.title}`;
                     if (!surpriseEventHasSpecificActivities(draft)) {
                         draft.activities = [...nsfwDirection.showActivities];
                     }
-                    if (
-                        !surpriseEventHasPlayableStructure(draft, validMemberIds)
-                        || !surpriseEventReadsLikeInteractiveShow(draft)
-                    ) {
-                        draft.memberRoles = buildFallbackSurpriseShowMemberRoles(participants);
-                        draft.userChoice = draft.userChoice || nsfwDirection.showChoice;
-                    }
+                    draft.memberRoles = buildFallbackSurpriseShowMemberRoles(participants);
+                    draft.userChoice = draft.userChoice || nsfwDirection.showChoice;
+                } else {
+                    draft.memberRoles = buildFallbackSurpriseEventMemberRoles(participants, draft.category);
+                    draft.userChoice = draft.userChoice || (participants.length > 1
+                        ? '你要先回應哪一位的第一步？'
+                        : `你要接受 ${participants[0].name} 的第一步，還是要求她改變安排？`);
                 }
             }
             const draftParticipantIds = new Set(draft?.involvedMemberIds || []);

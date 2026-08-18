@@ -51,3 +51,13 @@ export const buildStrictReviewModelRoute = (
 ) => uniqueRoute(isCc
     ? [settings.ccPrimary, settings.qualityFallback, settings.primary, settings.emergencyFallback]
     : [settings.qualityFallback, settings.primary, settings.emergencyFallback]);
+
+// Surprise cards use a prompt-level JSON contract on the primary model, then
+// the schema-capable emergency model. The slow quality model remains last.
+export const buildSurpriseEventModelRoute = (
+    settings: ChatModelSettings,
+) => uniqueRoute([
+    settings.primary,
+    settings.emergencyFallback,
+    settings.qualityFallback,
+]);

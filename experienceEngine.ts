@@ -56,8 +56,6 @@ export const SURPRISE_EVENT_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
                 'hook',
                 'setup',
                 'opening_instruction',
-                'involved_member_ids',
-                'member_roles',
                 'activities',
                 'user_choice',
                 'relationship_effect',
@@ -69,27 +67,6 @@ export const SURPRISE_EVENT_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
                 hook: { type: 'string' },
                 setup: { type: 'string' },
                 opening_instruction: { type: 'string' },
-                involved_member_ids: {
-                    type: 'array',
-                    minItems: 1,
-                    maxItems: ROOM_PRESENT_MEMBER_LIMIT,
-                    items: { type: 'string' },
-                },
-                member_roles: {
-                    type: 'array',
-                    minItems: 1,
-                    maxItems: ROOM_PRESENT_MEMBER_LIMIT,
-                    items: {
-                        type: 'object',
-                        additionalProperties: false,
-                        required: ['member_id', 'objective', 'first_move'],
-                        properties: {
-                            member_id: { type: 'string' },
-                            objective: { type: 'string' },
-                            first_move: { type: 'string' },
-                        },
-                    },
-                },
                 activities: {
                     type: 'array',
                     minItems: 3,
@@ -194,13 +171,35 @@ const stripFence = (value: string) => value
     .replace(/\s*```\s*$/u, '')
     .trim();
 
+const extractFirstJsonObject = (value: string) => {
+    const stripped = stripFence(value);
+    const start = stripped.indexOf('{');
+    if (start < 0) return stripped;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < stripped.length; index += 1) {
+        const character = stripped[index];
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (character === '\\') escaped = true;
+            else if (character === '"') inString = false;
+            continue;
+        }
+        if (character === '"') inString = true;
+        else if (character === '{') depth += 1;
+        else if (character === '}' && --depth === 0) return stripped.slice(start, index + 1);
+    }
+    return stripped;
+};
+
 export const parseSurpriseEventProposal = (
     raw: string,
     validMemberIds: string[],
     fallbackMemberId: string,
 ): Omit<SurpriseEventProposal, 'id' | 'createdAt' | 'status'> | null => {
     try {
-        const parsed = JSON.parse(stripFence(raw)) as Record<string, unknown>;
+        const parsed = JSON.parse(extractFirstJsonObject(raw)) as Record<string, unknown>;
         const title = clean(parsed.title, 48);
         const hook = clean(parsed.hook, 180);
         const setup = clean(parsed.setup, 520);
@@ -429,7 +428,8 @@ export const surpriseEventReadsLikeInteractiveShow = (
     && event.memberRoles!.every(role => !META_PLANNING_MOVE.test(`${role.objective}\n${role.firstMove}`))
 );
 
-const SPECIFIC_ACTIVITY_ACTION = /抽|回答|朗讀|指定|選擇|配對|交換|表演|示範|投票|評分|計時|完成|揭曉|即興|挑選|宣佈|寫下|猜測|模仿|演出|加入|按下/iu;
+const SPECIFIC_ACTIVITY_ACTION = /抽|回答|朗讀|指定|選擇|配對|交換|表演|示範|投票|評分|計時|完成|揭曉|即興|挑選|宣佈|寫下|猜測|模仿|演出|加入|按下|輪流|依次|倒數|限時|說出|使用|展示|穿上|脫下|戴上|解開|靠近|移動|觸碰|親吻|撫摸/iu;
+const SPECIFIC_ACTIVITY_MECHANIC = /(?:\d+|[一二三四五六七八九十]+)(?:秒|分鐘|回合|次)|卡牌?|題目|道具|計時|配對|順序|評分|投票|得分|淘汰|加碼|懲罰|獎勵/iu;
 const VAGUE_ACTIVITY_ONLY = /^(?:進行|完成|展開|參與|接受|提出)?\s*(?:一項|一個|不同的)?\s*(?:成人|18\+|NSFW|性|親密|互動)?\s*(?:活動|挑戰|遊戲|節目|任務)\s*[。.!！]?$/iu;
 
 export const surpriseEventHasSpecificActivities = (
@@ -441,7 +441,7 @@ export const surpriseEventHasSpecificActivities = (
         && new Set(normalized).size === activities.length
         && activities.every(activity => (
             activity.trim().length >= 12
-            && SPECIFIC_ACTIVITY_ACTION.test(activity)
+            && (SPECIFIC_ACTIVITY_ACTION.test(activity) || SPECIFIC_ACTIVITY_MECHANIC.test(activity))
             && !VAGUE_ACTIVITY_ONLY.test(activity.trim())
         ));
 };

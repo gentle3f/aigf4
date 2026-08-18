@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     buildCharacterModelRoute,
+    buildSurpriseEventModelRoute,
     buildStrictReviewModelRoute,
     normalizeChatModelSettings,
     parseChatModelSettings,
@@ -18,6 +19,7 @@ test('keeps Cc on an independent primary route', () => {
     assert.deepEqual(buildCharacterModelRoute(defaults, false), ['main', 'quality', 'emergency']);
     assert.deepEqual(buildCharacterModelRoute(defaults, true), ['cc-special', 'quality', 'main', 'emergency']);
     assert.deepEqual(buildStrictReviewModelRoute(defaults, true), ['cc-special', 'quality', 'main', 'emergency']);
+    assert.deepEqual(buildSurpriseEventModelRoute(defaults), ['main', 'emergency', 'quality']);
 });
 
 test('deduplicates routes when the user selects the same fallback', () => {
@@ -25,6 +27,7 @@ test('deduplicates routes when the user selects the same fallback', () => {
     assert.deepEqual(buildCharacterModelRoute(settings, false), ['main', 'emergency']);
     assert.deepEqual(buildCharacterModelRoute(settings, true), ['main', 'emergency']);
     assert.deepEqual(buildStrictReviewModelRoute(settings, false), ['main', 'emergency']);
+    assert.deepEqual(buildSurpriseEventModelRoute(settings), ['main', 'emergency']);
 });
 
 test('repairs missing or corrupt persisted model settings with defaults', () => {
