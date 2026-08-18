@@ -242,6 +242,7 @@ export interface SurpriseEventProposal {
     openingInstruction: string;
     involvedMemberIds: string[];
     memberRoles?: SurpriseEventMemberRole[];
+    activities?: string[];
     userChoice?: string;
     contentMode?: SurpriseEventContentMode;
     relationshipEffect: Pick<RelationshipState, 'closeness' | 'trust' | 'romanticTension' | 'initiative'>;

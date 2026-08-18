@@ -6,6 +6,7 @@ import {
     buildFallbackSurpriseShowMemberRoles,
     parseSurpriseEventProposal,
     relationshipStageFor,
+    surpriseEventHasSpecificActivities,
     surpriseEventHasPlayableStructure,
     surpriseEventMatchesCategory,
     surpriseEventMatchesContentMode,
@@ -45,12 +46,18 @@ test('preserves all five selected surprise-event participants', () => {
             objective: `完成屬於第 ${index + 1} 位的不同任務`,
             first_move: `${memberId} 立即拿出自己準備好的第 ${index + 1} 份線索。`,
         })),
+        activities: [
+            '五人抽取不同題目的卡牌並按抽籤次序朗讀。',
+            '每人完成卡牌上的限時表演，再由其他參與者評分。',
+            '最低分者抽取加碼條件，由使用者選擇保留或更換。',
+        ],
         user_choice: '你要先查看誰帶來的線索？',
         relationship_effect: { closeness: 2, trust: 1, romantic_tension: 2, initiative: 2 },
     }), memberIds, 'iu');
 
     assert.deepEqual(parsed?.involvedMemberIds, memberIds);
     assert.deepEqual(parsed?.memberRoles?.map(role => role.memberId), memberIds);
+    assert.equal(parsed ? surpriseEventHasSpecificActivities(parsed) : false, true);
     assert.equal(parsed ? surpriseEventHasPlayableStructure(parsed, memberIds) : false, true);
 });
 
@@ -88,12 +95,24 @@ test('builds a live show cast instead of assigning planning jobs', () => {
         hook: '所有參與者進入同一個成人互動節目。',
         setup: '第一回合的挑戰卡已經放在舞台中央，節目現在開始。',
         memberRoles,
+        activities: [
+            '所有參與者抽取題目卡並依次朗讀自己的題目。',
+            '抽中者完成六十秒即興表演，其餘參與者即場評分。',
+            '最低分者抽取加碼卡，再由使用者選擇保留或交換。',
+        ],
     };
 
     assert.equal(memberRoles.length, 5);
     assert.equal(new Set(memberRoles.map(role => role.firstMove)).size, 5);
     assert.equal(surpriseEventReadsLikeInteractiveShow(event), true);
+    assert.equal(surpriseEventHasSpecificActivities(event), true);
     assert.equal(memberRoles.some(role => /確認時間|路線|處理.*風險|重新協調/u.test(role.firstMove)), false);
+});
+
+test('rejects vague activity labels without an executable action', () => {
+    assert.equal(surpriseEventHasSpecificActivities({
+        activities: ['成人挑戰', '進行親密互動', '完成一項不同的活動'],
+    }), false);
 });
 
 test('rejects an event card that is only a planning outline', () => {

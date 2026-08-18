@@ -941,7 +941,8 @@ body.app-body {
 }
 
 .surprise-event-cast,
-.surprise-event-program {
+.surprise-event-program,
+.surprise-event-activities {
     margin-top: 10px;
     border-radius: 10px;
 }
@@ -956,7 +957,8 @@ body.app-body {
 }
 
 .surprise-event-cast strong,
-.surprise-event-program > strong {
+.surprise-event-program > strong,
+.surprise-event-activities > strong {
     color: #8b452f;
     font-size: 0.7rem;
     letter-spacing: 0.05em;
@@ -976,6 +978,26 @@ body.app-body {
 
 .surprise-event-program .surprise-event-hook {
     margin-top: 6px;
+}
+
+.surprise-event-activities {
+    padding: 11px;
+    border: 1px solid rgba(0, 168, 132, 0.18);
+    background: rgba(239, 252, 247, 0.78);
+}
+
+.surprise-event-activities ol {
+    display: grid;
+    gap: 8px;
+    margin: 8px 0 0;
+    padding-left: 1.2rem;
+}
+
+.surprise-event-activities li {
+    padding-left: 3px;
+    color: #304b43;
+    font-size: 0.76rem;
+    line-height: 1.52;
 }
 
 .surprise-event-role-section,

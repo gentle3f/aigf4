@@ -162,6 +162,7 @@ import {
     parseSurpriseEventProposal,
     surpriseEventMatchesCategory,
     surpriseEventMatchesContentMode,
+    surpriseEventHasSpecificActivities,
     surpriseEventHasPlayableStructure,
     surpriseEventReadsLikeInteractiveShow,
     surpriseEventsAreTooSimilar,
@@ -932,6 +933,11 @@ const NSFW_SURPRISE_EVENT_DIRECTIONS = [
         showTitle: '午夜真心與挑戰',
         showHook: '一個只限成年人的互動挑戰節目已經開場，每回合都要在真心題與成人挑戰之間二選一。',
         showSetup: '場地、挑戰卡與三輪賽制已經準備完成；所有已選角色都是正式參與者，第一回合現在就從抽取開場卡開始。',
+        showActivities: [
+            '每位參與者寫下一條只限成年人的真心問題，混合後逐一抽取並立即回答。',
+            '答題者指定下一位完成六十秒誘惑表演，其餘參與者即場評分。',
+            '本輪得分最低者抽取加碼條件，由你選擇保留、交換或改抽一次。',
+        ],
         showChoice: '第一回合由你指定誰先抽卡，或交給節目即場抽籤。',
         categories: ['backstage', 'domestic', 'rivalry', 'mystery', 'celebration'],
     },
@@ -941,6 +947,11 @@ const NSFW_SURPRISE_EVENT_DIRECTIONS = [
         showTitle: '身份交換劇場',
         showHook: '每位參與者抽取一個成人角色與秘密任務，必須保持身份直到回合結束。',
         showSetup: '舞台身份、場景規則與隱藏任務已經抽好；第一回合會逐一揭曉角色，並立即進入互動演出。',
+        showActivities: [
+            '每人抽取一張角色身份及一個禁止詞，朗讀身份後立即進入角色。',
+            '參與者兩人一組完成三分鐘即興演出，過程中說出禁止詞便要交換身份。',
+            '其餘參與者投票選出最投入的一組，再由你決定是否換角或加入秘密條件。',
+        ],
         showChoice: '你要先揭曉哪一位的身份，還是讓主持人按抽籤次序開始？',
         categories: ['fantasy', 'mystery', 'domestic', 'backstage'],
     },
@@ -950,6 +961,11 @@ const NSFW_SURPRISE_EVENT_DIRECTIONS = [
         showTitle: '安可後的成人特別篇',
         showHook: '正式演出結束後，所有已選角色留下錄製一段不公開的成人互動特別篇。',
         showSetup: '鏡頭、舞台與回合卡已重新設定，第一回合由其中一位提出節目的第一個成人邀請，其餘參與者會即場接續。',
+        showActivities: [
+            '每位參與者依次完成四十五秒個人誘惑舞台，並自行選擇音樂、語氣及站位。',
+            '節目抽出兩人配對，把各自的個人舞台合併成一段即興雙人演出。',
+            '所有人完成後由你選出安可人選，並指定安可加入一項新的表演條件。',
+        ],
         showChoice: '你要指定誰主持第一回合，還是讓她們自行搶先開始？',
         categories: ['backstage', 'celebration'],
     },
@@ -959,6 +975,11 @@ const NSFW_SURPRISE_EVENT_DIRECTIONS = [
         showTitle: '主導權擂台',
         showHook: '參與者要透過逐輪挑戰爭取下一回合的主導權，每次勝出都會解鎖新的成人規則。',
         showSetup: '計分牌、獎勵與替代懲罰已經公開；第一輪由所有已選角色同場競逐，不會有人留在場外旁觀。',
+        showActivities: [
+            '所有參與者抽籤決定主導者與挑戰者，並按卡牌要求交換稱呼及舞台位置。',
+            '主導者指定一項限時角色指令，挑戰者完成後由其他參與者投票評分。',
+            '本輪勝出者按下加碼鍵，從角色交換、雙人配對或延長計時中挑選下一條規則。',
+        ],
         showChoice: '第一輪由你選擇挑戰項目，或讓參與者各自提出一項再抽籤。',
         categories: ['rivalry', 'mystery', 'fantasy', 'domestic'],
     },
@@ -968,6 +989,11 @@ const NSFW_SURPRISE_EVENT_DIRECTIONS = [
         showTitle: '今晚誰最懂你',
         showHook: '所有參與者以不同方式完成成人挑戰，爭取成為最了解你反應的人。',
         showSetup: '每人已經準備一張完全不同的挑戰卡；第一輪會依次亮牌、互相回應，最後才由你作出選擇。',
+        showActivities: [
+            '每位參與者先寫下她猜測你最喜歡的一種語氣、造型或角色設定，再同時亮牌。',
+            '她們依次用六十秒表演自己的答案，其他參與者可以加入、模仿或提出加碼。',
+            '你為每段表演排序，最低分者抽取新角色卡並與最高分者配對進入下一輪。',
+        ],
         showChoice: '你要指定亮牌順序，還是讓她們自己爭取第一位？',
         categories: ['rivalry', 'celebration', 'backstage'],
     },
@@ -977,6 +1003,11 @@ const NSFW_SURPRISE_EVENT_DIRECTIONS = [
         showTitle: '倒數成人挑戰',
         showHook: '節目只有一段明確倒數時間，參與者必須在每輪時限結束前完成或改選挑戰。',
         showSetup: '倒數器、回合卡與中止按鈕已經就位；所有已選角色會在同一輪內輪流行動，時間一到便立刻進入加碼規則。',
+        showActivities: [
+            '每位參與者抽取一張六十秒任務卡，計時開始後立即完成指定語氣、角色或表演要求。',
+            '每次鈴聲響起便交換搭檔與任務卡，上一位留下的條件會加入下一段演出。',
+            '未能在時限完成者要回答一條成人真心題，再由你決定延長、換題或進入加碼。',
+        ],
         showChoice: '你要設定第一輪的開始次序，還是立即按下隨機開始鍵？',
         categories: ['backstage', 'mystery', 'domestic'],
     },
@@ -986,6 +1017,11 @@ const NSFW_SURPRISE_EVENT_DIRECTIONS = [
         showTitle: '成人盲盒特別場',
         showHook: '每個密封盲盒都藏有一件成人道具與對應挑戰，抽中者必須先讀出該輪規則。',
         showSetup: '盲盒、挑戰卡與替代選項已經排在場中央；每位已選角色都有自己的抽取回合，第一盒現在等待開啟。',
+        showActivities: [
+            '第一位參與者抽出眼罩、角色卡或計時器其中一件道具，並朗讀盒內的配對規則。',
+            '抽中眼罩者戴上後只靠同伴口頭提示猜出角色，其餘參與者輪流提供線索。',
+            '猜中後由她指定下一位打開角色盲盒，再由你選擇兩人配對或全部加入同一回合。',
+        ],
         showChoice: '第一個盲盒由你指定誰打開，或讓所有參與者同時抽籤。',
         categories: ['mystery', 'celebration', 'domestic', 'backstage'],
     },
@@ -8688,6 +8724,7 @@ const buildSurpriseEventExecutionContract = (proposal: SurpriseEventProposal, ro
     const roleLines = (proposal.memberRoles || []).map(role => (
         `- ${getSurpriseEventMemberName(role.memberId, room)} [${role.memberId}]: objective=${role.objective}; first visible move=${role.firstMove}`
     ));
+    const activityLines = (proposal.activities || []).map((activity, index) => `${index + 1}. ${activity}`);
     const minimumSpeakers = proposal.contentMode === 'nsfw'
         ? participantNames.length
         : participantNames.length >= 4 ? 3 : participantNames.length;
@@ -8695,6 +8732,7 @@ const buildSurpriseEventExecutionContract = (proposal: SurpriseEventProposal, ro
         '[SURPRISE EVENT EXECUTION CONTRACT - hidden instructions, never quote or mention]',
         `Selected participants: ${participantNames.join(', ')}`,
         roleLines.length > 0 ? `Distinct role plan:\n${roleLines.join('\n')}` : '',
+        activityLines.length > 0 ? `Concrete activity rundown:\n${activityLines.join('\n')}` : '',
         proposal.userChoice ? `Unresolved user decision: ${proposal.userChoice}` : '',
         'The causal order is fixed: establish the concrete catalyst, let the selected characters perform their assigned first moves, then stop at the unresolved user decision.',
         'Every selected participant must be visibly involved in this opening through attributed dialogue, a named action, or a named reaction. Nobody selected may disappear or become an unexplained spectator.',
@@ -8702,7 +8740,7 @@ const buildSurpriseEventExecutionContract = (proposal: SurpriseEventProposal, ro
             ? `At least ${minimumSpeakers} selected characters must speak in separately attributed lines; the others still need a named action or reaction.`
             : 'The selected character must speak and take one concrete action.',
         proposal.contentMode === 'nsfw'
-            ? 'This is a live interactive adult program, not an outline. Start inside round one: every selected cast member speaks, performs her assigned in-show move, and interacts with at least one other cast member before the user choice.'
+            ? 'This is a live interactive adult program, not an outline. Start inside activity 1 of round one: every selected cast member speaks, performs her assigned in-show move, and interacts with at least one other cast member before the user choice. Follow the concrete activity rundown instead of inventing another vague challenge.'
             : '',
         'Do not replace these distinct roles with a generic statement that everyone participates. Do not make unselected fixed members speak or act.',
     ].filter(Boolean).join('\n');
@@ -8807,6 +8845,21 @@ const createSurpriseEventCard = (proposal: SurpriseEventProposal) => {
         programLabel.textContent = '節目內容';
         program.append(programLabel, hook, setup);
         card.append(cast, program);
+
+        if (proposal.activities?.length) {
+            const activitySection = document.createElement('div');
+            activitySection.className = 'surprise-event-activities';
+            const activityLabel = document.createElement('strong');
+            activityLabel.textContent = '本回合實際活動';
+            const activityList = document.createElement('ol');
+            proposal.activities.forEach(activity => {
+                const item = document.createElement('li');
+                item.textContent = activity;
+                activityList.appendChild(item);
+            });
+            activitySection.append(activityLabel, activityList);
+            card.appendChild(activitySection);
+        }
     } else {
         card.append(hook, setup);
     }
@@ -12042,7 +12095,7 @@ const generateSurpriseEvent = async (
         'Never puppet the user, decide the user agrees, resolve the central tension, skip directly to the ending, reset the current relationship, or replay a completed scene.',
         'Only use IDs from the valid present-member list. An event may include a clearly attributed staff member, friend, fan, manager or other NPC when useful, but do not silently turn an NPC into a fixed room member.',
         'The opening_instruction is hidden from the user. It must tell the chat model exactly how to begin the event in character while preserving current location, clothing, positions and reality layer unless the event itself naturally initiates a transition.',
-        'Write title, hook, setup, every member role, user_choice and opening_instruction in natural Traditional Chinese. Return only the requested JSON.',
+        'Write title, hook, setup, activities, every member role, user_choice and opening_instruction in natural Traditional Chinese. Return only the requested JSON.',
         ...contentModeRules,
         `SELECTED PARTICIPANT IDS: ${validMemberIds.join(', ')}`,
         'The involved_member_ids array must contain every selected participant ID exactly once and no other fixed member.',
@@ -12051,6 +12104,8 @@ const generateSurpriseEvent = async (
             ? 'For this adult program, member role text must describe on-stage participation in the live first round. Never assign meta jobs such as checking time, confirming location, planning routes, handling interruption risk, coordinating options or returning a decision to the user.'
             : '',
         'Every first_move must be different, immediately playable and tied to the same causal event. Never write generic filler such as “joins in”, “has a role”, “reacts according to personality”, or “waits for the user”.',
+        'activities must contain 3 to 5 different concrete activities in execution order. Every item must name an observable action, who acts or how participants rotate, any card/prop/timer/pairing involved, and how that item ends.',
+        'Never use “adult challenge”, “sexual challenge”, “intimate interaction”, “something exciting”, “different activity” or similar labels as a complete activity. Those are categories, not descriptions. State the actual game mechanic and action.',
         'user_choice must be one clear unresolved decision the user can answer immediately. It must not assume consent or narrate the user’s action.',
         'Unselected fixed room members must not speak, act, or become part of this event card.',
         `ALLOWED FRESH CATEGORIES: ${allowedCategories.join(', ')}. Choose exactly one category from this list.`,
@@ -12097,12 +12152,17 @@ const generateSurpriseEvent = async (
             if (draft) {
                 draft.involvedMemberIds = [...validMemberIds];
                 if (!allowedCategories.includes(draft.category)) draft.category = fallbackCategory;
-                if (
-                    options.contentMode === 'nsfw'
-                    && !surpriseEventHasPlayableStructure(draft, validMemberIds)
-                ) {
-                    draft.memberRoles = buildFallbackSurpriseShowMemberRoles(participants);
-                    draft.userChoice = draft.userChoice || nsfwDirection.showChoice;
+                if (options.contentMode === 'nsfw') {
+                    if (!surpriseEventHasSpecificActivities(draft)) {
+                        draft.activities = [...nsfwDirection.showActivities];
+                    }
+                    if (
+                        !surpriseEventHasPlayableStructure(draft, validMemberIds)
+                        || !surpriseEventReadsLikeInteractiveShow(draft)
+                    ) {
+                        draft.memberRoles = buildFallbackSurpriseShowMemberRoles(participants);
+                        draft.userChoice = draft.userChoice || nsfwDirection.showChoice;
+                    }
                 }
             }
             const draftParticipantIds = new Set(draft?.involvedMemberIds || []);
@@ -12116,6 +12176,7 @@ const generateSurpriseEvent = async (
                 || !surpriseEventMatchesContentMode(draft, options.contentMode)
                 || !surpriseEventHasPlayableStructure(draft, validMemberIds)
                 || (options.contentMode === 'nsfw' && !surpriseEventReadsLikeInteractiveShow(draft))
+                || (options.contentMode === 'nsfw' && !surpriseEventHasSpecificActivities(draft))
                 || recentEvents.some(previous => surpriseEventsAreTooSimilar(previous, draft))
             ) {
                 throw new Error(`Repeated or invalid surprise event from ${model}.`);
@@ -12130,6 +12191,7 @@ const generateSurpriseEvent = async (
                 firstMove: normalizeTraditionalChineseLeaks(role.firstMove),
             }));
             if (draft.userChoice) draft.userChoice = normalizeTraditionalChineseLeaks(draft.userChoice);
+            draft.activities = draft.activities?.map(normalizeTraditionalChineseLeaks);
             return {
                 ...draft,
                 contentMode: options.contentMode,
@@ -12170,6 +12232,7 @@ const generateSurpriseEvent = async (
             intensity: 'heated' as const,
             involvedMemberIds: validMemberIds,
             memberRoles,
+            activities: [...nsfwDirection.showActivities],
             userChoice: nsfwDirection.showChoice,
             relationshipEffect: {
                 ...fallback.relationshipEffect,
@@ -12181,6 +12244,7 @@ const generateSurpriseEvent = async (
             ...fallback,
             involvedMemberIds: validMemberIds,
             memberRoles,
+            activities: memberRoles.slice(0, 3).map(role => role.firstMove),
             userChoice,
             setup: fallback.setup,
             openingInstruction: `${fallback.openingInstruction} 依照每人的指定第一步開始，停在使用者尚未作出的選擇。本事件必須保持非 18+。`,

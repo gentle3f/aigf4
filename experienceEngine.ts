@@ -58,6 +58,7 @@ export const SURPRISE_EVENT_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
                 'opening_instruction',
                 'involved_member_ids',
                 'member_roles',
+                'activities',
                 'user_choice',
                 'relationship_effect',
             ],
@@ -88,6 +89,12 @@ export const SURPRISE_EVENT_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
                             first_move: { type: 'string' },
                         },
                     },
+                },
+                activities: {
+                    type: 'array',
+                    minItems: 3,
+                    maxItems: 5,
+                    items: { type: 'string' },
                 },
                 user_choice: { type: 'string' },
                 relationship_effect: {
@@ -199,6 +206,11 @@ export const parseSurpriseEventProposal = (
         const setup = clean(parsed.setup, 520);
         const openingInstruction = clean(parsed.opening_instruction, 900);
         const userChoice = clean(parsed.user_choice, 220);
+        const activities = Array.from(new Set(
+            (Array.isArray(parsed.activities) ? parsed.activities : [])
+                .map(value => clean(value, 240))
+                .filter(Boolean),
+        )).slice(0, 5);
         const category = SURPRISE_EVENT_CATEGORIES.includes(parsed.category as SurpriseEventCategory)
             ? parsed.category as SurpriseEventCategory
             : null;
@@ -238,6 +250,7 @@ export const parseSurpriseEventProposal = (
             openingInstruction,
             involvedMemberIds,
             memberRoles: memberRoles.length > 0 ? memberRoles : undefined,
+            activities: activities.length > 0 ? activities : undefined,
             userChoice: userChoice || undefined,
             relationshipEffect: {
                 closeness: boundedEffect('closeness', -3, 6),
@@ -409,12 +422,29 @@ const INTERACTIVE_SHOW_EVIDENCE = /節目|回合|挑戰|遊戲|賽制|主持|參
 const META_PLANNING_MOVE = /確認(?:時間|地點|限制)|提出(?:一個)?(?:不同|可執行)?(?:的)?方向|處理.{0,8}風險|整理分歧|重新協調|集合方式|路線|行程|準備工作/iu;
 
 export const surpriseEventReadsLikeInteractiveShow = (
-    event: Pick<SurpriseEventProposal, 'title' | 'hook' | 'setup' | 'memberRoles'>,
+    event: Pick<SurpriseEventProposal, 'title' | 'hook' | 'setup' | 'memberRoles' | 'activities'>,
 ) => (
-    INTERACTIVE_SHOW_EVIDENCE.test(`${event.title}\n${event.hook}\n${event.setup}`)
+    INTERACTIVE_SHOW_EVIDENCE.test(`${event.title}\n${event.hook}\n${event.setup}\n${event.activities?.join('\n') || ''}`)
     && Boolean(event.memberRoles?.length)
     && event.memberRoles!.every(role => !META_PLANNING_MOVE.test(`${role.objective}\n${role.firstMove}`))
 );
+
+const SPECIFIC_ACTIVITY_ACTION = /抽|回答|朗讀|指定|選擇|配對|交換|表演|示範|投票|評分|計時|完成|揭曉|即興|挑選|宣佈|寫下|猜測|模仿|演出|加入|按下/iu;
+const VAGUE_ACTIVITY_ONLY = /^(?:進行|完成|展開|參與|接受|提出)?\s*(?:一項|一個|不同的)?\s*(?:成人|18\+|NSFW|性|親密|互動)?\s*(?:活動|挑戰|遊戲|節目|任務)\s*[。.!！]?$/iu;
+
+export const surpriseEventHasSpecificActivities = (
+    event: Pick<SurpriseEventProposal, 'activities'>,
+) => {
+    const activities = event.activities || [];
+    const normalized = activities.map(activity => normalizedWords(activity));
+    return activities.length >= 3
+        && new Set(normalized).size === activities.length
+        && activities.every(activity => (
+            activity.trim().length >= 12
+            && SPECIFIC_ACTIVITY_ACTION.test(activity)
+            && !VAGUE_ACTIVITY_ONLY.test(activity.trim())
+        ));
+};
 
 const eventText = (event: Pick<SurpriseEventProposal, 'title' | 'hook' | 'setup'>) =>
     `${event.title}\n${event.hook}\n${event.setup}`;
