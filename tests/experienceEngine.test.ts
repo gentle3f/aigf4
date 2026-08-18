@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     advanceRelationshipState,
+    buildFallbackSurpriseEventMemberRoles,
     parseSurpriseEventProposal,
     relationshipStageFor,
+    surpriseEventHasPlayableStructure,
     surpriseEventMatchesCategory,
     surpriseEventMatchesContentMode,
     surpriseEventsAreTooSimilar,
@@ -36,10 +38,43 @@ test('preserves all five selected surprise-event participants', () => {
         setup: '她們用一個私下慶祝安排邀請你加入。',
         opening_instruction: '讓五人各自參與，但不要替使用者答應。',
         involved_member_ids: memberIds,
+        member_roles: memberIds.map((memberId, index) => ({
+            member_id: memberId,
+            objective: `完成屬於第 ${index + 1} 位的不同任務`,
+            first_move: `${memberId} 立即拿出自己準備好的第 ${index + 1} 份線索。`,
+        })),
+        user_choice: '你要先查看誰帶來的線索？',
         relationship_effect: { closeness: 2, trust: 1, romantic_tension: 2, initiative: 2 },
     }), memberIds, 'iu');
 
     assert.deepEqual(parsed?.involvedMemberIds, memberIds);
+    assert.deepEqual(parsed?.memberRoles?.map(role => role.memberId), memberIds);
+    assert.equal(parsed ? surpriseEventHasPlayableStructure(parsed, memberIds) : false, true);
+});
+
+test('rejects a surprise event whose role plan omits a selected participant', () => {
+    const memberIds = ['iu', 'jennie', 'irene'];
+    assert.equal(surpriseEventHasPlayableStructure({
+        memberRoles: [
+            { memberId: 'iu', objective: '揭開事件的第一條線索', firstMove: 'IU 把密封信放到桌面中央。' },
+            { memberId: 'jennie', objective: '核對線索出現的時間', firstMove: 'Jennie 立即翻出手機內的時間紀錄。' },
+        ],
+        userChoice: '你要先打開信，還是先看時間紀錄？',
+    }, memberIds), false);
+});
+
+test('builds distinct playable fallback roles for all five participants', () => {
+    const participants = ['iu', 'jennie', 'irene', 'rose', 'lisa']
+        .map(id => ({ id, name: id.toUpperCase() }));
+    const roles = buildFallbackSurpriseEventMemberRoles(participants, 'backstage');
+    const event = {
+        memberRoles: roles,
+        userChoice: '你要先處理後台意外，還是先改變原本安排？',
+    };
+
+    assert.equal(roles.length, 5);
+    assert.equal(new Set(roles.map(role => role.firstMove)).size, 5);
+    assert.equal(surpriseEventHasPlayableStructure(event, participants.map(item => item.id)), true);
 });
 
 test('distinguishes explicit 18+ cards from non-sexual cards', () => {

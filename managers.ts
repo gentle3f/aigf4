@@ -226,6 +226,12 @@ export type SurpriseEventCategory =
 
 export type SurpriseEventContentMode = 'nsfw' | 'non-sexual';
 
+export interface SurpriseEventMemberRole {
+    memberId: string;
+    objective: string;
+    firstMove: string;
+}
+
 export interface SurpriseEventProposal {
     id: string;
     title: string;
@@ -235,6 +241,8 @@ export interface SurpriseEventProposal {
     setup: string;
     openingInstruction: string;
     involvedMemberIds: string[];
+    memberRoles?: SurpriseEventMemberRole[];
+    userChoice?: string;
     contentMode?: SurpriseEventContentMode;
     relationshipEffect: Pick<RelationshipState, 'closeness' | 'trust' | 'romanticTension' | 'initiative'>;
     status: 'pending' | 'starting' | 'active' | 'completed' | 'declined' | 'failed';

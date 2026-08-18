@@ -5,6 +5,7 @@ import type {
     RelationshipState,
     SurpriseEventCategory,
     SurpriseEventContentMode,
+    SurpriseEventMemberRole,
     SurpriseEventProposal,
 } from './managers.js';
 import { ROOM_PRESENT_MEMBER_LIMIT } from './roomManager.js';
@@ -56,6 +57,8 @@ export const SURPRISE_EVENT_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
                 'setup',
                 'opening_instruction',
                 'involved_member_ids',
+                'member_roles',
+                'user_choice',
                 'relationship_effect',
             ],
             properties: {
@@ -71,6 +74,22 @@ export const SURPRISE_EVENT_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
                     maxItems: ROOM_PRESENT_MEMBER_LIMIT,
                     items: { type: 'string' },
                 },
+                member_roles: {
+                    type: 'array',
+                    minItems: 1,
+                    maxItems: ROOM_PRESENT_MEMBER_LIMIT,
+                    items: {
+                        type: 'object',
+                        additionalProperties: false,
+                        required: ['member_id', 'objective', 'first_move'],
+                        properties: {
+                            member_id: { type: 'string' },
+                            objective: { type: 'string' },
+                            first_move: { type: 'string' },
+                        },
+                    },
+                },
+                user_choice: { type: 'string' },
                 relationship_effect: {
                     type: 'object',
                     additionalProperties: false,
@@ -179,6 +198,7 @@ export const parseSurpriseEventProposal = (
         const hook = clean(parsed.hook, 180);
         const setup = clean(parsed.setup, 520);
         const openingInstruction = clean(parsed.opening_instruction, 900);
+        const userChoice = clean(parsed.user_choice, 220);
         const category = SURPRISE_EVENT_CATEGORIES.includes(parsed.category as SurpriseEventCategory)
             ? parsed.category as SurpriseEventCategory
             : null;
@@ -193,6 +213,18 @@ export const parseSurpriseEventProposal = (
         )).slice(0, ROOM_PRESENT_MEMBER_LIMIT);
         if (involvedMemberIds.length === 0 && validIds.has(fallbackMemberId)) involvedMemberIds.push(fallbackMemberId);
         if (involvedMemberIds.length === 0) return null;
+        const memberRoles: SurpriseEventMemberRole[] = [];
+        const seenRoleIds = new Set<string>();
+        (Array.isArray(parsed.member_roles) ? parsed.member_roles : []).forEach(value => {
+            if (!value || typeof value !== 'object') return;
+            const role = value as Record<string, unknown>;
+            const memberId = typeof role.member_id === 'string' ? role.member_id.trim() : '';
+            const objective = clean(role.objective, 180);
+            const firstMove = clean(role.first_move, 240);
+            if (!validIds.has(memberId) || seenRoleIds.has(memberId) || !objective || !firstMove) return;
+            seenRoleIds.add(memberId);
+            memberRoles.push({ memberId, objective, firstMove });
+        });
         const effect = parsed.relationship_effect && typeof parsed.relationship_effect === 'object'
             ? parsed.relationship_effect as Record<string, unknown>
             : {};
@@ -205,6 +237,8 @@ export const parseSurpriseEventProposal = (
             setup,
             openingInstruction,
             involvedMemberIds,
+            memberRoles: memberRoles.length > 0 ? memberRoles : undefined,
+            userChoice: userChoice || undefined,
             relationshipEffect: {
                 closeness: boundedEffect('closeness', -3, 6),
                 trust: boundedEffect('trust', -3, 6),
@@ -221,6 +255,131 @@ const normalizedWords = (value: string) => value
     .toLocaleLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, '')
     .slice(0, 260);
+
+export const surpriseEventHasPlayableStructure = (
+    event: Pick<SurpriseEventProposal, 'memberRoles' | 'userChoice'>,
+    selectedMemberIds: string[],
+) => {
+    const selected = Array.from(new Set(selectedMemberIds.filter(Boolean)));
+    const roles = event.memberRoles || [];
+    if (!event.userChoice?.trim() || selected.length === 0 || roles.length !== selected.length) return false;
+    const roleIds = new Set(roles.map(role => role.memberId));
+    if (roleIds.size !== selected.length || !selected.every(id => roleIds.has(id))) return false;
+    const firstMoves = roles.map(role => normalizedWords(role.firstMove));
+    if (new Set(firstMoves).size !== firstMoves.length) return false;
+    return roles.every(role => (
+        role.objective.trim().length >= 6
+        && role.firstMove.trim().length >= 8
+        && !/^(?:等待|等候|配合|參與|有所行動|作出反應|看情況)/u.test(role.firstMove.trim())
+    ));
+};
+
+const FALLBACK_ROLE_OBJECTIVES = [
+    '揭開事件的核心觸發點',
+    '確認時間、地點與現實限制',
+    '提出一個不同而可執行的方向',
+    '處理可能令事件中斷的風險',
+    '整理分歧並把決定交回給你',
+] as const;
+
+const FALLBACK_EVENT_FIRST_MOVES: Record<SurpriseEventCategory, readonly string[]> = {
+    idol_schedule: [
+        '先攤開剛收到的突發行程，指出真正剩下的時間',
+        '立即核對下一個工作節點，說清楚最遲何時必須離開',
+        '提出一個能在空檔內立刻進行又不打亂當前場景的方案',
+        '留意經理人或工作人員動向，主動處理被打斷的風險',
+        '把兩個可立即執行的方案清楚放到你面前',
+    ],
+    backstage: [
+        '先關上休息室的門，把剛發生的後台意外說清楚',
+        '查看走廊動靜與下一個通告時間，報出可用的空檔',
+        '提出一個利用這段後台空檔的不同做法',
+        '主動處理門外工作人員或設備造成的中斷風險',
+        '把先處理突發狀況或先跟進私人安排兩條路交給你選',
+    ],
+    public_spotlight: [
+        '先用只有你看得懂的暗號指出鏡頭下的新變化',
+        '快速確認媒體、粉絲與工作人員目前的位置',
+        '提出一個不破壞公開身份又能回應你的辦法',
+        '主動擋住最可能暴露秘密互動的視線或追問',
+        '在不替你答應的前提下給出兩個清楚的回應方式',
+    ],
+    secret_escape: [
+        '先交出集合方法或目的地線索，正式提出這次秘密出走',
+        '確認可以離開多久以及必須避開的人和行程',
+        '提出另一條路線或藏身安排，令計劃不只得一個方案',
+        '主動留意追蹤、來電或被認出的風險',
+        '把立即出發或先完成一項準備的選擇交給你',
+    ],
+    unexpected_guest: [
+        '先對門外的聲音或突然現身的人作出具體反應',
+        '確認來客身份、來意以及是否知道房內目前的情況',
+        '提出接待、避開或直接問清楚來意的不同做法',
+        '主動守住現場的重要物件、秘密或人物位置',
+        '把是否開門以及由誰先應對的決定交給你',
+    ],
+    celebration: [
+        '先揭開這次慶祝的具體理由以及已準備好的第一件事',
+        '補充安排的時間、地點與不能錯過的細節',
+        '拿出一個與原方案不同但同樣能立即進行的驚喜',
+        '處理可能提早曝光或打斷慶祝的變數',
+        '把先拆開驚喜或先聽她們說明的選擇交給你',
+    ],
+    travel: [
+        '先指出交通、行李或路線究竟出了甚麼具體變化',
+        '立即查清下一班交通與真正可用的等待時間',
+        '提出一條能利用延誤時間的替代路線或附近去處',
+        '主動照看行李、票證與可能再次變動的通知',
+        '把繼續等候或採用替代方案的決定交給你',
+    ],
+    domestic: [
+        '先找出家中突發狀況的明確來源並採取第一個處理動作',
+        '檢查安全、工具與需要在甚麼時間前處理完成',
+        '提出一個不離開當前空間也能推進事情的做法',
+        '主動處理鄰居、維修人員或設備惡化的風險',
+        '把先解決問題或先利用這段意外空檔的選擇交給你',
+    ],
+    emotional_turn: [
+        '先讓那個一直隱藏的情緒破綻具體出現在你面前',
+        '說清楚這份情緒由哪個當下細節觸發而不是憑空告白',
+        '以自己的立場提出另一種理解，避免所有人只有同一反應',
+        '主動阻止誤會被草率解決或被轉移話題',
+        '把先追問真相或先給對方整理情緒的空間交給你決定',
+    ],
+    rivalry: [
+        '先提出一條清楚的比較或挑戰規則，令競爭正式開始',
+        '指出勝負如何判定以及甚麼行為不算數',
+        '用與第一人不同的策略回應挑戰並表明自己想贏的原因',
+        '主動看守公平或抓住可能改變勝負的意外變數',
+        '把先接受哪一項挑戰或修改哪條規則的決定交給你',
+    ],
+    mystery: [
+        '先把實物線索放到眾人看得見的位置並指出第一個異常',
+        '核對線索上的時間、文字或來源，排除最明顯的誤讀',
+        '提出一個與表面答案不同而且可以立即驗證的推測',
+        '主動保管線索並留意是否有人正在觀察或干擾',
+        '把先追查哪條線索的決定交給你而不提前揭開答案',
+    ],
+    fantasy: [
+        '先明確宣布共同想像的世界、身份與第一條規則',
+        '確認所有人仍知道這是想像層並保留返回現實的方法',
+        '提出一個能立刻改變幻想場景但不取代原人格的行動',
+        '主動帶入幻想世界的第一個阻礙或代價',
+        '把選擇哪個身份或先探索哪個方向交給你決定',
+    ],
+};
+
+export const buildFallbackSurpriseEventMemberRoles = (
+    participants: Array<{ id: string; name: string }>,
+    category: SurpriseEventCategory,
+): SurpriseEventMemberRole[] => {
+    const actions = FALLBACK_EVENT_FIRST_MOVES[category];
+    return participants.slice(0, ROOM_PRESENT_MEMBER_LIMIT).map((participant, index) => ({
+        memberId: participant.id,
+        objective: FALLBACK_ROLE_OBJECTIVES[index] || `以 ${participant.name} 的立場推進事件`,
+        firstMove: `${participant.name}${actions[index] || actions[actions.length - 1]}。`,
+    }));
+};
 
 const eventText = (event: Pick<SurpriseEventProposal, 'title' | 'hook' | 'setup'>) =>
     `${event.title}\n${event.hook}\n${event.setup}`;

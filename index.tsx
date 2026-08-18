@@ -152,6 +152,7 @@ import {
 } from "./strictReview.js";
 import {
     advanceRelationshipState,
+    buildFallbackSurpriseEventMemberRoles,
     collectRecentSurpriseEvents,
     createFallbackSurpriseEvent,
     formatRelationshipStatePrompt,
@@ -160,6 +161,7 @@ import {
     parseSurpriseEventProposal,
     surpriseEventMatchesCategory,
     surpriseEventMatchesContentMode,
+    surpriseEventHasPlayableStructure,
     surpriseEventsAreTooSimilar,
     SURPRISE_EVENT_CATEGORY_GUIDES,
     SURPRISE_EVENT_RESPONSE_FORMAT,
@@ -920,35 +922,42 @@ const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 2_500_000;
 const MAX_CHAT_IMAGE_EDGE = 1600;
 const CHAT_MAX_AUTO_CONTINUES = 2;
 const CHAT_MODEL_ATTEMPT_TIMEOUT_MS = 45_000;
-const SURPRISE_EVENT_ATTEMPT_TIMEOUT_MS = 15_000;
+const SURPRISE_EVENT_ATTEMPT_TIMEOUT_MS = 30_000;
 const NSFW_SURPRISE_EVENT_DIRECTIONS = [
     {
         prompt: 'a private adult seduction challenge with a concrete dare, clear roles and immediate sexual tension',
         fallbackPremise: '一張寫明成人規則的私密挑戰卡被放到你面前，第一個挑戰要求其中一人主動提出清楚的性邀請。',
+        categories: ['backstage', 'secret_escape', 'domestic', 'rivalry', 'mystery'],
     },
     {
         prompt: 'a consensual adult role-play premise with specific identities, a private setting and a clear first move',
         fallbackPremise: '她們準備了一個只限成年人的角色扮演設定，身份、場地與第一個性挑戰都已寫好，只等待你決定是否開始。',
+        categories: ['fantasy', 'mystery', 'domestic', 'secret_escape'],
     },
     {
         prompt: 'an after-work or after-performance private release where one selected character initiates a clearly sexual proposition',
         fallbackPremise: '工作或演出結束後的私人空檔裡，其中一人不再掩飾慾望，向你提出一個具體的成人邀請。',
+        categories: ['backstage', 'idol_schedule', 'secret_escape', 'celebration'],
     },
     {
         prompt: 'a playful adult power-exchange game with an explicit rule, a concrete reward or consequence, and room for the user to choose',
         fallbackPremise: '一場成人主導權遊戲訂下了清楚規則、獎勵與後果，但由你決定接受、拒絕或改寫第一條規則。',
+        categories: ['rivalry', 'mystery', 'fantasy', 'domestic'],
     },
     {
         prompt: 'a multi-character adult attention or jealousy game in which every selected character has a distinct active role',
         fallbackPremise: '幾位參與者把原本的爭寵變成明確的成人遊戲，每人提出不同的性挑戰，等你選擇先回應誰。',
+        categories: ['rivalry', 'celebration', 'backstage', 'secret_escape'],
     },
     {
         prompt: 'a risky-but-private adult encounter with a concrete interruption risk, time limit or need for secrecy',
         fallbackPremise: '一段有限時或可能被打斷的私人空檔，令她們直接提出一個必須立刻決定是否開始的成人性冒險。',
+        categories: ['secret_escape', 'backstage', 'idol_schedule', 'travel', 'public_spotlight'],
     },
     {
         prompt: 'the discovery or gifting of a clearly adult intimate item that creates a specific sexual challenge',
         fallbackPremise: '一件明確的成人情趣用品意外出現，附帶的使用規則把它變成一個尚未開始的具體性挑戰。',
+        categories: ['mystery', 'celebration', 'domestic', 'backstage'],
     },
 ] as const;
 const CHAT_MODEL_TIMEOUT_ERROR = 'CHAT_MODEL_TIMEOUT';
@@ -8637,6 +8646,68 @@ const getSurpriseEventParticipantNames = (proposal: SurpriseEventProposal) => {
     return currentPersona ? [currentPersona.name] : [];
 };
 
+const getSurpriseEventMemberName = (memberId: string, room?: ChatRoom) => (
+    room?.members.find(member => member.id === memberId)?.persona.name
+    || currentRoom?.members.find(member => member.id === memberId)?.persona.name
+    || (memberId === currentPersonaKey ? currentPersona?.name : '')
+    || memberId
+);
+
+const buildSurpriseEventExecutionContract = (proposal: SurpriseEventProposal, room?: ChatRoom) => {
+    const participantNames = proposal.involvedMemberIds.map(id => getSurpriseEventMemberName(id, room));
+    const roleLines = (proposal.memberRoles || []).map(role => (
+        `- ${getSurpriseEventMemberName(role.memberId, room)} [${role.memberId}]: objective=${role.objective}; first visible move=${role.firstMove}`
+    ));
+    const minimumSpeakers = participantNames.length >= 4 ? 3 : participantNames.length;
+    return [
+        '[SURPRISE EVENT EXECUTION CONTRACT - hidden instructions, never quote or mention]',
+        `Selected participants: ${participantNames.join(', ')}`,
+        roleLines.length > 0 ? `Distinct role plan:\n${roleLines.join('\n')}` : '',
+        proposal.userChoice ? `Unresolved user decision: ${proposal.userChoice}` : '',
+        'The causal order is fixed: establish the concrete catalyst, let the selected characters perform their assigned first moves, then stop at the unresolved user decision.',
+        'Every selected participant must be visibly involved in this opening through attributed dialogue, a named action, or a named reaction. Nobody selected may disappear or become an unexplained spectator.',
+        participantNames.length > 1
+            ? `At least ${minimumSpeakers} selected characters must speak in separately attributed lines; the others still need a named action or reaction.`
+            : 'The selected character must speak and take one concrete action.',
+        'Do not replace these distinct roles with a generic statement that everyone participates. Do not make unselected fixed members speak or act.',
+    ].filter(Boolean).join('\n');
+};
+
+const surpriseEventReplyCoversParticipants = (
+    proposal: SurpriseEventProposal,
+    room: ChatRoom,
+    result: GroupGenerationResult,
+) => {
+    const selectedIds = Array.from(new Set(proposal.involvedMemberIds));
+    const selectedSet = new Set(selectedIds);
+    const fixedMemberIds = new Set(room.members.map(member => member.id));
+    const spokenIds = new Set<string>();
+    const visibleIds = new Set<string>();
+
+    result.segments.forEach(segment => {
+        if (segment.type === 'dialogue' && segment.speakerId && selectedSet.has(segment.speakerId)) {
+            spokenIds.add(segment.speakerId);
+            visibleIds.add(segment.speakerId);
+        }
+        const normalizedText = segment.text.toLocaleLowerCase();
+        selectedIds.forEach(memberId => {
+            const memberName = room.members.find(member => member.id === memberId)?.persona.name.trim();
+            if (memberName && normalizedText.includes(memberName.toLocaleLowerCase())) visibleIds.add(memberId);
+        });
+    });
+
+    const hasUnselectedFixedSpeaker = result.segments.some(segment => (
+        segment.type === 'dialogue'
+        && Boolean(segment.speakerId)
+        && fixedMemberIds.has(segment.speakerId!)
+        && !selectedSet.has(segment.speakerId!)
+    ));
+    const minimumSpeakers = selectedIds.length >= 4 ? 3 : selectedIds.length;
+    return !hasUnselectedFixedSpeaker
+        && selectedIds.every(memberId => visibleIds.has(memberId))
+        && spokenIds.size >= minimumSpeakers;
+};
+
 const createSurpriseEventCard = (proposal: SurpriseEventProposal) => {
     const card = document.createElement('section');
     card.className = `system-action-card surprise-event-card surprise-event-${proposal.status}`;
@@ -8682,6 +8753,40 @@ const createSurpriseEventCard = (proposal: SurpriseEventProposal) => {
     setup.className = 'surprise-event-setup';
     setup.textContent = proposal.setup;
     card.append(eyebrow, title, badges, hook, setup);
+
+    if (proposal.memberRoles?.length) {
+        const roleSection = document.createElement('div');
+        roleSection.className = 'surprise-event-role-section';
+        const roleTitle = document.createElement('strong');
+        roleTitle.textContent = '各自會做甚麼';
+        const roleList = document.createElement('div');
+        roleList.className = 'surprise-event-role-list';
+        proposal.memberRoles.forEach(role => {
+            const row = document.createElement('div');
+            row.className = 'surprise-event-role-row';
+            const name = document.createElement('strong');
+            name.textContent = getSurpriseEventMemberName(role.memberId);
+            const objective = document.createElement('span');
+            objective.textContent = role.objective;
+            const firstMove = document.createElement('small');
+            firstMove.textContent = `第一步：${role.firstMove}`;
+            row.append(name, objective, firstMove);
+            roleList.appendChild(row);
+        });
+        roleSection.append(roleTitle, roleList);
+        card.appendChild(roleSection);
+    }
+
+    if (proposal.userChoice) {
+        const choice = document.createElement('div');
+        choice.className = 'surprise-event-user-choice';
+        const label = document.createElement('strong');
+        label.textContent = '留給你決定';
+        const text = document.createElement('span');
+        text.textContent = proposal.userChoice;
+        choice.append(label, text);
+        card.appendChild(choice);
+    }
 
     if (proposal.error) {
         const error = document.createElement('small');
@@ -10313,6 +10418,9 @@ const runConversationGeneration = async (
         : buildImmediateTurnOwnershipRequirement(request.persona.name, latestUserMessage);
     const systemPrompt = [
         baseSystemPrompt,
+        !assistantMode && request.surpriseEvent
+            ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
+            : '',
         turnOwnershipRequirement,
         npcContinuityRequirement,
         npcSpeechRequirement,
@@ -10992,8 +11100,14 @@ const runRoomConversationGeneration = async (
             const isRetry = modelIndex > 0 || attempt > 0;
             applyChatRuntimeState(isRetry ? 'retrying' : 'generating', isRetry ? '重新思考中...' : '思考中...');
             try {
+                const roomSystemPrompt = [
+                    buildGroupSystemPrompt(request.room),
+                    request.surpriseEvent
+                        ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
+                        : '',
+                ].filter(Boolean).join('\n\n');
                 const messages: VeniceMessage[] = [
-                    { role: 'system', content: buildGroupSystemPrompt(request.room) },
+                    { role: 'system', content: roomSystemPrompt },
                 ];
                 if (isRetry) {
                     messages.push({
@@ -11001,6 +11115,9 @@ const runRoomConversationGeneration = async (
                         content: [
                             'The previous attempt was invalid, repetitive, confused a speaker, or failed to answer the newest message.',
                             'Rebuild the fixed identity ledger and answer the newest turn from scratch with a genuinely new reaction and scene beat.',
+                            request.surpriseEvent
+                                ? 'The previous event opening also failed its participant contract. Include every selected character visibly, preserve each distinct first move, and do not let an unselected fixed member speak.'
+                                : '',
                             rejectedReply ? `Rejected output; do not copy it:\n${rejectedReply.slice(0, 900)}` : '',
                         ].filter(Boolean).join('\n'),
                     });
@@ -11046,6 +11163,13 @@ const runRoomConversationGeneration = async (
                 if (repeats && !userExplicitlyRequestsContinuation(latestUserMessage)) {
                     rejectedReply = parsed.text;
                     throw new Error(`Repeated group reply from ${model}.`);
+                }
+                if (
+                    request.surpriseEvent
+                    && !surpriseEventReplyCoversParticipants(request.surpriseEvent, request.room, parsed)
+                ) {
+                    rejectedReply = parsed.text;
+                    throw new Error(`Surprise event omitted or confused selected participants in ${model}.`);
                 }
 
                 console.info('[aigf4 group generation]', {
@@ -11204,6 +11328,9 @@ const strictReviewSingleReply = async (
     );
     const authoritativePrompt = [
         buildChatSystemPrompt(request.personaKey, request.persona),
+        request.surpriseEvent
+            ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
+            : '',
         buildImmediateTurnOwnershipRequirement(request.persona.name, latestUserMessage),
         buildNpcContinuityRequirement(establishedNpcNames),
         buildNpcSpeechRequirement(addressedNpcNames),
@@ -11281,6 +11408,9 @@ const strictReviewGroupReply = async (
         latestUserMessage,
         [
             buildGroupSystemPrompt(request.room),
+            request.surpriseEvent
+                ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
+                : '',
             'STRICT REVISION FORMAT: revised_response must contain one complete <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate> envelope.',
         ].join('\n\n'),
         serializedCandidate,
@@ -11300,6 +11430,10 @@ const strictReviewGroupReply = async (
             ),
         );
         if (groupNarrationUsesFirstPerson(revision)) return candidate;
+        if (
+            request.surpriseEvent
+            && !surpriseEventReplyCoversParticipants(request.surpriseEvent, request.room, revision)
+        ) return candidate;
         const namedMember = getDirectlyNamedRoomMember(request, latestUserMessage);
         if (namedMember && !revision.segments.some(segment => (
             segment.type === 'dialogue' && segment.speakerId === namedMember.id
@@ -11815,13 +11949,24 @@ const generateSurpriseEvent = async (
     const categoryPool = (idolLike
         ? ['backstage', 'idol_schedule', 'public_spotlight', 'secret_escape', 'unexpected_guest', 'celebration', 'travel', 'emotional_turn', 'rivalry', 'mystery']
         : ['secret_escape', 'unexpected_guest', 'celebration', 'travel', 'domestic', 'emotional_turn', 'rivalry', 'mystery', 'fantasy']) as SurpriseEventProposal['category'][];
-    const recentlyUsedCategories = new Set(recentEvents.slice(-6).map(event => event.category));
-    const freshCategoryPool = categoryPool.filter(category => !recentlyUsedCategories.has(category));
-    const selectableCategories = freshCategoryPool.length > 0 ? freshCategoryPool : categoryPool;
-    const targetCategory = selectableCategories[Math.floor(Math.random() * selectableCategories.length)];
     const nsfwDirection = NSFW_SURPRISE_EVENT_DIRECTIONS[
         Math.floor(Math.random() * NSFW_SURPRISE_EVENT_DIRECTIONS.length)
     ];
+    const compatibleCategoryPool = options.contentMode === 'nsfw'
+        ? categoryPool.filter(category => (
+            (nsfwDirection.categories as readonly SurpriseEventProposal['category'][]).includes(category)
+        ))
+        : categoryPool;
+    const recentlyUsedCategories = new Set(recentEvents.slice(-6).map(event => event.category));
+    const freshCategoryPool = compatibleCategoryPool.filter(category => !recentlyUsedCategories.has(category));
+    const selectableCategories = freshCategoryPool.length > 0 ? freshCategoryPool : compatibleCategoryPool;
+    const allowedCategories = [...selectableCategories]
+        .sort(() => Math.random() - 0.5)
+        .slice(0, Math.min(3, selectableCategories.length));
+    const fallbackCategory = allowedCategories[0] || categoryPool[0];
+    const allowedCategoryProof = allowedCategories
+        .map(category => `- ${category}: ${SURPRISE_EVENT_CATEGORY_GUIDES[category]}`)
+        .join('\n');
     const contentModeRules = options.contentMode === 'nsfw'
         ? [
             'CONTENT MODE: EXPLICIT ADULT 18+ / NSFW.',
@@ -11842,6 +11987,7 @@ const generateSurpriseEvent = async (
     const eventSystemPrompt = [
         'You design one fresh surprise-event card for a continuous private romance conversation.',
         'The card is a playable opening, not a complete short story: create an immediate hook, concrete situation and unresolved tension that can develop naturally over several chat turns.',
+        'Build one causal chain that is easy to understand: what concretely happened, where it happened, why it matters now, how each selected participant became involved, and what decision remains for the user. Do not splice together unrelated random ideas.',
         'The active characters must remain recognizable and retain their established voice, nationality, occupation, public identity, memories and current relationship progress.',
         'For a singer, idol, actor or other public performer, strongly prefer identity-specific inspiration when fresh: backstage timing, rehearsal, recording, award events, travel schedules, members or staff, public-versus-private tension, secret rest time, or a performance-related surprise. Keep all private developments explicitly inside this fictional conversation and never present invented claims as real news.',
         'Vary scale and mood. Events may be tender, funny, awkward, dramatic, mysterious, romantically charged or adult according to established context, but must not sanitize the current relationship or force an intensity unsupported by it.',
@@ -11850,13 +11996,16 @@ const generateSurpriseEvent = async (
         'Never puppet the user, decide the user agrees, resolve the central tension, skip directly to the ending, reset the current relationship, or replay a completed scene.',
         'Only use IDs from the valid present-member list. An event may include a clearly attributed staff member, friend, fan, manager or other NPC when useful, but do not silently turn an NPC into a fixed room member.',
         'The opening_instruction is hidden from the user. It must tell the chat model exactly how to begin the event in character while preserving current location, clothing, positions and reality layer unless the event itself naturally initiates a transition.',
-        'Write title, hook and setup in natural Traditional Chinese. Return only the requested JSON.',
+        'Write title, hook, setup, every member role, user_choice and opening_instruction in natural Traditional Chinese. Return only the requested JSON.',
         ...contentModeRules,
         `SELECTED PARTICIPANT IDS: ${validMemberIds.join(', ')}`,
-        'The involved_member_ids array must contain every selected participant ID exactly once and no other fixed member. Every selected character must have a meaningful role in the event.',
+        'The involved_member_ids array must contain every selected participant ID exactly once and no other fixed member.',
+        'member_roles must contain exactly one entry for every selected participant ID and no others. objective is that character’s distinct personal motive in this event; first_move is the first concrete, visible action or attributed line she will perform when the event starts.',
+        'Every first_move must be different, immediately playable and tied to the same causal event. Never write generic filler such as “joins in”, “has a role”, “reacts according to personality”, or “waits for the user”.',
+        'user_choice must be one clear unresolved decision the user can answer immediately. It must not assume consent or narrate the user’s action.',
         'Unselected fixed room members must not speak, act, or become part of this event card.',
-        `MANDATORY FRESH CATEGORY: ${targetCategory}. The returned category must equal this exactly.`,
-        `MANDATORY CATEGORY PROOF: ${SURPRISE_EVENT_CATEGORY_GUIDES[targetCategory]} If the setup does not visibly contain this proof, discard it and invent another event.`,
+        `ALLOWED FRESH CATEGORIES: ${allowedCategories.join(', ')}. Choose exactly one category from this list.`,
+        `CATEGORY PROOF REQUIREMENTS:\n${allowedCategoryProof}\nThe setup must visibly contain the proof for the chosen category.`,
         `CURRENT SCENE:\n${sceneContext}`,
         `FIXED CHARACTER FILES:\n${identityLedger}`,
         `RECENT EVENT CARDS THAT MUST NOT BE REPEATED OR MERELY RENAMED:\n${recentEventLedger}`,
@@ -11864,8 +12013,8 @@ const generateSurpriseEvent = async (
 
     const models = Array.from(new Set([
         chatModelSettings.qualityFallback,
-        chatModelSettings.emergencyFallback,
         chatModelSettings.primary,
+        chatModelSettings.emergencyFallback,
     ].filter(Boolean)));
     for (let index = 0; index < models.length; index += 1) {
         const model = models[index];
@@ -11887,8 +12036,8 @@ const generateSurpriseEvent = async (
                         content: `Create exactly one ${options.contentMode === 'nsfw' ? 'explicit 18+ / NSFW' : 'non-sexual'} event card now for all selected participants. Do not continue the conversation itself.`,
                     },
                 ],
-                temperature: 0.96,
-                topP: 0.97,
+                temperature: 0.78,
+                topP: 0.9,
                 repetitionPenalty: 1.12,
                 responseFormat: SURPRISE_EVENT_RESPONSE_FORMAT,
                 signal: request.controller.signal,
@@ -11900,9 +12049,10 @@ const generateSurpriseEvent = async (
             if (
                 !draft
                 || !hasExactParticipants
-                || draft.category !== targetCategory
+                || !allowedCategories.includes(draft.category)
                 || !surpriseEventMatchesCategory(draft)
                 || !surpriseEventMatchesContentMode(draft, options.contentMode)
+                || !surpriseEventHasPlayableStructure(draft, validMemberIds)
                 || recentEvents.some(previous => surpriseEventsAreTooSimilar(previous, draft))
             ) {
                 throw new Error(`Repeated or invalid surprise event from ${model}.`);
@@ -11911,6 +12061,12 @@ const generateSurpriseEvent = async (
             draft.hook = normalizeTraditionalChineseLeaks(draft.hook);
             draft.setup = normalizeTraditionalChineseLeaks(draft.setup);
             draft.openingInstruction = normalizeTraditionalChineseLeaks(draft.openingInstruction);
+            draft.memberRoles = draft.memberRoles?.map(role => ({
+                ...role,
+                objective: normalizeTraditionalChineseLeaks(role.objective),
+                firstMove: normalizeTraditionalChineseLeaks(role.firstMove),
+            }));
+            if (draft.userChoice) draft.userChoice = normalizeTraditionalChineseLeaks(draft.userChoice);
             return {
                 ...draft,
                 contentMode: options.contentMode,
@@ -11932,24 +12088,32 @@ const generateSurpriseEvent = async (
         request.persona,
         fallbackMemberId,
         recentEvents.map(event => event.category),
-        targetCategory,
+        fallbackCategory,
         validMemberIds,
     );
-    const participantNames = request.room
-        ? validMemberIds
-            .map(id => request.room?.members.find(member => member.id === id)?.persona.name)
-            .filter((name): name is string => Boolean(name))
-        : [request.persona.name];
-    const participantLabel = participantNames.join('、');
+    const participants = request.room
+        ? validMemberIds.map(id => ({
+            id,
+            name: request.room?.members.find(member => member.id === id)?.persona.name || id,
+        }))
+        : [{ id: request.personaKey, name: request.persona.name }];
+    const memberRoles = buildFallbackSurpriseEventMemberRoles(participants, fallback.category);
+    const roleSummary = memberRoles
+        .map(role => `${getSurpriseEventMemberName(role.memberId, request.room)}會${role.objective}`)
+        .join('；');
+    const userChoice = participants.length > 1
+        ? `你要先回應哪一位的第一步，還是要求她們重新協調安排？`
+        : `你要接受 ${participants[0].name} 的第一步、拒絕，還是要求她改變安排？`;
     const modeAwareFallback = options.contentMode === 'nsfw'
         ? {
             ...fallback,
             title: `成人限定：${fallback.title}`,
-            hook: nsfwDirection.fallbackPremise,
-            setup: `${fallback.setup} 這次由 ${participantLabel} 共同把它變成明確的 18+／NSFW 成人事件；每位參與者都有不同的主動角色，而第一個性行動仍等待你的選擇。`,
-            openingInstruction: `${fallback.openingInstruction} 必須按以下成人方向具體展開：${nsfwDirection.fallbackPremise} 保持明確的 18+／NSFW 性情境，不要降級成普通曖昧，也不要替使用者同意或完成整個事件。`,
+            setup: `${fallback.setup} ${nsfwDirection.fallbackPremise} 分工已確定：${roleSummary}。`,
+            openingInstruction: `${fallback.openingInstruction} 按以下成人方向具體展開：${nsfwDirection.fallbackPremise} 依照每人的指定第一步開始，停在使用者尚未作出的選擇，不要替使用者同意或完成整個事件。`,
             intensity: 'heated' as const,
             involvedMemberIds: validMemberIds,
+            memberRoles,
+            userChoice,
             relationshipEffect: {
                 ...fallback.relationshipEffect,
                 romanticTension: Math.max(5, fallback.relationshipEffect.romanticTension),
@@ -11959,7 +12123,10 @@ const generateSurpriseEvent = async (
         : {
             ...fallback,
             involvedMemberIds: validMemberIds,
-            openingInstruction: `${fallback.openingInstruction} 本事件必須保持非 18+，不要加入裸體、性行為、情趣用品或露骨性邀請。`,
+            memberRoles,
+            userChoice,
+            setup: `${fallback.setup} 分工已確定：${roleSummary}。`,
+            openingInstruction: `${fallback.openingInstruction} 依照每人的指定第一步開始，停在使用者尚未作出的選擇。本事件必須保持非 18+。`,
         };
     return {
         ...modeAwareFallback,
@@ -12030,6 +12197,7 @@ const buildSurpriseEventDirectorCue = (proposal: SurpriseEventProposal, room?: C
             : proposal.contentMode === 'non-sexual' ? 'NON-SEXUAL / NOT NSFW' : 'FOLLOW THE EXISTING CARD'}`,
         `Primary participating characters: ${participantNames}`,
         `Direction: ${proposal.openingInstruction}`,
+        buildSurpriseEventExecutionContract(proposal, room),
         'Only the listed primary participating characters may actively initiate or speak in the event opening. Other fixed room members remain in the background unless the user explicitly brings them in.',
         'Begin the event now as a seamless continuation of the current conversation. Let the relevant character take the first concrete initiative, preserve exact current continuity, and leave the consequential choice or response to the user. Do not summarize the card, announce an event, explain rules, or complete the whole plot in one response.',
     ].join('\n');
