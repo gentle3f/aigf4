@@ -338,6 +338,9 @@ export interface PersonaMemoryEntry {
     originalText?: string;
     sourceMessageIds?: string[];
     sourceMessageIndexes?: number[];
+    importance?: number;
+    sceneId?: string;
+    unresolved?: boolean;
     createdAt: number;
     pinned: boolean;
 }
@@ -395,6 +398,39 @@ export interface AllData {
 
 const SEEDED_CUSTOM_PERSONAS: { [key: string]: Persona } = {
     [LEGACY_CC_SEED_KEY]: { ...ccV3Persona },
+};
+
+const normalizedPersonaMemoryText = (value: string) => value
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+
+const personaMemoryTextIsSimilar = (left: string, right: string) => {
+    const leftText = normalizedPersonaMemoryText(left);
+    const rightText = normalizedPersonaMemoryText(right);
+    if (!leftText || !rightText) return false;
+    if (leftText === rightText) return true;
+    if (Math.min(leftText.length, rightText.length) >= 4 && (leftText.includes(rightText) || rightText.includes(leftText))) {
+        return true;
+    }
+    const pairs = (value: string) => new Set(
+        value.length < 2
+            ? [value]
+            : Array.from({ length: value.length - 1 }, (_, index) => value.slice(index, index + 2)),
+    );
+    const leftPairs = pairs(leftText);
+    const rightPairs = pairs(rightText);
+    const overlap = [...leftPairs].filter(pair => rightPairs.has(pair)).length;
+    return overlap / Math.max(1, Math.min(leftPairs.size, rightPairs.size)) >= 0.55;
+};
+
+const personaMemoriesDescribeSameEvent = (left: PersonaMemoryEntry, right: PersonaMemoryEntry) => {
+    if (left.kind !== right.kind) return false;
+    const leftSources = new Set(left.sourceMessageIds || []);
+    const sharesEvidence = (right.sourceMessageIds || []).some(id => leftSources.has(id));
+    if (sharesEvidence && personaMemoryTextIsSimilar(left.title, right.title)) return true;
+    return personaMemoryTextIsSimilar(left.title, right.title)
+        && personaMemoryTextIsSimilar(left.summary, right.summary);
 };
 
 // --- Memory Manager ---
@@ -911,6 +947,8 @@ export class MemoryManager {
             id: crypto.randomUUID?.() || `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
             title: entry.title.trim(),
             summary: entry.summary.trim(),
+            importance: Math.max(1, Math.min(5, Math.round(Number(entry.importance) || (type === 'soul' ? 5 : 3)))),
+            sourceMessageIds: Array.from(new Set((entry.sourceMessageIds || []).filter(Boolean))),
             createdAt: Date.now(),
             pinned: type === 'soul',
         };
@@ -931,20 +969,45 @@ export class MemoryManager {
         const previousCount = persona.lastMemorySummaryUserMessageCount;
         const previousVersion = persona.memorySummaryVersion;
         const target = (persona.memories ||= []);
-        const known = new Set(target.map(item => item.summary.trim().toLocaleLowerCase()));
+        const fingerprint = (entry: Pick<PersonaMemoryEntry, 'kind' | 'title' | 'summary' | 'sourceMessageIds'>) => {
+            const sources = [...(entry.sourceMessageIds || [])].sort().join('|');
+            const text = `${entry.kind}|${entry.title}|${entry.summary}`
+                .normalize('NFKC')
+                .toLocaleLowerCase()
+                .replace(/\s+/gu, ' ')
+                .trim();
+            return sources ? `${sources}::${text}` : text;
+        };
         let added = 0;
         entries.forEach(entry => {
-            const normalized = entry.summary.trim().toLocaleLowerCase();
-            if (!normalized || known.has(normalized)) return;
-            known.add(normalized);
-            target.push({
+            const created: PersonaMemoryEntry = {
                 ...entry,
                 id: crypto.randomUUID?.() || `memory-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
                 title: entry.title.trim(),
                 summary: entry.summary.trim(),
+                importance: Math.max(1, Math.min(5, Math.round(Number(entry.importance) || 3))),
+                sourceMessageIds: Array.from(new Set((entry.sourceMessageIds || []).filter(Boolean))),
                 createdAt: Date.now(),
                 pinned: false,
-            });
+            };
+            const normalized = fingerprint(created);
+            if (!created.summary) return;
+            const duplicate = target.find(existing => (
+                fingerprint(existing) === normalized
+                || personaMemoriesDescribeSameEvent(existing, created)
+            ));
+            if (duplicate) {
+                duplicate.sourceMessageIds = Array.from(new Set([
+                    ...(duplicate.sourceMessageIds || []),
+                    ...(created.sourceMessageIds || []),
+                ]));
+                duplicate.importance = Math.max(duplicate.importance || 1, created.importance || 1);
+                duplicate.unresolved = Boolean(duplicate.unresolved || created.unresolved);
+                if (!duplicate.sceneId && created.sceneId) duplicate.sceneId = created.sceneId;
+                if (created.summary.length > duplicate.summary.length) duplicate.summary = created.summary;
+                return;
+            }
+            target.push(created);
             added += 1;
         });
         persona.lastMemorySummaryUserMessageCount = userMessageCount;
@@ -964,12 +1027,16 @@ export class MemoryManager {
         key: string,
         type: 'soul' | 'memory',
         memoryId: string,
-        updates: Pick<PersonaMemoryEntry, 'title' | 'summary'>,
+        updates: Pick<PersonaMemoryEntry, 'title' | 'summary'> & Partial<Pick<PersonaMemoryEntry, 'importance' | 'unresolved'>>,
     ) {
         const entry = this.getPersonaMemoryEntries(key, type).find(item => item.id === memoryId);
         if (!entry) return null;
         entry.title = updates.title.trim() || entry.title;
         entry.summary = updates.summary.trim() || entry.summary;
+        if (typeof updates.importance === 'number') {
+            entry.importance = Math.max(1, Math.min(5, Math.round(updates.importance)));
+        }
+        if (typeof updates.unresolved === 'boolean') entry.unresolved = updates.unresolved;
         this.persistModifiedPersonas();
         return entry;
     }
@@ -980,6 +1047,22 @@ export class MemoryManager {
         if (type === 'soul') persona.soul = (persona.soul || []).filter(entry => entry.id !== memoryId);
         else persona.memories = (persona.memories || []).filter(entry => entry.id !== memoryId);
         this.persistModifiedPersonas();
+    }
+
+    removePersonaMemoriesBySourceMessageIds(key: string, sourceMessageIds: string[], userMessageCount: number) {
+        const persona = this.personas[key];
+        if (!persona || sourceMessageIds.length === 0) return 0;
+        const removedIds = new Set(sourceMessageIds);
+        const before = (persona.memories || []).length;
+        persona.memories = (persona.memories || []).filter(entry => (
+            !(entry.sourceMessageIds || []).some(id => removedIds.has(id))
+        ));
+        persona.lastMemorySummaryUserMessageCount = Math.min(
+            Number(persona.lastMemorySummaryUserMessageCount || 0),
+            Math.max(0, userMessageCount),
+        );
+        this.persistModifiedPersonas();
+        return before - persona.memories.length;
     }
 
     buildPersonaMarkdownFiles(key?: string) {
@@ -1003,6 +1086,13 @@ export class MemoryManager {
                     ...(allEntries.length > 0
                         ? allEntries.flatMap(entry => [
                             `## ${entry.title}`,
+                            '',
+                            'importance' in entry ? `- 重要度：${entry.importance || (type === 'soul' ? 5 : 3)} / 5` : '',
+                            'sceneId' in entry && entry.sceneId ? `- 場景 ID：${entry.sceneId}` : '',
+                            'unresolved' in entry && entry.unresolved ? '- 狀態：仍待跟進' : '',
+                            'sourceMessageIds' in entry && entry.sourceMessageIds?.length
+                                ? `- 來源訊息 ID：${entry.sourceMessageIds.join(', ')}`
+                                : '',
                             '',
                             entry.summary,
                             entry.originalText ? `\n> 使用者原句：${entry.originalText.replace(/\n+/gu, ' ')}` : '',

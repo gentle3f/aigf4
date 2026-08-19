@@ -96,9 +96,18 @@ import {
 import {
     AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES,
     AUTO_MEMORY_SUMMARY_VERSION,
+    buildMemoryTurnBatches,
+    MemoryBatchMode,
     parsePersonaAutoMemoryResponse,
     parseRoomAutoMemoryResponse,
 } from "./autoMemory.js";
+import {
+    ArchivedRecallTurn,
+    formatMemoryPromptMetadata,
+    getRoomMemoryKnowerIds,
+    selectRelevantMemories,
+    selectRelevantArchivedTurns,
+} from './memoryRetrieval.js';
 import {
     deleteChatAttachment,
     getChatAttachmentBlob,
@@ -914,14 +923,16 @@ const USES_VENICE_PROXY_AUTH = VENICE_API_BASE.startsWith('/');
 const DISABLED_FEATURE_MESSAGE = '此功能在目前版本暫時停用。';
 const GOD_MODE_ENTER_COMMAND = 'GOD MODE';
 const GOD_MODE_EXIT_COMMAND = 'BYE GOD MODE';
-const CHAT_HISTORY_MESSAGE_LIMIT = 120;
-const CHAT_HISTORY_CHAR_BUDGET = 100000;
+const CHAT_HISTORY_MESSAGE_LIMIT = 48;
+const CHAT_HISTORY_CHAR_BUDGET = 48000;
+const GROUP_CHAT_HISTORY_MESSAGE_LIMIT = 40;
+const GROUP_CHAT_HISTORY_CHAR_BUDGET = 40000;
 const ASSISTANT_HISTORY_MESSAGE_LIMIT = 60;
 const ASSISTANT_HISTORY_CHAR_BUDGET = 36000;
 const GOD_MODE_HISTORY_LIMIT = 10;
-const ROOM_MEMORY_SUMMARY_TURN_INTERVAL = 24;
-const AUTO_MEMORY_RECENT_MESSAGE_LIMIT = 48;
-const AUTO_MEMORY_MODEL_TIMEOUT_MS = 30_000;
+const ROOM_MEMORY_SUMMARY_TURN_INTERVAL = 12;
+const AUTO_MEMORY_RECENT_MESSAGE_LIMIT = 32;
+const AUTO_MEMORY_MODEL_TIMEOUT_MS = 50_000;
 const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 2_500_000;
 const MAX_CHAT_IMAGE_EDGE = 1600;
 const CHAT_MAX_AUTO_CONTINUES = 2;
@@ -7466,6 +7477,23 @@ const recallUserMessage = async (messageId: string) => {
     if (activeChatRequest?.conversationKey === conversationKey) cancelActiveChatRequest();
     const result = memoryManager.removeUserTurn(conversationKey, messageId);
     if (!result) return;
+    const removedSourceMessageIds = result.removed
+        .map(message => message.id)
+        .filter((id): id is string => Boolean(id));
+    const remainingUserMessageCount = result.remaining.filter(message => message.role === 'user').length;
+    if (roomManager.getRoom(conversationKey)) {
+        roomManager.removeMemoriesBySourceMessageIds(
+            conversationKey,
+            removedSourceMessageIds,
+            remainingUserMessageCount,
+        );
+    } else {
+        memoryManager.removePersonaMemoriesBySourceMessageIds(
+            conversationKey,
+            removedSourceMessageIds,
+            remainingUserMessageCount,
+        );
+    }
     const recalledMessage = result.removed[0];
     const sceneBeforeTurn = recalledMessage.content.roomSceneBeforeTurn;
     if (sceneBeforeTurn && roomManager.getRoom(conversationKey)) {
@@ -10009,8 +10037,12 @@ const getRecentChatMessages = (
 
     const messages = collectRecentMessagesWithinBudget(
         collapseRedundantCompletedTurns(historyMessages),
-        assistantMode ? ASSISTANT_HISTORY_CHAR_BUDGET : CHAT_HISTORY_CHAR_BUDGET,
-        assistantMode ? ASSISTANT_HISTORY_MESSAGE_LIMIT : CHAT_HISTORY_MESSAGE_LIMIT,
+        assistantMode
+            ? ASSISTANT_HISTORY_CHAR_BUDGET
+            : room ? GROUP_CHAT_HISTORY_CHAR_BUDGET : CHAT_HISTORY_CHAR_BUDGET,
+        assistantMode
+            ? ASSISTANT_HISTORY_MESSAGE_LIMIT
+            : room ? GROUP_CHAT_HISTORY_MESSAGE_LIMIT : CHAT_HISTORY_MESSAGE_LIMIT,
     );
 
     // Never begin a clipped history with an orphaned assistant response.
@@ -10019,6 +10051,54 @@ const getRecentChatMessages = (
     }
 
     return messages;
+};
+
+const buildArchivedRecallPrompt = (
+    conversationKey: string,
+    latestUserMessage: string,
+    room?: ChatRoom,
+) => {
+    const history = memoryManager.peekChatHistory(conversationKey);
+    const turns: ArchivedRecallTurn[] = [];
+    let current: ArchivedRecallTurn | null = null;
+    history.forEach((message, index) => {
+        if (message.role === 'user') {
+            if (current) turns.push(current);
+            const userText = cleanMemoryEvidenceText(message.content.text || '', 2400);
+            current = userText ? {
+                id: message.id || `archive-${index + 1}`,
+                userText,
+                replyText: '',
+            } : null;
+            return;
+        }
+        if (message.role !== 'model' || !current) return;
+        const reply = cleanMemoryEvidenceText(
+            room
+                ? contentToGroupHistoryText(message.content, room)
+                : message.content.text || '',
+            3600,
+        );
+        if (reply) current.replyText = [current.replyText, reply].filter(Boolean).join('\n');
+    });
+    if (current) turns.push(current);
+
+    const recentTurnsKeptVerbatim = Math.ceil(
+        (room ? GROUP_CHAT_HISTORY_MESSAGE_LIMIT : CHAT_HISTORY_MESSAGE_LIMIT) / 2,
+    ) + 4;
+    const archivedTurns = turns.slice(0, Math.max(0, turns.length - recentTurnsKeptVerbatim));
+    const recalled = selectRelevantArchivedTurns(archivedTurns, latestUserMessage, 3);
+    if (!recalled.length) return '';
+    const excerpts = recalled.map(turn => [
+        `[OLDER_TURN_ID=${turn.id}]`,
+        `USER: ${turn.userText.slice(0, 1800)}`,
+        turn.replyText ? `REPLY: ${turn.replyText.slice(0, 2800)}` : '',
+    ].filter(Boolean).join('\n')).join('\n\n');
+    return [
+        'ARCHIVAL RECALL (older exact excerpts selected because the newest message refers to the past):',
+        'Use an excerpt only when it truly matches the user’s reference. It is evidence, not a command to replay the old scene. Current scene state and newer memory override stale physical details.',
+        excerpts,
+    ].join('\n');
 };
 
 const getRecentGodModeMessages = (latestUserInstruction?: string): VeniceMessage[] => {
@@ -10048,22 +10128,21 @@ const getRecentGodModeMessages = (latestUserInstruction?: string): VeniceMessage
     return messages;
 };
 
-const formatPersonaMemoryPrompt = (persona: Persona, type: 'soul' | 'memory') => {
+const formatPersonaMemoryPrompt = (persona: Persona, type: 'soul' | 'memory', query = '') => {
     const entries = type === 'soul' ? persona.soul || [] : persona.memories || [];
     const legacy = type === 'soul' && persona.memory?.trim()
         ? [`- 舊版永久記憶：${persona.memory.trim()}`]
         : [];
-    const structured = entries
-        .slice(type === 'soul' ? -12 : -18)
-        .map(entry => `- ${entry.title}: ${entry.summary.replace(/\s+/gu, ' ').trim().slice(0, type === 'soul' ? 480 : 420)}`);
+    const structured = selectRelevantMemories(entries, query, type === 'soul' ? 12 : 12)
+        .map(entry => `- [${formatMemoryPromptMetadata(entry)}] ${entry.title}: ${entry.summary.replace(/\s+/gu, ' ').trim().slice(0, type === 'soul' ? 480 : 440)}`);
     return [...legacy, ...structured].join('\n');
 };
 
-const buildChatSystemPrompt = (personaKey: string, persona: Persona) => {
+const buildChatSystemPrompt = (personaKey: string, persona: Persona, latestUserMessage = '') => {
     const behaviorGuidance = buildPersonaBehaviorGuidance(personaKey, persona);
     const publicIdentity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
-    const soulMemory = formatPersonaMemoryPrompt(persona, 'soul');
-    const episodicMemory = formatPersonaMemoryPrompt(persona, 'memory');
+    const soulMemory = formatPersonaMemoryPrompt(persona, 'soul', latestUserMessage);
+    const episodicMemory = formatPersonaMemoryPrompt(persona, 'memory', latestUserMessage);
     const sections = [
         `You are ${persona.name}, the active romance character in a continuous private conversation. You are not an AI assistant.`,
         persona.description?.trim() ? `Short identity:\n${persona.description.trim()}` : '',
@@ -10487,7 +10566,10 @@ const runConversationGeneration = async (
     let failedCandidate = '';
     const baseSystemPrompt = assistantMode
         ? buildAssistantSystemPrompt()
-        : buildChatSystemPrompt(request.personaKey, request.persona);
+        : buildChatSystemPrompt(request.personaKey, request.persona, latestUserMessage);
+    const archivedRecall = assistantMode
+        ? ''
+        : buildArchivedRecallPrompt(request.conversationKey, latestUserMessage, request.room);
     const recentAssistantReplies = getRecentAssistantRepliesForPersona(request.conversationKey, assistantMode);
     const establishedNpcNames = assistantMode
         ? []
@@ -10508,6 +10590,7 @@ const runConversationGeneration = async (
         : buildImmediateTurnOwnershipRequirement(request.persona.name, latestUserMessage);
     const systemPrompt = [
         baseSystemPrompt,
+        archivedRecall,
         !assistantMode && request.surpriseEvent
             ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
             : '',
@@ -10904,7 +10987,7 @@ const buildCharacterPhotoProposal = async (
             'Describe the subject count and identity, visible pose or action, expression, clothing or requested state, setting, lighting, camera framing, viewpoint, and relevant objects.',
         ];
     const systemPrompt = [
-        buildChatSystemPrompt(request.personaKey, request.persona),
+        buildChatSystemPrompt(request.personaKey, request.persona, latestUserMessage),
         request.room ? [
             `This request belongs to fixed room "${request.room.title}".`,
             `The character preparing the photo is ${request.persona.name} (${request.photoSenderMemberId || request.room.leadMemberId}).`,
@@ -11181,6 +11264,11 @@ const runRoomConversationGeneration = async (
     let rejectedReply = '';
     const recentReplies = getRecentAssistantRepliesForPersona(request.conversationKey, false, 8);
     const fallbackMemberId = getGroupFallbackMemberId(request, latestUserMessage);
+    const archivedRecall = buildArchivedRecallPrompt(
+        request.conversationKey,
+        latestUserMessage,
+        request.room,
+    );
 
     for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
         const model = models[modelIndex];
@@ -11191,7 +11279,8 @@ const runRoomConversationGeneration = async (
             applyChatRuntimeState(isRetry ? 'retrying' : 'generating', isRetry ? '重新思考中...' : '思考中...');
             try {
                 const roomSystemPrompt = [
-                    buildGroupSystemPrompt(request.room),
+                    buildGroupSystemPrompt(request.room, latestUserMessage),
+                    archivedRecall,
                     request.surpriseEvent
                         ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
                         : '',
@@ -11316,8 +11405,8 @@ const getGroupFallbackMemberId = (
     return fallbackMemberId;
 };
 
-const STRICT_REVIEW_HISTORY_MESSAGE_LIMIT = 28;
-const STRICT_REVIEW_HISTORY_CHAR_BUDGET = 28000;
+const STRICT_REVIEW_HISTORY_MESSAGE_LIMIT = 18;
+const STRICT_REVIEW_HISTORY_CHAR_BUDGET = 18000;
 
 const STRICT_REVIEW_EDITOR_PROMPT = [
     'You are the strict final quality gate for a continuous private character conversation.',
@@ -11417,7 +11506,7 @@ const strictReviewSingleReply = async (
         establishedNpcNames,
     );
     const authoritativePrompt = [
-        buildChatSystemPrompt(request.personaKey, request.persona),
+        buildChatSystemPrompt(request.personaKey, request.persona, latestUserMessage),
         request.surpriseEvent
             ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
             : '',
@@ -11497,7 +11586,7 @@ const strictReviewGroupReply = async (
         request,
         latestUserMessage,
         [
-            buildGroupSystemPrompt(request.room),
+            buildGroupSystemPrompt(request.room, latestUserMessage),
             request.surpriseEvent
                 ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
                 : '',
@@ -12625,12 +12714,12 @@ async function generateValidatedAutoMemory<T>(
     parse: (text: string) => T | null,
 ): Promise<T> {
     const models = Array.from(new Set([
+        chatModelSettings.primary,
         chatModelSettings.qualityFallback,
         chatModelSettings.emergencyFallback,
-        chatModelSettings.primary,
+        DEFAULT_CHAT_MODEL_SETTINGS.primary,
         DEFAULT_CHAT_MODEL_SETTINGS.qualityFallback,
         DEFAULT_CHAT_MODEL_SETTINGS.emergencyFallback,
-        DEFAULT_CHAT_MODEL_SETTINGS.primary,
     ].filter(Boolean)));
     let lastError: Error | null = null;
     for (const model of models) {
@@ -12638,7 +12727,7 @@ async function generateValidatedAutoMemory<T>(
             const result = await generateChatTextWithTimeout({
                 model,
                 messages,
-                maxCompletionTokens: 900,
+                maxCompletionTokens: 4200,
                 temperature: 0.2,
                 topP: 0.85,
                 repetitionPenalty: 1.04,
@@ -12662,9 +12751,189 @@ type MemorySummaryRunResult =
     | { status: 'skipped'; reason: 'not-found' | 'busy' | 'no-history' | 'threshold' }
     | { status: 'error'; message: string };
 
+interface MemoryTranscriptBatch {
+    transcript: string;
+    sourceMessageIds: Set<string>;
+    sceneIds: string[];
+}
+
+const createMemoryMessageIdMap = (conversationKey: string, history: ChatMessage[]) => new Map(
+    history.map((message, index) => [
+        message,
+        message.id?.trim()
+            || `legacy-${conversationKey}-${Number(message.createdAt || 0)}-${index + 1}`,
+    ]),
+);
+
+const cleanMemoryEvidenceText = (value: string, limit = 7000) => value
+    .replace(/\u0000/gu, '')
+    .trim()
+    .slice(0, limit);
+
+const buildRoomMemoryTranscript = (
+    room: ChatRoom,
+    messages: ChatMessage[],
+    messageIds: ReadonlyMap<ChatMessage, string>,
+): MemoryTranscriptBatch => {
+    const sourceMessageIds = new Set<string>();
+    const sceneIds: string[] = [];
+    let activeScene = room.scene;
+    const lines = messages.flatMap(message => {
+        if (message.content.roomSceneBeforeTurn) activeScene = message.content.roomSceneBeforeTurn;
+        const text = cleanMemoryEvidenceText(message.role === 'user'
+            ? message.content.text || ''
+            : contentToGroupHistoryText(message.content, room));
+        if (!text) return [];
+        const sourceId = messageIds.get(message);
+        if (!sourceId) return [];
+        sourceMessageIds.add(sourceId);
+        const sceneId = activeScene.id || 'main';
+        if (!sceneIds.includes(sceneId)) sceneIds.push(sceneId);
+        const present = activeScene.presentMemberIds.length
+            ? activeScene.presentMemberIds.join(',')
+            : room.scene.presentMemberIds.join(',');
+        const speaker = message.role === 'user' ? 'USER' : 'GROUP_REPLY';
+        return [`[MESSAGE_ID=${sourceId}][SCENE_ID=${sceneId}][PRESENT=${present}][${speaker}]\n${text}`];
+    });
+    return { transcript: lines.join('\n\n'), sourceMessageIds, sceneIds };
+};
+
+const buildPersonaMemoryTranscript = (
+    persona: Persona,
+    messages: ChatMessage[],
+    messageIds: ReadonlyMap<ChatMessage, string>,
+): MemoryTranscriptBatch => {
+    const sourceMessageIds = new Set<string>();
+    const sceneIds: string[] = [];
+    const lines = messages.flatMap(message => {
+        const text = cleanMemoryEvidenceText(message.content.text || '');
+        if (!text) return [];
+        const sourceId = messageIds.get(message);
+        if (!sourceId) return [];
+        sourceMessageIds.add(sourceId);
+        const sceneId = message.content.roomSceneBeforeTurn?.id || 'main';
+        if (!sceneIds.includes(sceneId)) sceneIds.push(sceneId);
+        const speaker = message.role === 'user' ? 'USER' : persona.name;
+        return [`[MESSAGE_ID=${sourceId}][SCENE_ID=${sceneId}][${speaker}]\n${text}`];
+    });
+    return { transcript: lines.join('\n\n'), sourceMessageIds, sceneIds };
+};
+
+const formatExistingMemoryForExtractor = (
+    entries: Array<Pick<PersonaMemoryEntry, 'kind' | 'title' | 'summary' | 'sourceMessageIds'>>,
+    limit: number,
+) => entries.slice(-limit).map(entry => {
+    const sources = entry.sourceMessageIds?.length
+        ? ` sources=${entry.sourceMessageIds.join(',')}`
+        : '';
+    return `- [${entry.kind}${sources}] ${entry.title}: ${entry.summary.replace(/\s+/gu, ' ').slice(0, 280)}`;
+}).join('\n');
+
+const roomMemoryResponseFormat = {
+    type: 'json_schema' as const,
+    json_schema: {
+        name: 'room_memory_update_v3',
+        strict: true,
+        schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['memories'],
+            properties: {
+                memories: {
+                    type: 'array',
+                    maxItems: 12,
+                    items: {
+                        type: 'object',
+                        additionalProperties: false,
+                        required: [
+                            'kind',
+                            'title',
+                            'shared_summary',
+                            'subject_ids',
+                            'importance',
+                            'visibility',
+                            'unresolved',
+                            'scene_id',
+                            'source_message_ids',
+                            'perspectives',
+                        ],
+                        properties: {
+                            kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
+                            title: { type: 'string' },
+                            shared_summary: { type: 'string' },
+                            subject_ids: { type: 'array', minItems: 1, items: { type: 'string' } },
+                            importance: { type: 'integer', minimum: 1, maximum: 5 },
+                            visibility: { type: 'string', enum: ['restricted', 'shared'] },
+                            unresolved: { type: 'boolean' },
+                            scene_id: { type: 'string' },
+                            source_message_ids: { type: 'array', minItems: 1, items: { type: 'string' } },
+                            perspectives: {
+                                type: 'array',
+                                minItems: 1,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    required: ['member_id', 'salience', 'knowledge', 'memory'],
+                                    properties: {
+                                        member_id: { type: 'string' },
+                                        salience: { type: 'integer', minimum: 1, maximum: 5 },
+                                        knowledge: { type: 'string', enum: ['experienced', 'witnessed', 'told'] },
+                                        memory: { type: 'string' },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+};
+
+const personaMemoryResponseFormat = {
+    type: 'json_schema' as const,
+    json_schema: {
+        name: 'persona_memory_update_v3',
+        strict: true,
+        schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['memories'],
+            properties: {
+                memories: {
+                    type: 'array',
+                    maxItems: 12,
+                    items: {
+                        type: 'object',
+                        additionalProperties: false,
+                        required: [
+                            'kind',
+                            'title',
+                            'summary',
+                            'importance',
+                            'unresolved',
+                            'scene_id',
+                            'source_message_ids',
+                        ],
+                        properties: {
+                            kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
+                            title: { type: 'string' },
+                            summary: { type: 'string' },
+                            importance: { type: 'integer', minimum: 1, maximum: 5 },
+                            unresolved: { type: 'boolean' },
+                            scene_id: { type: 'string' },
+                            source_message_ids: { type: 'array', minItems: 1, items: { type: 'string' } },
+                        },
+                    },
+                },
+            },
+        },
+    },
+};
+
 const maybeSummarizeRoomMemory = async (
     roomId: string,
-    force = false,
+    mode: MemoryBatchMode = 'auto',
 ): Promise<MemorySummaryRunResult> => {
     const room = roomManager.getRoom(roomId);
     if (!room) return { status: 'skipped', reason: 'not-found' };
@@ -12673,87 +12942,98 @@ const maybeSummarizeRoomMemory = async (
     const userMessageCount = history.filter(message => message.role === 'user').length;
     if (userMessageCount === 0) return { status: 'skipped', reason: 'no-history' };
     const lastSummarized = Number(room.lastSummarizedUserMessageCount || 0);
+    const previousSummaryVersion = Number(room.memorySummaryVersion || 0);
     const needsRecovery = Number(room.memorySummaryVersion || 0) < AUTO_MEMORY_SUMMARY_VERSION
         && userMessageCount >= AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES;
-    if (!force && !needsRecovery && userMessageCount - lastSummarized < ROOM_MEMORY_SUMMARY_TURN_INTERVAL) {
+    if (mode === 'auto' && !needsRecovery && userMessageCount - lastSummarized < ROOM_MEMORY_SUMMARY_TURN_INTERVAL) {
         return { status: 'skipped', reason: 'threshold' };
     }
-    if (!force && !needsRecovery && userMessageCount <= lastSummarized) {
+    if (mode === 'auto' && !needsRecovery && userMessageCount <= lastSummarized) {
         return { status: 'skipped', reason: 'threshold' };
     }
+    const effectiveMode: MemoryBatchMode = needsRecovery && mode !== 'full' ? 'recovery' : mode;
+    const batches = buildMemoryTurnBatches(history, lastSummarized, effectiveMode);
+    if (!batches.length) return { status: 'skipped', reason: 'threshold' };
     roomSummaryInFlight.add(roomId);
     try {
-        const transcript = history
-            .filter(message => message.role === 'user' || message.role === 'model')
-            .slice(-AUTO_MEMORY_RECENT_MESSAGE_LIMIT)
-            .map(message => message.role === 'user'
-                ? `[USER] ${message.content.text || ''}`
-                : contentToGroupHistoryText(message.content, room))
-            .filter(Boolean)
-            .join('\n\n');
         const memberLedger = room.members.map(member => `${member.id}=${member.persona.name}`).join(', ');
-        const existing = room.sharedMemories
-            .slice(-36)
-            .map(entry => `- ${entry.title}: ${entry.summary}`)
-            .join('\n');
         const participantAliases = new Map<string, string>();
         room.members.forEach(member => {
             [member.id, member.persona.name, member.persona.publicIdentity?.canonicalName]
                 .filter((value): value is string => Boolean(value?.trim()))
                 .forEach(value => participantAliases.set(value.trim().toLocaleLowerCase(), member.id));
         });
-        const memories = await generateValidatedAutoMemory(
-            [
-                {
-                    role: 'system',
-                    content: [
-                        'Extract durable memory from a private fictional group conversation.',
-                        `Valid member ledger: ${memberLedger}.`,
-                        'Keep only events, promises, boundaries, preferences, relationship changes and user vulnerability that will improve future continuity.',
-                        'Do not copy graphic wording or transient physical choreography. Preserve emotional meaning, trust and boundaries accurately.',
-                        'Only include members who were present or directly involved. Return 1 to 6 concise memories in Traditional Chinese.',
-                        existing ? `Already stored memory.md entries; do not repeat or paraphrase them:\n${existing}` : '',
-                    ].filter(Boolean).join('\n'),
-                },
-                { role: 'user', content: transcript },
-            ],
-            {
-                type: 'json_schema',
-                json_schema: {
-                    name: 'room_memory_update',
-                    strict: true,
-                    schema: {
-                        type: 'object',
-                        additionalProperties: false,
-                        required: ['memories'],
-                        properties: {
-                            memories: {
-                                type: 'array',
-                                maxItems: 6,
-                                items: {
-                                    type: 'object',
-                                    additionalProperties: false,
-                                    required: ['kind', 'title', 'summary', 'participants'],
-                                    properties: {
-                                        kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
-                                        title: { type: 'string' },
-                                        summary: { type: 'string' },
-                                        participants: { type: 'array', minItems: 1, items: { type: 'string' } },
-                                    },
-                                },
-                            },
-                        },
+        const messageIds = createMemoryMessageIdMap(roomId, history);
+        let added = 0;
+        for (const [batchIndex, batch] of batches.entries()) {
+            const completesRun = batchIndex === batches.length - 1;
+            const checkpoint = completesRun ? batch.throughUserMessageCount : lastSummarized;
+            const summaryVersion = completesRun ? AUTO_MEMORY_SUMMARY_VERSION : previousSummaryVersion;
+            const evidence = buildRoomMemoryTranscript(room, batch.messages, messageIds);
+            if (!evidence.transcript) {
+                roomManager.applyEpisodicMemorySummary(
+                    roomId,
+                    [],
+                    checkpoint,
+                    summaryVersion,
+                );
+                continue;
+            }
+            const latestRoom = roomManager.getRoom(roomId) || room;
+            const existing = formatExistingMemoryForExtractor(latestRoom.sharedMemories, 64);
+            const memories = await generateValidatedAutoMemory(
+                [
+                    {
+                        role: 'system',
+                        content: [
+                            'You are a meticulous human-memory archivist for a continuous private group conversation.',
+                            'Return one JSON object matching the schema. Return an empty memories array when nothing is durable.',
+                            `Valid immutable member ledger: ${memberLedger}. Use only these member IDs.`,
+                            'Read the evidence as separate human minds, not as one shared narrator. A fact important to Rose can be a lasting Rose memory without becoming Jennie\'s memory.',
+                            'For each event, subject_ids identifies the fixed member(s) whose personal relationship storyline is affected. For a user disclosure, select its character recipient(s), since USER is not a member ID. perspectives lists only members who would genuinely retain it long-term.',
+                            'Mere presence is not enough for durable memory. Use experienced for a direct participant, witnessed for a meaningful observer, and told only when the transcript explicitly tells that member.',
+                            'Write each perspective from that member\'s knowledge and emotional significance. Do not give a member facts learned only in another member\'s private interaction.',
+                            'Prioritise user vulnerability, support needs, boundaries, promises, relationship changes, meaningful firsts, lasting preferences, unresolved tension and emotionally important romantic or adult milestones.',
+                            'When the user reveals vulnerability, preserve what they disclosed, what response helped or hurt, and why it matters, without diagnosing them.',
+                            'Preserve the relational meaning of intimate memories accurately; omit repetitive anatomy and moment-by-moment choreography unless a specific boundary or preference depends on it.',
+                            'Importance: 5 identity-level or explicitly permanent; 4 vulnerability, major promise/boundary/relationship milestone; 3 useful continuity; 1-2 usually omit.',
+                            'Use the smallest exact source_message_ids that prove each memory. Never invent an ID. scene_id must be one shown in the evidence.',
+                            'Set unresolved true only when a promise, conflict, plan, question or emotional need still needs follow-up.',
+                            'visibility is shared only when every fixed room member genuinely knows it; otherwise restricted.',
+                            'Write concise but complete Traditional Chinese. Do not merge unrelated events merely to save space.',
+                            existing ? `Existing memory.md entries; avoid duplicates and add only missing information:\n${existing}` : '',
+                        ].filter(Boolean).join('\n'),
                     },
-                },
-            },
-            text => parseRoomAutoMemoryResponse(text, participantAliases),
-        );
-        const added = roomManager.applyEpisodicMemorySummary(
-            roomId,
-            memories,
-            userMessageCount,
-            AUTO_MEMORY_SUMMARY_VERSION,
-        );
+                    { role: 'user', content: `Evidence transcript:\n\n${evidence.transcript}` },
+                ],
+                roomMemoryResponseFormat,
+                text => parseRoomAutoMemoryResponse(text, participantAliases, evidence.sourceMessageIds),
+            );
+            const validSceneIds = new Set(evidence.sceneIds);
+            const fallbackSceneId = evidence.sceneIds.at(-1) || room.scene.id;
+            const memberCount = room.members.length;
+            const stillExistingSourceIds = new Set(memoryManager.peekChatHistory(roomId)
+                .map(message => message.id?.trim() || messageIds.get(message))
+                .filter((id): id is string => Boolean(id)));
+            const normalized = memories.filter(memory => (
+                memory.sourceMessageIds?.every(id => stillExistingSourceIds.has(id))
+            )).map(memory => {
+                const knowerIds = memory.knowerIds || memory.perspectives?.map(item => item.memberId) || [];
+                return {
+                    ...memory,
+                    sceneId: memory.sceneId && validSceneIds.has(memory.sceneId)
+                        ? memory.sceneId
+                        : fallbackSceneId,
+                    visibility: knowerIds.length === memberCount ? 'shared' as const : 'restricted' as const,
+                };
+            });
+            added += roomManager.applyEpisodicMemorySummary(
+                roomId,
+                normalized,
+                checkpoint,
+                summaryVersion,
+            );
+        }
         if (currentRoom?.id === roomId) refreshCurrentRoom();
         return { status: 'success', added };
     } catch (error) {
@@ -12772,7 +13052,7 @@ const maybeSummarizeRoomMemory = async (
 
 const maybeSummarizePersonaMemory = async (
     personaKey: string,
-    force = false,
+    mode: MemoryBatchMode = 'auto',
 ): Promise<MemorySummaryRunResult> => {
     const persona = memoryManager.getPersona(personaKey);
     if (!persona || isAssistantPersonaKey(personaKey)) return { status: 'skipped', reason: 'not-found' };
@@ -12781,76 +13061,81 @@ const maybeSummarizePersonaMemory = async (
     const userMessageCount = history.filter(message => message.role === 'user').length;
     if (userMessageCount === 0) return { status: 'skipped', reason: 'no-history' };
     const lastSummarized = Number(persona.lastMemorySummaryUserMessageCount || 0);
+    const previousSummaryVersion = Number(persona.memorySummaryVersion || 0);
     const needsRecovery = Number(persona.memorySummaryVersion || 0) < AUTO_MEMORY_SUMMARY_VERSION
         && userMessageCount >= AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES;
-    if (!force && !needsRecovery && userMessageCount - lastSummarized < ROOM_MEMORY_SUMMARY_TURN_INTERVAL) {
+    if (mode === 'auto' && !needsRecovery && userMessageCount - lastSummarized < ROOM_MEMORY_SUMMARY_TURN_INTERVAL) {
         return { status: 'skipped', reason: 'threshold' };
     }
-    if (!force && !needsRecovery && userMessageCount <= lastSummarized) {
+    if (mode === 'auto' && !needsRecovery && userMessageCount <= lastSummarized) {
         return { status: 'skipped', reason: 'threshold' };
     }
+    const effectiveMode: MemoryBatchMode = needsRecovery && mode !== 'full' ? 'recovery' : mode;
+    const batches = buildMemoryTurnBatches(history, lastSummarized, effectiveMode);
+    if (!batches.length) return { status: 'skipped', reason: 'threshold' };
     personaSummaryInFlight.add(personaKey);
     try {
-        const transcript = history
-            .filter(message => message.role === 'user' || message.role === 'model')
-            .slice(-AUTO_MEMORY_RECENT_MESSAGE_LIMIT)
-            .map(message => `${message.role === 'user' ? '[USER]' : `[${persona.name}]`} ${message.content.text || ''}`)
-            .filter(Boolean)
-            .join('\n\n');
-        const existing = (persona.memories || [])
-            .slice(-24)
-            .map(entry => `- ${entry.title}: ${entry.summary}`)
-            .join('\n');
-        const memories = await generateValidatedAutoMemory(
-            [
-                {
-                    role: 'system',
-                    content: [
-                        `Extract durable episodic memory for ${persona.name} from a continuous private romance conversation.`,
-                        'Keep only events, promises, boundaries, preferences, relationship changes and user vulnerability that will improve future continuity.',
-                        'Do not copy transient choreography or summarize routine small talk. Preserve emotional meaning, trust and boundaries accurately.',
-                        'Return 1 to 6 concise, non-duplicate memories in Traditional Chinese.',
-                        existing ? `Already stored memory.md entries; do not repeat or paraphrase them:\n${existing}` : '',
-                    ].filter(Boolean).join('\n'),
-                },
-                { role: 'user', content: transcript },
-            ],
-            {
-                type: 'json_schema',
-                json_schema: {
-                    name: 'persona_memory_update',
-                    strict: true,
-                    schema: {
-                        type: 'object',
-                        additionalProperties: false,
-                        required: ['memories'],
-                        properties: {
-                            memories: {
-                                type: 'array',
-                                maxItems: 6,
-                                items: {
-                                    type: 'object',
-                                    additionalProperties: false,
-                                    required: ['kind', 'title', 'summary'],
-                                    properties: {
-                                        kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
-                                        title: { type: 'string' },
-                                        summary: { type: 'string' },
-                                    },
-                                },
-                            },
-                        },
+        const messageIds = createMemoryMessageIdMap(personaKey, history);
+        let added = 0;
+        for (const [batchIndex, batch] of batches.entries()) {
+            const completesRun = batchIndex === batches.length - 1;
+            const checkpoint = completesRun ? batch.throughUserMessageCount : lastSummarized;
+            const summaryVersion = completesRun ? AUTO_MEMORY_SUMMARY_VERSION : previousSummaryVersion;
+            const evidence = buildPersonaMemoryTranscript(persona, batch.messages, messageIds);
+            if (!evidence.transcript) {
+                memoryManager.applyPersonaMemorySummary(
+                    personaKey,
+                    [],
+                    checkpoint,
+                    summaryVersion,
+                );
+                continue;
+            }
+            const latestPersona = memoryManager.getPersona(personaKey) || persona;
+            const existing = formatExistingMemoryForExtractor(latestPersona.memories || [], 64);
+            const memories = await generateValidatedAutoMemory(
+                [
+                    {
+                        role: 'system',
+                        content: [
+                            `You are ${persona.name}'s meticulous long-term human-memory archivist for a continuous private romance conversation.`,
+                            'Return one JSON object matching the schema. Return an empty memories array when nothing is durable.',
+                            `Store only what ${persona.name} personally experienced, witnessed, or was explicitly told. Never import another character's private knowledge.`,
+                            'Prioritise user vulnerability, support needs, boundaries, promises, relationship changes, meaningful firsts, lasting preferences, unresolved tension and emotionally important romantic or adult milestones.',
+                            'When the user reveals vulnerability, preserve what they disclosed, the response they needed, what helped or hurt, and why it matters, without diagnosis or generic therapy language.',
+                            'Preserve intimate memories by their emotional, relational, preference and boundary significance. Avoid repetitive anatomy and transient choreography unless a lasting boundary or preference depends on it.',
+                            'Importance: 5 identity-level or explicitly permanent; 4 vulnerability, major promise/boundary/relationship milestone; 3 useful continuity; 1-2 usually omit.',
+                            'Use the smallest exact source_message_ids that prove each memory. Never invent an ID. scene_id must be one shown in the evidence.',
+                            'Set unresolved true only when a promise, conflict, plan, question or emotional need still needs follow-up.',
+                            'Write concise but complete Traditional Chinese. Keep separate events separate and skip routine small talk.',
+                            existing ? `Existing memory.md entries; avoid duplicates and add only missing information:\n${existing}` : '',
+                        ].filter(Boolean).join('\n'),
                     },
-                },
-            },
-            parsePersonaAutoMemoryResponse,
-        );
-        const added = memoryManager.applyPersonaMemorySummary(
-            personaKey,
-            memories,
-            userMessageCount,
-            AUTO_MEMORY_SUMMARY_VERSION,
-        );
+                    { role: 'user', content: `Evidence transcript:\n\n${evidence.transcript}` },
+                ],
+                personaMemoryResponseFormat,
+                text => parsePersonaAutoMemoryResponse(text, evidence.sourceMessageIds),
+            );
+            const validSceneIds = new Set(evidence.sceneIds);
+            const fallbackSceneId = evidence.sceneIds.at(-1) || 'main';
+            const stillExistingSourceIds = new Set(memoryManager.peekChatHistory(personaKey)
+                .map(message => message.id?.trim() || messageIds.get(message))
+                .filter((id): id is string => Boolean(id)));
+            const normalized = memories.filter(memory => (
+                memory.sourceMessageIds?.every(id => stillExistingSourceIds.has(id))
+            )).map(memory => ({
+                ...memory,
+                sceneId: memory.sceneId && validSceneIds.has(memory.sceneId)
+                    ? memory.sceneId
+                    : fallbackSceneId,
+            }));
+            added += memoryManager.applyPersonaMemorySummary(
+                personaKey,
+                normalized,
+                checkpoint,
+                summaryVersion,
+            );
+        }
         return { status: 'success', added };
     } catch (error) {
         console.warn('Background persona memory summary skipped:', error);
@@ -14296,7 +14581,7 @@ const replaceRoomMemberWithPrivateCandidate = async (
     )) return;
 
     const privatePersonaKey = candidate.sourcePersonaKey;
-    const memoryUpdate = await maybeSummarizePersonaMemory(privatePersonaKey, true);
+    const memoryUpdate = await maybeSummarizePersonaMemory(privatePersonaKey, 'recent');
     const privatePersona = memoryManager.getPersona(privatePersonaKey);
     if (!privatePersona) throw new Error('找不到要帶回群組的私訊角色。');
     const privateHistory = memoryManager.peekChatHistory(privatePersonaKey);
@@ -14846,32 +15131,30 @@ const renderRoomMemory = () => {
                 : remaining === 0 && totalUserMessages > lastSummarized
                     ? '已到整理門檻，下一次角色成功回覆後會更新。'
                     : `已處理至第 ${Math.min(lastSummarized, totalUserMessages)} / ${totalUserMessages} 則使用者訊息；再 ${remaining} 則自動整理。`;
-        const manualButton = document.createElement('button');
-        manualButton.type = 'button';
-        manualButton.className = 'manual-memory-update-button';
-        manualButton.disabled = inFlight || totalUserMessages === 0;
-        manualButton.textContent = inFlight
-            ? '正在整理…'
-            : `立即整理最近 ${AUTO_MEMORY_RECENT_MESSAGE_LIMIT} 則`;
-        manualButton.addEventListener('click', async () => {
+        const runManualMemoryUpdate = async (mode: MemoryBatchMode) => {
+            if (mode === 'full' && !confirm(
+                '完整重掃會分批讀取這個聊天室的全部文字歷史，可能使用較多 API 額度；原始對話及現有記憶都不會被刪除。繼續？',
+            )) return;
             manualMemoryUpdateNotice = {
                 conversationKey,
                 tone: 'running',
-                text: `正在讀取最近 ${AUTO_MEMORY_RECENT_MESSAGE_LIMIT} 則有效對話並更新 memory.md…`,
+                text: mode === 'full'
+                    ? '正在分批重掃全部文字歷史；請保持此頁開啟…'
+                    : `正在讀取最近 ${AUTO_MEMORY_RECENT_MESSAGE_LIMIT} 個使用者回合並更新 memory.md…`,
             };
             renderRoomMemory();
             const result = room
-                ? await maybeSummarizeRoomMemory(room.id, true)
+                ? await maybeSummarizeRoomMemory(room.id, mode)
                 : personaKey
-                    ? await maybeSummarizePersonaMemory(personaKey, true)
+                    ? await maybeSummarizePersonaMemory(personaKey, mode)
                     : { status: 'skipped', reason: 'not-found' } as const;
             if (result.status === 'success') {
                 manualMemoryUpdateNotice = {
                     conversationKey,
                     tone: 'success',
                     text: result.added > 0
-                        ? `整理完成，已新增 ${result.added} 項重要記憶。`
-                        : '整理完成；最近對話沒有新的重要內容需要加入，現有記憶未被重複寫入。',
+                        ? `${mode === 'full' ? '完整重掃' : '整理'}完成，已新增 ${result.added} 項重要記憶。`
+                        : `${mode === 'full' ? '完整重掃' : '整理'}完成；沒有找到尚未保存的重要內容。`,
                 };
             } else if (result.status === 'error') {
                 if (result.message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
@@ -14891,8 +15174,25 @@ const renderRoomMemory = () => {
                 manualMemoryUpdateNotice = { conversationKey, tone: 'error', text: skippedReason };
             }
             renderRoomMemory();
-        });
-        status.append(title, detail, manualButton);
+        };
+        const manualActions = document.createElement('div');
+        manualActions.className = 'manual-memory-update-actions';
+        const manualButton = document.createElement('button');
+        manualButton.type = 'button';
+        manualButton.className = 'manual-memory-update-button';
+        manualButton.disabled = inFlight || totalUserMessages === 0;
+        manualButton.textContent = inFlight
+            ? '正在整理…'
+            : `整理最近 ${AUTO_MEMORY_RECENT_MESSAGE_LIMIT} 回合`;
+        manualButton.addEventListener('click', () => void runManualMemoryUpdate('recent'));
+        const fullScanButton = document.createElement('button');
+        fullScanButton.type = 'button';
+        fullScanButton.className = 'manual-memory-update-button is-secondary';
+        fullScanButton.disabled = inFlight || totalUserMessages === 0;
+        fullScanButton.textContent = '重新掃描全部歷史';
+        fullScanButton.addEventListener('click', () => void runManualMemoryUpdate('full'));
+        manualActions.append(manualButton, fullScanButton);
+        status.append(title, detail, manualActions);
         if (manualMemoryUpdateNotice?.conversationKey === conversationKey) {
             const notice = document.createElement('span');
             notice.className = `manual-memory-update-notice is-${manualMemoryUpdateNotice.tone}`;
@@ -14920,6 +15220,16 @@ const renderRoomMemory = () => {
                     title: title.trim(),
                     summary: summary.trim(),
                     participants: [member.id],
+                    subjectIds: [member.id],
+                    knowerIds: [member.id],
+                    visibility: 'restricted',
+                    importance: 5,
+                    perspectives: [{
+                        memberId: member.id,
+                        salience: 5,
+                        knowledge: 'told',
+                        summary: summary.trim(),
+                    }],
                 });
             } else {
                 roomManager.addEpisodicMemories(room.id, [{
@@ -14927,6 +15237,16 @@ const renderRoomMemory = () => {
                     title: title.trim(),
                     summary: summary.trim(),
                     participants: [member.id],
+                    subjectIds: [member.id],
+                    knowerIds: [member.id],
+                    visibility: 'restricted',
+                    importance: 5,
+                    perspectives: [{
+                        memberId: member.id,
+                        salience: 5,
+                        knowledge: 'told',
+                        summary: summary.trim(),
+                    }],
                 }]);
             }
         } else if (personaKey) {
@@ -14934,6 +15254,7 @@ const renderRoomMemory = () => {
                 kind: selectedMemoryType === 'soul' ? 'preference' : 'event',
                 title: title.trim(),
                 summary: summary.trim(),
+                importance: 5,
             });
         }
         renderRoomMemory();
@@ -14961,11 +15282,14 @@ const renderRoomMemory = () => {
         empty.className = 'room-memory-empty';
         empty.textContent = selectedMemoryType === 'soul'
             ? '尚未加入永久核心記憶。'
-            : '尚未整理重要事件；系統會每 24 個使用者回合自動更新。';
+            : `尚未整理重要事件；系統會每 ${ROOM_MEMORY_SUMMARY_TURN_INTERVAL} 個使用者回合自動更新。`;
         roomMemoryList.appendChild(empty);
     }
     entries.forEach(entry => {
         const isLegacyPersonaMemory = !room && entry.id === 'legacy-persona-memory';
+        const canonicalEntry = room && selectedMemoryType === 'memory'
+            ? room.sharedMemories.find(item => item.id === entry.id)
+            : undefined;
         const card = document.createElement('article');
         card.className = 'room-memory-card';
         const title = document.createElement('input');
@@ -14976,11 +15300,77 @@ const renderRoomMemory = () => {
         summary.rows = 4;
         summary.value = entry.summary;
         summary.setAttribute('aria-label', '記憶內容');
+        const settings = document.createElement('div');
+        settings.className = 'room-memory-settings';
+        const importanceLabel = document.createElement('label');
+        importanceLabel.textContent = '重要度';
+        const importance = document.createElement('select');
+        importance.disabled = isLegacyPersonaMemory;
+        [
+            [1, '1 · 輕微'],
+            [2, '2 · 次要'],
+            [3, '3 · 有用'],
+            [4, '4 · 重要'],
+            [5, '5 · 核心'],
+        ].forEach(([value, label]) => {
+            const option = document.createElement('option');
+            option.value = String(value);
+            option.textContent = String(label);
+            option.selected = Number(entry.importance || (entry.pinned ? 5 : 3)) === value;
+            importance.appendChild(option);
+        });
+        importanceLabel.appendChild(importance);
+        settings.appendChild(importanceLabel);
+        let unresolved: HTMLInputElement | null = null;
+        if (selectedMemoryType === 'memory') {
+            const unresolvedLabel = document.createElement('label');
+            unresolvedLabel.className = 'room-memory-check';
+            unresolved = document.createElement('input');
+            unresolved.type = 'checkbox';
+            unresolved.checked = Boolean(entry.unresolved);
+            unresolvedLabel.append(unresolved, document.createTextNode('仍待跟進'));
+            settings.appendChild(unresolvedLabel);
+        }
+        let knowerInputs: HTMLInputElement[] = [];
+        let ownership: HTMLDetailsElement | null = null;
+        if (room && canonicalEntry && selectedMemoryType === 'memory') {
+            ownership = document.createElement('details');
+            ownership.className = 'room-memory-ownership';
+            const ownershipSummary = document.createElement('summary');
+            ownershipSummary.textContent = '誰會長期記得這件事';
+            const ownershipOptions = document.createElement('div');
+            ownershipOptions.className = 'room-memory-knowers';
+            const knowerIds = new Set(getRoomMemoryKnowerIds(canonicalEntry));
+            knowerInputs = room.members.map(roomMember => {
+                const label = document.createElement('label');
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.value = roomMember.id;
+                checkbox.checked = knowerIds.has(roomMember.id);
+                label.append(checkbox, document.createTextNode(roomMember.persona.name));
+                ownershipOptions.appendChild(label);
+                return checkbox;
+            });
+            const hint = document.createElement('p');
+            hint.textContent = '只勾真正親歷、目睹或後來被告知，而且會長期記住的人。';
+            ownership.append(ownershipSummary, ownershipOptions, hint);
+        }
         const meta = document.createElement('p');
+        const perspective = canonicalEntry?.perspectives?.find(item => item.memberId === member?.id);
         meta.textContent = [
             entry.pinned ? '永久' : '事件',
+            perspective?.knowledge === 'experienced'
+                ? '親歷'
+                : perspective?.knowledge === 'witnessed'
+                    ? '目睹'
+                    : perspective?.knowledge === 'told'
+                        ? '被告知'
+                        : '',
+            entry.sceneId ? `場景 ${entry.sceneId.slice(0, 12)}` : '',
+            entry.sourceMessageIds?.length ? `可追溯來源 ${entry.sourceMessageIds.length} 則` : '',
             entry.sourceMessageIndexes?.length ? `來源訊息 ${entry.sourceMessageIndexes.join(', ')}` : '',
         ].filter(Boolean).join(' · ');
+        if (entry.sourceMessageIds?.length) meta.title = entry.sourceMessageIds.join('\n');
         const actions = document.createElement('div');
         actions.className = 'room-memory-actions';
         const save = document.createElement('button');
@@ -14988,10 +15378,24 @@ const renderRoomMemory = () => {
         save.textContent = '儲存';
         save.addEventListener('click', () => {
             if (room && member) {
+                const selectedKnowers = canonicalEntry && knowerInputs.length
+                    ? knowerInputs.filter(input => input.checked).map(input => input.value)
+                    : [];
+                if (canonicalEntry && knowerInputs.length && selectedKnowers.length === 0) {
+                    alert('至少要保留一位真正記得這件事的角色。');
+                    return;
+                }
                 roomManager.updateMemory(room.id, member.id, entry.id, selectedMemoryType, {
                     title: title.value,
                     summary: summary.value,
+                    importance: Number(importance.value),
+                    unresolved: Boolean(unresolved?.checked),
                 });
+                if (canonicalEntry && knowerInputs.length) {
+                    roomManager.setMemoryKnowerIds(room.id, entry.id, selectedKnowers);
+                    renderRoomMemory();
+                    return;
+                }
             } else if (personaKey) {
                 if (isLegacyPersonaMemory) {
                     memoryManager.updatePersona(personaKey, { memory: summary.value.trim() });
@@ -15000,6 +15404,8 @@ const renderRoomMemory = () => {
                     memoryManager.updatePersonaMemory(personaKey, selectedMemoryType, entry.id, {
                         title: title.value,
                         summary: summary.value,
+                        importance: Number(importance.value),
+                        unresolved: Boolean(unresolved?.checked),
                     });
                 }
             }
@@ -15025,7 +15431,9 @@ const renderRoomMemory = () => {
             renderRoomMemory();
         });
         actions.append(save, remove);
-        card.append(title, summary, meta, actions);
+        card.append(title, summary, settings);
+        if (ownership) card.appendChild(ownership);
+        card.append(meta, actions);
         roomMemoryList.appendChild(card);
     });
 };
@@ -15333,8 +15741,8 @@ const startNewScene = () => {
         })
         : undefined;
 
-    if (currentRoom) void maybeSummarizeRoomMemory(currentRoom.id, true);
-    else if (currentPersonaKey) void maybeSummarizePersonaMemory(currentPersonaKey, true);
+    if (currentRoom) void maybeSummarizeRoomMemory(currentRoom.id, 'recent');
+    else if (currentPersonaKey) void maybeSummarizePersonaMemory(currentPersonaKey, 'recent');
     appendMessage({ text: SCENE_START_LABEL }, 'system');
     memoryManager.addMessage(currentConversationKey, 'system', {
         text: SCENE_END_MARKER,
@@ -15343,11 +15751,30 @@ const startNewScene = () => {
     if (currentRoom) {
         const previousScene = cloneRoomSnapshot(currentRoom.scene);
         if (completedSceneHistory.length > 0 && previousScene.presentMemberIds.length > 0) {
+            const sceneSummary = previousScene.summary || `在 ${previousScene.location || '上一幕'} 完成了一段共同經歷。`;
+            const sourceMessageIds = completedSceneHistory
+                .map(message => message.id)
+                .filter((id): id is string => Boolean(id));
             roomManager.addEpisodicMemories(currentRoom.id, [{
                 kind: 'event',
                 title: `已完成場景：${previousScene.location || '上一幕'}`,
-                summary: previousScene.summary,
+                summary: sceneSummary,
                 participants: [...previousScene.presentMemberIds],
+                subjectIds: [...previousScene.presentMemberIds],
+                knowerIds: [...previousScene.presentMemberIds],
+                visibility: previousScene.presentMemberIds.length === currentRoom.members.length
+                    ? 'shared'
+                    : 'restricted',
+                perspectives: previousScene.presentMemberIds.map(memberId => ({
+                    memberId,
+                    salience: 3,
+                    knowledge: 'experienced',
+                    summary: sceneSummary,
+                })),
+                importance: 3,
+                sceneId: previousScene.id,
+                unresolved: previousScene.unresolved.length > 0,
+                sourceMessageIds,
                 roleplayOnly: true,
             }]);
         }

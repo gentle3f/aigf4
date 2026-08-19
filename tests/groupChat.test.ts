@@ -377,6 +377,87 @@ test('group auto memory entries and checkpoint survive reload together', () => {
     assert.equal(restored?.memorySummaryVersion, 2);
 });
 
+test('group memory perspectives stay with the humans who actually remember them', () => {
+    const storage = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: {
+            getItem: (key: string) => storage.get(key) || null,
+            setItem: (key: string, value: string) => storage.set(key, value),
+            removeItem: (key: string) => storage.delete(key),
+        },
+    });
+    const manager = new RoomManager();
+    const room = manager.saveRoom(createRoom());
+
+    manager.applyEpisodicMemorySummary(room.id, [{
+        kind: 'vulnerability',
+        title: '只告訴 IU 的心事',
+        summary: '使用者在單獨相處時向 IU 說出一件脆弱的心事。',
+        participants: ['iu'],
+        subjectIds: ['iu'],
+        knowerIds: ['iu'],
+        visibility: 'restricted',
+        importance: 5,
+        sceneId: 'scene-private',
+        sourceMessageIds: ['message-private'],
+        unresolved: true,
+        perspectives: [{
+            memberId: 'iu',
+            salience: 5,
+            knowledge: 'experienced',
+            summary: 'IU 記得使用者只把這份脆弱交給自己。',
+        }],
+    }], 12, 3);
+
+    const restored = new RoomManager().getRoom(room.id)!;
+    assert.equal(restored.members.find(item => item.id === 'iu')?.memories.length, 1);
+    assert.equal(restored.members.find(item => item.id === 'jennie')?.memories.length, 0);
+    assert.deepEqual(restored.sharedMemories[0].knowerIds, ['iu']);
+    assert.equal(restored.sharedMemories[0].visibility, 'restricted');
+
+    const prompt = buildGroupSystemPrompt(restored, '你記得我說過的害怕嗎？');
+    assert.equal(prompt.match(/只把這份脆弱交給自己/gu)?.length, 1);
+    assert.doesNotMatch(prompt, /ROOM-WIDE memory\.md[^]*只把這份脆弱交給自己/u);
+});
+
+test('manual ownership correction adds and removes per-character memory copies', () => {
+    const storage = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: {
+            getItem: (key: string) => storage.get(key) || null,
+            setItem: (key: string, value: string) => storage.set(key, value),
+            removeItem: (key: string) => storage.delete(key),
+        },
+    });
+    const manager = new RoomManager();
+    const room = manager.saveRoom(createRoom());
+    manager.addEpisodicMemories(room.id, [{
+        kind: 'event',
+        title: '共同早餐',
+        summary: 'IU 記得這頓早餐。',
+        participants: ['iu'],
+        knowerIds: ['iu'],
+        perspectives: [{
+            memberId: 'iu',
+            salience: 4,
+            knowledge: 'experienced',
+            summary: 'IU 親歷了早餐。',
+        }],
+    }]);
+    const memoryId = manager.getRoom(room.id)!.sharedMemories[0].id;
+
+    manager.setMemoryKnowerIds(room.id, memoryId, ['iu', 'jennie']);
+    let updated = manager.getRoom(room.id)!;
+    assert.equal(updated.members.find(item => item.id === 'jennie')?.memories[0].summary, 'IU 記得這頓早餐。');
+
+    manager.setMemoryKnowerIds(room.id, memoryId, ['jennie']);
+    updated = manager.getRoom(room.id)!;
+    assert.equal(updated.members.find(item => item.id === 'iu')?.memories.length, 0);
+    assert.equal(updated.members.find(item => item.id === 'jennie')?.memories.length, 1);
+});
+
 test('deleting a room removes it after manager reload', () => {
     const storage = new Map<string, string>();
     Object.defineProperty(globalThis, 'localStorage', {

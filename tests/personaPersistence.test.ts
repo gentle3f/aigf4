@@ -73,3 +73,44 @@ test('auto memory entries and checkpoint are persisted together', () => {
     assert.equal(restored?.lastMemorySummaryUserMessageCount, 24);
     assert.equal(restored?.memorySummaryVersion, 2);
 });
+
+test('overlapping memory batches merge the same event instead of duplicating it', () => {
+    installLocalStorage();
+    const manager = new MemoryManager();
+    manager.applyPersonaMemorySummary('cc', [{
+        kind: 'promise',
+        title: '海邊日出約定',
+        summary: '兩人約定一起到海邊看日出。',
+        sourceMessageIds: ['message-1'],
+        importance: 4,
+    }], 12, 3);
+    const added = manager.applyPersonaMemorySummary('cc', [{
+        kind: 'promise',
+        title: '一起看海邊日出',
+        summary: '兩人認真約定下次一起到海邊看日出，而且不能突然失約。',
+        sourceMessageIds: ['message-1', 'message-2'],
+        importance: 5,
+    }], 24, 3);
+
+    const memories = manager.getPersonaMemoryEntries('cc', 'memory');
+    assert.equal(added, 0);
+    assert.equal(memories.length, 1);
+    assert.deepEqual(memories[0].sourceMessageIds, ['message-1', 'message-2']);
+    assert.equal(memories[0].importance, 5);
+});
+
+test('recalling a sourced turn also removes the derived long-term memory', () => {
+    installLocalStorage();
+    const manager = new MemoryManager();
+    manager.applyPersonaMemorySummary('cc', [{
+        kind: 'event',
+        title: '已收回事件',
+        summary: '這項記憶只來自即將收回的回合。',
+        sourceMessageIds: ['user-message', 'reply-message'],
+    }], 12, 3);
+
+    const removed = manager.removePersonaMemoriesBySourceMessageIds('cc', ['user-message'], 11);
+    assert.equal(removed, 1);
+    assert.equal(manager.getPersonaMemoryEntries('cc', 'memory').length, 0);
+    assert.equal(manager.getPersona('cc')?.lastMemorySummaryUserMessageCount, 11);
+});

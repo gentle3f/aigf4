@@ -2,6 +2,11 @@ import { ChatMessage, ChatSegment, Content, Persona } from './managers.js';
 import { formatRelationshipStatePrompt } from './experienceEngine.js';
 import { ChatRoom, ROOM_PRESENT_MEMBER_LIMIT, RoomMember, RoomSceneState } from './roomManager.js';
 import { VeniceJsonSchemaResponseFormat } from './venice.js';
+import {
+    formatMemoryPromptMetadata,
+    isRoomWideMemory,
+    selectRelevantMemories,
+} from './memoryRetrieval.js';
 
 export interface GroupNpcCandidate {
     name: string;
@@ -70,17 +75,31 @@ export const groupNarrationUsesFirstPerson = (result: GroupGenerationResult) => 
     && (segment.text.includes('我') || /(?:^|[^\p{L}\p{N}])(?:I|me|my|mine)(?:[^\p{L}\p{N}]|$)/iu.test(segment.text))
 ));
 
-const memberIdentityBlock = (member: RoomMember, isPresent: boolean) => {
+const memberIdentityBlock = (
+    member: RoomMember,
+    isPresent: boolean,
+    roomWideMemoryIds: ReadonlySet<string>,
+    query: string,
+) => {
     const persona = member.persona;
     const identity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
-    const soul = member.soul
-        .filter(entry => entry.pinned)
-        .slice(-12)
-        .map(entry => `- ${entry.title}: ${compact(entry.summary, 420)}`)
+    const soul = selectRelevantMemories(
+        member.soul.filter(entry => entry.pinned),
+        query,
+        isPresent ? 8 : 3,
+    )
+        .map(entry => `- [${formatMemoryPromptMetadata(entry)}] ${entry.title}: ${compact(entry.summary, 420)}`)
         .join('\n');
-    const memories = member.memories
-        .slice(-18)
-        .map(entry => `- ${entry.title}: ${compact(entry.summary, 360)}`)
+    const memories = selectRelevantMemories(
+        member.memories.filter(entry => !roomWideMemoryIds.has(entry.id)),
+        query,
+        isPresent ? 7 : 0,
+    )
+        .map(entry => {
+            const perspective = entry.perspectives?.find(item => item.memberId === member.id);
+            const knowledge = perspective?.knowledge ? `, ${perspective.knowledge}` : '';
+            return `- [${formatMemoryPromptMetadata(entry)}${knowledge}] ${entry.title}: ${compact(entry.summary, 420)}`;
+        })
         .join('\n');
     const privateHandoff = member.privateContinuityHandoff;
     const privateHandoffBlock = privateHandoff ? [
@@ -99,7 +118,7 @@ const memberIdentityBlock = (member: RoomMember, isPresent: boolean) => {
         `Display name: ${persona.name}`,
         `Presence now: ${isPresent ? 'PRESENT' : 'ABSENT'}`,
         `Short identity: ${compact(persona.description, 700)}`,
-        `Full personality and voice:\n${compact(persona.prompt, 4200)}`,
+        `Full personality and voice:\n${compact(persona.prompt, isPresent ? 4200 : 1400)}`,
         persona.greeting ? `Voice sample only; never repeat it verbatim:\n${compact(persona.greeting, 900)}` : '',
         identity ? [
             `Confirmed public identity: ${identity.canonicalName}`,
@@ -108,23 +127,28 @@ const memberIdentityBlock = (member: RoomMember, isPresent: boolean) => {
         ].join('\n') : '',
         soul ? `soul.md anchors:\n${soul}` : '',
         memories ? `memory.md excerpts:\n${memories}` : '',
+        'Memory firewall: this member may act only from her own memory.md entries and room-wide memories. Another member\'s private memory is not hers, even though all files are supplied to the scene engine.',
         privateHandoffBlock,
         formatRelationshipStatePrompt(persona),
     ].filter(Boolean).join('\n');
 };
 
-export const buildGroupSystemPrompt = (room: ChatRoom) => {
+export const buildGroupSystemPrompt = (room: ChatRoom, query = '') => {
     const present = new Set(room.scene.presentMemberIds);
+    const memoryQuery = [query, room.scene.summary, ...room.scene.unresolved].filter(Boolean).join('\n');
     const sharedSoul = room.sharedSoul
         .filter(entry => entry.pinned)
         .slice(-16)
         .map(entry => `- ${entry.title}: ${compact(entry.summary, 480)}`)
         .join('\n');
-    const sharedMemories = room.sharedMemories
-        .slice(-20)
-        .map(entry => `- ${entry.title}: ${compact(entry.summary, 420)}`)
+    const roomWideEntries = room.sharedMemories.filter(entry => isRoomWideMemory(entry, room));
+    const roomWideMemoryIds = new Set(roomWideEntries.map(entry => entry.id));
+    const sharedMemories = selectRelevantMemories(roomWideEntries, memoryQuery, 8)
+        .map(entry => `- [${formatMemoryPromptMetadata(entry)}] ${entry.title}: ${compact(entry.summary, 480)}`)
         .join('\n');
-    const memberBlocks = room.members.map(member => memberIdentityBlock(member, present.has(member.id))).join('\n\n---\n\n');
+    const memberBlocks = room.members
+        .map(member => memberIdentityBlock(member, present.has(member.id), roomWideMemoryIds, memoryQuery))
+        .join('\n\n---\n\n');
 
     return [
         `You write a continuous private romance-oriented group conversation named "${room.title}". You are the scene engine for several fixed characters, never an AI assistant.`,
@@ -141,8 +165,9 @@ export const buildGroupSystemPrompt = (room: ChatRoom) => {
         ].join('\n'),
         `CURRENT SCENE:\nLocation: ${room.scene.location}\nReality layer: ${room.scene.realityLayer}\nPresent member IDs: ${room.scene.presentMemberIds.join(', ')}\nSummary: ${room.scene.summary}\nUnresolved: ${room.scene.unresolved.join('; ') || 'none'}`,
         sharedSoul ? `SHARED soul.md:\n${sharedSoul}` : '',
-        sharedMemories ? `SHARED memory.md:\n${sharedMemories}` : '',
+        sharedMemories ? `ROOM-WIDE memory.md (every currently present member knows these):\n${sharedMemories}` : '',
         `FIXED MEMBER FILES:\n\n${memberBlocks}`,
+        'INDIVIDUAL MEMORY FIREWALL: Never transfer a private fact, promise, vulnerability or emotional interpretation from one member file to another. Mere co-presence does not make a detail equally memorable to everyone. A member may recall only room-wide memories and entries inside her own file.',
         [
             'REPLY QUALITY:',
             '- First understand and answer the newest user turn. Never continue an older command after the user has moved on.',

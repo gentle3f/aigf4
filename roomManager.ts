@@ -19,6 +19,15 @@ export type RoomMemoryKind =
     | 'event'
     | 'boundary';
 
+export type RoomMemoryKnowledgeSource = 'experienced' | 'witnessed' | 'told';
+
+export interface RoomMemoryPerspective {
+    memberId: string;
+    salience: number;
+    knowledge: RoomMemoryKnowledgeSource;
+    summary: string;
+}
+
 export interface RoomMemoryEntry {
     id: string;
     kind: RoomMemoryKind;
@@ -26,6 +35,13 @@ export interface RoomMemoryEntry {
     summary: string;
     originalText?: string;
     participants: string[];
+    subjectIds?: string[];
+    knowerIds?: string[];
+    visibility?: 'restricted' | 'shared';
+    perspectives?: RoomMemoryPerspective[];
+    importance?: number;
+    sceneId?: string;
+    unresolved?: boolean;
     sourceMessageIds?: string[];
     sourceMessageIndexes?: number[];
     createdAt: number;
@@ -279,6 +295,180 @@ const memberMemories = (memberId: string): RoomMemoryEntry[] => {
 export const cloneRoomSnapshot = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const cloneRoom = cloneRoomSnapshot;
 
+const uniqueMemberIds = (values: unknown, validMemberIds: ReadonlySet<string>) => Array.from(new Set(
+    (Array.isArray(values) ? values : [])
+        .filter((value): value is string => typeof value === 'string' && validMemberIds.has(value)),
+));
+
+const defaultMemoryImportance = (entry: Pick<RoomMemoryEntry, 'kind' | 'pinned'>) => {
+    if (entry.pinned || entry.kind === 'core') return 5;
+    if (entry.kind === 'vulnerability' || entry.kind === 'promise' || entry.kind === 'boundary') return 4;
+    if (entry.kind === 'relationship') return 4;
+    return 3;
+};
+
+const normalizeRoomMemoryEntry = (
+    entry: RoomMemoryEntry,
+    validMemberIds: ReadonlySet<string>,
+    forcedKnowerId?: string,
+): RoomMemoryEntry => {
+    const participants = uniqueMemberIds(entry.participants, validMemberIds);
+    const subjectIds = uniqueMemberIds(entry.subjectIds?.length ? entry.subjectIds : participants, validMemberIds);
+    const explicitPerspectives = (Array.isArray(entry.perspectives) ? entry.perspectives : []).flatMap(perspective => {
+        if (!perspective || !validMemberIds.has(perspective.memberId) || !perspective.summary?.trim()) return [];
+        const salience = Math.max(1, Math.min(5, Math.round(Number(perspective.salience) || 3)));
+        const knowledge: RoomMemoryKnowledgeSource = ['experienced', 'witnessed', 'told'].includes(perspective.knowledge)
+            ? perspective.knowledge
+            : 'experienced';
+        return [{
+            memberId: perspective.memberId,
+            salience,
+            knowledge,
+            summary: perspective.summary.trim(),
+        }];
+    });
+    const perspectiveIds = explicitPerspectives.map(perspective => perspective.memberId);
+    const knowerIds = forcedKnowerId
+        ? [forcedKnowerId]
+        : uniqueMemberIds(
+            entry.knowerIds?.length ? entry.knowerIds : perspectiveIds.length ? perspectiveIds : participants,
+            validMemberIds,
+        );
+    const importance = Math.max(1, Math.min(5, Math.round(Number(entry.importance) || defaultMemoryImportance(entry))));
+    const perspectives = explicitPerspectives.length
+        ? explicitPerspectives.filter(perspective => knowerIds.includes(perspective.memberId))
+        : knowerIds.map(memberId => ({
+            memberId,
+            salience: importance,
+            knowledge: 'experienced' as const,
+            summary: entry.summary,
+        }));
+    const visibility = entry.visibility === 'shared' || entry.visibility === 'restricted'
+        ? entry.visibility
+        : knowerIds.length > 1 && knowerIds.length === validMemberIds.size
+            ? 'shared'
+            : 'restricted';
+    return {
+        ...entry,
+        participants: subjectIds.length ? subjectIds : knowerIds,
+        subjectIds: subjectIds.length ? subjectIds : knowerIds,
+        knowerIds,
+        perspectives,
+        importance,
+        visibility,
+        sceneId: entry.sceneId?.trim() || undefined,
+        sourceMessageIds: Array.from(new Set((entry.sourceMessageIds || []).filter(Boolean))),
+        unresolved: Boolean(entry.unresolved),
+    };
+};
+
+const normalizeRoomData = (room: ChatRoom): ChatRoom => {
+    const normalized = cloneRoom(room);
+    normalized.members = Array.isArray(normalized.members) ? normalized.members : [];
+    const validMemberIds = new Set(normalized.members.map(member => member.id));
+    normalized.members.forEach(member => {
+        member.soul = (Array.isArray(member.soul) ? member.soul : [])
+            .filter(entry => entry?.id && entry?.summary)
+            .map(entry => normalizeRoomMemoryEntry(entry, validMemberIds, member.id));
+        member.memories = (Array.isArray(member.memories) ? member.memories : [])
+            .filter(entry => entry?.id && entry?.summary)
+            .map(entry => normalizeRoomMemoryEntry(entry, validMemberIds, member.id));
+    });
+    normalized.sharedSoul = (Array.isArray(normalized.sharedSoul) ? normalized.sharedSoul : [])
+        .filter(entry => entry?.id && entry?.summary)
+        .map(entry => normalizeRoomMemoryEntry(entry, validMemberIds));
+    normalized.sharedMemories = (Array.isArray(normalized.sharedMemories) ? normalized.sharedMemories : [])
+        .filter(entry => entry?.id && entry?.summary)
+        .map(entry => normalizeRoomMemoryEntry(entry, validMemberIds));
+    normalized.lastSummarizedUserMessageCount = Math.max(0, Number(normalized.lastSummarizedUserMessageCount || 0));
+    normalized.memorySummaryVersion = Math.max(0, Number(normalized.memorySummaryVersion || 0));
+    return normalized;
+};
+
+const roomMemoryForMember = (entry: RoomMemoryEntry, memberId: string): RoomMemoryEntry => {
+    const perspective = entry.perspectives?.find(item => item.memberId === memberId);
+    return {
+        ...cloneRoom(entry),
+        summary: perspective?.summary || entry.summary,
+        importance: perspective?.salience || entry.importance,
+        knowerIds: [memberId],
+        perspectives: perspective ? [cloneRoom(perspective)] : [],
+    };
+};
+
+const roomMemoryFingerprint = (entry: Pick<RoomMemoryEntry, 'kind' | 'title' | 'summary' | 'sourceMessageIds'>) => {
+    const sources = [...(entry.sourceMessageIds || [])].sort().join('|');
+    const text = `${entry.kind}|${entry.title}|${entry.summary}`.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim();
+    return sources ? `${sources}::${text}` : text;
+};
+
+const normalizedMemoryWords = (value: string) => value
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+
+const memoryBigrams = (value: string) => {
+    const normalized = normalizedMemoryWords(value);
+    if (normalized.length < 2) return new Set([normalized]);
+    return new Set(Array.from({ length: normalized.length - 1 }, (_, index) => normalized.slice(index, index + 2)));
+};
+
+const memoryTextIsSimilar = (left: string, right: string) => {
+    const leftText = normalizedMemoryWords(left);
+    const rightText = normalizedMemoryWords(right);
+    if (!leftText || !rightText) return false;
+    if (leftText === rightText) return true;
+    if (Math.min(leftText.length, rightText.length) >= 4 && (leftText.includes(rightText) || rightText.includes(leftText))) {
+        return true;
+    }
+    const leftPairs = memoryBigrams(leftText);
+    const rightPairs = memoryBigrams(rightText);
+    const overlap = [...leftPairs].filter(pair => rightPairs.has(pair)).length;
+    return overlap / Math.max(1, Math.min(leftPairs.size, rightPairs.size)) >= 0.55;
+};
+
+const roomMemoriesDescribeSameEvent = (left: RoomMemoryEntry, right: RoomMemoryEntry) => {
+    if (left.kind !== right.kind) return false;
+    const leftSources = new Set(left.sourceMessageIds || []);
+    const sharesEvidence = (right.sourceMessageIds || []).some(id => leftSources.has(id));
+    if (sharesEvidence && memoryTextIsSimilar(left.title, right.title)) return true;
+    return memoryTextIsSimilar(left.title, right.title)
+        && memoryTextIsSimilar(left.summary, right.summary);
+};
+
+const mergeRoomMemory = (target: RoomMemoryEntry, incoming: RoomMemoryEntry, memberCount: number) => {
+    target.sourceMessageIds = Array.from(new Set([
+        ...(target.sourceMessageIds || []),
+        ...(incoming.sourceMessageIds || []),
+    ]));
+    target.subjectIds = Array.from(new Set([
+        ...(target.subjectIds || target.participants),
+        ...(incoming.subjectIds || incoming.participants),
+    ]));
+    target.participants = [...target.subjectIds];
+    target.knowerIds = Array.from(new Set([
+        ...(target.knowerIds || target.participants),
+        ...(incoming.knowerIds || incoming.participants),
+    ]));
+    target.importance = Math.max(target.importance || 1, incoming.importance || 1);
+    target.unresolved = Boolean(target.unresolved || incoming.unresolved);
+    if (!target.sceneId && incoming.sceneId) target.sceneId = incoming.sceneId;
+    if (incoming.summary.length > target.summary.length) target.summary = incoming.summary;
+    const perspectives = new Map((target.perspectives || []).map(item => [item.memberId, item]));
+    (incoming.perspectives || []).forEach(item => {
+        const existing = perspectives.get(item.memberId);
+        if (!existing) {
+            perspectives.set(item.memberId, cloneRoom(item));
+            return;
+        }
+        existing.salience = Math.max(existing.salience, item.salience);
+        if (item.summary.length > existing.summary.length) existing.summary = item.summary;
+        if (existing.knowledge === 'told' && item.knowledge !== 'told') existing.knowledge = item.knowledge;
+    });
+    target.perspectives = [...perspectives.values()];
+    target.visibility = target.knowerIds.length === memberCount ? 'shared' : 'restricted';
+};
+
 const sanitizeFileName = (value: string) => value.replace(/[<>:"/\\|?*\u0000-\u001F]/gu, '_').trim() || 'character';
 
 const formatMemoryMarkdown = (member: RoomMember, room: ChatRoom, type: 'soul' | 'memory') => {
@@ -292,6 +482,14 @@ const formatMemoryMarkdown = (member: RoomMember, room: ChatRoom, type: 'soul' |
         '',
         ...entries.flatMap(entry => [
             `## ${entry.title}`,
+            '',
+            `- 重要度：${entry.importance || (entry.pinned ? 5 : 3)} / 5`,
+            entry.perspectives?.[0]?.knowledge
+                ? `- 記憶來源：${entry.perspectives[0].knowledge}`
+                : '',
+            entry.sceneId ? `- 場景 ID：${entry.sceneId}` : '',
+            entry.unresolved ? '- 狀態：仍待跟進' : '',
+            entry.sourceMessageIds?.length ? `- 來源訊息 ID：${entry.sourceMessageIds.join(', ')}` : '',
             '',
             entry.summary,
             entry.originalText ? `\n> 使用者原句：${entry.originalText.replace(/\n+/gu, ' ')}` : '',
@@ -330,7 +528,9 @@ export class RoomManager {
             const parsed = JSON.parse(raw) as RoomExportData | ChatRoom[];
             const rooms = Array.isArray(parsed) ? parsed : parsed.rooms;
             if (!Array.isArray(rooms)) return;
-            this.rooms = Object.fromEntries(rooms.filter(room => room?.id).map(room => [room.id, room]));
+            this.rooms = Object.fromEntries(rooms
+                .filter(room => room?.id)
+                .map(room => [room.id, normalizeRoomData(room)]));
         } catch (error) {
             console.error('Failed to load rooms:', error);
         }
@@ -358,7 +558,7 @@ export class RoomManager {
             }
             roomData.rooms.forEach(room => {
                 if (room?.id) {
-                    this.rooms[room.id] = cloneRoom(room);
+                    this.rooms[room.id] = normalizeRoomData(room);
                     this.deletedRoomIds.delete(room.id);
                 }
             });
@@ -383,7 +583,7 @@ export class RoomManager {
 
     saveRoom(room: ChatRoom) {
         room.updatedAt = Date.now();
-        this.rooms[room.id] = cloneRoom(room);
+        this.rooms[room.id] = normalizeRoomData(room);
         this.deletedRoomIds.delete(room.id);
         this.persist();
         this.persistDeletedRoomIds();
@@ -492,9 +692,9 @@ export class RoomManager {
             lastSummarizedUserMessageCount: 0,
             memorySummaryVersion: AUTO_MEMORY_SUMMARY_VERSION,
         };
-        this.rooms[room.id] = room;
+        this.rooms[room.id] = normalizeRoomData(room);
         this.persist();
-        return cloneRoom(room);
+        return cloneRoom(this.rooms[room.id]);
     }
 
     setPresentMembers(roomId: string, memberIds: string[]) {
@@ -529,14 +729,18 @@ export class RoomManager {
             const replacementSnapshot = cloneRoom(replacement);
             const temporaryId = replacementSnapshot.id;
             replacementSnapshot.id = memberId;
-            replacementSnapshot.soul = replacementSnapshot.soul.map(entry => ({
+            const remapEntry = (entry: RoomMemoryEntry): RoomMemoryEntry => ({
                 ...entry,
                 participants: entry.participants.map(id => id === temporaryId ? memberId : id),
-            }));
-            replacementSnapshot.memories = replacementSnapshot.memories.map(entry => ({
-                ...entry,
-                participants: entry.participants.map(id => id === temporaryId ? memberId : id),
-            }));
+                subjectIds: entry.subjectIds?.map(id => id === temporaryId ? memberId : id),
+                knowerIds: entry.knowerIds?.map(id => id === temporaryId ? memberId : id),
+                perspectives: entry.perspectives?.map(perspective => ({
+                    ...perspective,
+                    memberId: perspective.memberId === temporaryId ? memberId : perspective.memberId,
+                })),
+            });
+            replacementSnapshot.soul = replacementSnapshot.soul.map(remapEntry);
+            replacementSnapshot.memories = replacementSnapshot.memories.map(remapEntry);
             room.members[memberIndex] = replacementSnapshot;
         });
     }
@@ -550,15 +754,22 @@ export class RoomManager {
     }
 
     addSoulMemory(roomId: string, memberIds: string[], entry: Omit<RoomMemoryEntry, 'id' | 'createdAt' | 'pinned'>) {
-        const created: RoomMemoryEntry = {
+        let created: RoomMemoryEntry = {
             ...entry,
             id: createId('soul'),
             createdAt: Date.now(),
             pinned: true,
         };
         this.updateRoom(roomId, room => {
+            const validMemberIds = new Set(room.members.map(member => member.id));
+            created = normalizeRoomMemoryEntry({
+                ...created,
+                knowerIds: memberIds,
+                importance: 5,
+                visibility: memberIds.length === room.members.length ? 'shared' : 'restricted',
+            }, validMemberIds);
             room.members.forEach(member => {
-                if (memberIds.includes(member.id)) member.soul.push({ ...created, participants: [...memberIds] });
+                if (memberIds.includes(member.id)) member.soul.push(roomMemoryForMember(created, member.id));
             });
         });
         return created;
@@ -566,16 +777,17 @@ export class RoomManager {
 
     addEpisodicMemories(roomId: string, entries: Array<Omit<RoomMemoryEntry, 'id' | 'createdAt' | 'pinned'>>) {
         this.updateRoom(roomId, room => {
+            const validMemberIds = new Set(room.members.map(member => member.id));
             entries.forEach(entry => {
-                const created: RoomMemoryEntry = {
+                const created = normalizeRoomMemoryEntry({
                     ...entry,
                     id: createId('memory'),
                     createdAt: Date.now(),
                     pinned: false,
-                };
-                entry.participants.forEach(memberId => {
+                }, validMemberIds);
+                (created.knowerIds || created.participants).forEach(memberId => {
                     const member = room.members.find(item => item.id === memberId);
-                    if (member) member.memories.push(cloneRoom(created));
+                    if (member) member.memories.push(roomMemoryForMember(created, memberId));
                 });
                 room.sharedMemories.push(created);
             });
@@ -591,21 +803,37 @@ export class RoomManager {
         const room = this.rooms[roomId];
         if (!room) return 0;
         const previous = cloneRoom(room);
-        const known = new Set(room.sharedMemories.map(item => item.summary.trim().toLocaleLowerCase()));
+        const validMemberIds = new Set(room.members.map(member => member.id));
         let added = 0;
         entries.forEach(entry => {
-            const normalized = entry.summary.trim().toLocaleLowerCase();
-            if (!normalized || known.has(normalized)) return;
-            known.add(normalized);
-            const created: RoomMemoryEntry = {
+            const created = normalizeRoomMemoryEntry({
                 ...entry,
                 id: createId('memory'),
                 createdAt: Date.now(),
                 pinned: false,
-            };
-            entry.participants.forEach(memberId => {
+            }, validMemberIds);
+            if (!created.summary.trim()) return;
+            const duplicate = room.sharedMemories.find(existing => (
+                roomMemoryFingerprint(existing) === roomMemoryFingerprint(created)
+                || roomMemoriesDescribeSameEvent(existing, created)
+            ));
+            if (duplicate) {
+                mergeRoomMemory(duplicate, created, room.members.length);
+                room.members.forEach(member => {
+                    const existingIndex = member.memories.findIndex(item => item.id === duplicate.id);
+                    const shouldKnow = (duplicate.knowerIds || []).includes(member.id);
+                    if (!shouldKnow && existingIndex >= 0) member.memories.splice(existingIndex, 1);
+                    if (shouldKnow) {
+                        const memberCopy = roomMemoryForMember(duplicate, member.id);
+                        if (existingIndex >= 0) member.memories[existingIndex] = memberCopy;
+                        else member.memories.push(memberCopy);
+                    }
+                });
+                return;
+            }
+            (created.knowerIds || created.participants).forEach(memberId => {
                 const member = room.members.find(item => item.id === memberId);
-                if (member) member.memories.push(cloneRoom(created));
+                if (member) member.memories.push(roomMemoryForMember(created, memberId));
             });
             room.sharedMemories.push(created);
             added += 1;
@@ -627,7 +855,19 @@ export class RoomManager {
             const member = room.members.find(item => item.id === memberId);
             if (!member) return;
             if (type === 'soul') member.soul = member.soul.filter(entry => entry.id !== memoryId);
-            else member.memories = member.memories.filter(entry => entry.id !== memoryId);
+            else {
+                member.memories = member.memories.filter(entry => entry.id !== memoryId);
+                const canonical = room.sharedMemories.find(entry => entry.id === memoryId);
+                if (canonical) {
+                    canonical.knowerIds = (canonical.knowerIds || []).filter(id => id !== memberId);
+                    canonical.perspectives = (canonical.perspectives || []).filter(item => item.memberId !== memberId);
+                    if (!canonical.knowerIds.length) {
+                        room.sharedMemories = room.sharedMemories.filter(entry => entry.id !== memoryId);
+                    } else if (canonical.visibility === 'shared') {
+                        canonical.visibility = 'restricted';
+                    }
+                }
+            }
         });
     }
 
@@ -636,7 +876,7 @@ export class RoomManager {
         memberId: string,
         memoryId: string,
         type: 'soul' | 'memory',
-        updates: Pick<RoomMemoryEntry, 'title' | 'summary'>,
+        updates: Pick<RoomMemoryEntry, 'title' | 'summary'> & Partial<Pick<RoomMemoryEntry, 'importance' | 'unresolved'>>,
     ) {
         return this.updateRoom(roomId, room => {
             const member = room.members.find(item => item.id === memberId);
@@ -646,7 +886,82 @@ export class RoomManager {
             if (!entry) return;
             entry.title = updates.title.trim() || entry.title;
             entry.summary = updates.summary.trim() || entry.summary;
+            if (typeof updates.importance === 'number') {
+                entry.importance = Math.max(1, Math.min(5, Math.round(updates.importance)));
+            }
+            if (typeof updates.unresolved === 'boolean') entry.unresolved = updates.unresolved;
+            if (type === 'memory') {
+                const canonical = room.sharedMemories.find(item => item.id === memoryId);
+                const perspective = canonical?.perspectives?.find(item => item.memberId === memberId);
+                if (canonical) {
+                    canonical.title = entry.title;
+                    if (canonical.visibility === 'shared') canonical.summary = entry.summary;
+                }
+                if (perspective) {
+                    perspective.summary = entry.summary;
+                    perspective.salience = entry.importance || perspective.salience;
+                }
+                if (canonical) {
+                    canonical.importance = Math.max(
+                        1,
+                        ...(canonical.perspectives || []).map(item => item.salience),
+                    );
+                }
+            }
         });
+    }
+
+    setMemoryKnowerIds(roomId: string, memoryId: string, memberIds: string[]) {
+        return this.updateRoom(roomId, room => {
+            const canonical = room.sharedMemories.find(entry => entry.id === memoryId);
+            if (!canonical) return;
+            const validIds = new Set(room.members.map(member => member.id));
+            const nextIds = Array.from(new Set(memberIds.filter(id => validIds.has(id))));
+            if (!nextIds.length) return;
+            const previousPerspectives = new Map(
+                (canonical.perspectives || []).map(perspective => [perspective.memberId, perspective]),
+            );
+            canonical.knowerIds = nextIds;
+            canonical.visibility = nextIds.length === room.members.length ? 'shared' : 'restricted';
+            canonical.perspectives = nextIds.map(memberId => previousPerspectives.get(memberId) || ({
+                memberId,
+                salience: canonical.importance || 3,
+                knowledge: 'told' as const,
+                summary: canonical.summary,
+            }));
+            room.members.forEach(member => {
+                const existingIndex = member.memories.findIndex(entry => entry.id === memoryId);
+                const shouldKeep = nextIds.includes(member.id);
+                if (!shouldKeep && existingIndex >= 0) member.memories.splice(existingIndex, 1);
+                if (shouldKeep) {
+                    const memberCopy = roomMemoryForMember(canonical, member.id);
+                    if (existingIndex >= 0) member.memories[existingIndex] = memberCopy;
+                    else member.memories.push(memberCopy);
+                }
+            });
+        });
+    }
+
+    removeMemoriesBySourceMessageIds(roomId: string, sourceMessageIds: string[], userMessageCount: number) {
+        if (sourceMessageIds.length === 0) return 0;
+        let removed = 0;
+        this.updateRoom(roomId, room => {
+            const removedIds = new Set(sourceMessageIds);
+            const shouldRemove = (entry: RoomMemoryEntry) => (
+                (entry.sourceMessageIds || []).some(id => removedIds.has(id))
+            );
+            const before = room.sharedMemories.length;
+            room.sharedMemories = room.sharedMemories.filter(entry => !shouldRemove(entry));
+            removed = before - room.sharedMemories.length;
+            room.members.forEach(member => {
+                member.memories = member.memories.filter(entry => !shouldRemove(entry));
+            });
+            room.lastSummarizedUserMessageCount = Math.min(
+                Number(room.lastSummarizedUserMessageCount || 0),
+                Math.max(0, userMessageCount),
+            );
+        });
+        return removed;
     }
 
     buildMarkdownFiles(roomId?: string) {
@@ -752,7 +1067,7 @@ export class RoomManager {
             migrationVersion: IU_GROUP_MIGRATION_VERSION,
         };
 
-        this.rooms[room.id] = room;
+        this.rooms[room.id] = normalizeRoomData(room);
         this.persist();
 
         if (!memoryManager.hasChatHistory(room.id)) {
@@ -772,6 +1087,6 @@ export class RoomManager {
             };
             memoryManager.setChatHistory(room.id, [greeting]);
         }
-        return room;
+        return this.rooms[room.id];
     }
 }
