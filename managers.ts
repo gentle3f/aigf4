@@ -2,6 +2,11 @@
 import { personas as initialPersonas, ccV3Persona } from "./personas.tsx";
 import { deletePersonaAvatar, loadPersonaAvatars, savePersonaAvatar } from './avatarStore.js';
 import { AUTO_MEMORY_SUMMARY_VERSION } from './autoMemory.js';
+import {
+    decodeChatHistoryStorage,
+    encodeChatHistoryStorage,
+    isCompressedChatHistoryStorage,
+} from './chatHistoryStorage.js';
 import { notifyLocalCloudChange } from './cloudSyncEvents.js';
 
 // --- Constants ---
@@ -636,14 +641,14 @@ export class MemoryManager {
             const saved = localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
             if (!saved) return;
 
-            const parsed = JSON.parse(saved);
+            const parsed = decodeChatHistoryStorage<{ [key: string]: ChatMessage[] }>(saved);
             if (parsed && typeof parsed === 'object') {
                 this.chatHistories = parsed;
                 let changed = false;
                 Object.values(this.chatHistories).forEach(history => {
                     if (this.ensureChatMessageMetadata(history)) changed = true;
                 });
-                if (changed) this.persistChatHistories();
+                if (changed || !isCompressedChatHistoryStorage(saved)) this.persistChatHistories();
             }
         } catch (error) {
             console.error('Failed to load chat histories:', error);
@@ -652,7 +657,7 @@ export class MemoryManager {
 
     private persistChatHistories(throwOnError = false) {
         try {
-            localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(this.chatHistories));
+            localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, encodeChatHistoryStorage(this.chatHistories));
             notifyLocalCloudChange('messages');
         } catch (error) {
             console.error('Failed to save chat histories:', error);

@@ -108,7 +108,7 @@ test('storage failure rolls back the whole import instead of leaving partial dat
         value: {
             getItem: (key: string) => storage.get(key) || null,
             setItem: (key: string, value: string) => {
-                if (rejectImportedHistory && key === 'chatHistories' && value.includes('imported-message')) {
+                if (rejectImportedHistory && key === 'chatHistories') {
                     throw new DOMException('Quota exceeded', 'QuotaExceededError');
                 }
                 storage.set(key, value);

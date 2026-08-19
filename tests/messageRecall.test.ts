@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { decodeChatHistoryStorage } from '../chatHistoryStorage.js';
 import { MemoryManager } from '../managers.js';
 
 const installLocalStorage = () => {
@@ -48,5 +49,8 @@ test('old imported messages receive stable IDs before recall is used', () => {
     const history = new MemoryManager().getChatHistory('old');
 
     assert.ok(history.every(message => message.id && message.createdAt));
-    assert.match(storage.get('chatHistories') || '', /"id":/u);
+    const persisted = decodeChatHistoryStorage<Record<string, Array<{ id?: string }>>>(
+        storage.get('chatHistories') || '',
+    );
+    assert.ok(persisted.old.every(message => message.id));
 });

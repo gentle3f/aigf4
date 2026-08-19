@@ -1,6 +1,7 @@
 import { createClient, RealtimeChannel, Session, SupabaseClient } from '@supabase/supabase-js';
 import { listPersonaAvatarAssets, savePersonaAvatarBlob } from './avatarStore.js';
 import { listChatAttachments, saveChatAttachment } from './chatMediaStore.js';
+import { mergeChatHistoryMaps } from './cloudMessageMerge.js';
 import { readCloudSyncIndex, writeCloudSyncIndex } from './cloudSyncIndexStore.js';
 import { LOCAL_CLOUD_CHANGE_EVENT, LocalCloudChangeScope } from './cloudSyncEvents.js';
 import { shouldSkipRedundantCloudPull } from './cloudSyncPullPolicy.js';
@@ -17,6 +18,8 @@ const MEDIA_INDEX_KEY = 'wetappCloudMediaIndexV1';
 const PENDING_KEY = 'wetappCloudPendingV1';
 const LAST_SYNC_KEY = 'wetappCloudLastSyncAtV1';
 const SYNCED_USER_ID_KEY = 'wetappCloudSyncedUserIdV1';
+const PULL_RECOVERY_KEY = 'wetappCloudPullRecoveryV1';
+const SAFE_MERGE_VERSION_KEY = 'wetappCloudSafeMergeV1';
 const APP_SETTING_KEYS = [
     'veniceAssistantModel',
     'aigf4ChatModelSettingsV1',
@@ -173,7 +176,7 @@ export class SupabaseCloudSyncManager {
     private applyingRemote = false;
     private pushing = false;
     private pulling = false;
-    private pullRecoveryRequired = false;
+    private pullRecoveryRequired = localStorage.getItem(PULL_RECOVERY_KEY) === 'true';
     private pushTimer: number | null = null;
     private pullTimer: number | null = null;
     private started = false;
@@ -293,14 +296,13 @@ export class SupabaseCloudSyncManager {
         await this.stopRealtime();
         this.session = null;
         this.initializedUserId = '';
-        this.pullRecoveryRequired = false;
         this.setState('signed_out', '已登出；本機資料仍完整保留。');
     }
 
     async syncNow() {
         if (!this.session) throw new Error('請先登入 Supabase 雲端。');
-        if (this.pullRecoveryRequired) {
-            await this.pullCloudToLocal(true);
+        if (this.pullRecoveryRequired || localStorage.getItem(SAFE_MERGE_VERSION_KEY) !== '1') {
+            await this.recoverCloudSafely();
             return;
         }
         localStorage.setItem(PENDING_KEY, 'true');
@@ -309,10 +311,7 @@ export class SupabaseCloudSyncManager {
 
     async reloadFromCloud() {
         if (!this.session) throw new Error('請先登入 Supabase 雲端。');
-        if (!this.pullRecoveryRequired && localStorage.getItem(PENDING_KEY) === 'true') {
-            await this.pushLocalToCloud();
-        }
-        await this.pullCloudToLocal(true);
+        await this.recoverCloudSafely();
     }
 
     private readonly handleLocalChange = (event: CustomEvent<{ scope?: LocalCloudChangeScope }>) => {
@@ -404,7 +403,10 @@ export class SupabaseCloudSyncManager {
             const deviceHasSynced = localStorage.getItem(SYNCED_USER_ID_KEY) === this.session.user.id
                 || remoteState?.source_device_id === this.deviceId;
             const hasPendingChanges = localStorage.getItem(PENDING_KEY) === 'true';
-            if (cloudIsEmpty || (deviceHasSynced && hasPendingChanges)) {
+            const safeMergeRequired = localStorage.getItem(SAFE_MERGE_VERSION_KEY) !== '1';
+            if (deviceHasSynced && (this.pullRecoveryRequired || safeMergeRequired)) {
+                await this.recoverCloudSafely();
+            } else if (cloudIsEmpty || (deviceHasSynced && hasPendingChanges)) {
                 localStorage.setItem(PENDING_KEY, 'true');
                 await this.pushLocalToCloud(true);
             } else if (shouldSkipRedundantCloudPull({
@@ -415,7 +417,7 @@ export class SupabaseCloudSyncManager {
                 sessionUserId: this.session.user.id,
                 hasPendingChanges,
             })) {
-                this.pullRecoveryRequired = false;
+                this.setPullRecoveryRequired(false);
                 this.markSynced('本機已是雲端最新版本，毋須重複下載。');
             } else {
                 // An unknown device must accept the established cloud copy before it can upload.
@@ -439,48 +441,66 @@ export class SupabaseCloudSyncManager {
         if (this.pullTimer !== null || this.pushing || this.pulling) return;
         this.pullTimer = window.setTimeout(() => {
             this.pullTimer = null;
-            if (this.pullRecoveryRequired) void this.pullCloudToLocal(true);
+            if (this.pullRecoveryRequired) void this.recoverCloudSafely();
             else if (localStorage.getItem(PENDING_KEY) === 'true') void this.pushLocalToCloud();
             else void this.pullCloudToLocal();
         }, delay);
     }
 
-    private async pushLocalToCloud(initial = false) {
-        if (!this.client || !this.session || this.pushing || this.pulling || (this.pullRecoveryRequired && !initial)) return;
+    private async recoverCloudSafely() {
+        if (!this.client || !this.session || this.pushing || this.pulling) return false;
+        localStorage.setItem(PENDING_KEY, 'true');
+        const pushed = await this.pushLocalToCloud(false, true);
+        if (!pushed) return false;
+        const pulled = await this.pullCloudToLocal(true, true);
+        if (!pulled) return false;
+        localStorage.setItem(SAFE_MERGE_VERSION_KEY, '1');
+        localStorage.setItem(PENDING_KEY, 'true');
+        return this.pushLocalToCloud();
+    }
+
+    private async pushLocalToCloud(initial = false, preserveRemote = false): Promise<boolean> {
+        if (!this.client || !this.session || this.pushing || this.pulling) return false;
         if (!navigator.onLine) {
             this.setState('offline', '目前離線；變更會保留在本機，連線後自動補傳。');
-            return;
+            return false;
         }
         this.pushing = true;
         try {
             this.setState('pushing', initial ? '正在建立第一份完整雲端資料…' : '正在同步本機變更…', { progress: 5 });
             const payload = await this.buildStatePayload();
             const media = await this.collectLocalMedia(payload.rooms.rooms);
-            await this.pushMedia(media);
+            await this.pushMedia(media, preserveRemote);
             this.setState('pushing', '正在同步對話訊息…', { progress: 55 });
-            await this.pushMessages();
-            this.setState('pushing', '正在提交角色、記憶與聊天室設定…', { progress: 88 });
-            const { error } = await this.client.rpc('wetapp_save_state', {
-                new_payload: payload,
-                new_device_id: this.deviceId,
-            });
-            if (error) throw error;
-            localStorage.removeItem(PENDING_KEY);
-            this.pullRecoveryRequired = false;
-            this.markSynced(initial ? '第一份完整雲端資料已建立。' : '所有變更已同步。');
+            await this.pushMessages(preserveRemote);
+            if (preserveRemote) {
+                this.setState('connecting', '本機訊息已安全保留，正在合併雲端資料…', { progress: 94 });
+            } else {
+                this.setState('pushing', '正在提交角色、記憶與聊天室設定…', { progress: 88 });
+                const { error } = await this.client.rpc('wetapp_save_state', {
+                    new_payload: payload,
+                    new_device_id: this.deviceId,
+                });
+                if (error) throw error;
+                localStorage.removeItem(PENDING_KEY);
+                this.setPullRecoveryRequired(false);
+                this.markSynced(initial ? '第一份完整雲端資料已建立。' : '所有變更已同步。');
+            }
+            return true;
         } catch (error) {
             localStorage.setItem(PENDING_KEY, 'true');
             this.handleSyncError(error, '上傳雲端失敗');
+            return false;
         } finally {
             this.pushing = false;
         }
     }
 
-    private async pullCloudToLocal(force = false) {
-        if (!this.client || !this.session || this.pulling || this.pushing) return;
+    private async pullCloudToLocal(force = false, mergeLocal = false): Promise<boolean> {
+        if (!this.client || !this.session || this.pulling || this.pushing) return false;
         if (!navigator.onLine) {
             this.setState('offline', '目前離線；正在使用這部裝置的最近資料。');
-            return;
+            return false;
         }
         this.pulling = true;
         this.applyingRemote = true;
@@ -496,9 +516,9 @@ export class SupabaseCloudSyncManager {
                 sessionUserId: this.session.user.id,
                 hasPendingChanges: localStorage.getItem(PENDING_KEY) === 'true',
             })) {
-                this.pullRecoveryRequired = false;
+                this.setPullRecoveryRequired(false);
                 this.markSynced('本機已是雲端最新版本，毋須重複下載。');
-                return;
+                return true;
             }
             const [messageRows, mediaRows] = await Promise.all([
                 this.fetchAllRows<CloudMessageRow>('wetapp_messages', [
@@ -510,15 +530,23 @@ export class SupabaseCloudSyncManager {
             this.setState('pulling', `正在還原 ${mediaRows.length} 個私人媒體檔案…`, { progress: 35 });
             await this.pullMedia(mediaRows);
             this.setState('pulling', `正在整理 ${messageRows.length.toLocaleString('zh-HK')} 則訊息…`, { progress: 72 });
-            await this.applyRemoteData((stateResponse.data?.payload || {}) as Partial<CloudStatePayload>, messageRows);
+            await this.applyRemoteData(
+                (stateResponse.data?.payload || {}) as Partial<CloudStatePayload>,
+                messageRows,
+                mergeLocal,
+            );
             await this.refreshLocalIndexes(messageRows, mediaRows);
             localStorage.removeItem(PENDING_KEY);
-            this.pullRecoveryRequired = false;
+            this.setPullRecoveryRequired(false);
+            localStorage.setItem(SAFE_MERGE_VERSION_KEY, '1');
             this.callbacks.onRemoteApplied();
             this.markSynced('已載入雲端最新資料。');
+            return true;
         } catch (error) {
-            this.pullRecoveryRequired = true;
+            localStorage.setItem(PENDING_KEY, 'true');
+            this.setPullRecoveryRequired(true);
             this.handleSyncError(error, '下載雲端資料失敗');
+            return false;
         } finally {
             this.applyingRemote = false;
             this.pulling = false;
@@ -569,7 +597,7 @@ export class SupabaseCloudSyncManager {
         };
     }
 
-    private async pushMessages() {
+    private async pushMessages(preserveRemote = false) {
         if (!this.client || !this.session) return;
         const { conversations, messages, hashes } = this.collectLocalMessages();
         const previousHashes = await readCloudSyncIndex(MESSAGE_INDEX_KEY);
@@ -592,32 +620,36 @@ export class SupabaseCloudSyncManager {
                 progress: 55 + Math.round(((index + 1) / denominator) * 27),
             });
         }
-        const removedByConversation = new Map<string, string[]>();
-        removedKeys.forEach(key => {
-            const splitAt = key.indexOf('\u0000');
-            if (splitAt < 0) return;
-            const conversationKey = key.slice(0, splitAt);
-            const messageId = key.slice(splitAt + 1);
-            const ids = removedByConversation.get(conversationKey) || [];
-            ids.push(messageId);
-            removedByConversation.set(conversationKey, ids);
-        });
-        for (const [conversationKey, ids] of removedByConversation) {
-            for (const batch of batches(ids, 50)) {
-                const { error } = await this.client.from('wetapp_messages')
-                    .delete()
-                    .eq('conversation_key', conversationKey)
-                    .in('message_id', batch);
-                if (error) throw error;
+        if (!preserveRemote) {
+            const removedByConversation = new Map<string, string[]>();
+            removedKeys.forEach(key => {
+                const splitAt = key.indexOf('\u0000');
+                if (splitAt < 0) return;
+                const conversationKey = key.slice(0, splitAt);
+                const messageId = key.slice(splitAt + 1);
+                const ids = removedByConversation.get(conversationKey) || [];
+                ids.push(messageId);
+                removedByConversation.set(conversationKey, ids);
+            });
+            for (const [conversationKey, ids] of removedByConversation) {
+                for (const batch of batches(ids, 50)) {
+                    const { error } = await this.client.from('wetapp_messages')
+                        .delete()
+                        .eq('conversation_key', conversationKey)
+                        .in('message_id', batch);
+                    if (error) throw error;
+                }
             }
         }
 
         const previousConversations = await readCloudSyncIndex(CONVERSATION_INDEX_KEY);
         const conversationIndex = Object.fromEntries(conversations.map(row => [row.conversation_key, '1']));
-        const removedConversations = Object.keys(previousConversations).filter(key => !conversationIndex[key]);
-        for (const batch of batches(removedConversations, 50)) {
-            const { error } = await this.client.from('wetapp_conversations').delete().in('conversation_key', batch);
-            if (error) throw error;
+        if (!preserveRemote) {
+            const removedConversations = Object.keys(previousConversations).filter(key => !conversationIndex[key]);
+            for (const batch of batches(removedConversations, 50)) {
+                const { error } = await this.client.from('wetapp_conversations').delete().in('conversation_key', batch);
+                if (error) throw error;
+            }
         }
         await writeCloudSyncIndex(MESSAGE_INDEX_KEY, hashes);
         await writeCloudSyncIndex(CONVERSATION_INDEX_KEY, conversationIndex);
@@ -771,7 +803,7 @@ export class SupabaseCloudSyncManager {
         return result;
     }
 
-    private async pushMedia(media: LocalCloudMedia[]) {
+    private async pushMedia(media: LocalCloudMedia[], preserveRemote = false) {
         if (!this.client) return;
         const previousIndex = await readCloudSyncIndex(MEDIA_INDEX_KEY);
         const nextIndex = Object.fromEntries(media.map(asset => [asset.asset_id, asset.signature]));
@@ -793,17 +825,19 @@ export class SupabaseCloudSyncManager {
             });
         }
 
-        const removedIds = Object.keys(previousIndex).filter(assetId => !nextIndex[assetId]);
-        for (const batch of batches(removedIds, 50)) {
-            const existing = await this.client.from('wetapp_media').select('asset_id,storage_path').in('asset_id', batch);
-            if (existing.error) throw existing.error;
-            const paths = (existing.data || []).map(row => row.storage_path);
-            if (paths.length) {
-                const removal = await this.client.storage.from(STORAGE_BUCKET).remove(paths);
-                if (removal.error) throw removal.error;
+        if (!preserveRemote) {
+            const removedIds = Object.keys(previousIndex).filter(assetId => !nextIndex[assetId]);
+            for (const batch of batches(removedIds, 50)) {
+                const existing = await this.client.from('wetapp_media').select('asset_id,storage_path').in('asset_id', batch);
+                if (existing.error) throw existing.error;
+                const paths = (existing.data || []).map(row => row.storage_path);
+                if (paths.length) {
+                    const removal = await this.client.storage.from(STORAGE_BUCKET).remove(paths);
+                    if (removal.error) throw removal.error;
+                }
+                const deletion = await this.client.from('wetapp_media').delete().in('asset_id', batch);
+                if (deletion.error) throw deletion.error;
             }
-            const deletion = await this.client.from('wetapp_media').delete().in('asset_id', batch);
-            if (deletion.error) throw deletion.error;
         }
         await writeCloudSyncIndex(MEDIA_INDEX_KEY, nextIndex);
     }
@@ -860,10 +894,14 @@ export class SupabaseCloudSyncManager {
         }
     }
 
-    private async applyRemoteData(payload: Partial<CloudStatePayload>, rows: CloudMessageRow[]) {
-        const chatHistories: Record<string, ChatMessage[]> = {};
+    private async applyRemoteData(
+        payload: Partial<CloudStatePayload>,
+        rows: CloudMessageRow[],
+        mergeLocal = false,
+    ) {
+        const cloudChatHistories: Record<string, ChatMessage[]> = {};
         rows.forEach(row => {
-            (chatHistories[row.conversation_key] ||= []).push({
+            (cloudChatHistories[row.conversation_key] ||= []).push({
                 id: row.message_id,
                 createdAt: Number(row.created_at_ms),
                 speakerId: row.speaker_id || undefined,
@@ -871,14 +909,35 @@ export class SupabaseCloudSyncManager {
                 content: clone(row.content || {}),
             });
         });
+        const chatHistories = mergeLocal
+            ? mergeChatHistoryMaps(clone(this.memoryManager.getAllChatHistories()), cloudChatHistories)
+            : cloudChatHistories;
+        const customPersonas = mergeLocal
+            ? { ...clone(payload.customPersonas || {}), ...clone(this.memoryManager.getModifiedAndCustomPersonas()) }
+            : clone(payload.customPersonas || {});
+        const diaries = mergeLocal
+            ? { ...clone(payload.diaries || {}), ...clone(this.memoryManager.getAllDiaryEntries()) }
+            : clone(payload.diaries || {});
+        const interests = mergeLocal
+            ? { ...clone(payload.interests || {}), ...clone(this.memoryManager.getAllInterests()) }
+            : clone(payload.interests || {});
         this.memoryManager.loadAllData({
-            customPersonas: clone(payload.customPersonas || {}),
-            diaries: clone(payload.diaries || {}),
-            interests: clone(payload.interests || {}),
+            customPersonas,
+            diaries,
+            interests,
             chatHistories,
         }, true);
 
-        const rooms = clone(payload.rooms || { version: 2, rooms: [] });
+        const remoteRooms = clone(payload.rooms || { version: 2, rooms: [] });
+        const rooms = mergeLocal
+            ? {
+                version: 2 as const,
+                rooms: [...new Map([
+                    ...remoteRooms.rooms.map(room => [room.id, room] as const),
+                    ...this.roomManager.exportData().rooms.map(room => [room.id, room] as const),
+                ]).values()],
+            }
+            : remoteRooms;
         const avatarAssets = await listPersonaAvatarAssets();
         const avatarUrls = new Map<string, string>();
         for (const asset of avatarAssets) avatarUrls.set(asset.personaKey, await blobToDataUrl(asset.blob));
@@ -891,7 +950,11 @@ export class SupabaseCloudSyncManager {
         this.roomManager.importData(rooms, true);
         await this.memoryManager.restorePrivateAvatars();
         Object.entries(payload.appSettings || {}).forEach(([key, value]) => {
-            if (APP_SETTING_KEYS.includes(key) && typeof value === 'string') localStorage.setItem(key, value);
+            if (
+                APP_SETTING_KEYS.includes(key)
+                && typeof value === 'string'
+                && (!mergeLocal || localStorage.getItem(key) === null)
+            ) localStorage.setItem(key, value);
         });
     }
 
@@ -970,6 +1033,12 @@ export class SupabaseCloudSyncManager {
         localStorage.setItem(LAST_SYNC_KEY, String(lastSyncAt));
         if (this.session) localStorage.setItem(SYNCED_USER_ID_KEY, this.session.user.id);
         this.setState('synced', detail, { lastSyncAt, progress: 100 });
+    }
+
+    private setPullRecoveryRequired(required: boolean) {
+        this.pullRecoveryRequired = required;
+        if (required) localStorage.setItem(PULL_RECOVERY_KEY, 'true');
+        else localStorage.removeItem(PULL_RECOVERY_KEY);
     }
 
     private handleSyncError(error: unknown, prefix: string) {
