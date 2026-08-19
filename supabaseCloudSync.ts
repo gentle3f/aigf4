@@ -3,6 +3,7 @@ import { listPersonaAvatarAssets, savePersonaAvatarBlob } from './avatarStore.js
 import { listChatAttachments, saveChatAttachment } from './chatMediaStore.js';
 import { readCloudSyncIndex, writeCloudSyncIndex } from './cloudSyncIndexStore.js';
 import { LOCAL_CLOUD_CHANGE_EVENT, LocalCloudChangeScope } from './cloudSyncEvents.js';
+import { shouldSkipRedundantCloudPull } from './cloudSyncPullPolicy.js';
 import { ChatMessage, MemoryManager, Persona } from './managers.js';
 import { listCharacterPhotoAssets, saveCharacterPhotoAsset } from './photoStore.js';
 import { ChatRoom, RoomManager } from './roomManager.js';
@@ -172,6 +173,7 @@ export class SupabaseCloudSyncManager {
     private applyingRemote = false;
     private pushing = false;
     private pulling = false;
+    private pullRecoveryRequired = false;
     private pushTimer: number | null = null;
     private pullTimer: number | null = null;
     private started = false;
@@ -291,31 +293,39 @@ export class SupabaseCloudSyncManager {
         await this.stopRealtime();
         this.session = null;
         this.initializedUserId = '';
+        this.pullRecoveryRequired = false;
         this.setState('signed_out', '已登出；本機資料仍完整保留。');
     }
 
     async syncNow() {
         if (!this.session) throw new Error('請先登入 Supabase 雲端。');
+        if (this.pullRecoveryRequired) {
+            await this.pullCloudToLocal(true);
+            return;
+        }
         localStorage.setItem(PENDING_KEY, 'true');
         await this.pushLocalToCloud();
     }
 
     async reloadFromCloud() {
         if (!this.session) throw new Error('請先登入 Supabase 雲端。');
-        if (localStorage.getItem(PENDING_KEY) === 'true') await this.pushLocalToCloud();
-        await this.pullCloudToLocal();
+        if (!this.pullRecoveryRequired && localStorage.getItem(PENDING_KEY) === 'true') {
+            await this.pushLocalToCloud();
+        }
+        await this.pullCloudToLocal(true);
     }
 
     private readonly handleLocalChange = (event: CustomEvent<{ scope?: LocalCloudChangeScope }>) => {
         if (this.applyingRemote || this.pushing) return;
         localStorage.setItem(PENDING_KEY, 'true');
-        if (!this.session || !this.initializedUserId) return;
+        if (!this.session || !this.initializedUserId || this.pullRecoveryRequired) return;
         this.schedulePush(event.detail?.scope === 'media' ? 400 : 1200);
     };
 
     private readonly handleOnline = () => {
         if (!this.session) return;
-        if (localStorage.getItem(PENDING_KEY) === 'true') this.schedulePush(250);
+        if (this.pullRecoveryRequired) this.schedulePull(250);
+        else if (localStorage.getItem(PENDING_KEY) === 'true') this.schedulePush(250);
         else this.schedulePull(500);
     };
 
@@ -397,6 +407,16 @@ export class SupabaseCloudSyncManager {
             if (cloudIsEmpty || (deviceHasSynced && hasPendingChanges)) {
                 localStorage.setItem(PENDING_KEY, 'true');
                 await this.pushLocalToCloud(true);
+            } else if (shouldSkipRedundantCloudPull({
+                force: false,
+                cloudSourceDeviceId: remoteState?.source_device_id,
+                localDeviceId: this.deviceId,
+                syncedUserId: localStorage.getItem(SYNCED_USER_ID_KEY),
+                sessionUserId: this.session.user.id,
+                hasPendingChanges,
+            })) {
+                this.pullRecoveryRequired = false;
+                this.markSynced('本機已是雲端最新版本，毋須重複下載。');
             } else {
                 // An unknown device must accept the established cloud copy before it can upload.
                 localStorage.removeItem(PENDING_KEY);
@@ -419,13 +439,14 @@ export class SupabaseCloudSyncManager {
         if (this.pullTimer !== null || this.pushing || this.pulling) return;
         this.pullTimer = window.setTimeout(() => {
             this.pullTimer = null;
-            if (localStorage.getItem(PENDING_KEY) === 'true') void this.pushLocalToCloud();
+            if (this.pullRecoveryRequired) void this.pullCloudToLocal(true);
+            else if (localStorage.getItem(PENDING_KEY) === 'true') void this.pushLocalToCloud();
             else void this.pullCloudToLocal();
         }, delay);
     }
 
     private async pushLocalToCloud(initial = false) {
-        if (!this.client || !this.session || this.pushing || this.pulling) return;
+        if (!this.client || !this.session || this.pushing || this.pulling || (this.pullRecoveryRequired && !initial)) return;
         if (!navigator.onLine) {
             this.setState('offline', '目前離線；變更會保留在本機，連線後自動補傳。');
             return;
@@ -445,6 +466,7 @@ export class SupabaseCloudSyncManager {
             });
             if (error) throw error;
             localStorage.removeItem(PENDING_KEY);
+            this.pullRecoveryRequired = false;
             this.markSynced(initial ? '第一份完整雲端資料已建立。' : '所有變更已同步。');
         } catch (error) {
             localStorage.setItem(PENDING_KEY, 'true');
@@ -454,7 +476,7 @@ export class SupabaseCloudSyncManager {
         }
     }
 
-    private async pullCloudToLocal() {
+    private async pullCloudToLocal(force = false) {
         if (!this.client || !this.session || this.pulling || this.pushing) return;
         if (!navigator.onLine) {
             this.setState('offline', '目前離線；正在使用這部裝置的最近資料。');
@@ -464,8 +486,20 @@ export class SupabaseCloudSyncManager {
         this.applyingRemote = true;
         try {
             this.setState('pulling', '正在下載雲端變更…', { progress: 8 });
-            const stateResponse = await this.client.from('wetapp_state').select('payload,revision,updated_at').maybeSingle();
+            const stateResponse = await this.client.from('wetapp_state').select('payload,revision,updated_at,source_device_id').maybeSingle();
             if (stateResponse.error) throw stateResponse.error;
+            if (shouldSkipRedundantCloudPull({
+                force,
+                cloudSourceDeviceId: stateResponse.data?.source_device_id,
+                localDeviceId: this.deviceId,
+                syncedUserId: localStorage.getItem(SYNCED_USER_ID_KEY),
+                sessionUserId: this.session.user.id,
+                hasPendingChanges: localStorage.getItem(PENDING_KEY) === 'true',
+            })) {
+                this.pullRecoveryRequired = false;
+                this.markSynced('本機已是雲端最新版本，毋須重複下載。');
+                return;
+            }
             const [messageRows, mediaRows] = await Promise.all([
                 this.fetchAllRows<CloudMessageRow>('wetapp_messages', [
                     ['conversation_key', true],
@@ -479,9 +513,11 @@ export class SupabaseCloudSyncManager {
             await this.applyRemoteData((stateResponse.data?.payload || {}) as Partial<CloudStatePayload>, messageRows);
             await this.refreshLocalIndexes(messageRows, mediaRows);
             localStorage.removeItem(PENDING_KEY);
+            this.pullRecoveryRequired = false;
             this.callbacks.onRemoteApplied();
             this.markSynced('已載入雲端最新資料。');
         } catch (error) {
+            this.pullRecoveryRequired = true;
             this.handleSyncError(error, '下載雲端資料失敗');
         } finally {
             this.applyingRemote = false;
