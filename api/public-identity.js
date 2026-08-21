@@ -2,7 +2,7 @@ import { requireAuthenticatedRequest } from './_auth.js';
 
 const WIKIPEDIA_TIMEOUT_MS = 15_000;
 const SEARCH_RESULT_LIMIT = 5;
-const CLIENT_AGENT = 'aigf4/1.0 (https://aigf4.vercel.app; public identity resolver)';
+const CLIENT_AGENT = 'aigf4/1.0 (https://wetapp.madproduction.ai; public identity resolver)';
 
 const fetchWikipedia = async (language, params) => {
   const controller = new AbortController();
