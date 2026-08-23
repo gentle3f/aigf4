@@ -6867,7 +6867,7 @@ const appendLinkedLegacyHistory = (room: ChatRoom) => {
             memoryProposal: undefined,
             photoIntent: undefined,
             npcProposal: undefined,
-        }, sender, message);
+        }, sender, message, 'none');
     });
     appendHistoryDivider('新群組由這裡開始');
 };
@@ -6902,9 +6902,9 @@ const startLegacyChat = (key: string, restoredHistory: any[] | null = null, hist
 
     chatHistory.forEach(message => {
         if (message.role === 'user') {
-            appendMessage(message.content, 'user', message);
+            appendMessage(message.content, 'user', message, 'none');
         } else if (message.role === 'model') {
-            appendMessage(message.content, 'bot', message);
+            appendMessage(message.content, 'bot', message, 'none');
         } else if (message.role === 'system') {
             appendMessage(
                 message.content.text?.trim() === SCENE_END_MARKER
@@ -6912,6 +6912,7 @@ const startLegacyChat = (key: string, restoredHistory: any[] | null = null, hist
                     : message.content,
                 'system',
                 message,
+                'none',
             );
         }
     });
@@ -6932,8 +6933,9 @@ const startLegacyChat = (key: string, restoredHistory: any[] | null = null, hist
     messageInput.focus();
     updateAlbumState();
     
-    // Scroll to the bottom after rendering history
-    chatContainer.scrollTop = chatContainer.scrollHeight;
+    window.requestAnimationFrame(() => {
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    });
     syncBrowserViewState({ view: 'chat', conversationKey: key, personaKey: key }, historyMode);
 };
 
@@ -7026,7 +7028,7 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
         const content = message.role === 'system' && message.content.text?.trim() === SCENE_END_MARKER
             ? { ...message.content, text: SCENE_START_LABEL }
             : message.content;
-        appendMessage(content, sender, message);
+        appendMessage(content, sender, message, 'none');
     });
 
     appShell.classList.add('chat-open');
@@ -8941,10 +8943,44 @@ const createSurpriseEventCard = (proposal: SurpriseEventProposal) => {
     return card;
 };
 
+type MessageScrollMode = 'auto' | 'bottom' | 'start' | 'none';
+
+const scheduleMessageScroll = (
+    messageWrapper: HTMLElement,
+    sender: 'user' | 'bot' | 'system' | 'god-mode',
+    requestedMode: MessageScrollMode,
+) => {
+    const mode = requestedMode === 'auto'
+        ? (sender === 'bot' || sender === 'god-mode' ? 'start' : 'bottom')
+        : requestedMode;
+    if (mode === 'none') return;
+
+    const applyScroll = () => {
+        if (!messageWrapper.isConnected) return;
+        if (mode === 'bottom') {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            return;
+        }
+
+        const containerRect = chatContainer.getBoundingClientRect();
+        const messageRect = messageWrapper.getBoundingClientRect();
+        const readableTop = chatContainer.scrollTop + messageRect.top - containerRect.top - 8;
+        chatContainer.scrollTop = Math.max(0, readableTop);
+    };
+
+    if (mode === 'start') {
+        // Let any follow-up system card render first, then keep the actual reply at the reading position.
+        window.requestAnimationFrame(() => window.requestAnimationFrame(applyScroll));
+    } else {
+        window.requestAnimationFrame(applyScroll);
+    }
+};
+
 const appendMessage = (
     content: Content,
     sender: 'user' | 'bot' | 'system' | 'god-mode',
     messageMeta?: Pick<ChatMessage, 'speakerId' | 'createdAt' | 'id'>,
+    scrollMode: MessageScrollMode = 'auto',
 ): HTMLElement => {
     const isSystemMessage = sender === 'system';
     const groupDisplaySegments = sender === 'bot' && currentRoom
@@ -9154,9 +9190,7 @@ const appendMessage = (
     if (content.legacy) messageWrapper.classList.add('legacy-chat-message');
     chatContainer.appendChild(messageWrapper);
 
-    window.requestAnimationFrame(() => {
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-    });
+    scheduleMessageScroll(messageWrapper, sender, scrollMode);
 
     return messageWrapper;
 };
