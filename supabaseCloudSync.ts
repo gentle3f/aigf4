@@ -7,7 +7,7 @@ import { LOCAL_CLOUD_CHANGE_EVENT, LocalCloudChangeScope } from './cloudSyncEven
 import { shouldSkipRedundantCloudPull } from './cloudSyncPullPolicy.js';
 import { ChatMessage, MemoryManager, Persona } from './managers.js';
 import { listCharacterPhotoAssets, saveCharacterPhotoAsset } from './photoStore.js';
-import { ChatRoom, RoomManager } from './roomManager.js';
+import { ChatRoom, resolveRoomAvatarStorageKey, RoomManager } from './roomManager.js';
 
 const OWNER_EMAIL = 'gentle3f@gmail.com';
 const STORAGE_BUCKET = 'wetapp-private';
@@ -565,7 +565,7 @@ export class SupabaseCloudSyncManager {
         );
         for (const room of rooms.rooms) {
             for (const member of room.members) {
-                const localKey = this.roomAvatarKey(room.id, member.id);
+                const localKey = resolveRoomAvatarStorageKey(room.id, member);
                 if (isLocalImageUrl(member.persona.avatarUrl)) {
                     try {
                         const blob = await fetch(member.persona.avatarUrl!).then(response => response.blob());
@@ -573,6 +573,7 @@ export class SupabaseCloudSyncManager {
                         if (!existing || !await blobsMatch(existing.blob, blob)) {
                             await savePersonaAvatarBlob(localKey, blob, Date.now());
                         }
+                        member.avatarAssetKey = localKey;
                         member.persona.avatarUrl = `private-avatar:${localKey}`;
                     } catch (error) {
                         console.warn(`Unable to stage the room avatar for ${member.persona.name}.`, error);
@@ -733,7 +734,10 @@ export class SupabaseCloudSyncManager {
         const activePersonaKeys = new Set(Object.keys(this.memoryManager.getAllPersonas()));
         const roomAvatarTargets = new Map<string, { roomId: string; memberId: string }>();
         rooms.forEach(room => room.members.forEach(member => {
-            roomAvatarTargets.set(this.roomAvatarKey(room.id, member.id), { roomId: room.id, memberId: member.id });
+            roomAvatarTargets.set(resolveRoomAvatarStorageKey(room.id, member), {
+                roomId: room.id,
+                memberId: member.id,
+            });
         }));
         const userId = this.session.user.id;
         const result: LocalCloudMedia[] = [];
@@ -942,13 +946,19 @@ export class SupabaseCloudSyncManager {
         const avatarUrls = new Map<string, string>();
         for (const asset of avatarAssets) avatarUrls.set(asset.personaKey, await blobToDataUrl(asset.blob));
         rooms.rooms.forEach(room => room.members.forEach(member => {
-            const localKey = this.roomAvatarKey(room.id, member.id);
+            const localKey = resolveRoomAvatarStorageKey(room.id, member);
             const restored = avatarUrls.get(localKey);
-            if (restored) member.persona.avatarUrl = restored;
+            if (restored) {
+                member.avatarAssetKey = localKey;
+                member.persona.avatarUrl = restored;
+            }
             else if (member.persona.avatarUrl?.startsWith('private-avatar:')) member.persona.avatarUrl = null;
         }));
         this.roomManager.importData(rooms, true);
-        await this.memoryManager.restorePrivateAvatars();
+        await Promise.all([
+            this.memoryManager.restorePrivateAvatars(),
+            this.roomManager.restorePrivateAvatars(),
+        ]);
         Object.entries(payload.appSettings || {}).forEach(([key, value]) => {
             if (
                 APP_SETTING_KEYS.includes(key)
@@ -1051,7 +1061,4 @@ export class SupabaseCloudSyncManager {
         return `${row.conversation_key}\u0000${row.message_id}`;
     }
 
-    private roomAvatarKey(roomId: string, memberId: string) {
-        return `room-avatar:${roomId}:${memberId}`;
-    }
 }

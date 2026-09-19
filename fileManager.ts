@@ -385,11 +385,13 @@ export class FileManager {
                 jpg: 'image/jpeg',
                 jpeg: 'image/jpeg',
             } as Record<string, string>)[extension || ''] || 'image/jpeg';
-            tasks.push(fileEntry.async('base64').then((base64: string) => {
+            tasks.push(fileEntry.async('base64').then(async (base64: string) => {
                 if (!this.roomManager?.getMember(roomId, memberId)) return;
-                this.roomManager.updateMember(roomId, memberId, {
-                    persona: { avatarUrl: `data:${fallbackMimeType};base64,${base64}` },
-                });
+                await this.roomManager.setMemberAvatar(
+                    roomId,
+                    memberId,
+                    `data:${fallbackMimeType};base64,${base64}`,
+                );
             }));
         });
         await Promise.all(tasks);

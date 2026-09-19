@@ -1,9 +1,12 @@
 import { ChatContextBridge, ChatMessage, MemoryManager, Persona, PublicIdentity, TimelineBranchInfo } from './managers.js';
 import { AUTO_MEMORY_SUMMARY_VERSION } from './autoMemory.js';
+import { loadPersonaAvatars, savePersonaAvatar } from './avatarStore.js';
 import { notifyLocalCloudChange } from './cloudSyncEvents.js';
+import { decodeRoomStorage, encodeRoomStorage } from './roomStorage.js';
 
 const ROOM_STORAGE_KEY = 'aigf4RoomsV2';
 const DELETED_ROOM_IDS_STORAGE_KEY = 'aigf4DeletedRoomIdsV1';
+const PRIVATE_AVATAR_MARKER_PREFIX = 'private-avatar:';
 export const IU_GROUP_ROOM_ID = 'room_iu_jennie_irene_v1';
 const IU_GROUP_MIGRATION_VERSION = 2;
 
@@ -52,6 +55,7 @@ export interface RoomMemoryEntry {
 export interface RoomMember {
     id: string;
     sourcePersonaKey?: string;
+    avatarAssetKey?: string;
     privatePersonaKey?: string;
     privateContinuityImportedUserMessageCount?: number;
     privateContinuityHandoff?: ChatContextBridge;
@@ -95,6 +99,26 @@ export interface RoomExportData {
     version: 2;
     rooms: ChatRoom[];
 }
+
+export const roomAvatarStorageKey = (roomId: string, memberId: string) => (
+    `room-avatar:${roomId}:${memberId}`
+);
+
+const privateAvatarKeyFromUrl = (avatarUrl: string | null | undefined) => (
+    avatarUrl?.startsWith(PRIVATE_AVATAR_MARKER_PREFIX)
+        ? avatarUrl.slice(PRIVATE_AVATAR_MARKER_PREFIX.length).trim() || undefined
+        : undefined
+);
+
+export const resolveRoomAvatarStorageKey = (roomId: string, member: RoomMember) => (
+    member.avatarAssetKey
+    || privateAvatarKeyFromUrl(member.persona.avatarUrl)
+    || roomAvatarStorageKey(roomId, member.id)
+);
+
+const isLocalAvatarUrl = (avatarUrl: string | null | undefined) => Boolean(
+    avatarUrl && (avatarUrl.startsWith('data:image/') || avatarUrl.startsWith('blob:'))
+);
 
 const createId = (prefix: string) => (
     crypto.randomUUID?.() || `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
@@ -367,6 +391,7 @@ const normalizeRoomData = (room: ChatRoom): ChatRoom => {
     normalized.members = Array.isArray(normalized.members) ? normalized.members : [];
     const validMemberIds = new Set(normalized.members.map(member => member.id));
     normalized.members.forEach(member => {
+        member.avatarAssetKey ||= privateAvatarKeyFromUrl(member.persona?.avatarUrl);
         member.soul = (Array.isArray(member.soul) ? member.soul : [])
             .filter(entry => entry?.id && entry?.summary)
             .map(entry => normalizeRoomMemoryEntry(entry, validMemberIds, member.id));
@@ -525,7 +550,7 @@ export class RoomManager {
         try {
             const raw = localStorage.getItem(ROOM_STORAGE_KEY);
             if (!raw) return;
-            const parsed = JSON.parse(raw) as RoomExportData | ChatRoom[];
+            const parsed = decodeRoomStorage<RoomExportData | ChatRoom[]>(raw);
             const rooms = Array.isArray(parsed) ? parsed : parsed.rooms;
             if (!Array.isArray(rooms)) return;
             this.rooms = Object.fromEntries(rooms
@@ -537,7 +562,17 @@ export class RoomManager {
     }
 
     private persist() {
-        localStorage.setItem(ROOM_STORAGE_KEY, JSON.stringify(this.exportData()));
+        const data = this.exportData();
+        data.rooms.forEach(room => room.members.forEach(member => {
+            const assetKey = member.avatarAssetKey || privateAvatarKeyFromUrl(member.persona.avatarUrl);
+            if (!assetKey) return;
+            member.avatarAssetKey = assetKey;
+            if (!member.persona.avatarUrl || isLocalAvatarUrl(member.persona.avatarUrl)
+                || member.persona.avatarUrl.startsWith(PRIVATE_AVATAR_MARKER_PREFIX)) {
+                member.persona.avatarUrl = `${PRIVATE_AVATAR_MARKER_PREFIX}${assetKey}`;
+            }
+        }));
+        localStorage.setItem(ROOM_STORAGE_KEY, encodeRoomStorage(data));
         notifyLocalCloudChange('rooms');
     }
 
@@ -567,8 +602,6 @@ export class RoomManager {
         } catch (error) {
             this.rooms = previousRooms;
             this.deletedRoomIds = previousDeletedRoomIds;
-            this.persist();
-            this.persistDeletedRoomIds();
             throw error;
         }
     }
@@ -582,30 +615,54 @@ export class RoomManager {
     }
 
     saveRoom(room: ChatRoom) {
-        room.updatedAt = Date.now();
-        this.rooms[room.id] = normalizeRoomData(room);
+        const previous = this.rooms[room.id] ? cloneRoom(this.rooms[room.id]) : undefined;
+        const wasDeleted = this.deletedRoomIds.has(room.id);
+        const saved = normalizeRoomData({ ...cloneRoom(room), updatedAt: Date.now() });
+        this.rooms[room.id] = saved;
         this.deletedRoomIds.delete(room.id);
-        this.persist();
-        this.persistDeletedRoomIds();
-        return this.rooms[room.id];
+        try {
+            this.persist();
+            this.persistDeletedRoomIds();
+            return this.rooms[room.id];
+        } catch (error) {
+            if (previous) this.rooms[room.id] = previous;
+            else delete this.rooms[room.id];
+            if (wasDeleted) this.deletedRoomIds.add(room.id);
+            throw error;
+        }
     }
 
     deleteRoom(id: string) {
         if (!this.rooms[id]) return false;
+        const previous = cloneRoom(this.rooms[id]);
+        const wasDeleted = this.deletedRoomIds.has(id);
         delete this.rooms[id];
         this.deletedRoomIds.add(id);
-        this.persist();
-        this.persistDeletedRoomIds();
-        return true;
+        try {
+            this.persist();
+            this.persistDeletedRoomIds();
+            return true;
+        } catch (error) {
+            this.rooms[id] = previous;
+            if (!wasDeleted) this.deletedRoomIds.delete(id);
+            throw error;
+        }
     }
 
     updateRoom(id: string, updater: (room: ChatRoom) => void) {
-        const room = this.rooms[id];
-        if (!room) return null;
-        updater(room);
-        room.updatedAt = Date.now();
-        this.persist();
-        return room;
+        const previous = this.rooms[id];
+        if (!previous) return null;
+        const updated = cloneRoom(previous);
+        updater(updated);
+        updated.updatedAt = Date.now();
+        this.rooms[id] = normalizeRoomData(updated);
+        try {
+            this.persist();
+            return this.rooms[id];
+        } catch (error) {
+            this.rooms[id] = previous;
+            throw error;
+        }
     }
 
     getMember(roomId: string, memberId: string) {
@@ -618,7 +675,81 @@ export class RoomManager {
             if (!member) return;
             const { persona: personaUpdate, ...memberUpdate } = data;
             Object.assign(member, memberUpdate);
-            if (personaUpdate) member.persona = { ...member.persona, ...personaUpdate };
+            if (personaUpdate) {
+                if (Object.prototype.hasOwnProperty.call(personaUpdate, 'avatarUrl')
+                    && !Object.prototype.hasOwnProperty.call(memberUpdate, 'avatarAssetKey')) {
+                    member.avatarAssetKey = privateAvatarKeyFromUrl(personaUpdate.avatarUrl);
+                }
+                member.persona = { ...member.persona, ...personaUpdate };
+            }
+        });
+    }
+
+    async restorePrivateAvatars() {
+        const avatars = await loadPersonaAvatars();
+        let needsPersist = false;
+        let restored = 0;
+
+        for (const room of Object.values(this.rooms)) {
+            for (const member of room.members) {
+                const avatarUrl = member.persona.avatarUrl;
+                const pointerKey = privateAvatarKeyFromUrl(avatarUrl);
+                let assetKey = member.avatarAssetKey || pointerKey;
+
+                if (avatarUrl?.startsWith('data:image/')) {
+                    assetKey ||= roomAvatarStorageKey(room.id, member.id);
+                    if (!avatars[assetKey]) {
+                        try {
+                            await savePersonaAvatar(assetKey, avatarUrl);
+                            avatars[assetKey] = avatarUrl;
+                        } catch (error) {
+                            console.warn(`Failed to migrate the room avatar for ${member.persona.name}.`, error);
+                            continue;
+                        }
+                    }
+                    if (member.avatarAssetKey !== assetKey) {
+                        member.avatarAssetKey = assetKey;
+                    }
+                    needsPersist = true;
+                    restored += 1;
+                    continue;
+                }
+
+                if (!assetKey) continue;
+                if (member.avatarAssetKey !== assetKey) {
+                    member.avatarAssetKey = assetKey;
+                    needsPersist = true;
+                }
+                const restoredUrl = avatars[assetKey];
+                if (restoredUrl && restoredUrl !== avatarUrl) {
+                    member.persona.avatarUrl = restoredUrl;
+                    restored += 1;
+                } else if (!restoredUrl && pointerKey) {
+                    member.persona.avatarUrl = null;
+                }
+            }
+        }
+
+        if (needsPersist) this.persist();
+        return restored;
+    }
+
+    async setMemberAvatar(roomId: string, memberId: string, avatarUrl: string | null) {
+        const member = this.getMember(roomId, memberId);
+        if (!member) return null;
+
+        if (avatarUrl?.startsWith('data:image/')) {
+            const assetKey = roomAvatarStorageKey(roomId, memberId);
+            await savePersonaAvatar(assetKey, avatarUrl);
+            return this.updateMember(roomId, memberId, {
+                avatarAssetKey: assetKey,
+                persona: { avatarUrl },
+            });
+        }
+
+        return this.updateMember(roomId, memberId, {
+            avatarAssetKey: undefined,
+            persona: { avatarUrl },
         });
     }
 
@@ -651,6 +782,9 @@ export class RoomManager {
             return {
                 id: memberId,
                 sourcePersonaKey: entry.sourcePersonaKey,
+                avatarAssetKey: isLocalAvatarUrl(entry.persona.avatarUrl)
+                    ? entry.sourcePersonaKey
+                    : undefined,
                 persona: cloneRoom(entry.persona),
                 joinedAt: now,
                 soul: [
@@ -692,9 +826,7 @@ export class RoomManager {
             lastSummarizedUserMessageCount: 0,
             memorySummaryVersion: AUTO_MEMORY_SUMMARY_VERSION,
         };
-        this.rooms[room.id] = normalizeRoomData(room);
-        this.persist();
-        return cloneRoom(this.rooms[room.id]);
+        return cloneRoom(this.saveRoom(room));
     }
 
     setPresentMembers(roomId: string, memberIds: string[]) {

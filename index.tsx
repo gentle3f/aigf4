@@ -3831,9 +3831,7 @@ const handleAvatarUpload = async (event: Event) => {
         if (file && (targetKey || roomTarget)) {
             const dataUrl = await createOptimizedAvatarDataUrl(file);
             if (roomTarget) {
-                roomManager.updateMember(roomTarget.roomId, roomTarget.memberId, {
-                    persona: { avatarUrl: dataUrl },
-                });
+                await roomManager.setMemberAvatar(roomTarget.roomId, roomTarget.memberId, dataUrl);
                 if (currentRoom?.id === roomTarget.roomId) {
                     currentRoom = roomManager.getRoom(roomTarget.roomId) || currentRoom;
                     if (activeRoomMemberId === roomTarget.memberId && currentPersona) {
@@ -16608,7 +16606,10 @@ const init = async () => {
     window.addEventListener('pageshow', guardConversationSearchFromAutofill);
     initializeImageSeedControls();
     try {
-        await memoryManager.restorePrivateAvatars();
+        await Promise.all([
+            memoryManager.restorePrivateAvatars(),
+            roomManager.restorePrivateAvatars(),
+        ]);
     } catch (error) {
         console.error('Failed to restore private avatars:', error);
     }
