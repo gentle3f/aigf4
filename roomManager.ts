@@ -1,8 +1,9 @@
-import { ChatContextBridge, ChatMessage, MemoryManager, Persona, PublicIdentity, TimelineBranchInfo } from './managers.js';
+import { ChatContextBridge, ChatMessage, MemoryManager, Persona, PublicIdentity, TimelineBranchInfo, WardrobeState } from './managers.js';
 import { AUTO_MEMORY_SUMMARY_VERSION } from './autoMemory.js';
 import { loadPersonaAvatars, savePersonaAvatar } from './avatarStore.js';
 import { notifyLocalCloudChange } from './cloudSyncEvents.js';
 import { decodeRoomStorage, encodeRoomStorage } from './roomStorage.js';
+import { emptyWardrobeState, normalizeWardrobeState } from './wardrobe.js';
 
 const ROOM_STORAGE_KEY = 'aigf4RoomsV2';
 const DELETED_ROOM_IDS_STORAGE_KEY = 'aigf4DeletedRoomIdsV1';
@@ -73,6 +74,7 @@ export interface RoomSceneState {
     summary: string;
     unresolved: string[];
     startedAt: number;
+    wardrobe?: WardrobeState;
 }
 
 export interface ChatRoom {
@@ -390,6 +392,7 @@ const normalizeRoomData = (room: ChatRoom): ChatRoom => {
     const normalized = cloneRoom(room);
     normalized.members = Array.isArray(normalized.members) ? normalized.members : [];
     const validMemberIds = new Set(normalized.members.map(member => member.id));
+    normalized.scene.wardrobe = normalizeWardrobeState(normalized.scene.wardrobe, validMemberIds);
     normalized.members.forEach(member => {
         member.avatarAssetKey ||= privateAvatarKeyFromUrl(member.persona?.avatarUrl);
         member.soul = (Array.isArray(member.soul) ? member.soul : [])
@@ -817,6 +820,7 @@ export class RoomManager {
                 summary: '這是一個剛建立的群組聊天室，成員正準備開始聊天。',
                 unresolved: [],
                 startedAt: now,
+                wardrobe: emptyWardrobeState(),
             },
             sharedSoul: [],
             sharedMemories: [],
@@ -1187,6 +1191,7 @@ export class RoomManager {
                 summary: '三人與使用者在一段漫長經歷後相擁入睡；新群組從翌日清晨開始，三人都仍在房內。',
                 unresolved: ['今天如何安排工作與陪伴時間'],
                 startedAt: now,
+                wardrobe: emptyWardrobeState(),
             },
             sharedSoul: sharedSoul(),
             sharedMemories: sharedMemories(),

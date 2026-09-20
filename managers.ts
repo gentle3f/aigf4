@@ -267,6 +267,11 @@ export interface ImageGenerationMetadata {
     identityMode?: 'avatar_reference' | 'persona_description' | 'public_identity';
 }
 
+export interface WardrobeState {
+    user: string;
+    characters: Record<string, string>;
+}
+
 export interface ChatSceneSnapshot {
     id: string;
     location: string;
@@ -275,6 +280,7 @@ export interface ChatSceneSnapshot {
     summary: string;
     unresolved: string[];
     startedAt: number;
+    wardrobe?: WardrobeState;
 }
 
 export interface ChatContextBridge {
@@ -303,6 +309,7 @@ export interface Content {
     surpriseEvent?: SurpriseEventProposal;
     contextBridge?: ChatContextBridge;
     roomSceneBeforeTurn?: ChatSceneSnapshot;
+    wardrobeState?: WardrobeState;
     legacy?: boolean;
 }
 

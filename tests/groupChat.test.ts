@@ -86,6 +86,26 @@ test('group prompt keeps immutable member and presence ledgers', () => {
     assert.match(prompt, /never one of the listed characters/i);
     assert.match(prompt, /A character may speak more than once/i);
     assert.match(prompt, /Do not return a JSON response object/i);
+    assert.match(prompt, /AUTHORITATIVE CURRENT WARDROBE LEDGER/i);
+    assert.match(prompt, /wardrobe_updates/i);
+});
+
+test('group parser preserves outfits unless a member has an explicit wardrobe update', () => {
+    const room = createRoom();
+    room.scene.wardrobe = {
+        user: '白色恤衫及深藍牛仔褲',
+        characters: {
+            iu: '白色上衣及黑色短裙',
+            jennie: '紅色連身裙',
+        },
+    };
+    const parsed = parseGroupGeneration([
+        '<chat>IU：「我哋繼續傾。」</chat>',
+        '<scene>{"location":"living room","reality_layer":"physical","present_member_ids":["iu","jennie"],"summary":"conversation continues","unresolved":[],"wardrobe_updates":{"user":"KEEP","members":[{"member_id":"iu","outfit":"KEEP"},{"member_id":"Jennie","outfit":"KEEP"}]}}</scene>',
+        '<npc_candidate>null</npc_candidate>',
+    ].join(''), room);
+
+    assert.deepEqual(parsed.scene.wardrobe, room.scene.wardrobe);
 });
 
 test('group prompt pins returned private context to its owner', () => {

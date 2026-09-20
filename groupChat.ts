@@ -7,6 +7,7 @@ import {
     isRoomWideMemory,
     selectRelevantMemories,
 } from './memoryRetrieval.js';
+import { formatWardrobeLedger, mergeWardrobeUpdate } from './wardrobe.js';
 
 export interface GroupNpcCandidate {
     name: string;
@@ -149,6 +150,10 @@ export const buildGroupSystemPrompt = (room: ChatRoom, query = '') => {
     const memberBlocks = room.members
         .map(member => memberIdentityBlock(member, present.has(member.id), roomWideMemoryIds, memoryQuery))
         .join('\n\n---\n\n');
+    const wardrobeParticipants = room.members.map(member => ({
+        key: member.id,
+        label: member.persona.name,
+    }));
 
     return [
         `You write a continuous private romance-oriented group conversation named "${room.title}". You are the scene engine for several fixed characters, never an AI assistant.`,
@@ -164,6 +169,7 @@ export const buildGroupSystemPrompt = (room: ChatRoom, query = '') => {
             '- Narration is an external third-person camera. It must name the relevant character and must never use 我 / 我們 / 我哋 / I / me / my for any character or for the user. First-person pronouns are allowed only inside a clearly labelled character dialogue line.',
         ].join('\n'),
         `CURRENT SCENE:\nLocation: ${room.scene.location}\nReality layer: ${room.scene.realityLayer}\nPresent member IDs: ${room.scene.presentMemberIds.join(', ')}\nSummary: ${room.scene.summary}\nUnresolved: ${room.scene.unresolved.join('; ') || 'none'}`,
+        formatWardrobeLedger(room.scene.wardrobe, wardrobeParticipants),
         sharedSoul ? `SHARED soul.md:\n${sharedSoul}` : '',
         sharedMemories ? `ROOM-WIDE memory.md (every currently present member knows these):\n${sharedMemories}` : '',
         `FIXED MEMBER FILES:\n\n${memberBlocks}`,
@@ -187,7 +193,8 @@ export const buildGroupSystemPrompt = (room: ChatRoom, query = '') => {
             '- Do not return a JSON response object. Use the simple envelope below so the live dialogue remains reliable.',
             '- Inside <chat>, put every narration or speaker turn on its own new line. Write narration as （text） and every spoken line as exact Display Name：「dialogue」. A display name may appear several times in one reply.',
             '- Never place [Name], a second speaker label, or another character’s dialogue inside the current speaker line. End that line and start a new labelled line whenever the speaker changes.',
-            '- After </chat>, put one compact JSON object inside <scene> with keys location, reality_layer, present_member_ids, summary, unresolved.',
+            '- After </chat>, put one compact JSON object inside <scene> with keys location, reality_layer, present_member_ids, summary, unresolved, wardrobe_updates.',
+            '- wardrobe_updates must be {"user":"KEEP","members":[{"member_id":"exact fixed ID","outfit":"KEEP"}]}. Include each present member. Use KEEP unless this exact turn visibly established a clothing change; otherwise provide one concise complete current outfit. Never change clothing merely to add variety.',
             '- Then put null inside <npc_candidate>, unless the newest turn introduced a genuinely new recurring named person; in that case use one compact JSON object with name, gender, description, public_figure_query.',
             '- Preserve location, reality layer and present members unless the newest turn actually changes them.',
             '- Return only: <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate>.',
@@ -223,7 +230,7 @@ export const GROUP_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
                 scene: {
                     type: 'object',
                     additionalProperties: false,
-                    required: ['location', 'reality_layer', 'present_member_ids', 'summary', 'unresolved'],
+                    required: ['location', 'reality_layer', 'present_member_ids', 'summary', 'unresolved', 'wardrobe_updates'],
                     properties: {
                         location: { type: 'string' },
                         reality_layer: { type: 'string', enum: ['physical', 'texting', 'imagined'] },
@@ -234,6 +241,27 @@ export const GROUP_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
                         },
                         summary: { type: 'string' },
                         unresolved: { type: 'array', maxItems: 6, items: { type: 'string' } },
+                        wardrobe_updates: {
+                            type: 'object',
+                            additionalProperties: false,
+                            required: ['user', 'members'],
+                            properties: {
+                                user: { type: 'string' },
+                                members: {
+                                    type: 'array',
+                                    maxItems: ROOM_PRESENT_MEMBER_LIMIT,
+                                    items: {
+                                        type: 'object',
+                                        additionalProperties: false,
+                                        required: ['member_id', 'outfit'],
+                                        properties: {
+                                            member_id: { type: 'string' },
+                                            outfit: { type: 'string' },
+                                        },
+                                    },
+                                },
+                            },
+                        },
                     },
                 },
                 npc_candidate: {
@@ -557,6 +585,10 @@ export const parseGroupGeneration = (
             present_member_ids?: string[];
             summary?: string;
             unresolved?: string[];
+            wardrobe_updates?: {
+                user?: string;
+                members?: Array<{ member_id?: string; outfit?: string }>;
+            };
         };
         npc_candidate?: {
             name?: string;
@@ -578,6 +610,10 @@ export const parseGroupGeneration = (
         present_member_ids?: string[];
         summary?: string;
         unresolved?: string[];
+        wardrobe_updates?: {
+            user?: string;
+            members?: Array<{ member_id?: string; outfit?: string }>;
+        };
     } | null);
     const taggedNpcText = extractTaggedBlock(rawText, 'npc_candidate');
     const taggedNpc = /^(?:null|none)$/iu.test(taggedNpcText)
@@ -633,6 +669,11 @@ export const parseGroupGeneration = (
     const unresolved = Array.isArray(sceneData?.unresolved)
         ? sceneData.unresolved
         : Array.isArray(room.scene.unresolved) ? room.scene.unresolved : [];
+    const wardrobe = mergeWardrobeUpdate(
+        room.scene.wardrobe,
+        sceneData?.wardrobe_updates,
+        room.members.map(member => ({ key: member.id, label: member.persona.name })),
+    );
     const scene: RoomSceneState = {
         ...room.scene,
         location: compact(sceneData?.location, 240) || room.scene.location,
@@ -642,6 +683,7 @@ export const parseGroupGeneration = (
         presentMemberIds: requestedIds.length > 0 ? requestedIds : room.scene.presentMemberIds,
         summary: compact(sceneData?.summary, 1200) || room.scene.summary,
         unresolved: unresolved.map(item => compact(item, 240)).filter(Boolean).slice(0, 6),
+        wardrobe,
     };
     const npc = parsed?.npc_candidate || taggedNpc;
 

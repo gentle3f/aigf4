@@ -338,7 +338,10 @@ function trimWrappedQuotes(text: string): string {
 }
 
 export function cleanVeniceChatReply(rawText: string): string {
-  let text = stripCodeFences(rawText).replace(/\r/g, '').trim();
+  let text = stripCodeFences(rawText)
+    .replace(/<wardrobe>[\s\S]*?<\/wardrobe>/gi, '')
+    .replace(/\r/g, '')
+    .trim();
 
   if (!text) {
     return '';

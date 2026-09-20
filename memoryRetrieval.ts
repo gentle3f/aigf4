@@ -12,7 +12,7 @@ const queryTerms = (query: string) => {
     const normalized = normalize(query);
     const terms = new Set<string>();
     normalized.match(/[a-z0-9][a-z0-9'_-]{1,31}/giu)?.forEach(term => terms.add(term));
-    const hanRuns = normalized.match(/[\p{Script=Han}]{2,}/gu) || [];
+    const hanRuns: string[] = normalized.match(/[\p{Script=Han}]{2,}/gu) ?? [];
     hanRuns.forEach(run => {
         if (run.length <= 4) terms.add(run);
         for (let index = 0; index < run.length - 1; index += 1) {

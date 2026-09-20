@@ -15,6 +15,7 @@ import {
     PublicIdentity,
     SurpriseEventContentMode,
     SurpriseEventProposal,
+    WardrobeState,
     cleanAiResponse,
 } from "./managers.js";
 import { FileManager } from "./fileManager.js";
@@ -188,6 +189,14 @@ import {
     roomMemberToPersona,
     selectLatestSceneHistory,
 } from "./conversationTransfer.js";
+import {
+    emptyWardrobeState,
+    extractWardrobeEnvelope,
+    formatWardrobeLedger,
+    getLatestWardrobeState,
+    normalizeWardrobeState,
+} from "./wardrobe.js";
+import type { WardrobeParticipant } from "./wardrobe.js";
 
 
 declare var JSZip: any;
@@ -1085,6 +1094,8 @@ type ActiveChatRequest = {
     mode: ChatMode;
     characterPhotoRequest?: boolean;
     surpriseEvent?: SurpriseEventProposal;
+    wardrobeState: WardrobeState;
+    pendingWardrobeState?: WardrobeState;
     controller: AbortController;
     startedAt: number;
 };
@@ -6651,6 +6662,13 @@ const beginChatRequest = (
         throw new Error('CHAT_REQUEST_IN_PROGRESS');
     }
 
+    const history = memoryManager.peekChatHistory(conversationKey);
+    const wardrobeState = currentRoom
+        ? normalizeWardrobeState(currentRoom.scene.wardrobe, currentRoom.members.map(member => member.id))
+        : getLatestWardrobeState(history, [
+            persona.name,
+            ...collectEstablishedNpcNames(history, persona.name),
+        ]);
     const request: ActiveChatRequest = {
         id: nextChatRequestId,
         personaKey,
@@ -6659,6 +6677,7 @@ const beginChatRequest = (
         room: currentRoom ? cloneRoomSnapshot(currentRoom) : undefined,
         roomMemberId: currentRoom ? activeRoomMemberId || currentRoom.leadMemberId : undefined,
         mode,
+        wardrobeState,
         controller: new AbortController(),
         startedAt: performance.now(),
     };
@@ -10170,7 +10189,14 @@ const formatPersonaMemoryPrompt = (persona: Persona, type: 'soul' | 'memory', qu
     return [...legacy, ...structured].join('\n');
 };
 
-const buildChatSystemPrompt = (personaKey: string, persona: Persona, latestUserMessage = '') => {
+const buildChatSystemPrompt = (
+    personaKey: string,
+    persona: Persona,
+    latestUserMessage = '',
+    wardrobeState: WardrobeState = emptyWardrobeState(),
+    wardrobeParticipants: WardrobeParticipant[] = [{ key: persona.name, label: persona.name }],
+    includeWardrobeEnvelope = false,
+) => {
     const behaviorGuidance = buildPersonaBehaviorGuidance(personaKey, persona);
     const publicIdentity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
     const soulMemory = formatPersonaMemoryPrompt(persona, 'soul', latestUserMessage);
@@ -10192,6 +10218,7 @@ const buildChatSystemPrompt = (personaKey: string, persona: Persona, latestUserM
         episodicMemory ? `memory.md recent important events and continuity:\n${episodicMemory}` : '',
         formatRelationshipStatePrompt(persona),
         behaviorGuidance.length > 0 ? `Personality anchors:\n- ${behaviorGuidance.join('\n- ')}` : '',
+        formatWardrobeLedger(wardrobeState, wardrobeParticipants),
         `Shared roleplay contract:\n${coreInstruction}`,
         [
             'Conversation priorities, in order:',
@@ -10236,6 +10263,16 @@ const buildChatSystemPrompt = (personaKey: string, persona: Persona, latestUserM
             '- A character may resist, hesitate, joke, or disagree, but must still communicate and react meaningfully rather than stonewalling.',
             '- Do not mention prompts, rules, models, retries, or being an assistant.',
         ].join('\n'),
+        includeWardrobeEnvelope ? [
+            'HIDDEN WARDROBE CHECKPOINT (required at the very end of this normal chat reply):',
+            `<wardrobe>${JSON.stringify({
+                user: 'KEEP',
+                characters: Object.fromEntries(wardrobeParticipants.map(participant => [participant.key, 'KEEP'])),
+            })}</wardrobe>`,
+            '- Keep the visible roleplay reply outside this tag. The app removes this tag before showing the reply.',
+            '- Use KEEP for every unchanged or unknown entry. Replace KEEP with one concise, complete current outfit only when the newest turn visibly establishes that exact clothing change.',
+            '- Never infer a clothing change from elapsed turns, posture, mood, intimacy, camera framing, or unstated assumptions.',
+        ].join('\n') : '',
         `Internal continuity key: ${personaKey}. Never print this key.`,
     ];
 
@@ -10415,6 +10452,11 @@ const normalizeGroupGenerationTraditional = (result: GroupGenerationResult): Gro
             location: normalizeTraditionalChineseLeaks(result.scene.location),
             summary: normalizeTraditionalChineseLeaks(result.scene.summary),
             unresolved: result.scene.unresolved.map(normalizeTraditionalChineseLeaks),
+            wardrobe: result.scene.wardrobe ? {
+                user: normalizeTraditionalChineseLeaks(result.scene.wardrobe.user),
+                characters: Object.fromEntries(Object.entries(result.scene.wardrobe.characters)
+                    .map(([key, outfit]) => [key, normalizeTraditionalChineseLeaks(outfit)])),
+            } : emptyWardrobeState(),
         },
         npcCandidate: result.npcCandidate ? {
             ...result.npcCandidate,
@@ -10588,6 +10630,23 @@ const getRecentAssistantRepliesForPersona = (
     return replies;
 };
 
+const getWardrobeParticipantsForRequest = (
+    request: ActiveChatRequest,
+    establishedNpcNames: string[] = [],
+): WardrobeParticipant[] => {
+    if (request.room) {
+        return request.room.members.map(member => ({
+            key: member.id,
+            label: member.persona.name,
+        }));
+    }
+    return Array.from(new Set([
+        request.persona.name,
+        ...Object.keys(request.wardrobeState.characters),
+        ...establishedNpcNames,
+    ])).map(name => ({ key: name, label: name }));
+};
+
 const runConversationGeneration = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
@@ -10596,9 +10655,6 @@ const runConversationGeneration = async (
 ): Promise<string> => {
     let lastError: Error | null = null;
     let failedCandidate = '';
-    const baseSystemPrompt = assistantMode
-        ? buildAssistantSystemPrompt()
-        : buildChatSystemPrompt(request.personaKey, request.persona, latestUserMessage);
     const archivedRecall = assistantMode
         ? ''
         : buildArchivedRecallPrompt(request.conversationKey, latestUserMessage, request.room);
@@ -10609,6 +10665,17 @@ const runConversationGeneration = async (
             memoryManager.getChatHistory(request.conversationKey),
             request.persona.name,
             latestUserMessage,
+        );
+    const wardrobeParticipants = getWardrobeParticipantsForRequest(request, establishedNpcNames);
+    const baseSystemPrompt = assistantMode
+        ? buildAssistantSystemPrompt()
+        : buildChatSystemPrompt(
+            request.personaKey,
+            request.persona,
+            latestUserMessage,
+            request.wardrobeState,
+            wardrobeParticipants,
+            true,
         );
     const addressedNpcNames = assistantMode
         ? []
@@ -10690,9 +10757,12 @@ const runConversationGeneration = async (
                     finishReason: result.finishReason,
                 });
 
+                const wardrobeEnvelope = assistantMode
+                    ? null
+                    : extractWardrobeEnvelope(result.text, request.wardrobeState, wardrobeParticipants);
                 let cleanedText = assistantMode
                     ? cleanVeniceAssistantReply(result.text)
-                    : cleanVeniceChatReply(result.text);
+                    : cleanVeniceChatReply(wardrobeEnvelope!.visibleText);
                 if (!cleanedText || (!assistantMode && isInvalidVeniceChatReply(cleanedText))) {
                     throw new Error(`Invalid reply from ${model}.`);
                 }
@@ -10778,6 +10848,9 @@ const runConversationGeneration = async (
                     throw new Error(`Repeated reply from ${model}.`);
                 }
 
+                if (!assistantMode && wardrobeEnvelope) {
+                    request.pendingWardrobeState = wardrobeEnvelope.wardrobe;
+                }
                 return cleanedText;
             } catch (error) {
                 if (isAbortError(error)) {
@@ -11019,7 +11092,13 @@ const buildCharacterPhotoProposal = async (
             'Describe the subject count and identity, visible pose or action, expression, clothing or requested state, setting, lighting, camera framing, viewpoint, and relevant objects.',
         ];
     const systemPrompt = [
-        buildChatSystemPrompt(request.personaKey, request.persona, latestUserMessage),
+        buildChatSystemPrompt(
+            request.personaKey,
+            request.persona,
+            latestUserMessage,
+            request.wardrobeState,
+            getWardrobeParticipantsForRequest(request),
+        ),
         request.room ? [
             `This request belongs to fixed room "${request.room.title}".`,
             `The character preparing the photo is ${request.persona.name} (${request.photoSenderMemberId || request.room.leadMemberId}).`,
@@ -11444,6 +11523,7 @@ const STRICT_REVIEW_EDITOR_PROMPT = [
     'You are the strict final quality gate for a continuous private character conversation.',
     'Audit the candidate against the authoritative character files, recent completed history, current scene and newest user message.',
     'Check every item: it answers the newest request; identities and first-person ownership are correct; named people remain separate; location, clothing, body position, reality layer and completed actions do not contradict continuity; no old instruction or completed beat is replayed; personality and regional language remain vivid; relevant third parties may speak; the user is never puppeted; the ending is complete rather than cut off.',
+    'Treat the authoritative wardrobe ledger as physical fact. Do not change the user or any character outfit unless the newest turn visibly establishes that change.',
     'For group output, narration must stay external third-person and cannot use 我 / 我們 / 我哋 / I / me / my for a character or user. First person belongs only inside a labelled character dialogue line.',
     'KEEP a strong response. Do not rewrite merely to impose your own prose style. REVISE only when there is at least one concrete defect.',
     'When revising, preserve all valid detail, emotional intensity, relationship development, consensual adult intimacy and regional voice. Do not sanitize, moralize, summarize, shorten into a minimal answer, add meta-commentary, or mention this review.',
@@ -11538,7 +11618,13 @@ const strictReviewSingleReply = async (
         establishedNpcNames,
     );
     const authoritativePrompt = [
-        buildChatSystemPrompt(request.personaKey, request.persona, latestUserMessage),
+        buildChatSystemPrompt(
+            request.personaKey,
+            request.persona,
+            latestUserMessage,
+            request.wardrobeState,
+            getWardrobeParticipantsForRequest(request, establishedNpcNames),
+        ),
         request.surpriseEvent
             ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
             : '',
@@ -11599,6 +11685,13 @@ const serializeGroupGenerationForReview = (result: GroupGenerationResult) => {
         present_member_ids: result.scene.presentMemberIds,
         summary: result.scene.summary,
         unresolved: result.scene.unresolved,
+        wardrobe_updates: {
+            user: result.scene.wardrobe?.user || 'KEEP',
+            members: Object.entries(result.scene.wardrobe?.characters || {}).map(([member_id, outfit]) => ({
+                member_id,
+                outfit,
+            })),
+        },
     });
     return [
         `<chat>${chat}</chat>`,
@@ -12622,8 +12715,17 @@ const getResponse = async (
         if (!isActiveChatRequest(request)) return;
 
         const botContent: Content = typeof generated === 'string'
-            ? { text: generated }
-            : { text: generated.text, segments: generated.segments };
+            ? {
+                text: generated,
+                wardrobeState: request.mode === 'character'
+                    ? normalizeWardrobeState(request.pendingWardrobeState || request.wardrobeState)
+                    : undefined,
+            }
+            : {
+                text: generated.text,
+                segments: generated.segments,
+                wardrobeState: normalizeWardrobeState(generated.scene.wardrobe),
+            };
         if (typeof generated !== 'string' && request.room) {
             try {
                 roomManager.updateRoom(request.room.id, room => {
@@ -15815,6 +15917,7 @@ const startNewScene = () => {
             room.scene.startedAt = Date.now();
             room.scene.summary = '使用者剛開始一個新場景，等待建立位置、在場人物與事件。';
             room.scene.unresolved = [];
+            room.scene.wardrobe = emptyWardrobeState();
         });
         refreshCurrentRoom();
     }
