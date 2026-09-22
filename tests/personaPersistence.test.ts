@@ -15,6 +15,15 @@ const installLocalStorage = () => {
     return storage;
 };
 
+test('chat preferences survive reload for a built-in character without other edits', () => {
+    installLocalStorage();
+    const manager = new MemoryManager();
+    manager.updatePersona('cc', { chatPreferences: { length: 'detailed', style: 'dialogue', pace: 'slow' } });
+    assert.deepEqual(new MemoryManager().getPersona('cc')?.chatPreferences, {
+        length: 'detailed', style: 'dialogue', pace: 'slow',
+    });
+});
+
 test('built-in persona edits use an independent default snapshot and survive reload', () => {
     const storage = installLocalStorage();
     const avatarUrl = 'data:image/webp;base64,Y2MtdGVzdA==';

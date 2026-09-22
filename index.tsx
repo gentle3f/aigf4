@@ -197,6 +197,7 @@ import {
     normalizeWardrobeState,
 } from "./wardrobe.js";
 import type { WardrobeParticipant } from "./wardrobe.js";
+import { editChatPreferences, experienceDialog, experienceButton, preferencePrompt } from './chatExperience.js';
 
 
 declare var JSZip: any;
@@ -10217,6 +10218,7 @@ const buildChatSystemPrompt = (
         soulMemory ? `soul.md permanent identity, relationship and user anchors:\n${soulMemory}` : '',
         episodicMemory ? `memory.md recent important events and continuity:\n${episodicMemory}` : '',
         formatRelationshipStatePrompt(persona),
+        preferencePrompt(persona.chatPreferences),
         behaviorGuidance.length > 0 ? `Personality anchors:\n- ${behaviorGuidance.join('\n- ')}` : '',
         formatWardrobeLedger(wardrobeState, wardrobeParticipants),
         `Shared roleplay contract:\n${coreInstruction}`,
@@ -10270,7 +10272,7 @@ const buildChatSystemPrompt = (
                 characters: Object.fromEntries(wardrobeParticipants.map(participant => [participant.key, 'KEEP'])),
             })}</wardrobe>`,
             '- Keep the visible roleplay reply outside this tag. The app removes this tag before showing the reply.',
-            '- Use KEEP for every unchanged or unknown entry. Replace KEEP with one concise, complete current outfit only when the newest turn visibly establishes that exact clothing change.',
+            '- Use KEEP for every unchanged or unknown entry. For an empty ledger entry, initialize it from explicit current-scene history. For an established entry, replace KEEP only when this turn visibly establishes a clothing change. Return the complete resulting outfit.',
             '- Never infer a clothing change from elapsed turns, posture, mood, intimacy, camera framing, or unstated assumptions.',
         ].join('\n') : '',
         `Internal continuity key: ${personaKey}. Never print this key.`,
@@ -10377,10 +10379,17 @@ const generateChatTextWithTimeout = async (
     }, timeoutMs);
 
     try {
-        return await generateVeniceText({
+        const result = await generateVeniceText({
             ...options,
             signal: timeoutController.signal,
         });
+        try {
+            const stored = JSON.parse(localStorage.getItem('wetappUsageV1') || '[]');
+            const rows = Array.isArray(stored) ? stored : [];
+            rows.push({ at: Date.now(), model: result.model, input: result.promptTokens || 0, output: result.completionTokens || 0, phase: chatRuntimeState });
+            localStorage.setItem('wetappUsageV1', JSON.stringify(rows.slice(-300)));
+        } catch { /* Usage reporting must never block a completed reply. */ }
+        return result;
     } catch (error) {
         if (timedOut && !upstreamSignal?.aborted) {
             throw new Error(CHAT_MODEL_TIMEOUT_ERROR);
@@ -11624,6 +11633,7 @@ const strictReviewSingleReply = async (
             latestUserMessage,
             request.wardrobeState,
             getWardrobeParticipantsForRequest(request, establishedNpcNames),
+            true,
         ),
         request.surpriseEvent
             ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
@@ -11636,11 +11646,16 @@ const strictReviewSingleReply = async (
         request,
         latestUserMessage,
         authoritativePrompt,
-        candidate,
+        `${candidate}\n<wardrobe>${JSON.stringify(request.pendingWardrobeState || request.wardrobeState)}</wardrobe>`,
     );
     if (!decision || decision.decision === 'keep') return candidate;
 
-    let revision = cleanVeniceChatReply(decision.revisedResponse);
+    const revisedWardrobe = extractWardrobeEnvelope(
+        decision.revisedResponse,
+        request.pendingWardrobeState || request.wardrobeState,
+        getWardrobeParticipantsForRequest(request, establishedNpcNames),
+    );
+    let revision = cleanVeniceChatReply(revisedWardrobe.visibleText);
     revision = request.personaKey === 'cc'
         ? normalizeCcCantoneseLeaks(revision)
         : normalizeTraditionalChineseLeaks(revision);
@@ -11656,6 +11671,7 @@ const strictReviewSingleReply = async (
         || replyContainsAttributedNpcSpeech(revision, addressedNpcNames);
     if (
         !revision
+        || !revisedWardrobe.hadValidUpdate
         || isInvalidVeniceChatReply(revision)
         || replyBreaksSpeakerOwnership(revision)
         || replyHasUnconfirmedAddressLabel(
@@ -11672,6 +11688,7 @@ const strictReviewSingleReply = async (
         console.warn('[aigf4 strict revision rejected]', { requestId: request.id, issues: decision.issues });
         return candidate;
     }
+    request.pendingWardrobeState = revisedWardrobe.wardrobe;
     return revision;
 };
 
@@ -16703,6 +16720,7 @@ const setupEventListeners = () => {
 
 // --- Initialization ---
 const init = async () => {
+    await memoryManager.restoreChatRecovery();
     syncBrowserViewState(HOME_HISTORY_STATE, 'replace');
     conversationSearchInput.value = '';
     guardConversationSearchFromAutofill();
@@ -16735,6 +16753,185 @@ const init = async () => {
         if (pendingVideoJob) void resumePendingVideoJob('auto');
     }
 };
+
+const openExperienceDraft = async (direct = false) => {
+    if (!currentPersona || !currentPersonaKey || !currentConversationKey || activeChatRequest || isGodModeActive || isAssistantPersonaKey(currentPersonaKey)) return;
+    const key = currentConversationKey;
+    const history = memoryManager.peekChatHistory(key);
+    const last = history.at(-1);
+    if (direct && (last?.role !== 'model' || !last.content.text || last.content.photoProposal)) {
+        showError('請在角色完成一般文字回覆後使用導演功能。');
+        return;
+    }
+    const dialog = experienceDialog(direct ? '導演一下' : '幫我接戲');
+    moreOptionsMenu.classList.add('hidden');
+    const output = document.createElement('div');
+    output.style.whiteSpace = 'pre-wrap';
+    const request = beginChatRequest(currentPersonaKey, currentPersona, 'character', key);
+    const generate = async (instruction: string) => {
+        output.textContent = '構思中…';
+        const controls = Array.from(dialog.querySelectorAll('button')).filter(button => button.textContent !== '關閉');
+        controls.forEach(button => { button.disabled = true; });
+        try {
+            const context = history.slice(-16).map(message => ({
+                role: message.role === 'model' ? 'assistant' as const : message.role,
+                content: request.room ? contentToGroupHistoryText(message.content, request.room) : message.content.text || '',
+            })).filter(message => message.content);
+            const result = await generateChatTextWithTimeout({
+                model: buildCharacterModelRoute(chatModelSettings, request.personaKey === 'cc')[0],
+                messages: [
+                    { role: 'system', content: [
+                        request.room ? buildGroupSystemPrompt(request.room) : buildChatSystemPrompt(request.personaKey, request.persona, '', request.wardrobeState),
+                        direct
+                            ? 'Editing task: rewrite only the last assistant reply. Preserve every event, fact, outfit, participant and outcome. Change presentation only. Return the same chat envelope for a group, or plain prose for a single chat.'
+                            : 'Suggestion task: return JSON {"suggestions":["...","...","..."]}: exactly three distinct short messages the USER could send next: dialogue, action, or gentle development. Match the user language. Respect current scene and do not invent past facts. Do not continue as a character.',
+                    ].join('\n\n') },
+                    ...context,
+                    { role: 'user', content: instruction },
+                ],
+                temperature: 0.7,
+                signal: request.controller.signal,
+            });
+            if (!dialog.open || currentConversationKey !== key) return;
+            output.replaceChildren();
+            if (!direct) {
+                const raw = result.text.replace(/^\s*```(?:json)?/i, '').replace(/```\s*$/, '').trim();
+                const data = JSON.parse(raw);
+                if (!Array.isArray(data.suggestions) || data.suggestions.length !== 3 || data.suggestions.some((v: unknown) => typeof v !== 'string' || !v.trim())) throw new Error('未能整理建議，請再試一次。');
+                data.suggestions.forEach((suggestion: string) => output.append(experienceButton(suggestion, () => {
+                    messageInput.value = suggestion;
+                    messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    dialog.close();
+                    messageInput.focus();
+                })));
+            } else {
+                const parsed = request.room ? parseGroupGeneration(result.text, request.room) : null;
+                const replacement: Content = {
+                    ...last!.content,
+                    text: parsed?.text || cleanVeniceChatReply(result.text),
+                    segments: parsed?.segments,
+                    previousVersions: [...(last!.content.previousVersions || []), { ...last!.content, previousVersions: undefined }],
+                };
+                if (!replacement.text) throw new Error('修改草稿是空白，原回覆已保留。');
+                output.textContent = replacement.text;
+                output.append(experienceButton('採用這個版本', () => {
+                    const current = memoryManager.peekChatHistory(key);
+                    if (current.at(-1)?.id !== last!.id || current.at(-1)?.content.text !== last!.content.text) {
+                        output.textContent = '對話已有更新，請重新產生草稿。';
+                        return;
+                    }
+                    const updated = current.map((message, index) => index === current.length - 1 ? { ...message, content: replacement } : message);
+                    memoryManager.setChatHistory(key, updated, true);
+                    dialog.close();
+                    startChat(key, null, 'skip');
+                }));
+            }
+        } catch (error) {
+            if (!request.controller.signal.aborted) output.textContent = error instanceof Error ? error.message : '暫時未能產生草稿。';
+        } finally {
+            controls.forEach(button => { button.disabled = false; });
+        }
+    };
+    dialog.addEventListener('close', () => { request.controller.abort(); finishChatRequest(request); }, { once: true });
+    if (direct) {
+        ['更細膩', '多些對話', '節奏慢一點', '讓其他在場角色參與'].forEach(label => dialog.append(experienceButton(label, () => { void generate(label); })));
+        if (last!.content.previousVersions?.length) dialog.append(experienceButton('還原上一個版本', () => {
+            const versions = last!.content.previousVersions!;
+            const restored = { ...versions.at(-1)!, previousVersions: versions.slice(0, -1) };
+            memoryManager.setChatHistory(key, history.map((message, index) => index === history.length - 1 ? { ...message, content: restored } : message), true);
+            dialog.close();
+            startChat(key, null, 'skip');
+        }));
+    }
+    dialog.append(output);
+    if (!direct) void generate('請提供三個可直接放進輸入框的接戲建議。');
+};
+
+[
+    ['最近文字用量', () => {
+        const dialog = experienceDialog('最近文字用量（這部裝置）');
+        moreOptionsMenu.classList.add('hidden');
+        let rows: Array<{ at: number; model: string; input: number; output: number }> = [];
+        try { const saved = JSON.parse(localStorage.getItem('wetappUsageV1') || '[]'); if (Array.isArray(saved)) rows = saved; } catch { /* Empty report for corrupt diagnostics. */ }
+        const summary = document.createElement('p');
+        summary.textContent = `最近 ${rows.length} 次成功請求：輸入 ${rows.reduce((sum, row) => sum + row.input, 0).toLocaleString()} tokens；輸出 ${rows.reduce((sum, row) => sum + row.output, 0).toLocaleString()} tokens。包含審核及接戲等請求；不包含圖片、影片或未回傳用量的失敗請求。`;
+        dialog.append(summary);
+        rows.slice(-30).reverse().forEach(row => {
+            const line = document.createElement('p');
+            line.style.cssText = 'padding:12px 0;border-bottom:1px solid #ddd';
+            line.textContent = `${new Date(row.at).toLocaleString()} · ${row.model}\n輸入 ${row.input} / 輸出 ${row.output}`;
+            dialog.append(line);
+        });
+    }],
+    ['目前場景與衣著', () => {
+        if (!currentPersona || !currentConversationKey || activeChatRequest) return;
+        const key = currentConversationKey;
+        const room = currentRoom;
+        const history = memoryManager.peekChatHistory(key);
+        const participants = room ? room.members.map(member => ({ key: member.id, label: member.persona.name })) : [{ key: currentPersona.name, label: currentPersona.name }];
+        const state = room ? normalizeWardrobeState(room.scene.wardrobe) : getLatestWardrobeState(history, participants.map(person => person.key));
+        const dialog = experienceDialog('目前場景與衣著');
+        moreOptionsMenu.classList.add('hidden');
+        const fields: Array<{ key: string; input: HTMLTextAreaElement }> = [];
+        const addField = (fieldKey: string, labelText: string, value: string) => {
+            const label = document.createElement('label');
+            label.textContent = labelText;
+            const input = document.createElement('textarea');
+            input.value = value;
+            input.maxLength = 360;
+            input.rows = 2;
+            input.style.cssText = 'display:block;width:100%;padding:12px;margin:6px 0 16px;border:1px solid #a5cfc2;border-radius:10px;background:white;color:#163d35';
+            label.append(input);
+            dialog.append(label);
+            fields.push({ key: fieldKey, input });
+        };
+        if (room) addField('location', '地點', room.scene.location);
+        addField('user', '你的衣著', state.user);
+        participants.forEach(person => addField(`character:${person.key}`, person.label, state.characters[person.key] || ''));
+        dialog.append(experienceButton('儲存目前狀態', () => {
+            if (activeChatRequest) return;
+            const updated = normalizeWardrobeState(state);
+            fields.forEach(field => {
+                if (field.key === 'user') updated.user = field.input.value.trim();
+                else if (field.key.startsWith('character:')) updated.characters[field.key.slice(10)] = field.input.value.trim();
+            });
+            if (room) roomManager.updateRoom(room.id, target => {
+                target.scene.wardrobe = updated;
+                target.scene.location = fields.find(field => field.key === 'location')!.input.value.trim();
+            });
+            memoryManager.addMessage(key, 'system', { text: '[系統] 已更新目前衣著設定。', wardrobeState: updated });
+            dialog.close();
+            if (currentConversationKey === key) startChat(key, null, 'skip');
+        }));
+    }],
+    ['幫我接戲', () => { void openExperienceDraft(); }],
+    ['導演一下', () => { void openExperienceDraft(true); }],
+    ['互動偏好', () => {
+        if (!currentPersona || !currentPersonaKey || activeChatRequest) return;
+        moreOptionsMenu.classList.add('hidden');
+        const key = currentConversationKey;
+        const personaKey = currentPersonaKey;
+        const roomId = currentRoom?.id;
+        editChatPreferences(currentRoom?.chatPreferences || currentPersona.chatPreferences, value => {
+            if (roomId) roomManager.updateRoom(roomId, room => { room.chatPreferences = value; });
+            else memoryManager.updatePersona(personaKey, { chatPreferences: value });
+            if (currentConversationKey === key && key) startChat(key, null, 'skip');
+        });
+    }],
+].forEach(([label, action]) => {
+    const button = document.createElement('button');
+    button.className = 'dropdown-item';
+    button.textContent = label as string;
+    button.onclick = action as () => void;
+    moreOptionsMenu.prepend(button);
+});
+
+window.addEventListener('wetapp-storage-failed', () => {
+    showError('本機儲存失敗。請保持此頁開啟，立即檢查雲端同步或匯出備份，避免重新整理後遺失訊息。');
+});
+window.addEventListener('wetapp-storage-recovered', () => {
+    showError('訊息已寫入本機備援儲存。請完成雲端同步；聊天室資料容量仍需整理。');
+});
 
 void init();
 

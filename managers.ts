@@ -8,6 +8,7 @@ import {
     isCompressedChatHistoryStorage,
 } from './chatHistoryStorage.js';
 import { notifyLocalCloudChange } from './cloudSyncEvents.js';
+import { readChatRecovery, saveChatRecovery } from './chatRecoveryStore.js';
 
 // --- Constants ---
 export const DIARY_CHECKPOINT = '[DIARY_CHECKPOINT]';
@@ -295,6 +296,7 @@ export interface ChatContextBridge {
 }
 
 export interface Content {
+    previousVersions?: Content[];
     text?: string;
     segments?: ChatSegment[];
     attachments?: ChatAttachment[];
@@ -375,6 +377,7 @@ export interface TimelineBranchInfo {
 }
 
 export interface Persona {
+    chatPreferences?: import('./chatExperience.js').ChatPreferences;
     name: string;
     emoji: string;
     gender: "male" | "female";
@@ -495,6 +498,7 @@ export class MemoryManager {
                     Number(currentPersona.lastMemorySummaryUserMessageCount || 0) !== Number(originalPersona.lastMemorySummaryUserMessageCount || 0) ||
                     Number(currentPersona.memorySummaryVersion || 0) !== Number(originalPersona.memorySummaryVersion || 0) ||
                     currentPersona.favoritePhotoPrompt !== originalPersona.favoritePhotoPrompt ||
+                    JSON.stringify(currentPersona.chatPreferences || null) !== JSON.stringify(originalPersona.chatPreferences || null) ||
                     Boolean(currentPersona.publicIdentityEnabled) !== Boolean(originalPersona.publicIdentityEnabled) ||
                     JSON.stringify(currentPersona.publicIdentity || null) !== JSON.stringify(originalPersona.publicIdentity || null)
                 ) 
@@ -698,12 +702,37 @@ export class MemoryManager {
         }
     }
 
+    private recoveryReady = false;
+
+    async restoreChatRecovery() {
+        try {
+            const saved = await readChatRecovery();
+            if (saved && localStorage.getItem(CHAT_HISTORY_STORAGE_KEY) === saved.baseline) {
+                this.chatHistories = decodeChatHistoryStorage(saved.data);
+                Object.values(this.chatHistories).forEach(history => this.ensureChatMessageMetadata(history));
+            }
+        } catch (error) {
+            console.warn('Chat recovery unavailable', error);
+        } finally {
+            this.recoveryReady = true;
+        }
+    }
+
     private persistChatHistories(throwOnError = false) {
         try {
             localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, encodeChatHistoryStorage(this.chatHistories));
+            if (this.recoveryReady) void saveChatRecovery(null).catch(console.warn);
             notifyLocalCloudChange('messages');
         } catch (error) {
             console.error('Failed to save chat histories:', error);
+            if (!throwOnError && typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('wetapp-storage-failed'));
+                if (this.recoveryReady) void saveChatRecovery({
+                    baseline: localStorage.getItem(CHAT_HISTORY_STORAGE_KEY),
+                    data: encodeChatHistoryStorage(this.chatHistories),
+                }).then(() => window.dispatchEvent(new CustomEvent('wetapp-storage-recovered'))).catch(console.error);
+                notifyLocalCloudChange('messages');
+            }
             if (throwOnError) throw error;
         }
     }
@@ -1117,8 +1146,15 @@ export class MemoryManager {
     
     setChatHistory(key: string, history: ChatMessage[], throwOnError = false) {
         this.ensureChatMessageMetadata(history);
+        const previous = this.chatHistories[key];
         this.chatHistories[key] = history;
-        this.persistChatHistories(throwOnError);
+        try {
+            this.persistChatHistories(throwOnError);
+        } catch (error) {
+            if (previous) this.chatHistories[key] = previous;
+            else delete this.chatHistories[key];
+            throw error;
+        }
     }
 
     removeUserTurn(key: string, messageId: string) {

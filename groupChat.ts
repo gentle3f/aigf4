@@ -8,6 +8,7 @@ import {
     selectRelevantMemories,
 } from './memoryRetrieval.js';
 import { formatWardrobeLedger, mergeWardrobeUpdate } from './wardrobe.js';
+import { preferencePrompt } from './chatExperience.js';
 
 export interface GroupNpcCandidate {
     name: string;
@@ -170,6 +171,7 @@ export const buildGroupSystemPrompt = (room: ChatRoom, query = '') => {
         ].join('\n'),
         `CURRENT SCENE:\nLocation: ${room.scene.location}\nReality layer: ${room.scene.realityLayer}\nPresent member IDs: ${room.scene.presentMemberIds.join(', ')}\nSummary: ${room.scene.summary}\nUnresolved: ${room.scene.unresolved.join('; ') || 'none'}`,
         formatWardrobeLedger(room.scene.wardrobe, wardrobeParticipants),
+        preferencePrompt(room.chatPreferences),
         sharedSoul ? `SHARED soul.md:\n${sharedSoul}` : '',
         sharedMemories ? `ROOM-WIDE memory.md (every currently present member knows these):\n${sharedMemories}` : '',
         `FIXED MEMBER FILES:\n\n${memberBlocks}`,

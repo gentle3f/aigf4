@@ -78,6 +78,7 @@ export interface RoomSceneState {
 }
 
 export interface ChatRoom {
+    chatPreferences?: import('./chatExperience.js').ChatPreferences;
     id: string;
     type: 'group';
     title: string;
