@@ -116,6 +116,7 @@ import {
     saveChatAttachment,
 } from "./chatMediaStore.js";
 import {
+    buildGroupSystemPromptWithAccounting,
     buildGroupSystemPrompt,
     contentToGroupHistoryText,
     getGroupDisplaySegments,
@@ -213,9 +214,11 @@ import {
     summarizePromptComponents,
     type PromptComponentSize,
 } from './promptAccounting.js';
+import { createConversationPromptCacheKey } from './veniceCache.js';
 import {
     cancelChatPerformanceTurn,
     completeChatPerformanceTurn,
+    isChatPerformanceEnabled,
     markChatPerformance,
     startChatPerformanceTurn,
 } from './chatPerformance.js';
@@ -10468,7 +10471,17 @@ const markVeniceRequestAggregate = (
     messages: VeniceMessage[],
     attempt: number,
     flags: { repair?: boolean; fallback?: boolean; continuation?: boolean } = {},
-    result?: { promptTokens?: number; completionTokens?: number; text?: string },
+    result?: {
+        promptTokens?: number;
+        completionTokens?: number;
+        text?: string;
+        promptCacheUsage?: {
+            cachedTokens?: number;
+            cacheCreationInputTokens?: number;
+            uncachedPromptTokens?: number;
+            cacheHitPercent?: number;
+        } | null;
+    },
 ) => {
     markChatPerformance([
         label,
@@ -10483,6 +10496,22 @@ const markVeniceRequestAggregate = (
         result ? `completionTokens=${result.completionTokens ?? 'na'}` : '',
         result ? `completionChars=${result.text?.length ?? 0}` : '',
     ].filter(Boolean).join(' '));
+    if (!result) return;
+
+    const cache = result.promptCacheUsage;
+    const cacheLabel = label.replace(/:response-meta$/u, '');
+    markChatPerformance(cache
+        ? [
+            `${cacheLabel}:cache`,
+            `model=${model}`,
+            `promptTokens=${result.promptTokens ?? 'na'}`,
+            `cachedTokens=${cache.cachedTokens ?? 'na'}`,
+            `cacheCreationInputTokens=${cache.cacheCreationInputTokens ?? 'na'}`,
+            `uncachedPromptTokens=${cache.uncachedPromptTokens ?? 'na'}`,
+            `cacheHitPercent=${cache.cacheHitPercent ?? 'na'}`,
+        ].join(' ')
+        : `${cacheLabel}:cache model=${model} cacheStats=unavailable`,
+    );
 };
 
 const markPromptComponentAccounting = (
@@ -10491,10 +10520,11 @@ const markPromptComponentAccounting = (
     requestMessages: number,
     systemMessages: number,
 ) => {
+    if (!isChatPerformanceEnabled()) return;
     components
         .filter(component => component.chars > 0)
         .forEach(component => markChatPerformance(
-            `prompt:component scope=${scope} name=${component.name} chars=${component.chars} estimatedTokens=${estimatePromptTokens(component.chars)} messages=${component.messages}`,
+            `prompt:component scope=${scope} name=${component.name} chars=${component.chars} estimatedTokens=${estimatePromptTokens(component.chars)} messages=${component.messages} signature=${component.signature ?? 'aggregate'}`,
         ));
     const total = summarizePromptComponents(components);
     markChatPerformance(
@@ -10788,6 +10818,9 @@ const runConversationGeneration = async (
         request.room,
     );
     const latestUserContent = getLatestUserVeniceContent(request, latestUserMessage);
+    const promptCacheKey = assistantMode
+        ? undefined
+        : createConversationPromptCacheKey(request.conversationKey, 'chat');
     const basePromptComponents = assistantMode
         ? [promptComponent('base-system', baseSystemPrompt)]
         : classifyCharacterSystemPrompt(baseSystemPrompt);
@@ -10872,6 +10905,7 @@ const runConversationGeneration = async (
                     temperature: assistantMode ? 0.7 : 0.82,
                     topP: assistantMode ? 0.9 : 0.94,
                     repetitionPenalty: assistantMode ? 1.04 : 1.12,
+                    promptCacheKey,
                     signal: request.controller.signal,
                 });
                 markChatPerformance(
@@ -11523,6 +11557,7 @@ const runRoomConversationGeneration = async (
         latestUserMessage,
         request.room,
     );
+    const promptCacheKey = createConversationPromptCacheKey(request.conversationKey, 'chat');
 
     for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
         const model = models[modelIndex];
@@ -11532,7 +11567,8 @@ const runRoomConversationGeneration = async (
             const isRetry = modelIndex > 0 || attempt > 0;
             applyChatRuntimeState(isRetry ? 'retrying' : 'generating', isRetry ? '重新思考中...' : '思考中...');
             try {
-                const groupSystemPrompt = buildGroupSystemPrompt(request.room, latestUserMessage);
+                const groupPromptBuild = buildGroupSystemPromptWithAccounting(request.room, latestUserMessage);
+                const groupSystemPrompt = groupPromptBuild.prompt;
                 const surpriseEventContract = request.surpriseEvent
                     ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
                     : '';
@@ -11550,7 +11586,8 @@ const runRoomConversationGeneration = async (
                 );
                 const latestUserContent = getLatestUserVeniceContent(request, latestUserMessage);
                 const promptComponents: PromptComponentSize[] = [
-                    promptComponent('room-group-context', groupSystemPrompt),
+                    { ...promptComponent('room-group-context', groupSystemPrompt), includeInTotal: false },
+                    ...groupPromptBuild.components,
                     promptComponent('archived-recall', archivedRecall),
                     promptComponent('surprise-event', surpriseEventContract),
                     {
@@ -11607,6 +11644,7 @@ const runRoomConversationGeneration = async (
                     topP: 0.92,
                     repetitionPenalty: 1.1,
                     stop: [],
+                    promptCacheKey,
                     signal: request.controller.signal,
                 });
                 markChatPerformance(isRetry ? 'generation:repair' : 'generation:primary', generationStartedAt);
@@ -11741,6 +11779,7 @@ const requestStrictReviewDecision = async (
 ) => {
     const preparationStartedAt = performance.now();
     const reviewerModels = buildStrictReviewModelRoute(chatModelSettings, request.personaKey === 'cc');
+    const promptCacheKey = createConversationPromptCacheKey(request.conversationKey, 'review');
     for (let index = 0; index < reviewerModels.length; index += 1) {
         const model = reviewerModels[index];
         applyChatRuntimeState('retrying', index === 0 ? '檢查回覆中...' : '重新檢查中...');
@@ -11782,6 +11821,7 @@ const requestStrictReviewDecision = async (
                 repetitionPenalty: 1.02,
                 stop: [],
                 responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,
+                promptCacheKey,
                 signal: request.controller.signal,
             });
             markChatPerformance('strict-review:request', reviewStartedAt);

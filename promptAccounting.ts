@@ -1,7 +1,11 @@
+import { opaqueCacheHash } from './veniceCache.js';
+
 export interface PromptComponentSize {
     name: string;
     chars: number;
     messages: number;
+    includeInTotal?: boolean;
+    signature?: string;
 }
 
 // Chinese-heavy prompts tokenise close to one token per two characters. This is
@@ -12,6 +16,7 @@ export const promptComponent = (name: string, text: string, messages = 0): Promp
     name,
     chars: text.length,
     messages,
+    signature: opaqueCacheHash(text),
 });
 
 export const classifyCharacterSystemPrompt = (systemPrompt: string): PromptComponentSize[] => systemPrompt
@@ -36,6 +41,10 @@ export const classifyCharacterSystemPrompt = (systemPrompt: string): PromptCompo
     });
 
 export const summarizePromptComponents = (components: PromptComponentSize[]) => ({
-    chars: components.reduce((total, component) => total + component.chars, 0),
-    messages: components.reduce((total, component) => total + component.messages, 0),
+    chars: components
+        .filter(component => component.includeInTotal !== false)
+        .reduce((total, component) => total + component.chars, 0),
+    messages: components
+        .filter(component => component.includeInTotal !== false)
+        .reduce((total, component) => total + component.messages, 0),
 });

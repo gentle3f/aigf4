@@ -1,6 +1,7 @@
 export type RequestState = 'idle' | 'queueing' | 'generating' | 'retrying' | 'error';
 
 import { normalizeArtificialProseEscapes } from './chatProseEscapes.js';
+import { parseVenicePromptCacheUsage, type VenicePromptCacheUsage } from './veniceCache.js';
 
 export type VeniceMessageContentPart =
   | { type: 'text'; text: string }
@@ -41,6 +42,7 @@ export interface VeniceTextGenerationOptions {
   stop?: string[];
   seed?: number;
   responseFormat?: VeniceJsonSchemaResponseFormat;
+  promptCacheKey?: string;
   signal?: AbortSignal;
   onStateChange?: (state: RequestState, detail?: string) => void;
 }
@@ -50,6 +52,7 @@ export interface VeniceTextGenerationResult {
   text: string;
   promptTokens?: number;
   completionTokens?: number;
+  promptCacheUsage?: VenicePromptCacheUsage | null;
   finishReason?: string | null;
 }
 
@@ -98,6 +101,10 @@ interface VeniceChatResponse {
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
+    prompt_tokens_details?: {
+      cached_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
   };
   error?: string;
 }
@@ -240,6 +247,7 @@ export async function generateVeniceText(
     stop = ['\nUser:', '\nUSER:', '\n使用者:'],
     seed,
     responseFormat,
+    promptCacheKey,
     signal,
     onStateChange,
   } = options;
@@ -268,6 +276,7 @@ export async function generateVeniceText(
       seed,
       ...(stop.length > 0 ? { stop } : {}),
       ...(responseFormat ? { response_format: responseFormat } : {}),
+      ...(promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
       venice_parameters: {
         include_venice_system_prompt: false,
         disable_thinking: true,
@@ -291,6 +300,7 @@ export async function generateVeniceText(
     text,
     promptTokens: response.usage?.prompt_tokens,
     completionTokens: response.usage?.completion_tokens,
+    promptCacheUsage: parseVenicePromptCacheUsage(response.usage),
     finishReason: choice?.finish_reason ?? null,
   };
 }

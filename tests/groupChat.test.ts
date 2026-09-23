@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    buildGroupSystemPromptWithAccounting,
     buildGroupSystemPrompt,
     contentToGroupHistoryText,
     getGroupDisplaySegments,
@@ -9,6 +10,7 @@ import {
     selectLegacyGroupHistory,
     trimTrailingUnansweredUserMessages,
 } from '../groupChat.js';
+import { summarizePromptComponents } from '../promptAccounting.js';
 import { ChatMessage, Content, MemoryManager } from '../managers.js';
 import {
     ChatRoom,
@@ -89,6 +91,17 @@ test('group prompt keeps immutable member and presence ledgers', () => {
     assert.match(prompt, /Do not return a JSON response object/i);
     assert.match(prompt, /AUTHORITATIVE CURRENT WARDROBE LEDGER/i);
     assert.match(prompt, /wardrobe_updates/i);
+});
+
+test('group prompt accounting reconciles the unchanged prompt without member content', () => {
+    const room = createRoom();
+    const accounting = buildGroupSystemPromptWithAccounting(room, '最新訊息');
+    assert.equal(accounting.prompt, buildGroupSystemPrompt(room, '最新訊息'));
+    assert.equal(summarizePromptComponents(accounting.components).chars, accounting.prompt.length);
+    assert.ok(accounting.components.some(component => component.name === 'room-members-persona'));
+    assert.ok(accounting.components.some(component => component.name === 'room-current-scene'));
+    assert.ok(accounting.components.some(component => component.name === 'room-wardrobe'));
+    assert.ok(accounting.components.every(component => !('text' in component)));
 });
 
 test('group parser preserves outfits unless a member has an explicit wardrobe update', () => {
