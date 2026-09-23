@@ -207,6 +207,13 @@ import {
 } from './chatExperience.js';
 import { calculateMessageStartScrollTop, setInstantScrollTop } from './chatScroll.js';
 import {
+    classifyCharacterSystemPrompt,
+    estimatePromptTokens,
+    promptComponent,
+    summarizePromptComponents,
+    type PromptComponentSize,
+} from './promptAccounting.js';
+import {
     cancelChatPerformanceTurn,
     completeChatPerformanceTurn,
     markChatPerformance,
@@ -10478,6 +10485,23 @@ const markVeniceRequestAggregate = (
     ].filter(Boolean).join(' '));
 };
 
+const markPromptComponentAccounting = (
+    scope: string,
+    components: PromptComponentSize[],
+    requestMessages: number,
+    systemMessages: number,
+) => {
+    components
+        .filter(component => component.chars > 0)
+        .forEach(component => markChatPerformance(
+            `prompt:component scope=${scope} name=${component.name} chars=${component.chars} estimatedTokens=${estimatePromptTokens(component.chars)} messages=${component.messages}`,
+        ));
+    const total = summarizePromptComponents(components);
+    markChatPerformance(
+        `prompt:component-total scope=${scope} chars=${total.chars} estimatedTokens=${estimatePromptTokens(total.chars)} requestMessages=${requestMessages} systemMessages=${systemMessages} contextMessages=${total.messages}`,
+    );
+};
+
 const normalizeTraditionalChineseLeaks = (text: string) => {
     return text.replace(
         new RegExp(`[${Object.keys(TRADITIONAL_CHARACTER_REPLACEMENTS).join('')}]`, 'gu'),
@@ -10744,18 +10768,47 @@ const runConversationGeneration = async (
     const turnOwnershipRequirement = assistantMode
         ? ''
         : buildImmediateTurnOwnershipRequirement(request.persona.name, latestUserMessage);
-    const systemPrompt = [
+    const surpriseEventContract = !assistantMode && request.surpriseEvent
+        ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
+        : '';
+    const systemPromptParts = [
         baseSystemPrompt,
         archivedRecall,
-        !assistantMode && request.surpriseEvent
-            ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
-            : '',
+        surpriseEventContract,
         turnOwnershipRequirement,
         npcContinuityRequirement,
         npcSpeechRequirement,
-    ]
-        .filter(Boolean)
-        .join('\n\n');
+    ].filter(Boolean);
+    const systemPrompt = systemPromptParts.join('\n\n');
+    const recentMessages = getRecentChatMessages(
+        request.conversationKey,
+        latestUserMessage,
+        assistantMode,
+        request.persona,
+        request.room,
+    );
+    const latestUserContent = getLatestUserVeniceContent(request, latestUserMessage);
+    const basePromptComponents = assistantMode
+        ? [promptComponent('base-system', baseSystemPrompt)]
+        : classifyCharacterSystemPrompt(baseSystemPrompt);
+    const requestPromptComponents: PromptComponentSize[] = [
+        ...basePromptComponents,
+        promptComponent('archived-recall', archivedRecall),
+        promptComponent('surprise-event', surpriseEventContract),
+        promptComponent('immediate-turn-ownership', turnOwnershipRequirement),
+        promptComponent('npc-continuity', npcContinuityRequirement),
+        promptComponent('npc-direct-speech', npcSpeechRequirement),
+        {
+            name: 'recent-conversation-history',
+            chars: getVeniceMessageAggregate(recentMessages),
+            messages: recentMessages.length,
+        },
+        {
+            name: 'latest-user-and-attachments',
+            chars: getVeniceMessageAggregate([{ role: 'user', content: latestUserContent }]),
+            messages: 1,
+        },
+    ];
     markChatPerformance('generation:prompt-build', preparationStartedAt);
 
     for (let index = 0; index < models.length; index += 1) {
@@ -10792,14 +10845,8 @@ const runConversationGeneration = async (
                     });
                 }
 
-                messages.push(...getRecentChatMessages(
-                    request.conversationKey,
-                    latestUserMessage,
-                    assistantMode,
-                    request.persona,
-                    request.room,
-                ));
-                messages.push({ role: 'user', content: getLatestUserVeniceContent(request, latestUserMessage) });
+                messages.push(...recentMessages);
+                messages.push({ role: 'user', content: latestUserContent });
                 const generationPhase = index === 0 && !isRepairAttempt
                     ? 'generation:primary'
                     : isRepairAttempt ? 'generation:repair' : 'generation:fallback';
@@ -10810,6 +10857,14 @@ const runConversationGeneration = async (
                     attempt + 1,
                     { repair: isRepairAttempt, fallback: index > 0 },
                 );
+                markPromptComponentAccounting(generationPhase, [
+                    ...requestPromptComponents,
+                    ...(isRepairAttempt ? [{
+                        name: 'repair-instructions',
+                        chars: getVeniceMessageAggregate([messages[1]!]),
+                        messages: 1,
+                    }] : []),
+                ], messages.length, isRepairAttempt ? 2 : 1);
 
                 const result = await generateChatTextWithTimeout({
                     model,
@@ -11477,13 +11532,38 @@ const runRoomConversationGeneration = async (
             const isRetry = modelIndex > 0 || attempt > 0;
             applyChatRuntimeState(isRetry ? 'retrying' : 'generating', isRetry ? '重新思考中...' : '思考中...');
             try {
+                const groupSystemPrompt = buildGroupSystemPrompt(request.room, latestUserMessage);
+                const surpriseEventContract = request.surpriseEvent
+                    ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
+                    : '';
                 const roomSystemPrompt = [
-                    buildGroupSystemPrompt(request.room, latestUserMessage),
+                    groupSystemPrompt,
                     archivedRecall,
-                    request.surpriseEvent
-                        ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
-                        : '',
+                    surpriseEventContract,
                 ].filter(Boolean).join('\n\n');
+                const recentMessages = getRecentChatMessages(
+                    request.conversationKey,
+                    latestUserMessage,
+                    false,
+                    request.persona,
+                    request.room,
+                );
+                const latestUserContent = getLatestUserVeniceContent(request, latestUserMessage);
+                const promptComponents: PromptComponentSize[] = [
+                    promptComponent('room-group-context', groupSystemPrompt),
+                    promptComponent('archived-recall', archivedRecall),
+                    promptComponent('surprise-event', surpriseEventContract),
+                    {
+                        name: 'recent-conversation-history',
+                        chars: getVeniceMessageAggregate(recentMessages),
+                        messages: recentMessages.length,
+                    },
+                    {
+                        name: 'latest-user-and-attachments',
+                        chars: getVeniceMessageAggregate([{ role: 'user', content: latestUserContent }]),
+                        messages: 1,
+                    },
+                ];
                 const messages: VeniceMessage[] = [
                     { role: 'system', content: roomSystemPrompt },
                 ];
@@ -11500,14 +11580,8 @@ const runRoomConversationGeneration = async (
                         ].filter(Boolean).join('\n'),
                     });
                 }
-                messages.push(...getRecentChatMessages(
-                    request.conversationKey,
-                    latestUserMessage,
-                    false,
-                    request.persona,
-                    request.room,
-                ));
-                messages.push({ role: 'user', content: getLatestUserVeniceContent(request, latestUserMessage) });
+                messages.push(...recentMessages);
+                messages.push({ role: 'user', content: latestUserContent });
 
                 const generationStartedAt = performance.now();
                 markChatPerformance(isRetry ? 'generation:repair-request-start' : 'generation:primary-request-start');
@@ -11518,6 +11592,14 @@ const runRoomConversationGeneration = async (
                     attempt + 1,
                     { repair: isRetry, fallback: modelIndex > 0 },
                 );
+                markPromptComponentAccounting(isRetry ? 'generation:repair' : 'generation:primary', [
+                    ...promptComponents,
+                    ...(isRetry ? [{
+                        name: 'repair-instructions',
+                        chars: getVeniceMessageAggregate([messages[1]!]),
+                        messages: 1,
+                    }] : []),
+                ], messages.length, isRetry ? 2 : 1);
                 const result = await generateChatTextWithTimeout({
                     model,
                     messages,
@@ -11666,20 +11748,32 @@ const requestStrictReviewDecision = async (
             markChatPerformance('strict-review:prepare', preparationStartedAt);
             const reviewStartedAt = performance.now();
             markChatPerformance('strict-review:request-start');
+            const reviewHistory = getStrictReviewHistory(request, latestUserMessage);
+            const candidateAndUser = [
+                `NEWEST USER MESSAGE:\n${latestUserMessage}`,
+                `CANDIDATE RESPONSE TO AUDIT:\n${candidateResponse}`,
+                'Return the strict review JSON now.',
+            ].join('\n\n');
             const messages: VeniceMessage[] = [
                 { role: 'system', content: STRICT_REVIEW_EDITOR_PROMPT },
                 { role: 'system', content: `AUTHORITATIVE CHARACTER AND CONTINUITY RULES:\n${authoritativePrompt}` },
-                ...getStrictReviewHistory(request, latestUserMessage),
+                ...reviewHistory,
                 {
                     role: 'user',
-                    content: [
-                        `NEWEST USER MESSAGE:\n${latestUserMessage}`,
-                        `CANDIDATE RESPONSE TO AUDIT:\n${candidateResponse}`,
-                        'Return the strict review JSON now.',
-                    ].join('\n\n'),
+                    content: candidateAndUser,
                 },
             ];
             markVeniceRequestAggregate('strict-review:request-meta', model, messages, index + 1, { fallback: index > 0 });
+            markPromptComponentAccounting('strict-review', [
+                promptComponent('strict-review-editor', STRICT_REVIEW_EDITOR_PROMPT),
+                promptComponent('strict-review-authoritative-context', authoritativePrompt),
+                {
+                    name: 'strict-review-history',
+                    chars: getVeniceMessageAggregate(reviewHistory),
+                    messages: reviewHistory.length,
+                },
+                promptComponent('strict-review-user-and-candidate', candidateAndUser, 1),
+            ], messages.length, 2);
             const result = await generateChatTextWithTimeout({
                 model,
                 messages,
