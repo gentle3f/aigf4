@@ -187,6 +187,20 @@ export const buildGroupSystemPromptWithAccounting = (
         key: member.id,
         label: member.persona.name,
     }));
+    const textingRealityContract = room.scene.realityLayer === 'texting'
+        ? [
+            'REMOTE TEXTING CONTRACT (CURRENTLY ACTIVE):',
+            '- The current reality layer is texting: this is remote text communication, not a shared physical scene.',
+            '- Membership, PRESENT status, a physical location label, or older physical narration never means a character is physically with the user now.',
+            '- Characters may send messages and describe their own remote surroundings, feelings, expressions, intentions or chat-visible information.',
+            '- Do not make a character touch, see, hear, smell, undress, move beside, restrain or physically act directly on the user.',
+            '- Do not make room members physically interact unless the established state explicitly places those members together. Do not turn older physical narration into current co-presence.',
+            '- Physical interaction with the user is valid only after the scene explicitly changes reality_layer to physical.',
+        ].join('\n')
+        : '';
+    const sceneDetailGuidance = room.scene.realityLayer === 'texting'
+        ? '- Include meaningful dialogue plus fresh remote-message reactions, each character\'s own surroundings, feelings, expressions, intentions or a brief third-person reaction. Do not pad or repeat.'
+        : '- Include meaningful dialogue plus fresh action, expression, physical distance, sensory environment or a brief third-person reaction. Use enough detail to make the moment satisfying, but do not pad or repeat.';
 
     const parts: GroupPromptPart[] = [
         {
@@ -211,6 +225,7 @@ export const buildGroupSystemPromptWithAccounting = (
             name: 'room-current-scene',
             text: `CURRENT SCENE:\nLocation: ${room.scene.location}\nReality layer: ${room.scene.realityLayer}\nPresent member IDs: ${room.scene.presentMemberIds.join(', ')}\nSummary: ${room.scene.summary}\nUnresolved: ${room.scene.unresolved.join('; ') || 'none'}`,
         },
+        ...(textingRealityContract ? [{ name: 'room-texting-reality-contract', text: textingRealityContract }] : []),
         { name: 'room-wardrobe', text: formatWardrobeLedger(room.scene.wardrobe, wardrobeParticipants) },
         { name: 'room-response-preferences', text: preferencePrompt(room.chatPreferences) },
         ...(sharedSoul ? [{ name: 'room-shared-soul-memory', text: `SHARED soul.md:\n${sharedSoul}` }] : []),
@@ -233,7 +248,7 @@ export const buildGroupSystemPromptWithAccounting = (
             '- Give characters their own immediate wants and initiative. When natural, let someone make a concrete choice, suggest a plan, interrupt, or start the next small action instead of always waiting for the user or ending with a question.',
             '- Pace attraction and dramatic tension in steps. Preserve gains in closeness, allow a charged moment to breathe, and transition naturally after an intense beat instead of abruptly resetting or endlessly escalating.',
             '- Normally write 5 to 10 alternating narration/dialogue lines for a substantial turn. A character may speak more than once before and after an action, and present members may answer, interrupt, tease or react to one another.',
-            '- Include meaningful dialogue plus fresh action, expression, physical distance, sensory environment or a brief third-person reaction. Use enough detail to make the moment satisfying, but do not pad or repeat.',
+            sceneDetailGuidance,
             '- Let relevant present members speak and act. Do not force every member to speak on every turn, and do not create a detached novel chapter.',
             '- If the user asks present members to leave, update present_member_ids. If the user enters imagination, story or roleplay inside the room, set reality_layer to imagined; return to the prior physical/texting layer when the user ends it.',
             '- Treat completed scenes as memories, not scripts. Never repeat the previous opening, pose, reassurance, question or emotional beat.',

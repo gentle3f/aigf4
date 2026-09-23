@@ -104,6 +104,50 @@ test('group prompt accounting reconciles the unchanged prompt without member con
     assert.ok(accounting.components.every(component => !('text' in component)));
 });
 
+test('group texting prompt makes remote communication override a physical location label', () => {
+    const room = createRoom();
+    room.scene.realityLayer = 'texting';
+    room.scene.location = 'a luxury vehicle';
+    room.scene.presentMemberIds = ['iu', 'jennie'];
+
+    const prompt = buildGroupSystemPrompt(room);
+
+    assert.match(prompt, /Reality layer: texting/);
+    assert.match(prompt, /remote text communication, not a shared physical scene/i);
+    assert.match(prompt, /physical location label.*never means a character is physically with the user/i);
+    assert.match(prompt, /Do not make a character touch.*physically act directly on the user/i);
+    assert.match(prompt, /Do not turn older physical narration into current co-presence/i);
+    assert.match(prompt, /remote-message reactions/i);
+    assert.doesNotMatch(prompt, /fresh action, expression, physical distance, sensory environment/i);
+});
+
+test('group physical prompt preserves physical scene guidance without the remote contract', () => {
+    const room = createRoom();
+    room.scene.realityLayer = 'physical';
+    room.scene.location = 'a luxury vehicle';
+
+    const prompt = buildGroupSystemPrompt(room);
+
+    assert.doesNotMatch(prompt, /REMOTE TEXTING CONTRACT/i);
+    assert.doesNotMatch(prompt, /remote text communication, not a shared physical scene/i);
+    assert.match(prompt, /fresh action, expression, physical distance, sensory environment/i);
+});
+
+test('group prompt reality contracts differ between otherwise identical texting and physical rooms', () => {
+    const texting = createRoom();
+    texting.scene.realityLayer = 'texting';
+    texting.scene.location = 'a luxury vehicle';
+    const physical = JSON.parse(JSON.stringify(texting));
+    physical.scene.realityLayer = 'physical';
+
+    const textingPrompt = buildGroupSystemPrompt(texting);
+    const physicalPrompt = buildGroupSystemPrompt(physical);
+
+    assert.notEqual(textingPrompt, physicalPrompt);
+    assert.match(textingPrompt, /Physical interaction with the user is valid only after the scene explicitly changes reality_layer to physical/i);
+    assert.doesNotMatch(physicalPrompt, /Physical interaction with the user is valid only after the scene explicitly changes reality_layer to physical/i);
+});
+
 test('group parser preserves outfits unless a member has an explicit wardrobe update', () => {
     const room = createRoom();
     room.scene.wardrobe = {
