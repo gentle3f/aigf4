@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
     decodeChatHistoryStorage,
     encodeChatHistoryStorage,
+    encodeChatHistoryStorageWithMetrics,
     isCompressedChatHistoryStorage,
 } from '../chatHistoryStorage.js';
 
@@ -25,4 +26,12 @@ test('compresses chat history while preserving every message exactly', () => {
 test('still reads legacy uncompressed chat history', () => {
     const legacy = { room: [{ role: 'user', content: { text: '舊資料' } }] };
     assert.deepEqual(decodeChatHistoryStorage(JSON.stringify(legacy)), legacy);
+});
+
+test('returns encode size metrics from the same serialization pass', () => {
+    const value = { room: [{ role: 'user', content: { text: 'hello' } }] };
+    const result = encodeChatHistoryStorageWithMetrics(value);
+    assert.equal(result.jsonChars, JSON.stringify(value).length);
+    assert.equal(result.encoded, encodeChatHistoryStorage(value));
+    assert.ok(result.compressedChars > 0);
 });

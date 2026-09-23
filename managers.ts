@@ -5,11 +5,12 @@ import { AUTO_MEMORY_SUMMARY_VERSION } from './autoMemory.js';
 import {
     decodeChatHistoryStorage,
     encodeChatHistoryStorage,
+    encodeChatHistoryStorageWithMetrics,
     isCompressedChatHistoryStorage,
 } from './chatHistoryStorage.js';
 import { notifyLocalCloudChange } from './cloudSyncEvents.js';
 import { readChatRecovery, saveChatRecovery } from './chatRecoveryStore.js';
-import { markChatPerformance } from './chatPerformance.js';
+import { isChatPerformanceEnabled, markChatPerformance } from './chatPerformance.js';
 
 // --- Constants ---
 export const DIARY_CHECKPOINT = '[DIARY_CHECKPOINT]';
@@ -731,7 +732,15 @@ export class MemoryManager {
     private persistChatHistories(throwOnError = false) {
         try {
             const encodeStartedAt = performance.now();
-            const encoded = encodeChatHistoryStorage(this.chatHistories);
+            const encodedStats = encodeChatHistoryStorageWithMetrics(this.chatHistories);
+            const encoded = encodedStats.encoded;
+            if (isChatPerformanceEnabled()) {
+                const histories = Object.values(this.chatHistories);
+                const messageCount = histories.reduce((count, history) => count + history.length, 0);
+                markChatPerformance(
+                    `storage:history-size conversations=${histories.length} messages=${messageCount} jsonChars=${encodedStats.jsonChars} compressedChars=${encodedStats.compressedChars}`,
+                );
+            }
             markChatPerformance('storage:history-encode', encodeStartedAt);
             const writeStartedAt = performance.now();
             localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, encoded);

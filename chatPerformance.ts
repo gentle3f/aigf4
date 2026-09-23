@@ -28,6 +28,8 @@ const isEnabled = () => {
     }
 };
 
+export const isChatPerformanceEnabled = () => isEnabled();
+
 const expose = () => {
     if (typeof window === 'undefined' || !isEnabled()) return;
     Object.assign(window as Window & { __aigf4Perf?: unknown }, {

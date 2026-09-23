@@ -2,9 +2,23 @@ import LZString from 'lz-string';
 
 const COMPRESSED_PREFIX = 'lz16:';
 
-export const encodeChatHistoryStorage = (value: unknown) => (
-    `${COMPRESSED_PREFIX}${LZString.compressToUTF16(JSON.stringify(value))}`
-);
+export type EncodedChatHistoryStorage = {
+    encoded: string;
+    jsonChars: number;
+    compressedChars: number;
+};
+
+export const encodeChatHistoryStorageWithMetrics = (value: unknown): EncodedChatHistoryStorage => {
+    const json = JSON.stringify(value);
+    const compressed = LZString.compressToUTF16(json);
+    return {
+        encoded: `${COMPRESSED_PREFIX}${compressed}`,
+        jsonChars: json.length,
+        compressedChars: compressed.length,
+    };
+};
+
+export const encodeChatHistoryStorage = (value: unknown) => encodeChatHistoryStorageWithMetrics(value).encoded;
 
 export const decodeChatHistoryStorage = <T>(raw: string): T => {
     const json = raw.startsWith(COMPRESSED_PREFIX)

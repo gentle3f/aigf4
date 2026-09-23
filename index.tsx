@@ -204,6 +204,7 @@ import {
     parseExperienceSuggestions,
     preferencePrompt,
 } from './chatExperience.js';
+import { calculateMessageStartScrollTop, setInstantScrollTop } from './chatScroll.js';
 import {
     cancelChatPerformanceTurn,
     completeChatPerformanceTurn,
@@ -8994,13 +8995,17 @@ const scheduleMessageScroll = (
 
         const containerRect = chatContainer.getBoundingClientRect();
         const messageRect = messageWrapper.getBoundingClientRect();
-        const readableTop = chatContainer.scrollTop + messageRect.top - containerRect.top - 8;
-        chatContainer.scrollTop = Math.max(0, readableTop);
+        const readableTop = calculateMessageStartScrollTop(
+            chatContainer.scrollTop,
+            messageRect.top,
+            containerRect.top,
+        );
+        setInstantScrollTop(chatContainer, readableTop);
     };
 
     if (mode === 'start') {
-        // Let any follow-up system card render first, then keep the actual reply at the reading position.
-        window.requestAnimationFrame(() => window.requestAnimationFrame(applyScroll));
+        // Read layout and position the reply before the browser can paint it at the old scroll offset.
+        applyScroll();
     } else {
         window.requestAnimationFrame(applyScroll);
     }
@@ -10586,6 +10591,8 @@ const continueTruncatedChatReply = async (
     systemPrompt: string,
     assistantMode: boolean,
 ): Promise<{ text: string; finishReason: string | null } | null> => {
+    const continuationStartedAt = performance.now();
+    markChatPerformance('generation:continuation-request-start');
     const result = await generateChatTextWithTimeout({
         model,
         messages: [
@@ -10609,6 +10616,7 @@ const continueTruncatedChatReply = async (
         repetitionPenalty: 1.02,
         signal: request.controller.signal,
     });
+    markChatPerformance('generation:continuation', continuationStartedAt);
 
     console.info('[aigf4 generation]', {
         requestId: request.id,
@@ -10776,8 +10784,8 @@ const runConversationGeneration = async (
                 });
                 markChatPerformance(
                     index === 0 && !isRepairAttempt
-                        ? 'generation:primary-request'
-                        : isRepairAttempt ? 'generation:repair-request' : 'generation:fallback-request',
+                        ? 'generation:primary'
+                        : isRepairAttempt ? 'generation:repair' : 'generation:fallback',
                     requestStartedAt,
                 );
 
@@ -11456,6 +11464,8 @@ const runRoomConversationGeneration = async (
                 ));
                 messages.push({ role: 'user', content: getLatestUserVeniceContent(request, latestUserMessage) });
 
+                const generationStartedAt = performance.now();
+                markChatPerformance(isRetry ? 'generation:repair-request-start' : 'generation:primary-request-start');
                 const result = await generateChatTextWithTimeout({
                     model,
                     messages,
@@ -11465,6 +11475,7 @@ const runRoomConversationGeneration = async (
                     stop: [],
                     signal: request.controller.signal,
                 });
+                markChatPerformance(isRetry ? 'generation:repair' : 'generation:primary', generationStartedAt);
                 const parsed = normalizeGroupGenerationTraditional(
                     parseGroupGeneration(result.text, request.room, fallbackMemberId),
                 );
@@ -12841,7 +12852,7 @@ const getResponse = async (
                     },
                 };
                 memoryManager.addMessage(request.conversationKey, 'system', proposalContent);
-                if (currentConversationKey === request.conversationKey) appendMessage(proposalContent, 'system');
+                if (currentConversationKey === request.conversationKey) appendMessage(proposalContent, 'system', undefined, 'none');
             }
         }
         if (typeof generated === 'string' && !request.room && request.mode === 'character') {
@@ -12852,7 +12863,7 @@ const getResponse = async (
             proposals.forEach(proposal => {
                 const proposalContent: Content = { npcProposal: proposal };
                 memoryManager.addMessage(request.conversationKey, 'system', proposalContent);
-                if (currentConversationKey === request.conversationKey) appendMessage(proposalContent, 'system');
+                if (currentConversationKey === request.conversationKey) appendMessage(proposalContent, 'system', undefined, 'none');
             });
         }
         const personaListStartedAt = performance.now();
