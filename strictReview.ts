@@ -1,4 +1,5 @@
 import type { VeniceJsonSchemaResponseFormat } from './venice.js';
+import { normalizeArtificialProseEscapes } from './chatProseEscapes.js';
 
 export interface StrictReviewDecision {
     decision: 'keep' | 'revise';
@@ -41,7 +42,7 @@ export const parseStrictReviewDecision = (raw: string): StrictReviewDecision | n
     }
     const taggedRevision = text.match(/<revision>\s*([\s\S]*?)\s*<\/revision>/iu)?.[1]?.trim();
     if (taggedRevision) {
-        return { decision: 'revise', issues: ['strict-review'], revisedResponse: taggedRevision };
+        return { decision: 'revise', issues: ['strict-review'], revisedResponse: normalizeArtificialProseEscapes(taggedRevision) };
     }
 
     try {

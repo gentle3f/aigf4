@@ -4,12 +4,12 @@ import { deletePersonaAvatar, loadPersonaAvatars, savePersonaAvatar } from './av
 import { AUTO_MEMORY_SUMMARY_VERSION } from './autoMemory.js';
 import {
     decodeChatHistoryStorage,
-    encodeChatHistoryStorage,
-    encodeChatHistoryStorageWithMetrics,
+    encodeChatHistoryJson,
     isCompressedChatHistoryStorage,
 } from './chatHistoryStorage.js';
 import { notifyLocalCloudChange } from './cloudSyncEvents.js';
 import { readChatRecovery, saveChatRecovery } from './chatRecoveryStore.js';
+import { hasUndurableHistorySnapshot, LatestHistoryPersistence, type HistoryCompressionResult } from './chatHistoryPersistence.js';
 import { isChatPerformanceEnabled, markChatPerformance } from './chatPerformance.js';
 
 // --- Constants ---
@@ -459,6 +459,10 @@ export class MemoryManager {
     private privateAvatarKeys = new Set<string>();
     private chatHistoryWriteTimer: number | null = null;
     private chatHistoryWritePending = false;
+    private chatHistoryPersistenceVersion = 0;
+    private chatHistoryLastDurableVersion = 0;
+    private chatHistoryWorkerUnavailable = false;
+    private asyncHistoryPersistence: LatestHistoryPersistence<{ [key: string]: ChatMessage[] }> | null = null;
 
     constructor() {
         // Persona objects must not share references with the immutable defaults.
@@ -471,7 +475,13 @@ export class MemoryManager {
         this.upgradeBundledCcPersona();
         this.ensureSeededCustomPersonas();
         if (typeof window !== 'undefined') {
-            const flush = () => this.flushScheduledChatHistoryWrite();
+            const flush = () => {
+                this.flushScheduledChatHistoryWrite();
+                // A worker cannot be trusted to finish once this document is hidden.
+                if (hasUndurableHistorySnapshot(this.chatHistoryLastDurableVersion, this.chatHistoryPersistenceVersion)) {
+                    this.persistChatHistories(true, true);
+                }
+            };
             window.addEventListener('pagehide', flush);
             document.addEventListener('visibilitychange', () => {
                 if (document.visibilityState === 'hidden') flush();
@@ -729,21 +739,80 @@ export class MemoryManager {
         }
     }
 
-    private persistChatHistories(throwOnError = false) {
+    private getAsyncHistoryPersistence() {
+        if (this.asyncHistoryPersistence || this.chatHistoryWorkerUnavailable || typeof Worker === 'undefined') {
+            return this.asyncHistoryPersistence;
+        }
         try {
-            const encodeStartedAt = performance.now();
-            const encodedStats = encodeChatHistoryStorageWithMetrics(this.chatHistories);
-            const encoded = encodedStats.encoded;
-            if (isChatPerformanceEnabled()) {
-                const histories = Object.values(this.chatHistories);
-                const messageCount = histories.reduce((count, history) => count + history.length, 0);
-                markChatPerformance(
-                    `storage:history-size conversations=${histories.length} messages=${messageCount} jsonChars=${encodedStats.jsonChars} compressedChars=${encodedStats.compressedChars}`,
-                );
+            const worker = new Worker(new URL('./chatHistoryCompression.worker.ts', import.meta.url), { type: 'module' });
+            const pending = new Map<number, {
+                resolve: (result: HistoryCompressionResult) => void;
+                reject: (error: Error) => void;
+            }>();
+            const failPending = (error: Error) => {
+                pending.forEach(({ reject }) => reject(error));
+                pending.clear();
+                worker.terminate();
+            };
+            worker.onmessage = ({ data }: MessageEvent<HistoryCompressionResult>) => {
+                const request = pending.get(data.version);
+                if (!request) return;
+                pending.delete(data.version);
+                request.resolve(data);
+            };
+            worker.onerror = () => failPending(new Error('Chat history compression worker failed.'));
+            this.asyncHistoryPersistence = new LatestHistoryPersistence(
+                {
+                    compress: (version, value) => new Promise<HistoryCompressionResult>((resolve, reject) => {
+                        pending.set(version, { resolve, reject });
+                        worker.postMessage({ version, value });
+                    }),
+                },
+                result => {
+                    // A synchronous page-exit write or newer queued snapshot already won.
+                    if (result.version !== this.chatHistoryPersistenceVersion) return;
+                    this.writeDurableChatHistories(result.encoded, result, false, result.version);
+                },
+                error => {
+                    console.error('Chat history worker compression failed:', error);
+                    this.chatHistoryWorkerUnavailable = true;
+                    this.asyncHistoryPersistence = null;
+                    // Preserve the latest in-memory messages rather than accepting a stale worker result.
+                    this.persistChatHistories(false, true);
+                },
+            );
+            return this.asyncHistoryPersistence;
+        } catch (error) {
+            console.warn('Chat history worker unavailable; using synchronous persistence.', error);
+            this.chatHistoryWorkerUnavailable = true;
+            return null;
+        }
+    }
+
+    private logHistorySize(result: Pick<HistoryCompressionResult, 'jsonChars' | 'compressedChars'>) {
+        if (!isChatPerformanceEnabled()) return;
+        const histories = Object.values(this.chatHistories);
+        const messageCount = histories.reduce((count, history) => count + history.length, 0);
+        markChatPerformance(
+            `storage:history-size conversations=${histories.length} messages=${messageCount} jsonChars=${result.jsonChars} compressedChars=${result.compressedChars}`,
+        );
+    }
+
+    private writeDurableChatHistories(
+        encoded: string,
+        metrics?: Pick<HistoryCompressionResult, 'jsonChars' | 'compressedChars' | 'jsonSerializeMs' | 'compressionMs'>,
+        throwOnError = false,
+        version?: number,
+    ) {
+        try {
+            if (metrics) {
+                this.logHistorySize(metrics);
+                markChatPerformance('storage:history-json-serialize', performance.now() - metrics.jsonSerializeMs);
+                markChatPerformance('storage:history-compress', performance.now() - metrics.compressionMs);
             }
-            markChatPerformance('storage:history-encode', encodeStartedAt);
             const writeStartedAt = performance.now();
             localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, encoded);
+            if (typeof version === 'number') this.chatHistoryLastDurableVersion = Math.max(this.chatHistoryLastDurableVersion, version);
             markChatPerformance('storage:history-write', writeStartedAt);
             if (this.recoveryReady) void saveChatRecovery(null).catch(console.warn);
             const cloudStartedAt = performance.now();
@@ -755,10 +824,39 @@ export class MemoryManager {
                 window.dispatchEvent(new CustomEvent('wetapp-storage-failed'));
                 if (this.recoveryReady) void saveChatRecovery({
                     baseline: localStorage.getItem(CHAT_HISTORY_STORAGE_KEY),
-                    data: encodeChatHistoryStorage(this.chatHistories),
+                    data: encoded,
                 }).then(() => window.dispatchEvent(new CustomEvent('wetapp-storage-recovered'))).catch(console.error);
                 notifyLocalCloudChange('messages');
             }
+            if (throwOnError) throw error;
+        }
+    }
+
+    private persistChatHistories(throwOnError = false, forceSynchronous = false) {
+        const version = ++this.chatHistoryPersistenceVersion;
+        if (!forceSynchronous && !throwOnError) {
+            const persistence = this.getAsyncHistoryPersistence();
+            if (persistence) {
+                const workerPostStartedAt = performance.now();
+                persistence.schedule(version, this.chatHistories);
+                markChatPerformance('storage:worker-post', workerPostStartedAt);
+                return;
+            }
+        }
+
+        try {
+            const jsonStartedAt = performance.now();
+            const json = JSON.stringify(this.chatHistories);
+            const compressedStartedAt = performance.now();
+            const encodedStats = encodeChatHistoryJson(json);
+            const finishedAt = performance.now();
+            this.writeDurableChatHistories(encodedStats.encoded, {
+                ...encodedStats,
+                jsonSerializeMs: Math.round(compressedStartedAt - jsonStartedAt),
+                compressionMs: Math.round(finishedAt - compressedStartedAt),
+            }, throwOnError, version);
+        } catch (error) {
+            console.error('Failed to prepare chat history snapshot:', error);
             if (throwOnError) throw error;
         }
     }

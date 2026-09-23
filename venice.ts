@@ -1,5 +1,7 @@
 export type RequestState = 'idle' | 'queueing' | 'generating' | 'retrying' | 'error';
 
+import { normalizeArtificialProseEscapes } from './chatProseEscapes.js';
+
 export type VeniceMessageContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }
@@ -9,6 +11,16 @@ export interface VeniceMessage {
   role: 'system' | 'user' | 'assistant';
   content: string | VeniceMessageContentPart[];
 }
+
+/** Safe aggregate only: this never returns message text or attachment data. */
+export const getVeniceMessageAggregate = (messages: VeniceMessage[]) => messages.reduce((total, message) => {
+  if (typeof message.content === 'string') return total + message.content.length;
+  return total + message.content.reduce((partTotal, part) => {
+    if (part.type === 'text') return partTotal + part.text.length;
+    if (part.type === 'image_url') return partTotal + part.image_url.url.length;
+    return partTotal + part.file.filename.length + part.file.file_data.length;
+  }, 0);
+}, 0);
 
 export interface VeniceJsonSchemaResponseFormat {
   type: 'json_schema';
@@ -334,7 +346,13 @@ function stripCodeFences(text: string): string {
 }
 
 function trimWrappedQuotes(text: string): string {
-  return text.replace(/^[\s"'`]+/, '').replace(/[\s"'`]+$/, '').trim();
+  const trimmed = text.trim();
+  const pairs: Record<string, string> = { '"': '"', "'": "'", '`': '`', '“': '”', '‘': '’', '「': '」', '『': '』' };
+  const first = trimmed[0];
+  if (first && pairs[first] === trimmed.at(-1)) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
 }
 
 export function cleanVeniceChatReply(rawText: string): string {
@@ -374,7 +392,7 @@ export function cleanVeniceChatReply(rawText: string): string {
     .filter(line => !/^\|\s/.test(line))
     .map(line => line.replace(/^(?:assistant|reply|answer|角色|回覆|回答)\s*[:：]\s*/i, ''));
 
-  return trimWrappedQuotes(lines.join('\n').replace(/\n{3,}/g, '\n\n').trim());
+  return trimWrappedQuotes(normalizeArtificialProseEscapes(lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()));
 }
 
 export function cleanVeniceAssistantReply(rawText: string): string {
@@ -390,7 +408,7 @@ export function cleanVeniceAssistantReply(rawText: string): string {
     text = text.slice(0, nextUserTurn).trim();
   }
 
-  return text.replace(/\n{4,}/g, '\n\n\n').trim();
+  return normalizeArtificialProseEscapes(text.replace(/\n{4,}/g, '\n\n\n').trim());
 }
 
 export function isInvalidVeniceChatReply(text: string): boolean {

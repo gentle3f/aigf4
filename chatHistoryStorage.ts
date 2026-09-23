@@ -8,14 +8,18 @@ export type EncodedChatHistoryStorage = {
     compressedChars: number;
 };
 
-export const encodeChatHistoryStorageWithMetrics = (value: unknown): EncodedChatHistoryStorage => {
-    const json = JSON.stringify(value);
+export const encodeChatHistoryJson = (json: string): EncodedChatHistoryStorage => {
     const compressed = LZString.compressToUTF16(json);
     return {
         encoded: `${COMPRESSED_PREFIX}${compressed}`,
         jsonChars: json.length,
         compressedChars: compressed.length,
     };
+};
+
+export const encodeChatHistoryStorageWithMetrics = (value: unknown): EncodedChatHistoryStorage => {
+    const json = JSON.stringify(value);
+    return encodeChatHistoryJson(json);
 };
 
 export const encodeChatHistoryStorage = (value: unknown) => encodeChatHistoryStorageWithMetrics(value).encoded;

@@ -34,6 +34,7 @@ import {
     cleanVeniceChatReply,
     extractPersonaUpdatePayload,
     generateVeniceText,
+    getVeniceMessageAggregate,
     isInvalidVeniceChatReply,
     listVeniceTextModels,
     RequestState,
@@ -10454,6 +10455,29 @@ const TRADITIONAL_CHARACTER_REPLACEMENTS: Record<string, string> = {
     颤: '顫', 习: '習', 顿: '頓', 绝: '絕', 刚: '剛', 无: '無',
 };
 
+const markVeniceRequestAggregate = (
+    label: string,
+    model: string,
+    messages: VeniceMessage[],
+    attempt: number,
+    flags: { repair?: boolean; fallback?: boolean; continuation?: boolean } = {},
+    result?: { promptTokens?: number; completionTokens?: number; text?: string },
+) => {
+    markChatPerformance([
+        label,
+        `model=${model}`,
+        `attempt=${attempt}`,
+        `messages=${messages.length}`,
+        `chars=${getVeniceMessageAggregate(messages)}`,
+        `repair=${Boolean(flags.repair)}`,
+        `fallback=${Boolean(flags.fallback)}`,
+        `continuation=${Boolean(flags.continuation)}`,
+        result ? `promptTokens=${result.promptTokens ?? 'na'}` : '',
+        result ? `completionTokens=${result.completionTokens ?? 'na'}` : '',
+        result ? `completionChars=${result.text?.length ?? 0}` : '',
+    ].filter(Boolean).join(' '));
+};
+
 const normalizeTraditionalChineseLeaks = (text: string) => {
     return text.replace(
         new RegExp(`[${Object.keys(TRADITIONAL_CHARACTER_REPLACEMENTS).join('')}]`, 'gu'),
@@ -10593,30 +10617,33 @@ const continueTruncatedChatReply = async (
 ): Promise<{ text: string; finishReason: string | null } | null> => {
     const continuationStartedAt = performance.now();
     markChatPerformance('generation:continuation-request-start');
+    const messages: VeniceMessage[] = [
+        { role: 'system', content: systemPrompt },
+        ...getRecentChatMessages(
+            request.conversationKey,
+            latestUserMessage,
+            assistantMode,
+            request.persona,
+            request.room,
+        ),
+        { role: 'user', content: getLatestUserVeniceContent(request, latestUserMessage) },
+        { role: 'assistant', content: partialReply },
+        {
+            role: 'user',
+            content: 'Continue the exact same reply from where it stopped. Do not restart, summarize, or repeat any previous text. Output only the missing continuation.',
+        },
+    ];
+    markVeniceRequestAggregate('generation:continuation:request-meta', model, messages, 1, { continuation: true });
     const result = await generateChatTextWithTimeout({
         model,
-        messages: [
-            { role: 'system', content: systemPrompt },
-            ...getRecentChatMessages(
-                request.conversationKey,
-                latestUserMessage,
-                assistantMode,
-                request.persona,
-                request.room,
-            ),
-            { role: 'user', content: getLatestUserVeniceContent(request, latestUserMessage) },
-            { role: 'assistant', content: partialReply },
-            {
-                role: 'user',
-                content: 'Continue the exact same reply from where it stopped. Do not restart, summarize, or repeat any previous text. Output only the missing continuation.',
-            },
-        ],
+        messages,
         temperature: 0.72,
         topP: 0.9,
         repetitionPenalty: 1.02,
         signal: request.controller.signal,
     });
     markChatPerformance('generation:continuation', continuationStartedAt);
+    markVeniceRequestAggregate('generation:continuation:response-meta', result.model, messages, 1, { continuation: true }, result);
 
     console.info('[aigf4 generation]', {
         requestId: request.id,
@@ -10773,6 +10800,16 @@ const runConversationGeneration = async (
                     request.room,
                 ));
                 messages.push({ role: 'user', content: getLatestUserVeniceContent(request, latestUserMessage) });
+                const generationPhase = index === 0 && !isRepairAttempt
+                    ? 'generation:primary'
+                    : isRepairAttempt ? 'generation:repair' : 'generation:fallback';
+                markVeniceRequestAggregate(
+                    `${generationPhase}:request-meta`,
+                    model,
+                    messages,
+                    attempt + 1,
+                    { repair: isRepairAttempt, fallback: index > 0 },
+                );
 
                 const result = await generateChatTextWithTimeout({
                     model,
@@ -10787,6 +10824,14 @@ const runConversationGeneration = async (
                         ? 'generation:primary'
                         : isRepairAttempt ? 'generation:repair' : 'generation:fallback',
                     requestStartedAt,
+                );
+                markVeniceRequestAggregate(
+                    `${generationPhase}:response-meta`,
+                    result.model,
+                    messages,
+                    attempt + 1,
+                    { repair: isRepairAttempt, fallback: index > 0 },
+                    result,
                 );
 
                 console.info('[aigf4 generation]', {
@@ -11466,6 +11511,13 @@ const runRoomConversationGeneration = async (
 
                 const generationStartedAt = performance.now();
                 markChatPerformance(isRetry ? 'generation:repair-request-start' : 'generation:primary-request-start');
+                markVeniceRequestAggregate(
+                    `${isRetry ? 'generation:repair' : 'generation:primary'}:request-meta`,
+                    model,
+                    messages,
+                    attempt + 1,
+                    { repair: isRetry, fallback: modelIndex > 0 },
+                );
                 const result = await generateChatTextWithTimeout({
                     model,
                     messages,
@@ -11476,6 +11528,14 @@ const runRoomConversationGeneration = async (
                     signal: request.controller.signal,
                 });
                 markChatPerformance(isRetry ? 'generation:repair' : 'generation:primary', generationStartedAt);
+                markVeniceRequestAggregate(
+                    `${isRetry ? 'generation:repair' : 'generation:primary'}:response-meta`,
+                    result.model,
+                    messages,
+                    attempt + 1,
+                    { repair: isRetry, fallback: modelIndex > 0 },
+                    result,
+                );
                 const parsed = normalizeGroupGenerationTraditional(
                     parseGroupGeneration(result.text, request.room, fallbackMemberId),
                 );
@@ -11606,21 +11666,23 @@ const requestStrictReviewDecision = async (
             markChatPerformance('strict-review:prepare', preparationStartedAt);
             const reviewStartedAt = performance.now();
             markChatPerformance('strict-review:request-start');
+            const messages: VeniceMessage[] = [
+                { role: 'system', content: STRICT_REVIEW_EDITOR_PROMPT },
+                { role: 'system', content: `AUTHORITATIVE CHARACTER AND CONTINUITY RULES:\n${authoritativePrompt}` },
+                ...getStrictReviewHistory(request, latestUserMessage),
+                {
+                    role: 'user',
+                    content: [
+                        `NEWEST USER MESSAGE:\n${latestUserMessage}`,
+                        `CANDIDATE RESPONSE TO AUDIT:\n${candidateResponse}`,
+                        'Return the strict review JSON now.',
+                    ].join('\n\n'),
+                },
+            ];
+            markVeniceRequestAggregate('strict-review:request-meta', model, messages, index + 1, { fallback: index > 0 });
             const result = await generateChatTextWithTimeout({
                 model,
-                messages: [
-                    { role: 'system', content: STRICT_REVIEW_EDITOR_PROMPT },
-                    { role: 'system', content: `AUTHORITATIVE CHARACTER AND CONTINUITY RULES:\n${authoritativePrompt}` },
-                    ...getStrictReviewHistory(request, latestUserMessage),
-                    {
-                        role: 'user',
-                        content: [
-                            `NEWEST USER MESSAGE:\n${latestUserMessage}`,
-                            `CANDIDATE RESPONSE TO AUDIT:\n${candidateResponse}`,
-                            'Return the strict review JSON now.',
-                        ].join('\n\n'),
-                    },
-                ],
+                messages,
                 temperature: 0.18,
                 topP: 0.82,
                 repetitionPenalty: 1.02,
@@ -11629,10 +11691,15 @@ const requestStrictReviewDecision = async (
                 signal: request.controller.signal,
             });
             markChatPerformance('strict-review:request', reviewStartedAt);
+            markVeniceRequestAggregate('strict-review:response-meta', result.model, messages, index + 1, { fallback: index > 0 }, result);
             const parseStartedAt = performance.now();
             const decision = parseStrictReviewDecision(result.text);
             markChatPerformance('strict-review:parse', parseStartedAt);
             if (!decision) throw new Error(`Invalid strict review from ${model}.`);
+            const parsedFormat = /<revision>[\s\S]*<\/revision>/iu.test(result.text)
+                ? 'tagged'
+                : /^\s*\{/u.test(result.text) ? 'json' : 'keep-tag';
+            markChatPerformance(`strict-review:decision model=${result.model} attempt=${index + 1} retry=${index > 0} fallback=${index > 0} decision=${decision.decision} format=${parsedFormat}`);
             console.info('[aigf4 strict review]', {
                 requestId: request.id,
                 model: result.model,
@@ -11644,10 +11711,12 @@ const requestStrictReviewDecision = async (
             return decision;
         } catch (error) {
             if (isAbortError(error) && request.controller.signal.aborted) throw error;
+            const reason = error instanceof Error ? error.message : String(error);
+            markChatPerformance(`strict-review:attempt-error model=${model} attempt=${index + 1} retry=${index > 0} fallback=${index > 0} timeout=${reason === CHAT_MODEL_TIMEOUT_ERROR}`);
             console.warn('[aigf4 strict review unavailable]', {
                 requestId: request.id,
                 model,
-                reason: error instanceof Error ? error.message : String(error),
+                reason,
             });
         }
     }
