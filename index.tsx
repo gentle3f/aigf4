@@ -198,6 +198,12 @@ import {
 } from "./wardrobe.js";
 import type { WardrobeParticipant } from "./wardrobe.js";
 import { editChatPreferences, experienceDialog, experienceButton, preferencePrompt } from './chatExperience.js';
+import {
+    cancelChatPerformanceTurn,
+    completeChatPerformanceTurn,
+    markChatPerformance,
+    startChatPerformanceTurn,
+} from './chatPerformance.js';
 
 
 declare var JSZip: any;
@@ -10662,6 +10668,7 @@ const runConversationGeneration = async (
     models: string[],
     assistantMode: boolean,
 ): Promise<string> => {
+    const preparationStartedAt = performance.now();
     let lastError: Error | null = null;
     let failedCandidate = '';
     const archivedRecall = assistantMode
@@ -10708,6 +10715,7 @@ const runConversationGeneration = async (
     ]
         .filter(Boolean)
         .join('\n\n');
+    markChatPerformance('generation:prompt-build', preparationStartedAt);
 
     for (let index = 0; index < models.length; index += 1) {
         const model = models[index];
@@ -10719,6 +10727,12 @@ const runConversationGeneration = async (
             applyChatRuntimeState(index === 0 && !isRepairAttempt ? 'generating' : 'retrying', detail);
 
             try {
+                const requestStartedAt = performance.now();
+                markChatPerformance(
+                    index === 0 && !isRepairAttempt
+                        ? 'generation:primary-request-start'
+                        : isRepairAttempt ? 'generation:repair-request-start' : 'generation:fallback-request-start',
+                );
                 const messages: VeniceMessage[] = [{ role: 'system', content: systemPrompt }];
                 if (isRepairAttempt) {
                     messages.push({
@@ -10754,6 +10768,12 @@ const runConversationGeneration = async (
                     repetitionPenalty: assistantMode ? 1.04 : 1.12,
                     signal: request.controller.signal,
                 });
+                markChatPerformance(
+                    index === 0 && !isRepairAttempt
+                        ? 'generation:primary-request'
+                        : isRepairAttempt ? 'generation:repair-request' : 'generation:fallback-request',
+                    requestStartedAt,
+                );
 
                 console.info('[aigf4 generation]', {
                     requestId: request.id,
@@ -11560,11 +11580,15 @@ const requestStrictReviewDecision = async (
     authoritativePrompt: string,
     candidateResponse: string,
 ) => {
+    const preparationStartedAt = performance.now();
     const reviewerModels = buildStrictReviewModelRoute(chatModelSettings, request.personaKey === 'cc');
     for (let index = 0; index < reviewerModels.length; index += 1) {
         const model = reviewerModels[index];
         applyChatRuntimeState('retrying', index === 0 ? '檢查回覆中...' : '重新檢查中...');
         try {
+            markChatPerformance('strict-review:prepare', preparationStartedAt);
+            const reviewStartedAt = performance.now();
+            markChatPerformance('strict-review:request-start');
             const result = await generateChatTextWithTimeout({
                 model,
                 messages: [
@@ -11587,7 +11611,10 @@ const requestStrictReviewDecision = async (
                 responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,
                 signal: request.controller.signal,
             });
+            markChatPerformance('strict-review:request', reviewStartedAt);
+            const parseStartedAt = performance.now();
             const decision = parseStrictReviewDecision(result.text);
+            markChatPerformance('strict-review:parse', parseStartedAt);
             if (!decision) throw new Error(`Invalid strict review from ${model}.`);
             console.info('[aigf4 strict review]', {
                 requestId: request.id,
@@ -12759,14 +12786,20 @@ const getResponse = async (
                 currentRoom.scene = generated.scene;
             }
         }
+        const persistStartedAt = performance.now();
         memoryManager.addMessage(request.conversationKey, 'model', botContent);
+        markChatPerformance('response:final-persist', persistStartedAt);
         if (currentConversationKey === request.conversationKey) {
+            const renderStartedAt = performance.now();
             appendMessage(botContent, 'bot');
+            markChatPerformance('response:final-render', renderStartedAt);
         }
         if (request.mode === 'character') {
             try {
+                const relationshipStartedAt = performance.now();
                 updateRelationshipPulseAfterTurn(request, triggeringMessage, generated);
                 rememberStartedSurpriseEvent(request);
+                markChatPerformance('response:relationship-update', relationshipStartedAt);
             } catch (error) {
                 // A valid live reply should not be lost if optional experience state cannot persist.
                 console.warn('Unable to persist relationship or surprise-event state.', error);
@@ -12816,8 +12849,11 @@ const getResponse = async (
                 if (currentConversationKey === request.conversationKey) appendMessage(proposalContent, 'system');
             });
         }
+        const personaListStartedAt = performance.now();
         renderPersonaList();
+        markChatPerformance('response:persona-list-render', personaListStartedAt);
         finishChatRequest(request);
+        completeChatPerformanceTurn('response:final-visible');
         if (request.room) void maybeSummarizeRoomMemory(request.room.id);
         else if (request.mode === 'character') void maybeSummarizePersonaMemory(request.personaKey);
     } catch (error) {
@@ -13631,7 +13667,9 @@ const sendMessage = async ({
     messageInput.value = '';
     resetMessageInput();
     updateSendButtonState();
+    const userRenderStartedAt = performance.now();
     appendMessage(userContent, 'user', userMessageMeta);
+    markChatPerformance('send:user-render', userRenderStartedAt);
 
     if (isGodModeActive) {
         if (isPersonaInspectCommand(userMessage)) {
@@ -13646,7 +13684,9 @@ const sendMessage = async ({
     }
 
     const persona = currentPersona as Persona;
+    const persistStartedAt = performance.now();
     memoryManager.addMessage(conversationKey, 'user', userContent, userMessageMeta);
+    markChatPerformance('send:user-persist', persistStartedAt);
     if (
         !assistantMode
         && !characterPhotoRequest
@@ -13708,6 +13748,7 @@ const sendMessage = async ({
 };
 
 const dispatchSendMessage = (options: Parameters<typeof sendMessage>[0] = {}) => {
+    startChatPerformanceTurn();
     void sendMessage(options).catch(error => {
         console.error('Unexpected send failure:', error);
         if (activeChatRequest) cancelActiveChatRequest();
@@ -13716,6 +13757,7 @@ const dispatchSendMessage = (options: Parameters<typeof sendMessage>[0] = {}) =>
             ? { ...diagnosed, code: currentRoom ? 'GROUP_PREPARE' : 'CHAT_PREPARE' }
             : diagnosed;
         const message = formatChatFailureMessage(diagnostic);
+        cancelChatPerformanceTurn('send:error');
         applyChatRuntimeState('error');
         updateSendButtonState();
         showError(message);

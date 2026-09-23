@@ -9,6 +9,7 @@ import {
 } from './chatHistoryStorage.js';
 import { notifyLocalCloudChange } from './cloudSyncEvents.js';
 import { readChatRecovery, saveChatRecovery } from './chatRecoveryStore.js';
+import { markChatPerformance } from './chatPerformance.js';
 
 // --- Constants ---
 export const DIARY_CHECKPOINT = '[DIARY_CHECKPOINT]';
@@ -455,6 +456,8 @@ export class MemoryManager {
     private interests: { [personaKey: string]: Interest[] } = {};
     private customPersonaCounter: number = 0;
     private privateAvatarKeys = new Set<string>();
+    private chatHistoryWriteTimer: number | null = null;
+    private chatHistoryWritePending = false;
 
     constructor() {
         // Persona objects must not share references with the immutable defaults.
@@ -466,6 +469,13 @@ export class MemoryManager {
         this.promoteLegacyCcSeed();
         this.upgradeBundledCcPersona();
         this.ensureSeededCustomPersonas();
+        if (typeof window !== 'undefined') {
+            const flush = () => this.flushScheduledChatHistoryWrite();
+            window.addEventListener('pagehide', flush);
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') flush();
+            });
+        }
     }
     
     getModifiedAndCustomPersonas(): { [key: string]: Persona } {
@@ -720,9 +730,16 @@ export class MemoryManager {
 
     private persistChatHistories(throwOnError = false) {
         try {
-            localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, encodeChatHistoryStorage(this.chatHistories));
+            const encodeStartedAt = performance.now();
+            const encoded = encodeChatHistoryStorage(this.chatHistories);
+            markChatPerformance('storage:history-encode', encodeStartedAt);
+            const writeStartedAt = performance.now();
+            localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, encoded);
+            markChatPerformance('storage:history-write', writeStartedAt);
             if (this.recoveryReady) void saveChatRecovery(null).catch(console.warn);
+            const cloudStartedAt = performance.now();
             notifyLocalCloudChange('messages');
+            markChatPerformance('storage:cloud-notify', cloudStartedAt);
         } catch (error) {
             console.error('Failed to save chat histories:', error);
             if (!throwOnError && typeof window !== 'undefined') {
@@ -735,6 +752,27 @@ export class MemoryManager {
             }
             if (throwOnError) throw error;
         }
+    }
+
+    private scheduleChatHistoryWrite() {
+        this.chatHistoryWritePending = true;
+        if (this.chatHistoryWriteTimer !== null) return;
+        this.chatHistoryWriteTimer = window.setTimeout(() => {
+            this.chatHistoryWriteTimer = null;
+            this.flushScheduledChatHistoryWrite();
+        }, 0);
+    }
+
+    private flushScheduledChatHistoryWrite() {
+        if (!this.chatHistoryWritePending) return;
+        this.chatHistoryWritePending = false;
+        if (this.chatHistoryWriteTimer !== null) {
+            window.clearTimeout(this.chatHistoryWriteTimer);
+            this.chatHistoryWriteTimer = null;
+        }
+        const startedAt = performance.now();
+        this.persistChatHistories();
+        markChatPerformance('storage:deferred-history-flush', startedAt);
     }
 
     private ensureChatMessageMetadata(history: ChatMessage[]) {
@@ -1196,7 +1234,9 @@ export class MemoryManager {
             role,
             content,
         });
-        this.persistChatHistories();
+        // Prompt construction reads this in-memory update immediately. The full compressed
+        // snapshot is deferred so the visible send action and request start never wait on it.
+        this.scheduleChatHistoryWrite();
     }
 
     pruneLastUserMessage(key: string) {
