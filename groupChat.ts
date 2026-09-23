@@ -535,6 +535,15 @@ export const getGroupDisplaySegments = (
 
     const rawText = content.text?.trim() || '';
     if (!rawText) return [];
+    // Repair legacy failed turns containing the whole transport envelope before rendering.
+    if (/<chat>[\s\S]*<\/chat>/iu.test(rawText)) {
+        try {
+            return parseGroupGeneration(rawText, room, fallbackMemberId).segments;
+        } catch {
+            const chatOnly = extractTaggedBlock(rawText, 'chat');
+            if (chatOnly) return parsePlainGroupSegments(chatOnly, room, fallbackMemberId);
+        }
+    }
     const labelledSegments = splitKnownSpeakerLabels(rawText, room, fallbackMemberId);
     if (labelledSegments?.length) return labelledSegments;
 
@@ -703,8 +712,11 @@ export const parseGroupGeneration = (
 };
 
 export const contentToGroupHistoryText = (content: Content, room: ChatRoom) => {
-    if (!content.segments?.length) return content.text?.trim() || '';
-    return normalizeGroupSegments(content.segments, room).map(segment => {
+    const segments = content.segments?.length
+        ? normalizeGroupSegments(content.segments, room)
+        : getGroupDisplaySegments(content, room);
+    if (segments.length === 0) return '';
+    return segments.map(segment => {
         if (segment.type === 'narration') return `[旁白] ${segment.text}`;
         return `[${segment.speakerName || memberName(room, segment.speakerId)}] ${segment.text}`;
     }).join('\n');

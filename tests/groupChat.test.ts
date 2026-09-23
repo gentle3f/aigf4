@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     buildGroupSystemPrompt,
+    contentToGroupHistoryText,
     getGroupDisplaySegments,
     groupNarrationUsesFirstPerson,
     parseGroupGeneration,
@@ -278,6 +279,20 @@ test('stored group turns are repaired for display without rewriting chat history
 
     const repaired = getGroupDisplaySegments(content, room);
     assert.deepEqual(repaired.map(segment => segment.speakerName), ['IU', 'Irene', 'Jennie']);
+});
+
+test('stored transport envelopes never display or re-enter group history as scene JSON', () => {
+    const room = createRoom();
+    const content: Content = {
+        text: '<chat>IU：「我會等你。」\nJennie：「我都在。」</chat>'
+            + '<scene>{"location":"店外","reality_layer":"physical","present_member_ids":["iu","jennie"],"summary":"兩人等待。","unresolved":[]}</scene>'
+            + '<npc_candidate>null</npc_candidate>',
+    };
+    const display = getGroupDisplaySegments(content, room);
+    assert.deepEqual(display.map(segment => segment.speakerName), ['IU', 'Jennie']);
+    const history = contentToGroupHistoryText(content, room);
+    assert.equal(history.includes('<scene>'), false);
+    assert.equal(history.includes('present_member_ids'), false);
 });
 
 test('group parser rejects dialogue spoken only by an absent member', () => {

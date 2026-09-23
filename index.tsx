@@ -197,7 +197,13 @@ import {
     normalizeWardrobeState,
 } from "./wardrobe.js";
 import type { WardrobeParticipant } from "./wardrobe.js";
-import { editChatPreferences, experienceDialog, experienceButton, preferencePrompt } from './chatExperience.js';
+import {
+    editChatPreferences,
+    experienceDialog,
+    experienceButton,
+    parseExperienceSuggestions,
+    preferencePrompt,
+} from './chatExperience.js';
 import {
     cancelChatPerformanceTurn,
     completeChatPerformanceTurn,
@@ -16823,10 +16829,20 @@ const openExperienceDraft = async (direct = false) => {
                 model: buildCharacterModelRoute(chatModelSettings, request.personaKey === 'cc')[0],
                 messages: [
                     { role: 'system', content: [
-                        request.room ? buildGroupSystemPrompt(request.room) : buildChatSystemPrompt(request.personaKey, request.persona, '', request.wardrobeState),
                         direct
-                            ? 'Editing task: rewrite only the last assistant reply. Preserve every event, fact, outfit, participant and outcome. Change presentation only. Return the same chat envelope for a group, or plain prose for a single chat.'
-                            : 'Suggestion task: return JSON {"suggestions":["...","...","..."]}: exactly three distinct short messages the USER could send next: dialogue, action, or gentle development. Match the user language. Respect current scene and do not invent past facts. Do not continue as a character.',
+                            ? [
+                                request.room
+                                    ? buildGroupSystemPrompt(request.room)
+                                    : buildChatSystemPrompt(request.personaKey, request.persona, '', request.wardrobeState),
+                                'Editing task: rewrite only the last assistant reply. Preserve every event, fact, outfit, participant and outcome. Change presentation only. Return the same chat envelope for a group, or plain prose for a single chat.',
+                            ].join('\n\n')
+                            : [
+                                'You suggest the next message for the USER in an ongoing private roleplay conversation.',
+                                request.room
+                                    ? 'This is a group conversation. Respect the existing participants and scene supplied in the history.'
+                                    : 'This is a one-to-one conversation. Respect the existing character and scene supplied in the history.',
+                                'Return only valid JSON: {"suggestions":["...","...","..."]}. Give exactly three distinct short messages the USER could send next: dialogue, action, or gentle development. Match the user language. Respect current scene and do not invent past facts. Do not continue as a character. Never return <chat>, <scene>, <npc_candidate>, XML, or prose outside the JSON object.',
+                            ].join('\n\n'),
                     ].join('\n\n') },
                     ...context,
                     { role: 'user', content: instruction },
@@ -16837,8 +16853,7 @@ const openExperienceDraft = async (direct = false) => {
             if (!dialog.open || currentConversationKey !== key) return;
             output.replaceChildren();
             if (!direct) {
-                const raw = result.text.replace(/^\s*```(?:json)?/i, '').replace(/```\s*$/, '').trim();
-                const data = JSON.parse(raw);
+                const data = { suggestions: parseExperienceSuggestions(result.text) };
                 if (!Array.isArray(data.suggestions) || data.suggestions.length !== 3 || data.suggestions.some((v: unknown) => typeof v !== 'string' || !v.trim())) throw new Error('未能整理建議，請再試一次。');
                 data.suggestions.forEach((suggestion: string) => output.append(experienceButton(suggestion, () => {
                     messageInput.value = suggestion;

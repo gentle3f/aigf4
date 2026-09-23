@@ -6,6 +6,26 @@ export interface ChatPreferences {
 
 export const defaultChatPreferences: ChatPreferences = { length: 'natural', style: 'balanced', pace: 'natural' };
 
+export function parseExperienceSuggestions(raw: string): string[] {
+    const unfenced = raw.replace(/^\s*```(?:json)?\s*/iu, '').replace(/\s*```\s*$/u, '').trim();
+    const start = unfenced.indexOf('{');
+    const end = unfenced.lastIndexOf('}');
+    const candidate = start >= 0 && end > start ? unfenced.slice(start, end + 1) : unfenced;
+    try {
+        const data = JSON.parse(candidate) as { suggestions?: unknown };
+        if (
+            Array.isArray(data.suggestions)
+            && data.suggestions.length === 3
+            && data.suggestions.every(value => typeof value === 'string' && value.trim())
+        ) {
+            return data.suggestions.map(value => value.trim());
+        }
+    } catch {
+        // Never surface a raw JSON parser exception to the chat UI.
+    }
+    throw new Error('未能整理接戲建議，請再試一次。');
+}
+
 export function preferencePrompt(value?: ChatPreferences): string {
     if (!value) return '';
     return [
