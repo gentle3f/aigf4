@@ -125,6 +125,7 @@ import {
     parseGroupGeneration,
     resolveRoomMemberPersona,
     selectLegacyGroupHistory,
+    selectGroupHistorySinceCurrentRealityLayer,
     trimTrailingUnansweredUserMessages,
 } from "./groupChat.js";
 import {
@@ -10043,7 +10044,15 @@ const getRecentChatMessages = (
             }
         }
     }
-    const sourceHistory = completedHistory.slice(activeSceneStart);
+    const sceneHistory = completedHistory.slice(activeSceneStart);
+    const historyForRealityBoundary = latestUserMessage
+        ? completeHistory.slice(activeSceneStart)
+        : sceneHistory;
+    const sourceHistory = room
+        ? trimTrailingUnansweredUserMessages(
+            selectGroupHistorySinceCurrentRealityLayer(historyForRealityBoundary, room.scene.realityLayer),
+        )
+        : sceneHistory;
     const historyMessages: VeniceMessage[] = [];
     const confirmedHistoryNpcNames = !assistantMode && !room
         ? collectEstablishedNpcNames(sourceHistory, persona?.name || '')

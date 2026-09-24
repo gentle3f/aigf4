@@ -7,6 +7,7 @@ import {
     getGroupDisplaySegments,
     groupNarrationUsesFirstPerson,
     parseGroupGeneration,
+    selectGroupHistorySinceCurrentRealityLayer,
     selectLegacyGroupHistory,
     trimTrailingUnansweredUserMessages,
 } from '../groupChat.js';
@@ -113,12 +114,18 @@ test('group texting prompt makes remote communication override a physical locati
     const prompt = buildGroupSystemPrompt(room);
 
     assert.match(prompt, /Reality layer: texting/);
+    assert.match(prompt, /Communication mode: REMOTE TEXTING/);
+    assert.match(prompt, /Physical co-presence with user: NO/);
+    assert.match(prompt, /Context\/location metadata: a luxury vehicle/);
+    assert.match(prompt, /does NOT mean the characters and user currently share that physical space/i);
     assert.match(prompt, /remote text communication, not a shared physical scene/i);
     assert.match(prompt, /physical location label.*never means a character is physically with the user/i);
     assert.match(prompt, /Do not make a character touch.*physically act directly on the user/i);
     assert.match(prompt, /Do not turn older physical narration into current co-presence/i);
     assert.match(prompt, /remote-message reactions/i);
     assert.doesNotMatch(prompt, /fresh action, expression, physical distance, sensory environment/i);
+    assert.match(prompt, /CURRENT REALITY OVERRIDES OLDER NARRATION/);
+    assert.ok(prompt.indexOf('CURRENT REALITY OVERRIDES OLDER NARRATION') > prompt.indexOf('FIXED MEMBER FILES'));
 });
 
 test('group physical prompt preserves physical scene guidance without the remote contract', () => {
@@ -129,6 +136,8 @@ test('group physical prompt preserves physical scene guidance without the remote
     const prompt = buildGroupSystemPrompt(room);
 
     assert.doesNotMatch(prompt, /REMOTE TEXTING CONTRACT/i);
+    assert.doesNotMatch(prompt, /CURRENT REALITY OVERRIDES OLDER NARRATION/i);
+    assert.doesNotMatch(prompt, /Communication mode: REMOTE TEXTING/i);
     assert.doesNotMatch(prompt, /remote text communication, not a shared physical scene/i);
     assert.match(prompt, /fresh action, expression, physical distance, sensory environment/i);
 });
@@ -146,6 +155,64 @@ test('group prompt reality contracts differ between otherwise identical texting 
     assert.notEqual(textingPrompt, physicalPrompt);
     assert.match(textingPrompt, /Physical interaction with the user is valid only after the scene explicitly changes reality_layer to physical/i);
     assert.doesNotMatch(physicalPrompt, /Physical interaction with the user is valid only after the scene explicitly changes reality_layer to physical/i);
+});
+
+test('texting history starts at the latest snapshot-confirmed texting transition without mutating old turns', () => {
+    const room = createRoom();
+    const physicalSnapshot = { ...room.scene, realityLayer: 'physical' as const };
+    const textingSnapshot = { ...room.scene, realityLayer: 'texting' as const };
+    const history: ChatMessage[] = [
+        { id: 'physical-user', role: 'user', content: { text: 'old physical turn', roomSceneBeforeTurn: physicalSnapshot } },
+        { id: 'physical-model', role: 'model', content: { text: 'old physical co-presence narration' } },
+        { id: 'texting-user', role: 'user', content: { text: 'now we are remote', roomSceneBeforeTurn: textingSnapshot } },
+        { id: 'texting-model', role: 'model', content: { text: 'remote reply remains useful' } },
+    ];
+    const selected = selectGroupHistorySinceCurrentRealityLayer(history, 'texting');
+
+    assert.deepEqual(selected.map(message => message.id), ['texting-user', 'texting-model']);
+    assert.equal(history.length, 4);
+    assert.equal(history[1].content.text, 'old physical co-presence narration');
+});
+
+test('a newest unanswered texting snapshot still establishes the history boundary', () => {
+    const room = createRoom();
+    const history: ChatMessage[] = [
+        { id: 'physical-user', role: 'user', content: { text: 'old physical turn', roomSceneBeforeTurn: { ...room.scene, realityLayer: 'physical' } } },
+        { id: 'physical-model', role: 'model', content: { text: 'old physical co-presence narration' } },
+        { id: 'latest-texting-user', role: 'user', content: { text: 'now remote', roomSceneBeforeTurn: { ...room.scene, realityLayer: 'texting' } } },
+    ];
+    const sinceTransition = selectGroupHistorySinceCurrentRealityLayer(history, 'texting');
+
+    assert.deepEqual(sinceTransition.map(message => message.id), ['latest-texting-user']);
+    assert.deepEqual(trimTrailingUnansweredUserMessages(sinceTransition), []);
+});
+
+test('clean texting history retains useful remote continuity and leaves long-term memory in the prompt', () => {
+    const room = createRoom();
+    room.scene.realityLayer = 'texting';
+    room.sharedMemories = [{
+        id: 'past-event', kind: 'event', title: 'Earlier vehicle trip', summary: 'This is a past shared event, not the current setting.',
+        participants: ['iu', 'jennie'], createdAt: 1, pinned: false, visibility: 'shared',
+    }];
+    const snapshot = { ...room.scene };
+    const history: ChatMessage[] = [
+        { id: 'remote-user', role: 'user', content: { text: 'remote check-in', roomSceneBeforeTurn: snapshot } },
+        { id: 'remote-model', role: 'model', content: { text: 'remote answer' } },
+    ];
+
+    assert.deepEqual(selectGroupHistorySinceCurrentRealityLayer(history, 'texting').map(message => message.id), ['remote-user', 'remote-model']);
+    assert.match(buildGroupSystemPrompt(room, 'remote check-in'), /Earlier vehicle trip/);
+});
+
+test('physical history keeps the same old turns and physical prompt behaviour', () => {
+    const room = createRoom();
+    const history: ChatMessage[] = [
+        { id: 'old-user', role: 'user', content: { text: 'old turn', roomSceneBeforeTurn: { ...room.scene, realityLayer: 'texting' } } },
+        { id: 'old-model', role: 'model', content: { text: 'old reply' } },
+    ];
+
+    assert.equal(selectGroupHistorySinceCurrentRealityLayer(history, 'physical'), history);
+    assert.match(buildGroupSystemPrompt(room), /fresh action, expression, physical distance, sensory environment/i);
 });
 
 test('group parser preserves outfits unless a member has an explicit wardrobe update', () => {
