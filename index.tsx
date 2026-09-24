@@ -10050,7 +10050,11 @@ const getRecentChatMessages = (
         : sceneHistory;
     const sourceHistory = room
         ? trimTrailingUnansweredUserMessages(
-            selectGroupHistorySinceCurrentRealityLayer(historyForRealityBoundary, room.scene.realityLayer),
+            selectGroupHistorySinceCurrentRealityLayer(
+                historyForRealityBoundary,
+                room.scene.realityLayer,
+                room.scene.realityEpochId,
+            ),
         )
         : sceneHistory;
     const historyMessages: VeniceMessage[] = [];
@@ -12998,21 +13002,23 @@ const getResponse = async (
                 text: generated.text,
                 segments: generated.segments,
                 wardrobeState: normalizeWardrobeState(generated.scene.wardrobe),
-            };
+        };
         if (typeof generated !== 'string' && request.room) {
+            let persistedScene = generated.scene;
             try {
-                roomManager.updateRoom(request.room.id, room => {
+                const storedRoom = roomManager.updateRoom(request.room.id, room => {
                     room.scene = generated.scene;
                 });
+                persistedScene = storedRoom?.scene || generated.scene;
             } catch (error) {
                 // A nearly full mobile storage quota must not swallow a valid live reply.
                 console.warn('Unable to persist the latest room scene.', error);
             }
-            request.room.scene = generated.scene;
+            request.room.scene = persistedScene;
             if (currentRoom?.id === request.room.id) {
                 const storedRoom = roomManager.getRoom(request.room.id);
-                currentRoom = storedRoom || { ...currentRoom, scene: generated.scene };
-                currentRoom.scene = generated.scene;
+                currentRoom = storedRoom || { ...currentRoom, scene: persistedScene };
+                currentRoom.scene = persistedScene;
             }
         }
         const persistStartedAt = performance.now();

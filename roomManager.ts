@@ -70,6 +70,7 @@ export interface RoomSceneState {
     id: string;
     location: string;
     realityLayer: 'physical' | 'texting' | 'imagined';
+    realityEpochId?: string;
     presentMemberIds: string[];
     summary: string;
     unresolved: string[];
@@ -126,6 +127,8 @@ const isLocalAvatarUrl = (avatarUrl: string | null | undefined) => Boolean(
 const createId = (prefix: string) => (
     crypto.randomUUID?.() || `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 );
+
+const createRealityEpochId = () => createId('reality');
 
 const publicIdentity = (
     canonicalName: string,
@@ -391,6 +394,9 @@ const normalizeRoomMemoryEntry = (
 
 const normalizeRoomData = (room: ChatRoom): ChatRoom => {
     const normalized = cloneRoom(room);
+    if (!normalized.scene.realityEpochId?.trim()) {
+        normalized.scene.realityEpochId = createRealityEpochId();
+    }
     normalized.members = Array.isArray(normalized.members) ? normalized.members : [];
     const validMemberIds = new Set(normalized.members.map(member => member.id));
     normalized.scene.wardrobe = normalizeWardrobeState(normalized.scene.wardrobe, validMemberIds);
@@ -557,9 +563,13 @@ export class RoomManager {
             const parsed = decodeRoomStorage<RoomExportData | ChatRoom[]>(raw);
             const rooms = Array.isArray(parsed) ? parsed : parsed.rooms;
             if (!Array.isArray(rooms)) return;
+            const needsRealityEpochInitialization = rooms.some(room => (
+                room?.id && !room.scene?.realityEpochId?.trim()
+            ));
             this.rooms = Object.fromEntries(rooms
                 .filter(room => room?.id)
                 .map(room => [room.id, normalizeRoomData(room)]));
+            if (needsRealityEpochInitialization) this.persist();
         } catch (error) {
             console.error('Failed to load rooms:', error);
         }
@@ -657,7 +667,11 @@ export class RoomManager {
         const previous = this.rooms[id];
         if (!previous) return null;
         const updated = cloneRoom(previous);
+        const previousRealityLayer = updated.scene.realityLayer;
         updater(updated);
+        if (updated.scene.realityLayer !== previousRealityLayer) {
+            updated.scene.realityEpochId = createRealityEpochId();
+        }
         updated.updatedAt = Date.now();
         this.rooms[id] = normalizeRoomData(updated);
         try {
@@ -817,6 +831,7 @@ export class RoomManager {
                 id: createId('scene'),
                 location: '群組聊天',
                 realityLayer: 'texting',
+                realityEpochId: createRealityEpochId(),
                 presentMemberIds: roomMembers.slice(0, ROOM_PRESENT_MEMBER_LIMIT).map(member => member.id),
                 summary: '這是一個剛建立的群組聊天室，成員正準備開始聊天。',
                 unresolved: [],
@@ -1188,6 +1203,7 @@ export class RoomManager {
                 id: createId('scene'),
                 location: '私人住所，深夜休息後的清晨',
                 realityLayer: 'physical',
+                realityEpochId: createRealityEpochId(),
                 presentMemberIds: ['iu', 'jennie', 'irene'],
                 summary: '三人與使用者在一段漫長經歷後相擁入睡；新群組從翌日清晨開始，三人都仍在房內。',
                 unresolved: ['今天如何安排工作與陪伴時間'],

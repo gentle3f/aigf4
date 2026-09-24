@@ -75,22 +75,28 @@ export const trimTrailingUnansweredUserMessages = (history: ChatMessage[]) => {
 
 /**
  * A room snapshot is stored when each user turn is sent. Assistant messages
- * inherit their preceding user turn's layer. In texting, retain only the
- * contiguous known-texting turn suffix; an incompatible or unknown user turn
- * is a hard boundary, never a reason to fall back to older raw dialogue.
+ * inherit their preceding user turn's reality epoch. In texting, retain only
+ * the contiguous known-epoch suffix; an incompatible or legacy user turn is a
+ * hard boundary, never a reason to fall back to older raw dialogue.
  */
 export const selectGroupHistorySinceCurrentRealityLayer = (
     history: ChatMessage[],
     realityLayer: RoomSceneState['realityLayer'],
+    currentRealityEpochId?: string,
 ) => {
     if (realityLayer !== 'texting') return history;
+
+    const latestUserSnapshot = [...history].reverse().find(message => message.role === 'user')
+        ?.content.roomSceneBeforeTurn;
+    const currentEpoch = latestUserSnapshot?.realityEpochId?.trim();
+    if (!currentEpoch || (currentRealityEpochId && currentEpoch !== currentRealityEpochId)) return [];
 
     let currentLayerStart = history.length;
     for (let index = history.length - 1; index >= 0; index -= 1) {
         const message = history[index];
         if (message.role !== 'user') continue;
         const snapshot = message.content.roomSceneBeforeTurn;
-        if (!snapshot || snapshot.realityLayer !== realityLayer) break;
+        if (!snapshot || snapshot.realityEpochId !== currentEpoch) break;
         currentLayerStart = index;
     }
     return history.slice(currentLayerStart);

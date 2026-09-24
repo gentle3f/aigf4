@@ -49,6 +49,7 @@ const createRoom = (): ChatRoom => ({
         id: 'scene-1',
         location: 'living room',
         realityLayer: 'physical',
+        realityEpochId: 'epoch-physical',
         presentMemberIds: ['iu', 'jennie'],
         summary: 'IU and Jennie are talking with the user.',
         unresolved: [],
@@ -159,8 +160,8 @@ test('group prompt reality contracts differ between otherwise identical texting 
 
 test('first texting turn after physical history never falls back to old physical dialogue', () => {
     const room = createRoom();
-    const physicalSnapshot = { ...room.scene, realityLayer: 'physical' as const };
-    const textingSnapshot = { ...room.scene, realityLayer: 'texting' as const };
+    const physicalSnapshot = { ...room.scene, realityLayer: 'physical' as const, realityEpochId: 'epoch-physical' };
+    const textingSnapshot = { ...room.scene, realityLayer: 'texting' as const, realityEpochId: 'epoch-texting' };
     const history: ChatMessage[] = [
         { id: 'physical-user', role: 'user', content: { text: 'old physical turn', roomSceneBeforeTurn: physicalSnapshot } },
         { id: 'physical-model', role: 'model', content: { text: 'old physical co-presence narration' } },
@@ -177,9 +178,9 @@ test('first texting turn after physical history never falls back to old physical
 test('a newest unanswered texting snapshot still establishes the history boundary', () => {
     const room = createRoom();
     const history: ChatMessage[] = [
-        { id: 'physical-user', role: 'user', content: { text: 'old physical turn', roomSceneBeforeTurn: { ...room.scene, realityLayer: 'physical' } } },
+        { id: 'physical-user', role: 'user', content: { text: 'old physical turn', roomSceneBeforeTurn: { ...room.scene, realityLayer: 'physical', realityEpochId: 'epoch-physical' } } },
         { id: 'physical-model', role: 'model', content: { text: 'old physical co-presence narration' } },
-        { id: 'latest-texting-user', role: 'user', content: { text: 'now remote', roomSceneBeforeTurn: { ...room.scene, realityLayer: 'texting' } } },
+        { id: 'latest-texting-user', role: 'user', content: { text: 'now remote', roomSceneBeforeTurn: { ...room.scene, realityLayer: 'texting', realityEpochId: 'epoch-texting' } } },
     ];
     const sinceTransition = selectGroupHistorySinceCurrentRealityLayer(history, 'texting');
 
@@ -189,8 +190,8 @@ test('a newest unanswered texting snapshot still establishes the history boundar
 
 test('texting history retains a contiguous same-layer suffix with every assistant response in its user turn', () => {
     const room = createRoom();
-    const physicalSnapshot = { ...room.scene, realityLayer: 'physical' as const };
-    const textingSnapshot = { ...room.scene, realityLayer: 'texting' as const };
+    const physicalSnapshot = { ...room.scene, realityLayer: 'physical' as const, realityEpochId: 'epoch-physical' };
+    const textingSnapshot = { ...room.scene, realityLayer: 'texting' as const, realityEpochId: 'epoch-texting' };
     const history: ChatMessage[] = [
         { id: 'physical-user', role: 'user', content: { text: 'old physical turn', roomSceneBeforeTurn: physicalSnapshot } },
         { id: 'physical-model', role: 'model', content: { text: 'old physical answer' } },
@@ -210,8 +211,8 @@ test('texting history retains a contiguous same-layer suffix with every assistan
 
 test('an unknown user-turn layer is a hard barrier for texting continuity', () => {
     const room = createRoom();
-    const physicalSnapshot = { ...room.scene, realityLayer: 'physical' as const };
-    const textingSnapshot = { ...room.scene, realityLayer: 'texting' as const };
+    const physicalSnapshot = { ...room.scene, realityLayer: 'physical' as const, realityEpochId: 'epoch-physical' };
+    const textingSnapshot = { ...room.scene, realityLayer: 'texting' as const, realityEpochId: 'epoch-texting' };
     const history: ChatMessage[] = [
         { id: 'physical-user', role: 'user', content: { text: 'old physical turn', roomSceneBeforeTurn: physicalSnapshot } },
         { id: 'physical-model', role: 'model', content: { text: 'old physical answer' } },
@@ -229,9 +230,64 @@ test('an unknown user-turn layer is a hard barrier for texting continuity', () =
     ]);
 });
 
+test('first post-upgrade texting turn excludes every legacy user turn without an epoch', () => {
+    const room = createRoom();
+    room.scene.realityLayer = 'texting';
+    room.scene.realityEpochId = 'epoch-current';
+    const legacySnapshot = { ...room.scene, realityEpochId: undefined };
+    const currentSnapshot = { ...room.scene };
+    const history: ChatMessage[] = [
+        { id: 'legacy-user', role: 'user', content: { text: 'old legacy turn', roomSceneBeforeTurn: legacySnapshot } },
+        { id: 'legacy-model', role: 'model', content: { text: 'old legacy reply' } },
+        { id: 'latest-user', role: 'user', content: { text: 'new current turn', roomSceneBeforeTurn: currentSnapshot } },
+    ];
+
+    const selected = selectGroupHistorySinceCurrentRealityLayer(history, 'texting', room.scene.realityEpochId);
+    assert.deepEqual(selected.map(message => message.id), ['latest-user']);
+    assert.deepEqual(trimTrailingUnansweredUserMessages(selected), []);
+});
+
+test('second post-upgrade texting turn retains only the current epoch completed turn', () => {
+    const room = createRoom();
+    const legacySnapshot = { ...room.scene, realityLayer: 'texting' as const, realityEpochId: undefined };
+    const currentSnapshot = { ...room.scene, realityLayer: 'texting' as const, realityEpochId: 'epoch-current' };
+    const history: ChatMessage[] = [
+        { id: 'legacy-user', role: 'user', content: { text: 'old legacy turn', roomSceneBeforeTurn: legacySnapshot } },
+        { id: 'legacy-model', role: 'model', content: { text: 'old legacy reply' } },
+        { id: 'current-user-a', role: 'user', content: { text: 'current turn A', roomSceneBeforeTurn: currentSnapshot } },
+        { id: 'current-model-a', role: 'model', content: { text: 'current reply A' } },
+        { id: 'latest-user-b', role: 'user', content: { text: 'current turn B', roomSceneBeforeTurn: currentSnapshot } },
+    ];
+
+    const selected = selectGroupHistorySinceCurrentRealityLayer(history, 'texting', 'epoch-current');
+    assert.deepEqual(trimTrailingUnansweredUserMessages(selected).map(message => message.id), [
+        'current-user-a', 'current-model-a',
+    ]);
+});
+
+test('texting epoch selection stops at a missing legacy snapshot before an older epoch', () => {
+    const room = createRoom();
+    const epochOne = { ...room.scene, realityLayer: 'texting' as const, realityEpochId: 'epoch-one' };
+    const epochTwo = { ...room.scene, realityLayer: 'texting' as const, realityEpochId: 'epoch-two' };
+    const legacy = { ...room.scene, realityLayer: 'texting' as const, realityEpochId: undefined };
+    const history: ChatMessage[] = [
+        { id: 'epoch-one-user', role: 'user', content: { text: 'old epoch', roomSceneBeforeTurn: epochOne } },
+        { id: 'epoch-one-model', role: 'model', content: { text: 'old epoch reply' } },
+        { id: 'legacy-user', role: 'user', content: { text: 'legacy boundary', roomSceneBeforeTurn: legacy } },
+        { id: 'legacy-model', role: 'model', content: { text: 'legacy reply' } },
+        { id: 'epoch-two-user', role: 'user', content: { text: 'current epoch', roomSceneBeforeTurn: epochTwo } },
+        { id: 'epoch-two-model', role: 'model', content: { text: 'current epoch reply' } },
+    ];
+
+    assert.deepEqual(selectGroupHistorySinceCurrentRealityLayer(history, 'texting', 'epoch-two').map(message => message.id), [
+        'epoch-two-user', 'epoch-two-model',
+    ]);
+});
+
 test('clean texting history retains useful remote continuity and leaves long-term memory in the prompt', () => {
     const room = createRoom();
     room.scene.realityLayer = 'texting';
+    room.scene.realityEpochId = 'epoch-texting';
     room.sharedMemories = [{
         id: 'past-event', kind: 'event', title: 'Earlier vehicle trip', summary: 'This is a past shared event, not the current setting.',
         participants: ['iu', 'jennie'], createdAt: 1, pinned: false, visibility: 'shared',

@@ -279,6 +279,7 @@ export interface ChatSceneSnapshot {
     id: string;
     location: string;
     realityLayer: 'physical' | 'texting' | 'imagined';
+    realityEpochId?: string;
     presentMemberIds: string[];
     summary: string;
     unresolved: string[];
