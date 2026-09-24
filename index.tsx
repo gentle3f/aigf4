@@ -170,6 +170,7 @@ import {
     applySingleStrictReview,
 } from "./engine/reviewApplication.js";
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
+import { scheduleReplyVisibleHaptic } from "./chatHaptics.js";
 import {
     advanceRelationshipState,
     buildFallbackSurpriseEventMemberRoles,
@@ -13032,6 +13033,7 @@ const getResponse = async (
             const renderStartedAt = performance.now();
             appendMessage(botContent, 'bot');
             markChatPerformance('response:final-render', renderStartedAt);
+            scheduleReplyVisibleHaptic();
         }
         if (request.mode === 'character') {
             try {
