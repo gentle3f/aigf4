@@ -25,6 +25,7 @@ const EXPORTED_APP_SETTING_KEYS = [
 ];
 
 interface FileManagerCallbacks {
+    beforeAllDataRestore?: () => void;
     onSingleChatRestored: (key: string, history: ChatMessage[]) => void;
     onAllDataRestored: (summary: ImportSummary) => void;
 }
@@ -85,6 +86,7 @@ export class FileManager {
             downloadImagesBtn: uiAndCallbacks.downloadImagesBtn
         };
         this.callbacks = {
+            beforeAllDataRestore: uiAndCallbacks.beforeAllDataRestore,
             onSingleChatRestored: uiAndCallbacks.onSingleChatRestored,
             onAllDataRestored: uiAndCallbacks.onAllDataRestored,
         };
@@ -843,6 +845,7 @@ export class FileManager {
                 ? this.prepareReplacementImport(rawAllData)
                 : this.prepareMergeSafeImport(rawAllData);
             const allData = prepared.data;
+            this.callbacks.beforeAllDataRestore?.();
             this.memoryManager.loadAllData(allData, replaceExisting);
             this.roomManager?.importData(allData.rooms, replaceExisting);
 

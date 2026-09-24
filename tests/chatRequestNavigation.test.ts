@@ -18,8 +18,9 @@ test('single global request remains in progress while another conversation is vi
     assert.equal(shouldCancelActiveRequestForConversation(activeRequest.conversationKey, 'conversation-b'), false);
 });
 
-test('same-conversation reload and destructive mutation cancel the matching active request', () => {
+test('only destructive operations cancel the matching active request', () => {
     assert.equal(shouldCancelActiveRequestForConversation('conversation-a', 'conversation-a'), true);
+    assert.equal(shouldCancelActiveRequestForConversation('conversation-a', 'conversation-b'), false);
     assert.equal(shouldCancelActiveRequestForConversation(undefined, 'conversation-a'), false);
 });
 
@@ -28,12 +29,29 @@ test('completed replies render only in their original visible conversation', () 
     assert.equal(shouldRenderCompletedReplyInConversation('conversation-b', 'conversation-a'), false);
 });
 
-test('production navigation keeps background chats, preserves target cancellation, and leaves generic rendering untouched', () => {
+test('production navigation never cancels a request, while history replacement and destructive mutation do', () => {
     const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
-    assert.match(source, /const startChat =[^]*shouldCancelActiveRequestForConversation\(activeChatRequest\?\.conversationKey, key\)/u);
+    const fileManagerSource = readFileSync(new URL('../fileManager.ts', import.meta.url), 'utf8');
+    const legacyChat = source.slice(source.indexOf('const startLegacyChat ='), source.indexOf('const startChat ='));
+    const standardChat = source.slice(source.indexOf('const startChat ='), source.indexOf('const showSelectionView ='));
+    assert.match(source, /const startChat = \([^]*?\) => \{\s*closeChatSearch\(\);/u);
+    assert.match(source, /const startLegacyChat = \([^]*?\) => \{\s*const selectedPersona/u);
+    assert.match(legacyChat, /if \(restoredHistory\) \{\s*if \(shouldCancelActiveRequestForConversation\(activeChatRequest\?\.conversationKey, key\)\) \{\s*cancelActiveChatRequest\(\);\s*\}\s*memoryManager\.setChatHistory\(key, restoredHistory\);/u);
+    assert.match(standardChat, /if \(restoredHistory\) \{\s*if \(shouldCancelActiveRequestForConversation\(activeChatRequest\?\.conversationKey, key\)\) \{\s*cancelActiveChatRequest\(\);\s*\}\s*memoryManager\.setChatHistory\(key, restoredHistory\);/u);
     assert.doesNotMatch(source.slice(source.indexOf('const showSelectionView'), source.indexOf('const deleteCharacterPhotoAssetsForHistory')), /cancelActiveChatRequest\(\)/u);
     assert.match(source, /const deleteConversationFromList =[^]*shouldCancelActiveRequestForConversation\(activeChatRequest\?\.conversationKey, key\)[^]*memoryManager\.clearChatHistory\(key\)/u);
     assert.match(source, /const deleteCustomPersona =[^]*shouldCancelActiveRequestForConversation\(activeChatRequest\?\.conversationKey, key\)[^]*memoryManager\.deleteCustomPersona\(key\)/u);
     assert.match(source, /clearChatBtn\.addEventListener\('click', async \(\) => \{[^]*shouldCancelActiveRequestForConversation\(activeChatRequest\?\.conversationKey, conversationKey\)[^]*memoryManager\.clearChatHistory\(conversationKey\)/u);
+    assert.match(source, /async function deleteSelectedPhotos\(\) \{[^]*shouldCancelActiveRequestForConversation\(activeChatRequest\?\.conversationKey, conversationKey\)[^]*memoryManager\.setChatHistory\(conversationKey, newHistory\)/u);
+    assert.match(source, /const fileManager = new FileManager\([^]*beforeAllDataRestore: \(\) => \{\s*if \(activeChatRequest\) cancelActiveChatRequest\(\);/u);
+    assert.match(fileManagerSource, /this\.callbacks\.beforeAllDataRestore\?\.\(\);\s*this\.memoryManager\.loadAllData/u);
     assert.match(source, /shouldRenderCompletedReplyInConversation\(currentConversationKey, request\.conversationKey\)[^]*appendMessage\(botContent, 'bot'\)[^]*scheduleReplyVisibleHaptic\(\)/u);
+    assert.match(source, /if \(activeChatRequest\) \{\s*throw new Error\('CHAT_REQUEST_IN_PROGRESS'\);\s*\}/u);
+});
+
+test('A remains the one active request through A to B to A and A to home to A navigation', () => {
+    const activeRequest = { conversationKey: 'conversation-a' };
+    const navigate = <T>(request: T, _target: string | null) => request;
+    assert.equal(navigate(navigate(activeRequest, 'conversation-b'), 'conversation-a'), activeRequest);
+    assert.equal(navigate(navigate(activeRequest, null), 'conversation-a'), activeRequest);
 });

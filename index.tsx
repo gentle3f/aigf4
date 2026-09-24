@@ -743,6 +743,9 @@ roomManager.ensureIuGroupRoom(memoryManager);
 const fileManager = new FileManager(memoryManager, {
     downloadAllChatsBtn,
     downloadImagesBtn,
+    beforeAllDataRestore: () => {
+        if (activeChatRequest) cancelActiveChatRequest();
+    },
     onSingleChatRestored: (key, history) => {
         startChat(key, history);
     },
@@ -6931,9 +6934,6 @@ const appendLinkedLegacyHistory = (room: ChatRoom) => {
 };
 
 const startLegacyChat = (key: string, restoredHistory: any[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
-    if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, key)) {
-        cancelActiveChatRequest();
-    }
     const selectedPersona = memoryManager.getPersona(key);
     if (!selectedPersona || (key !== VENICE_ASSISTANT_PERSONA_KEY && selectedPersona.gender !== 'female')) {
         currentPersonaKey = null;
@@ -6956,6 +6956,9 @@ const startLegacyChat = (key: string, restoredHistory: any[] | null = null, hist
     let chatHistory = restoredHistory || memoryManager.getChatHistory(key);
 
     if (restoredHistory) {
+        if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, key)) {
+            cancelActiveChatRequest();
+        }
         memoryManager.setChatHistory(key, restoredHistory);
     }
     chatHistory = recoverInterruptedPhotoProposals(key, chatHistory);
@@ -7019,9 +7022,6 @@ const restoreRoomPrivateContinuityHandoffs = (room: ChatRoom, history: ChatMessa
 };
 
 const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
-    if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, key)) {
-        cancelActiveChatRequest();
-    }
     closeChatSearch();
     const storedRoom = roomManager.getRoom(key) || null;
     const room = storedRoom
@@ -7072,7 +7072,12 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
 
     chatContainer.innerHTML = '';
     let chatHistory = restoredHistory || memoryManager.getChatHistory(key);
-    if (restoredHistory) memoryManager.setChatHistory(key, restoredHistory);
+    if (restoredHistory) {
+        if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, key)) {
+            cancelActiveChatRequest();
+        }
+        memoryManager.setChatHistory(key, restoredHistory);
+    }
     const bridgedHistory = ensureLatestSceneTransitionBridge(
         chatHistory,
         key,
@@ -14296,6 +14301,7 @@ function showMainAlbumButtons() {
 
 async function deleteSelectedPhotos() {
     if (selectedPhotoIndices.size === 0 || !currentConversationKey) return;
+    const conversationKey = currentConversationKey;
     
     // Get the history indices of the photos to be deleted
     const historyIndicesToDelete = new Set<number>(
@@ -14309,9 +14315,12 @@ async function deleteSelectedPhotos() {
 
     // Filter the chat history, keeping only messages whose index is NOT in the deletion set
     if (historyIndicesToDelete.size > 0) {
-        const currentHistory = memoryManager.getChatHistory(currentConversationKey);
+        if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, conversationKey)) {
+            cancelActiveChatRequest();
+        }
+        const currentHistory = memoryManager.getChatHistory(conversationKey);
         const newHistory = currentHistory.filter((_, index) => !historyIndicesToDelete.has(index));
-        memoryManager.setChatHistory(currentConversationKey, newHistory);
+        memoryManager.setChatHistory(conversationKey, newHistory);
     }
     await Promise.all(assetIdsToDelete.map(async assetId => {
         const objectUrl = characterPhotoObjectUrls.get(assetId);
@@ -14325,7 +14334,7 @@ async function deleteSelectedPhotos() {
     renderAlbum();
     
     // Also refresh the main chat view
-    startChat(currentConversationKey);
+    startChat(conversationKey);
     
     showMainAlbumButtons();
 }
@@ -17134,6 +17143,9 @@ const openExperienceDraft = async (direct = false) => {
                         return;
                     }
                     const updated = current.map((message, index) => index === current.length - 1 ? { ...message, content: replacement } : message);
+                    if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, key)) {
+                        cancelActiveChatRequest();
+                    }
                     memoryManager.setChatHistory(key, updated, true);
                     dialog.close();
                     startChat(key, null, 'skip');
@@ -17151,6 +17163,9 @@ const openExperienceDraft = async (direct = false) => {
         if (last!.content.previousVersions?.length) dialog.append(experienceButton('還原上一個版本', () => {
             const versions = last!.content.previousVersions!;
             const restored = { ...versions.at(-1)!, previousVersions: versions.slice(0, -1) };
+            if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, key)) {
+                cancelActiveChatRequest();
+            }
             memoryManager.setChatHistory(key, history.map((message, index) => index === history.length - 1 ? { ...message, content: restored } : message), true);
             dialog.close();
             startChat(key, null, 'skip');
