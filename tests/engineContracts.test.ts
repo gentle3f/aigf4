@@ -26,8 +26,8 @@ test('future decision providers receive semantic state and do not require a prov
         latestUserText: 'continue',
         realityLayer: 'texting',
         realityEpochId: 'epoch-1',
-        participantIds: ['member-1'],
-        relevantMemoryIds: ['memory-1'],
+        participants: [{ id: 'member-1', name: 'Member', present: true, role: 'lead' }],
+        relevantMemories: [{ id: 'memory-1', summary: 'A relevant shared memory.', kind: 'shared' }],
         candidateText: 'candidate text',
     };
     const provider: DecisionProvider = {

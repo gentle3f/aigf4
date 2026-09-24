@@ -19,12 +19,7 @@ export interface GenerationTrace {
         realityLayer?: string;
         realityEpochId?: string;
     };
-    generation?: {
-        attempts?: number;
-        primaryLatencyMs?: number;
-        fallbackUsed?: boolean;
-        continuationCount?: number;
-    };
+    attempts: GenerationAttemptTrace[];
     decision?: {
         provider?: string;
         latencyMs?: number;
@@ -42,11 +37,24 @@ export interface GenerationTrace {
     };
 }
 
+export interface GenerationAttemptTrace {
+    phase: 'primary' | 'repair' | 'fallback' | 'continuation';
+    model: string;
+    routeIndex?: number;
+    attemptIndex?: number;
+    latencyMs?: number;
+    promptTokens?: number;
+    completionTokens?: number;
+    finishReason?: string | null;
+    outcome: 'accepted' | 'invalid' | 'error' | 'aborted';
+    errorCode?: string;
+}
+
 export const createGenerationTrace = (
     requestId: string,
     mode: EngineTurnMode,
     conversationKey?: string,
-): GenerationTrace => ({ requestId, conversationKey, mode });
+): GenerationTrace => ({ requestId, conversationKey, mode, attempts: [] });
 
 // Deliberately metadata-only: this module has no fields for prompts, replies,
 // message bodies, credentials, or provider payloads.
@@ -61,13 +69,9 @@ export const markGenerationRoute = (trace: GenerationTrace, route: ResolvedModel
 
 export const markGenerationAttempt = (
     trace: GenerationTrace,
-    options: { primaryLatencyMs?: number; fallbackUsed?: boolean; continuation?: boolean },
+    attempt: GenerationAttemptTrace,
 ) => {
-    const generation = trace.generation || (trace.generation = {});
-    generation.attempts = (generation.attempts || 0) + 1;
-    if (typeof options.primaryLatencyMs === 'number') generation.primaryLatencyMs = options.primaryLatencyMs;
-    if (options.fallbackUsed) generation.fallbackUsed = true;
-    if (options.continuation) generation.continuationCount = (generation.continuationCount || 0) + 1;
+    trace.attempts.push({ ...attempt });
 };
 
 export const markStrictReview = (

@@ -64,11 +64,15 @@ coordinator.
 `tests/conversationCharacterization.test.ts` records:
 
 - saved model setting precedence, normal/Cc/strict routes;
-- primary repair and fallback attempt cardinality;
-- strict-review keep/revise transport parsing;
+- a Phase 2 plan mechanically derived from the existing normal/Cc routes and
+  existing primary-repair/fallback cardinality;
+- strict-review keep/revise transport parsing and candidate-retention
+  semantics when a revision is missing, incomplete, or fails legacy
+  validation;
 - group structured output and proposed scene parsing;
 - texting epoch selection excluding legacy raw dialogue;
-- the current abort limitation as metadata-only coverage.
+- the current limitation that live DOM abort-to-commit eligibility is not yet
+  characterized by a pure Engine V2 boundary.
 
 The live DOM orchestration remains legacy code in `index.tsx`; Phase 0 avoids
 duplicating it into a fake browser. Existing group, epoch, strict-review,
@@ -78,14 +82,35 @@ wardrobe, storage, and auto-memory tests remain the behavioral guardrails.
 
 `engine/contracts.ts` defines `TurnSnapshot`, `ResolvedModelRoute`,
 `TurnContext`, single/group candidate proposals, review state, and a future
-`DecisionProvider` interface. Candidate scene and wardrobe fields are named
-as proposed state, not committed state.
+`DecisionProvider` interface. A group candidate has one canonical
+`GroupGenerationResult` proposed state; it is not durable state. Review state
+contains compact semantic evidence (participant details and relevant-memory
+summaries), not raw prompt or history content.
 
 `engine/observability/generationTrace.ts` defines a metadata-only,
-in-memory `GenerationTrace`. It stores identifiers, model routes, counts,
-latencies, token/accounting sizes, review metadata, and final commit status.
-It has no fields for prompts, messages, generated responses, API keys, or
+in-memory `GenerationTrace`. It stores identifiers, model routes, individual
+primary/repair/fallback/continuation attempts, timing, token counts, finish
+reasons, outcomes, error codes, review metadata, and final commit status. It
+has no fields for prompts, messages, generated responses, API keys, or
 provider payloads. It is not production-connected in this phase.
+
+## Phase 1.5 hardening
+
+`engine/reviewApplication.ts` makes the strict-review application boundary
+explicit without moving the legacy validators: keep uses the candidate, a
+valid revision replaces it, and an incomplete or rejected revision retains
+the candidate. The existing single-chat wardrobe, speaker ownership, NPC,
+repetition, and length validators remain in `index.tsx`. The existing group
+envelope, parser, narrator, participant, and repetition validators also
+remain in `index.tsx`.
+
+`buildGenerationPlan` is a test-facing equivalence contract derived directly
+from the existing production model route and retry helper. It does not route
+requests independently and is not used to alter production generation.
+
+Live DOM abort handling remains a documented Phase 2 characterization gap;
+the trace can represent an aborted uncommitted attempt, but is not yet wired
+to the live orchestration path.
 
 ## Deliberately legacy
 

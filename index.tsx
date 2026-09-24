@@ -166,6 +166,10 @@ import {
     STRICT_REVIEW_RESPONSE_FORMAT,
 } from "./strictReview.js";
 import {
+    applyGroupStrictReview,
+    applySingleStrictReview,
+} from "./engine/reviewApplication.js";
+import {
     advanceRelationshipState,
     buildFallbackSurpriseEventMemberRoles,
     buildFallbackSurpriseShowMemberRoles,
@@ -11909,48 +11913,48 @@ const strictReviewSingleReply = async (
         authoritativePrompt,
         `${candidate}\n<wardrobe>${JSON.stringify(request.pendingWardrobeState || request.wardrobeState)}</wardrobe>`,
     );
-    if (!decision || decision.decision === 'keep') return candidate;
-
-    const revisedWardrobe = extractWardrobeEnvelope(
-        decision.revisedResponse,
-        request.pendingWardrobeState || request.wardrobeState,
-        getWardrobeParticipantsForRequest(request, establishedNpcNames),
-    );
-    let revision = cleanVeniceChatReply(revisedWardrobe.visibleText);
-    revision = request.personaKey === 'cc'
-        ? normalizeCcCantoneseLeaks(revision)
-        : normalizeTraditionalChineseLeaks(revision);
-    const lengthRatio = revision.length / Math.max(candidate.length, 1);
-    const recentReplies = getRecentAssistantRepliesForPersona(request.conversationKey, false, 8);
-    const repeats = recentReplies.some(previous => (
-        repliesAreTooSimilar(previous, revision)
-        || replyReusesOpeningOrNarrativeBeat(revision, previous)
-        || replyReusesCompletedClause(revision, previous)
-    ));
-    const validNpcSpeech = addressedNpcNames.length === 0
-        || request.personaKey === 'cc'
-        || replyContainsAttributedNpcSpeech(revision, addressedNpcNames);
-    if (
-        !revision
-        || !revisedWardrobe.hadValidUpdate
-        || isInvalidVeniceChatReply(revision)
-        || replyBreaksSpeakerOwnership(revision)
-        || replyHasUnconfirmedAddressLabel(
-            revision,
-            latestUserMessage,
-            request.persona.name,
-            establishedNpcNames,
-        )
-        || !validNpcSpeech
-        || (repeats && !userExplicitlyRequestsContinuation(latestUserMessage))
-        || lengthRatio < 0.62
-        || lengthRatio > 1.85
-    ) {
-        console.warn('[aigf4 strict revision rejected]', { requestId: request.id, issues: decision.issues });
-        return candidate;
-    }
-    request.pendingWardrobeState = revisedWardrobe.wardrobe;
-    return revision;
+    return applySingleStrictReview(candidate, decision, revisedResponse => {
+        const revisedWardrobe = extractWardrobeEnvelope(
+            revisedResponse,
+            request.pendingWardrobeState || request.wardrobeState,
+            getWardrobeParticipantsForRequest(request, establishedNpcNames),
+        );
+        let revision = cleanVeniceChatReply(revisedWardrobe.visibleText);
+        revision = request.personaKey === 'cc'
+            ? normalizeCcCantoneseLeaks(revision)
+            : normalizeTraditionalChineseLeaks(revision);
+        const lengthRatio = revision.length / Math.max(candidate.length, 1);
+        const recentReplies = getRecentAssistantRepliesForPersona(request.conversationKey, false, 8);
+        const repeats = recentReplies.some(previous => (
+            repliesAreTooSimilar(previous, revision)
+            || replyReusesOpeningOrNarrativeBeat(revision, previous)
+            || replyReusesCompletedClause(revision, previous)
+        ));
+        const validNpcSpeech = addressedNpcNames.length === 0
+            || request.personaKey === 'cc'
+            || replyContainsAttributedNpcSpeech(revision, addressedNpcNames);
+        if (
+            !revision
+            || !revisedWardrobe.hadValidUpdate
+            || isInvalidVeniceChatReply(revision)
+            || replyBreaksSpeakerOwnership(revision)
+            || replyHasUnconfirmedAddressLabel(
+                revision,
+                latestUserMessage,
+                request.persona.name,
+                establishedNpcNames,
+            )
+            || !validNpcSpeech
+            || (repeats && !userExplicitlyRequestsContinuation(latestUserMessage))
+            || lengthRatio < 0.62
+            || lengthRatio > 1.85
+        ) {
+            console.warn('[aigf4 strict revision rejected]', { requestId: request.id, issues: decision?.issues || [] });
+            return null;
+        }
+        request.pendingWardrobeState = revisedWardrobe.wardrobe;
+        return revision;
+    });
 };
 
 const serializeGroupGenerationForReview = (result: GroupGenerationResult) => {
@@ -11997,43 +12001,39 @@ const strictReviewGroupReply = async (
         ].join('\n\n'),
         serializedCandidate,
     );
-    if (!decision || decision.decision === 'keep') return candidate;
-    if (!/<chat>[\s\S]*<\/chat>/iu.test(decision.revisedResponse)
-        || !/<scene>[\s\S]*<\/scene>/iu.test(decision.revisedResponse)
-        || !/<npc_candidate>[\s\S]*<\/npc_candidate>/iu.test(decision.revisedResponse)) {
-        return candidate;
-    }
-    try {
-        const revision = normalizeGroupGenerationTraditional(
-            parseGroupGeneration(
-                decision.revisedResponse,
-                request.room,
-                getGroupFallbackMemberId(request, latestUserMessage),
-            ),
-        );
-        if (groupNarrationUsesFirstPerson(revision)) return candidate;
-        if (
-            request.surpriseEvent
-            && !surpriseEventReplyCoversParticipants(request.surpriseEvent, request.room, revision)
-        ) return candidate;
-        const namedMember = getDirectlyNamedRoomMember(request, latestUserMessage);
-        if (namedMember && !revision.segments.some(segment => (
-            segment.type === 'dialogue' && segment.speakerId === namedMember.id
-        ))) return candidate;
-        const recentReplies = getRecentAssistantRepliesForPersona(request.conversationKey, false, 8);
-        if (recentReplies.some(previous => repliesAreTooSimilar(previous, revision.text))
-            && !userExplicitlyRequestsContinuation(latestUserMessage)) return candidate;
-        return {
-            ...revision,
-            npcCandidate: revision.npcCandidate || candidate.npcCandidate,
-        };
-    } catch (error) {
-        console.warn('[aigf4 strict group revision rejected]', {
-            requestId: request.id,
-            reason: error instanceof Error ? error.message : String(error),
-        });
-        return candidate;
-    }
+    return applyGroupStrictReview(candidate, decision, revisedResponse => {
+        try {
+            const revision = normalizeGroupGenerationTraditional(
+                parseGroupGeneration(
+                    revisedResponse,
+                    request.room!,
+                    getGroupFallbackMemberId(request, latestUserMessage),
+                ),
+            );
+            if (groupNarrationUsesFirstPerson(revision)) return null;
+            if (
+                request.surpriseEvent
+                && !surpriseEventReplyCoversParticipants(request.surpriseEvent, request.room!, revision)
+            ) return null;
+            const namedMember = getDirectlyNamedRoomMember(request, latestUserMessage);
+            if (namedMember && !revision.segments.some(segment => (
+                segment.type === 'dialogue' && segment.speakerId === namedMember.id
+            ))) return null;
+            const recentReplies = getRecentAssistantRepliesForPersona(request.conversationKey, false, 8);
+            if (recentReplies.some(previous => repliesAreTooSimilar(previous, revision.text))
+                && !userExplicitlyRequestsContinuation(latestUserMessage)) return null;
+            return {
+                ...revision,
+                npcCandidate: revision.npcCandidate || candidate.npcCandidate,
+            };
+        } catch (error) {
+            console.warn('[aigf4 strict group revision rejected]', {
+                requestId: request.id,
+                reason: error instanceof Error ? error.message : String(error),
+            });
+            return null;
+        }
+    });
 };
 
 const runCharacterChatGeneration = async (

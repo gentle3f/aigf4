@@ -50,8 +50,6 @@ export interface SingleCandidate {
 
 export interface GroupCandidate {
     result: GroupGenerationResult;
-    proposedScene: RoomSceneState;
-    proposedWardrobe: WardrobeState;
 }
 
 export interface ReviewAssessment {
@@ -66,9 +64,18 @@ export interface ReviewState {
     realityLayer?: RoomSceneState['realityLayer'];
     realityEpochId?: string;
     sceneSummary?: string;
-    participantIds: string[];
+    participants: Array<{
+        id: string;
+        name: string;
+        present?: boolean;
+        role?: string;
+    }>;
     wardrobe?: WardrobeState;
-    relevantMemoryIds: string[];
+    relevantMemories: Array<{
+        id: string;
+        summary: string;
+        kind?: string;
+    }>;
     candidateText: string;
     proposedScene?: RoomSceneState;
 }

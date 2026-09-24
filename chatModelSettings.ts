@@ -43,6 +43,18 @@ const uniqueRoute = (models: string[]) => Array.from(new Set(models.map(cleanMod
 // without changing either generator's retry behavior.
 export const getGenerationAttemptCount = (routeIndex: number) => routeIndex === 0 ? 2 : 1;
 
+export interface GenerationPlanAttempt {
+    model: string;
+    routeIndex: number;
+    attemptIndex: number;
+    phase: 'primary' | 'repair' | 'fallback';
+}
+
+export interface GenerationPlan {
+    models: string[];
+    attempts: GenerationPlanAttempt[];
+}
+
 export const buildCharacterModelRoute = (
     settings: ChatModelSettings,
     isCc: boolean,
@@ -56,6 +68,28 @@ export const buildStrictReviewModelRoute = (
 ) => uniqueRoute(isCc
     ? [settings.ccPrimary, settings.qualityFallback, settings.primary, settings.emergencyFallback]
     : [settings.qualityFallback, settings.primary, settings.emergencyFallback]);
+
+// This is a test-facing description of the route and retry loop already used
+// by both legacy generators. It adds no routing rule of its own.
+export const buildGenerationPlan = (
+    settings: ChatModelSettings,
+    isCc: boolean,
+): GenerationPlan => {
+    const models = buildCharacterModelRoute(settings, isCc);
+    return {
+        models,
+        attempts: models.flatMap((model, routeIndex) => (
+            Array.from({ length: getGenerationAttemptCount(routeIndex) }, (_, attemptOffset) => ({
+                model,
+                routeIndex,
+                attemptIndex: attemptOffset + 1,
+                phase: routeIndex === 0
+                    ? attemptOffset === 0 ? 'primary' : 'repair'
+                    : 'fallback',
+            }))
+        )),
+    };
+};
 
 // Surprise cards use a prompt-level JSON contract on the primary model, then
 // the schema-capable emergency model. The slow quality model remains last.
