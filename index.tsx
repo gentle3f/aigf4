@@ -169,6 +169,7 @@ import {
     applyGroupStrictReview,
     applySingleStrictReview,
 } from "./engine/reviewApplication.js";
+import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import {
     advanceRelationshipState,
     buildFallbackSurpriseEventMemberRoles,
@@ -12045,8 +12046,10 @@ const runCharacterChatGeneration = async (
         const candidate = await runRoomConversationGeneration(request, latestUserMessage, models);
         return strictReviewGroupReply(request, latestUserMessage, candidate);
     }
-    const candidate = await runConversationGeneration(request, latestUserMessage, models, false);
-    return strictReviewSingleReply(request, latestUserMessage, candidate);
+    return runSingleTurnAdapter({
+        generateCandidate: () => runConversationGeneration(request, latestUserMessage, models, false),
+        reviewCandidate: candidate => strictReviewSingleReply(request, latestUserMessage, candidate),
+    });
 };
 
 const runAssistantChatGeneration = async (
