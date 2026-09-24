@@ -170,6 +170,10 @@ import {
     applySingleStrictReview,
 } from "./engine/reviewApplication.js";
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
+import {
+    createGenerationTrace,
+    createTracedSingleTurnDependencies,
+} from "./engine/observability/generationTrace.js";
 import { scheduleReplyVisibleHaptic } from "./chatHaptics.js";
 import { createVisibilityAwareTimeout } from "./visibilityAwareTimeout.js";
 import {
@@ -12070,10 +12074,13 @@ const runCharacterChatGeneration = async (
         const candidate = await runRoomConversationGeneration(request, latestUserMessage, models);
         return strictReviewGroupReply(request, latestUserMessage, candidate);
     }
-    return runSingleTurnAdapter({
+    const trace = createGenerationTrace(String(request.id), 'single', request.conversationKey);
+    return runSingleTurnAdapter(createTracedSingleTurnDependencies(trace, {
         generateCandidate: () => runConversationGeneration(request, latestUserMessage, models, false),
         reviewCandidate: candidate => strictReviewSingleReply(request, latestUserMessage, candidate),
-    });
+    }, {
+        isAbortError,
+    }));
 };
 
 const runAssistantChatGeneration = async (

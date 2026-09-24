@@ -1,12 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    MAX_RECENT_GENERATION_TRACES,
+    clearRecentGenerationTracesForTesting,
+    createTracedSingleTurnDependencies,
     createGenerationTrace,
     finalizeGenerationTrace,
+    getRecentGenerationTraces,
     markGenerationAttempt,
     markGenerationRoute,
     markStrictReview,
+    recordGenerationTrace,
 } from '../engine/observability/generationTrace.js';
+import { runSingleTurnAdapter } from '../engine/singleTurnAdapter.js';
+
+const abortError = () => Object.assign(new Error('aborted'), { name: 'AbortError' });
 
 test('GenerationTrace records metadata only and has no prompt or response fields', () => {
     const trace = createGenerationTrace('request-1', 'group', 'room-1');
@@ -55,4 +63,95 @@ test('GenerationTrace finalization is metadata-only and can represent an aborted
         phase: 'primary', model: 'primary', routeIndex: 0, attemptIndex: 1,
         outcome: 'aborted', errorCode: 'ABORTED',
     }]);
+});
+
+test('broad single-turn trace preserves generate-review return semantics and records timings', async () => {
+    let now = 0;
+    const trace = createGenerationTrace('single-success', 'single', 'conversation-a');
+    let generated = 0;
+    let reviewed = 0;
+    const result = await runSingleTurnAdapter(createTracedSingleTurnDependencies(trace, {
+        generateCandidate: async () => { generated += 1; now = 12; return 'candidate'; },
+        reviewCandidate: async candidate => { reviewed += 1; now = 31; return `${candidate}-reviewed`; },
+    }, { now: () => now, record: () => undefined }));
+
+    assert.equal(result, 'candidate-reviewed');
+    assert.equal(generated, 1);
+    assert.equal(reviewed, 1);
+    assert.deepEqual(trace.stages, { generationLatencyMs: 12, reviewLatencyMs: 19 });
+    assert.deepEqual(trace.final, { totalLatencyMs: 31, outcome: 'accepted' });
+    assert.deepEqual(trace.attempts, []);
+});
+
+test('broad single-turn trace preserves generation errors and skips review', async () => {
+    const error = new Error('generation failure');
+    const trace = createGenerationTrace('generation-error', 'single');
+    let reviewed = false;
+    await assert.rejects(
+        runSingleTurnAdapter(createTracedSingleTurnDependencies(trace, {
+            generateCandidate: async () => { throw error; },
+            reviewCandidate: async candidate => { reviewed = true; return candidate; },
+        }, { now: () => 7, record: () => undefined })),
+        received => received === error,
+    );
+    assert.equal(reviewed, false);
+    assert.equal(trace.final?.outcome, 'error');
+});
+
+test('broad single-turn trace preserves generation aborts', async () => {
+    const error = abortError();
+    const trace = createGenerationTrace('generation-abort', 'single');
+    await assert.rejects(
+        runSingleTurnAdapter(createTracedSingleTurnDependencies(trace, {
+            generateCandidate: async () => { throw error; },
+            reviewCandidate: async candidate => candidate,
+        }, { now: () => 4, isAbortError: received => received === error, record: () => undefined })),
+        received => received === error,
+    );
+    assert.equal(trace.final?.outcome, 'aborted');
+});
+
+test('broad single-turn trace preserves review errors after recording generation timing', async () => {
+    let now = 0;
+    const error = new Error('review failure');
+    const trace = createGenerationTrace('review-error', 'single');
+    await assert.rejects(
+        runSingleTurnAdapter(createTracedSingleTurnDependencies(trace, {
+            generateCandidate: async () => { now = 9; return 'candidate'; },
+            reviewCandidate: async () => { now = 17; throw error; },
+        }, { now: () => now, record: () => undefined })),
+        received => received === error,
+    );
+    assert.equal(trace.stages?.generationLatencyMs, 9);
+    assert.equal(trace.final?.outcome, 'error');
+});
+
+test('broad single-turn trace preserves review aborts', async () => {
+    const error = abortError();
+    const trace = createGenerationTrace('review-abort', 'single');
+    await assert.rejects(
+        runSingleTurnAdapter(createTracedSingleTurnDependencies(trace, {
+            generateCandidate: async () => 'candidate',
+            reviewCandidate: async () => { throw error; },
+        }, { now: () => 4, isAbortError: received => received === error, record: () => undefined })),
+        received => received === error,
+    );
+    assert.equal(trace.final?.outcome, 'aborted');
+});
+
+test('recent trace collector stays bounded and returns metadata-only defensive copies', () => {
+    clearRecentGenerationTracesForTesting();
+    for (let index = 0; index <= MAX_RECENT_GENERATION_TRACES; index += 1) {
+        const trace = createGenerationTrace(`request-${index}`, 'single', 'conversation-a');
+        trace.stages = { generationLatencyMs: index };
+        finalizeGenerationTrace(trace, { totalLatencyMs: index, outcome: 'accepted' });
+        recordGenerationTrace(trace);
+    }
+    const traces = getRecentGenerationTraces();
+    assert.equal(traces.length, MAX_RECENT_GENERATION_TRACES);
+    assert.equal(traces[0]?.requestId, 'request-1');
+    traces[0]!.attempts.push({ phase: 'primary', model: 'mutated', outcome: 'accepted' });
+    assert.equal(getRecentGenerationTraces()[0]?.attempts.length, 0);
+    assert.doesNotMatch(JSON.stringify(traces), /prompt|reply|secret|memory contents|user text/i);
+    clearRecentGenerationTracesForTesting();
 });

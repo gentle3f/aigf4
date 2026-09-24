@@ -85,8 +85,10 @@ test('CASE H: the adapter is a pure dependency seam with no persistence capabili
     ]);
 });
 
-test('Cc single chat uses the same adapter seam while the group branch remains direct', () => {
+test('Cc single chat traces the same adapter seam while the group branch remains direct', () => {
     const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
-    assert.match(source, /runSingleTurnAdapter\(\{\s*generateCandidate: \(\) => runConversationGeneration\(request, latestUserMessage, models, false\),\s*reviewCandidate: candidate => strictReviewSingleReply\(request, latestUserMessage, candidate\),\s*\}\)/s);
+    assert.match(source, /const trace = createGenerationTrace\(String\(request\.id\), 'single', request\.conversationKey\);\s*return runSingleTurnAdapter\(createTracedSingleTurnDependencies\(trace, \{\s*generateCandidate: \(\) => runConversationGeneration\(request, latestUserMessage, models, false\),\s*reviewCandidate: candidate => strictReviewSingleReply\(request, latestUserMessage, candidate\),\s*\}, \{\s*isAbortError,\s*\}\)\);/s);
     assert.match(source, /if \(request\.room\) \{\s*const candidate = await runRoomConversationGeneration\(request, latestUserMessage, models\);\s*return strictReviewGroupReply\(request, latestUserMessage, candidate\);\s*\}/s);
+    const groupBranch = source.slice(source.indexOf('if (request.room) {'), source.indexOf("const trace = createGenerationTrace"));
+    assert.doesNotMatch(groupBranch, /GenerationTrace|createTracedSingleTurnDependencies|recordGenerationTrace/);
 });
