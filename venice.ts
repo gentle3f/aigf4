@@ -158,8 +158,10 @@ export const VENICE_MODELS_API_BASE =
 export const VENICE_API_KEY = VITE_ENV.DEV
   ? VITE_ENV.VITE_VENICE_API_KEY || ''
   : '';
+// Emergency rollback: change only this default to 'qwen-3-6-plus'.
+export const DEFAULT_PRIMARY_CHAT_MODEL = 'qwen-3-8-27b';
 export const VENICE_CHAT_MODEL =
-  VITE_ENV.VITE_VENICE_CHAT_MODEL || 'qwen-3-6-plus';
+  VITE_ENV.VITE_VENICE_CHAT_MODEL || DEFAULT_PRIMARY_CHAT_MODEL;
 export const VENICE_CHAT_QUALITY_FALLBACK_MODEL =
   VITE_ENV.VITE_VENICE_CHAT_QUALITY_FALLBACK_MODEL || 'gemma-4-uncensored';
 export const VENICE_CC_MODEL =

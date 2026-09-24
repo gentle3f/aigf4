@@ -42,7 +42,7 @@ The browser never receives `VENICE_API_KEY` in proxy mode.
 
 ## Character chat
 
-- Default and imported characters use `qwen-3-6-plus` for stronger multi-speaker continuity.
+- Default and imported characters use `qwen-3-8-27b` as the primary conversation model.
 - Invalid, repetitive, or malformed replies retry automatically before using the configured fallbacks.
 - Named third parties can speak in the current scene without taking over the active character or user identity.
 - The home and chat screens use a WhatsApp-style conversation layout with search, emoji, private attachments, per-chat media, and mobile back navigation.
