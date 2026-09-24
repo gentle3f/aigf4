@@ -172,6 +172,10 @@ import {
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import { scheduleReplyVisibleHaptic } from "./chatHaptics.js";
 import {
+    shouldCancelActiveRequestForConversation,
+    shouldRenderCompletedReplyInConversation,
+} from "./chatRequestNavigation.js";
+import {
     advanceRelationshipState,
     buildFallbackSurpriseEventMemberRoles,
     buildFallbackSurpriseShowMemberRoles,
@@ -3356,6 +3360,9 @@ const deleteCustomPersona = async (key: string) => {
     isDeletingPersona = true;
 
     try {
+        if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, key)) {
+            cancelActiveChatRequest();
+        }
         const history = memoryManager.getChatHistory(key);
         if (currentPersonaKey === key && characterPhotoRequestController) {
             characterPhotoRequestController.abort();
@@ -6923,7 +6930,9 @@ const appendLinkedLegacyHistory = (room: ChatRoom) => {
 };
 
 const startLegacyChat = (key: string, restoredHistory: any[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
-    cancelActiveChatRequest();
+    if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, key)) {
+        cancelActiveChatRequest();
+    }
     const selectedPersona = memoryManager.getPersona(key);
     if (!selectedPersona || (key !== VENICE_ASSISTANT_PERSONA_KEY && selectedPersona.gender !== 'female')) {
         currentPersonaKey = null;
@@ -7009,7 +7018,9 @@ const restoreRoomPrivateContinuityHandoffs = (room: ChatRoom, history: ChatMessa
 };
 
 const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
-    cancelActiveChatRequest();
+    if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, key)) {
+        cancelActiveChatRequest();
+    }
     closeChatSearch();
     const storedRoom = roomManager.getRoom(key) || null;
     const room = storedRoom
@@ -7113,7 +7124,6 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
 };
 
 const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
-    cancelActiveChatRequest();
     closeChatSearch();
     cancelImageRequest();
     cancelVideoPromptOptimization();
@@ -7313,8 +7323,10 @@ const deleteConversationFromList = async (key: string, title: string, room?: Cha
             : `確定要刪除與「${title}」的聊天記錄嗎？角色人格、頭像、soul.md 與 memory.md 會保留。`;
     if (!confirm(prompt)) return;
 
-    if (currentConversationKey === key) {
+    if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, key)) {
         cancelActiveChatRequest();
+    }
+    if (currentConversationKey === key) {
         if (characterPhotoRequestController) characterPhotoRequestController.abort();
     }
     const history = memoryManager.peekChatHistory(key);
@@ -13029,7 +13041,7 @@ const getResponse = async (
         const persistStartedAt = performance.now();
         memoryManager.addMessage(request.conversationKey, 'model', botContent);
         markChatPerformance('response:final-persist', persistStartedAt);
-        if (currentConversationKey === request.conversationKey) {
+        if (shouldRenderCompletedReplyInConversation(currentConversationKey, request.conversationKey)) {
             const renderStartedAt = performance.now();
             appendMessage(botContent, 'bot');
             markChatPerformance('response:final-render', renderStartedAt);
@@ -16725,6 +16737,9 @@ const setupEventListeners = () => {
         if (currentConversationKey && currentPersona) {
             const conversationKey = currentConversationKey;
             if (confirm(`確定要清除 ${currentRoom?.title || currentPersona.name} 的對話記錄嗎？`)) {
+                if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, conversationKey)) {
+                    cancelActiveChatRequest();
+                }
                 if (characterPhotoRequestController) characterPhotoRequestController.abort();
                 const history = memoryManager.getChatHistory(conversationKey);
                 await Promise.all([

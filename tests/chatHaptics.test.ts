@@ -57,7 +57,7 @@ test('reply-visible haptic schedules exactly two animation frames before one not
 
 test('final accepted render schedules the haptic while generic appendMessage remains untouched', () => {
     const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
-    assert.match(source, /if \(currentConversationKey === request\.conversationKey\) \{\s*const renderStartedAt = performance\.now\(\);\s*appendMessage\(botContent, 'bot'\);\s*markChatPerformance\('response:final-render', renderStartedAt\);\s*scheduleReplyVisibleHaptic\(\);\s*\}/s);
+    assert.match(source, /if \(shouldRenderCompletedReplyInConversation\(currentConversationKey, request\.conversationKey\)\) \{\s*const renderStartedAt = performance\.now\(\);\s*appendMessage\(botContent, 'bot'\);\s*markChatPerformance\('response:final-render', renderStartedAt\);\s*scheduleReplyVisibleHaptic\(\);\s*\}/s);
     const appendMessage = source.slice(source.indexOf('const appendMessage ='), source.indexOf('const appendHistoryDivider ='));
     assert.doesNotMatch(appendMessage, /scheduleReplyVisibleHaptic|notifyReplyVisible|vibrate/);
 });
