@@ -38,6 +38,11 @@ export const parseChatModelSettings = (
 
 const uniqueRoute = (models: string[]) => Array.from(new Set(models.map(cleanModelId).filter(Boolean)));
 
+// The current generators repair the first route model once, then try each
+// configured fallback once. Keeping this rule here makes it characterizable
+// without changing either generator's retry behavior.
+export const getGenerationAttemptCount = (routeIndex: number) => routeIndex === 0 ? 2 : 1;
+
 export const buildCharacterModelRoute = (
     settings: ChatModelSettings,
     isCc: boolean,

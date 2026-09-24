@@ -33,6 +33,7 @@
     "personas.tsx",
     "fileManager.ts",
     "venice.ts",
-    "vite.config.ts"
+    "vite.config.ts",
+    "engine/**/*.ts"
   ]
 }

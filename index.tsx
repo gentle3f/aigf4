@@ -156,6 +156,7 @@ import {
     buildSurpriseEventModelRoute,
     buildStrictReviewModelRoute,
     CHAT_MODEL_SETTINGS_STORAGE_KEY,
+    getGenerationAttemptCount,
     normalizeChatModelSettings,
     parseChatModelSettings,
 } from "./chatModelSettings.js";
@@ -10859,7 +10860,7 @@ const runConversationGeneration = async (
 
     for (let index = 0; index < models.length; index += 1) {
         const model = models[index];
-        const attemptCount = index === 0 ? 2 : 1;
+        const attemptCount = getGenerationAttemptCount(index);
 
         for (let attempt = 0; attempt < attemptCount; attempt += 1) {
             const isRepairAttempt = attempt > 0;
@@ -11574,7 +11575,7 @@ const runRoomConversationGeneration = async (
 
     for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
         const model = models[modelIndex];
-        const attempts = modelIndex === 0 ? 2 : 1;
+        const attempts = getGenerationAttemptCount(modelIndex);
 
         for (let attempt = 0; attempt < attempts; attempt += 1) {
             const isRetry = modelIndex > 0 || attempt > 0;
