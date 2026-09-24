@@ -171,6 +171,7 @@ import {
 } from "./engine/reviewApplication.js";
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import { scheduleReplyVisibleHaptic } from "./chatHaptics.js";
+import { createVisibilityAwareTimeout } from "./visibilityAwareTimeout.js";
 import {
     shouldCancelActiveRequestForConversation,
     shouldRenderCompletedReplyInConversation,
@@ -10427,16 +10428,21 @@ const generateChatTextWithTimeout = async (
     let timedOut = false;
 
     const abortFromUpstream = () => timeoutController.abort(upstreamSignal?.reason);
-    if (upstreamSignal?.aborted) {
-        abortFromUpstream();
-    } else {
-        upstreamSignal?.addEventListener('abort', abortFromUpstream, { once: true });
-    }
-
-    const timeoutId = window.setTimeout(() => {
+    const abortForTimeout = () => {
         timedOut = true;
         timeoutController.abort();
-    }, timeoutMs);
+    };
+    const visibilityTimeout = upstreamSignal
+        ? createVisibilityAwareTimeout({
+            timeoutMs,
+            onTimeout: abortForTimeout,
+            signal: upstreamSignal,
+            onAbort: abortFromUpstream,
+        })
+        : null;
+    const timeoutId = visibilityTimeout
+        ? null
+        : window.setTimeout(abortForTimeout, timeoutMs);
 
     try {
         const result = await generateVeniceText({
@@ -10456,8 +10462,8 @@ const generateChatTextWithTimeout = async (
         }
         throw error;
     } finally {
-        window.clearTimeout(timeoutId);
-        upstreamSignal?.removeEventListener('abort', abortFromUpstream);
+        visibilityTimeout?.cancel();
+        if (timeoutId !== null) window.clearTimeout(timeoutId);
     }
 };
 
