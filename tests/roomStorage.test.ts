@@ -111,3 +111,89 @@ test('failed branch persistence rolls back the in-memory room', () => {
     assert.equal(manager.getRoom('room-branch'), undefined);
     assert.equal(manager.getRoom('room-source')?.title, 'Storage test room');
 });
+
+test('a physical turn snapshot remains physical after the live room enters texting', () => {
+    const liveRoom = room();
+    const beforeTurn = cloneRoomSnapshot(liveRoom.scene);
+
+    liveRoom.scene.realityLayer = 'texting';
+    liveRoom.scene.location = 'private chat';
+
+    assert.equal(beforeTurn.realityLayer, 'physical');
+    assert.equal(beforeTurn.location, 'home');
+});
+
+test('scene snapshot preserves location and summary after later live scene changes', () => {
+    const liveRoom = room();
+    const beforeTurn = cloneRoomSnapshot(liveRoom.scene);
+
+    liveRoom.scene.location = 'new location';
+    liveRoom.scene.summary = 'A different scene summary.';
+
+    assert.equal(beforeTurn.location, 'home');
+    assert.equal(beforeTurn.summary, room().scene.summary);
+});
+
+test('scene snapshot preserves nested member and unresolved arrays', () => {
+    const liveRoom = room();
+    liveRoom.scene.unresolved = ['first unresolved detail'];
+    const beforeTurn = cloneRoomSnapshot(liveRoom.scene);
+
+    liveRoom.scene.presentMemberIds.push('later-member');
+    liveRoom.scene.unresolved.push('later unresolved detail');
+
+    assert.deepEqual(beforeTurn.presentMemberIds, ['one', 'two']);
+    assert.deepEqual(beforeTurn.unresolved, ['first unresolved detail']);
+});
+
+test('scene snapshot preserves nested wardrobe state', () => {
+    const liveRoom = room();
+    liveRoom.scene.wardrobe = {
+        user: 'navy shirt',
+        characters: { one: 'white dress', two: 'denim jacket' },
+    };
+    const beforeTurn = cloneRoomSnapshot(liveRoom.scene);
+
+    liveRoom.scene.wardrobe.user = 'black coat';
+    liveRoom.scene.wardrobe.characters.one = 'red dress';
+    liveRoom.scene.wardrobe.characters.three = 'new outfit';
+
+    assert.deepEqual(beforeTurn.wardrobe, {
+        user: 'navy shirt',
+        characters: { one: 'white dress', two: 'denim jacket' },
+    });
+});
+
+test('sequential scene snapshots preserve their original reality layer, id, and start time', () => {
+    const liveRoom = room();
+    const physicalA = cloneRoomSnapshot(liveRoom.scene);
+
+    liveRoom.scene = {
+        ...liveRoom.scene,
+        id: 'scene-2',
+        realityLayer: 'texting',
+        startedAt: 2,
+    };
+    const textingB = cloneRoomSnapshot(liveRoom.scene);
+
+    liveRoom.scene = {
+        ...liveRoom.scene,
+        id: 'scene-3',
+        realityLayer: 'physical',
+        startedAt: 3,
+    };
+    const physicalC = cloneRoomSnapshot(liveRoom.scene);
+
+    assert.deepEqual(
+        [physicalA, textingB, physicalC].map(snapshot => ({
+            id: snapshot.id,
+            realityLayer: snapshot.realityLayer,
+            startedAt: snapshot.startedAt,
+        })),
+        [
+            { id: 'scene-1', realityLayer: 'physical', startedAt: 1 },
+            { id: 'scene-2', realityLayer: 'texting', startedAt: 2 },
+            { id: 'scene-3', realityLayer: 'physical', startedAt: 3 },
+        ],
+    );
+});
