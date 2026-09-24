@@ -157,7 +157,7 @@ test('group prompt reality contracts differ between otherwise identical texting 
     assert.doesNotMatch(physicalPrompt, /Physical interaction with the user is valid only after the scene explicitly changes reality_layer to physical/i);
 });
 
-test('texting history starts at the latest snapshot-confirmed texting transition without mutating old turns', () => {
+test('first texting turn after physical history never falls back to old physical dialogue', () => {
     const room = createRoom();
     const physicalSnapshot = { ...room.scene, realityLayer: 'physical' as const };
     const textingSnapshot = { ...room.scene, realityLayer: 'texting' as const };
@@ -185,6 +185,48 @@ test('a newest unanswered texting snapshot still establishes the history boundar
 
     assert.deepEqual(sinceTransition.map(message => message.id), ['latest-texting-user']);
     assert.deepEqual(trimTrailingUnansweredUserMessages(sinceTransition), []);
+});
+
+test('texting history retains a contiguous same-layer suffix with every assistant response in its user turn', () => {
+    const room = createRoom();
+    const physicalSnapshot = { ...room.scene, realityLayer: 'physical' as const };
+    const textingSnapshot = { ...room.scene, realityLayer: 'texting' as const };
+    const history: ChatMessage[] = [
+        { id: 'physical-user', role: 'user', content: { text: 'old physical turn', roomSceneBeforeTurn: physicalSnapshot } },
+        { id: 'physical-model', role: 'model', content: { text: 'old physical answer' } },
+        { id: 'texting-a-user', role: 'user', content: { text: 'remote A', roomSceneBeforeTurn: textingSnapshot } },
+        { id: 'texting-a-model-1', role: 'model', content: { text: 'remote A answer one' } },
+        { id: 'texting-a-model-2', role: 'model', content: { text: 'remote A answer two' } },
+        { id: 'texting-b-user', role: 'user', content: { text: 'remote B', roomSceneBeforeTurn: textingSnapshot } },
+        { id: 'texting-b-model', role: 'model', content: { text: 'remote B answer' } },
+        { id: 'latest-texting-user', role: 'user', content: { text: 'remote C', roomSceneBeforeTurn: textingSnapshot } },
+    ];
+
+    assert.deepEqual(selectGroupHistorySinceCurrentRealityLayer(history, 'texting').map(message => message.id), [
+        'texting-a-user', 'texting-a-model-1', 'texting-a-model-2',
+        'texting-b-user', 'texting-b-model', 'latest-texting-user',
+    ]);
+});
+
+test('an unknown user-turn layer is a hard barrier for texting continuity', () => {
+    const room = createRoom();
+    const physicalSnapshot = { ...room.scene, realityLayer: 'physical' as const };
+    const textingSnapshot = { ...room.scene, realityLayer: 'texting' as const };
+    const history: ChatMessage[] = [
+        { id: 'physical-user', role: 'user', content: { text: 'old physical turn', roomSceneBeforeTurn: physicalSnapshot } },
+        { id: 'physical-model', role: 'model', content: { text: 'old physical answer' } },
+        { id: 'early-texting-user', role: 'user', content: { text: 'early remote turn', roomSceneBeforeTurn: textingSnapshot } },
+        { id: 'early-texting-model', role: 'model', content: { text: 'early remote answer' } },
+        { id: 'unknown-user', role: 'user', content: { text: 'unknown layer turn' } },
+        { id: 'unknown-model', role: 'model', content: { text: 'unknown layer answer' } },
+        { id: 'late-texting-user', role: 'user', content: { text: 'late remote turn', roomSceneBeforeTurn: textingSnapshot } },
+        { id: 'late-texting-model', role: 'model', content: { text: 'late remote answer' } },
+        { id: 'latest-texting-user', role: 'user', content: { text: 'latest remote turn', roomSceneBeforeTurn: textingSnapshot } },
+    ];
+
+    assert.deepEqual(selectGroupHistorySinceCurrentRealityLayer(history, 'texting').map(message => message.id), [
+        'late-texting-user', 'late-texting-model', 'latest-texting-user',
+    ]);
 });
 
 test('clean texting history retains useful remote continuity and leaves long-term memory in the prompt', () => {
