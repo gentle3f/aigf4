@@ -10738,6 +10738,22 @@ const recordSingleGenerationAttempt = (
     } catch { /* Trace recording is strictly observational. */ }
 };
 
+const getGroupGenerationAttemptFailure = (
+    error: unknown,
+) => classifyGenerationAttemptFailure(
+    isAbortError(error),
+    error instanceof Error && error.message === CHAT_MODEL_TIMEOUT_ERROR,
+);
+
+const recordGroupGenerationAttempt = (
+    trace: GenerationTrace | undefined,
+    attempt: GenerationAttemptTrace,
+) => {
+    try {
+        if (trace) markGenerationAttempt(trace, attempt);
+    } catch { /* Trace recording is strictly observational. */ }
+};
+
 const getStrictReviewAttemptFailure = (
     request: ActiveChatRequest,
     error: unknown,
@@ -11726,6 +11742,7 @@ const runRoomConversationGeneration = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
     models: string[],
+    trace?: GenerationTrace,
 ): Promise<GroupGenerationResult> => {
     if (!request.room) throw new Error('Room snapshot is unavailable.');
 
@@ -11746,6 +11763,10 @@ const runRoomConversationGeneration = async (
 
         for (let attempt = 0; attempt < attempts; attempt += 1) {
             const isRetry = modelIndex > 0 || attempt > 0;
+            let requestStartedAt: number | null = null;
+            let attemptRecorded = false;
+            let result: Awaited<ReturnType<typeof generateChatTextWithTimeout>> | undefined;
+            const attemptPhase = classifySingleGenerationAttempt(modelIndex, attempt + 1);
             applyChatRuntimeState(isRetry ? 'retrying' : 'generating', isRetry ? '重新思考中...' : '思考中...');
             try {
                 const groupPromptBuild = buildGroupSystemPromptWithAccounting(request.room, latestUserMessage);
@@ -11818,7 +11839,8 @@ const runRoomConversationGeneration = async (
                         messages: 1,
                     }] : []),
                 ], messages.length, isRetry ? 2 : 1);
-                const result = await generateChatTextWithTimeout({
+                requestStartedAt = performance.now();
+                result = await generateChatTextWithTimeout({
                     model,
                     messages,
                     temperature: 0.78,
@@ -11869,6 +11891,19 @@ const runRoomConversationGeneration = async (
                     throw new Error(`Surprise event omitted or confused selected participants in ${model}.`);
                 }
 
+                recordGroupGenerationAttempt(trace, {
+                    phase: attemptPhase,
+                    model: result.model || model,
+                    routeIndex: modelIndex,
+                    attemptIndex: attempt + 1,
+                    latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+                    promptTokens: result.promptTokens,
+                    completionTokens: result.completionTokens,
+                    finishReason: result.finishReason ?? null,
+                    outcome: 'accepted',
+                });
+                attemptRecorded = true;
+
                 console.info('[aigf4 group generation]', {
                     requestId: request.id,
                     model: result.model,
@@ -11880,6 +11915,33 @@ const runRoomConversationGeneration = async (
                 });
                 return parsed;
             } catch (error) {
+                if (!attemptRecorded && requestStartedAt !== null) {
+                    if (result) {
+                        recordGroupGenerationAttempt(trace, {
+                            phase: attemptPhase,
+                            model: result.model || model,
+                            routeIndex: modelIndex,
+                            attemptIndex: attempt + 1,
+                            latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+                            promptTokens: result.promptTokens,
+                            completionTokens: result.completionTokens,
+                            finishReason: result.finishReason ?? null,
+                            outcome: 'invalid',
+                            errorCode: 'INVALID_RESPONSE',
+                        });
+                    } else {
+                        const failure = getGroupGenerationAttemptFailure(error);
+                        recordGroupGenerationAttempt(trace, {
+                            phase: attemptPhase,
+                            model,
+                            routeIndex: modelIndex,
+                            attemptIndex: attempt + 1,
+                            latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+                            ...failure,
+                        });
+                    }
+                    attemptRecorded = true;
+                }
                 if (isAbortError(error)) throw error;
                 lastError = error instanceof Error ? error : new Error(String(error));
                 console.warn('[aigf4 group attempt rejected]', {
@@ -12253,7 +12315,7 @@ const runCharacterChatGeneration = async (
     if (request.room) {
         const trace = createGenerationTrace(String(request.id), 'group', request.conversationKey);
         return runGroupTurnAdapter(createTracedGroupTurnDependencies(trace, {
-            generateCandidate: () => runRoomConversationGeneration(request, latestUserMessage, models),
+            generateCandidate: () => runRoomConversationGeneration(request, latestUserMessage, models, trace),
             reviewCandidate: candidate => strictReviewGroupReply(request, latestUserMessage, candidate),
         }, {
             isAbortError,

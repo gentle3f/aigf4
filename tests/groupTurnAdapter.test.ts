@@ -92,7 +92,7 @@ test('group wiring uses the broad trace adapter seam and leaves downstream scene
         characterGeneration.indexOf("const trace = createGenerationTrace(String(request.id), 'single'", groupBranchStart),
     );
 
-    assert.match(groupBranch, /const trace = createGenerationTrace\(String\(request\.id\), 'group', request\.conversationKey\);\s*return runGroupTurnAdapter\(createTracedGroupTurnDependencies\(trace, \{\s*generateCandidate: \(\) => runRoomConversationGeneration\(request, latestUserMessage, models\),\s*reviewCandidate: candidate => strictReviewGroupReply\(request, latestUserMessage, candidate\),\s*\}, \{\s*isAbortError,\s*\}\)\);/s);
+    assert.match(groupBranch, /const trace = createGenerationTrace\(String\(request\.id\), 'group', request\.conversationKey\);\s*return runGroupTurnAdapter\(createTracedGroupTurnDependencies\(trace, \{\s*generateCandidate: \(\) => runRoomConversationGeneration\(request, latestUserMessage, models, trace\),\s*reviewCandidate: candidate => strictReviewGroupReply\(request, latestUserMessage, candidate\),\s*\}, \{\s*isAbortError,\s*\}\)\);/s);
     assert.doesNotMatch(groupBranch, /markGenerationAttempt|markStrictReviewAttempt|recordGenerationTrace/);
     assert.match(characterGeneration, /return runSingleTurnAdapter\(createTracedSingleTurnDependencies\(trace,/);
 

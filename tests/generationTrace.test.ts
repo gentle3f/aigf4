@@ -179,6 +179,35 @@ test('production attempt cardinality remains primary plus repair, then one per f
     assert.deepEqual(trace.attempts.map(attempt => attempt.phase), ['primary', 'repair', 'fallback']);
 });
 
+test('group attempt metadata follows the existing primary-repair-fallback route shape', () => {
+    const trace = createGenerationTrace('group-route-cardinality', 'group');
+    ([
+        [0, 1, 'invalid'],
+        [0, 2, 'invalid'],
+        [1, 1, 'accepted'],
+    ] as const).forEach(([routeIndex, attemptIndex, outcome]) => markGenerationAttempt(trace, {
+        phase: classifySingleGenerationAttempt(routeIndex, attemptIndex),
+        model: `model-${routeIndex}`,
+        routeIndex,
+        attemptIndex,
+        latencyMs: 10,
+        promptTokens: 100,
+        completionTokens: 20,
+        finishReason: 'stop',
+        outcome,
+        ...(outcome === 'invalid' ? { errorCode: 'INVALID_RESPONSE' as const } : {}),
+    }));
+
+    assert.deepEqual(trace.attempts.map(({ phase, routeIndex, attemptIndex, outcome }) => ({
+        phase, routeIndex, attemptIndex, outcome,
+    })), [
+        { phase: 'primary', routeIndex: 0, attemptIndex: 1, outcome: 'invalid' },
+        { phase: 'repair', routeIndex: 0, attemptIndex: 2, outcome: 'invalid' },
+        { phase: 'fallback', routeIndex: 1, attemptIndex: 1, outcome: 'accepted' },
+    ]);
+    assert.equal(trace.strictReview?.attempts, undefined);
+});
+
 test('strict-review route cardinality remains normal three reviewers and Cc four reviewers', () => {
     const settings = {
         primary: 'primary', qualityFallback: 'quality', emergencyFallback: 'emergency', ccPrimary: 'cc',
@@ -240,6 +269,29 @@ test('production strict-review source records one terminal attempt per reviewer 
     assert.match(reviewRequest, /if \(!attemptRecorded && requestStartedAt !== null\) \{[\s\S]*\.\.\.failure,/);
     assert.match(reviewRequest, /return null;/);
     assert.match(singleReview, /requestStrictReviewDecision\([\s\S]*trace,/);
+    assert.doesNotMatch(groupReview, /requestStrictReviewDecision\([\s\S]*trace/);
+});
+
+test('production group generation records one terminal attempt per actual request without tracing strict review', () => {
+    const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
+    const groupGeneration = source.slice(
+        source.indexOf('const runRoomConversationGeneration'),
+        source.indexOf('const getDirectlyNamedRoomMember'),
+    );
+    const groupReview = source.slice(
+        source.indexOf('const strictReviewGroupReply'),
+        source.indexOf('const runCharacterChatGeneration'),
+    );
+
+    assert.equal(getGenerationAttemptCount(0), 2);
+    assert.equal(getGenerationAttemptCount(1), 1);
+    assert.equal((groupGeneration.match(/result = await generateChatTextWithTimeout\(/g) || []).length, 1);
+    assert.match(groupGeneration, /const attempts = getGenerationAttemptCount\(modelIndex\);/);
+    assert.match(groupGeneration, /const attemptPhase = classifySingleGenerationAttempt\(modelIndex, attempt \+ 1\);/);
+    assert.match(groupGeneration, /outcome: 'accepted',[\s\S]*attemptRecorded = true;[\s\S]*return parsed;/);
+    assert.match(groupGeneration, /if \(!attemptRecorded && requestStartedAt !== null\) \{[\s\S]*if \(result\) \{[\s\S]*outcome: 'invalid',[\s\S]*errorCode: 'INVALID_RESPONSE',[\s\S]*attemptRecorded = true;/);
+    assert.match(groupGeneration, /const failure = getGroupGenerationAttemptFailure\(error\);[\s\S]*\.\.\.failure,/);
+    assert.match(groupGeneration, /if \(isAbortError\(error\)\) throw error;/);
     assert.doesNotMatch(groupReview, /requestStrictReviewDecision\([\s\S]*trace/);
 });
 
