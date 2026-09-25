@@ -169,6 +169,7 @@ import {
     applyGroupStrictReview,
     applySingleStrictReview,
 } from "./engine/reviewApplication.js";
+import { runGroupTurnAdapter } from "./engine/groupTurnAdapter.js";
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import {
     classifyGenerationAttemptFailure,
@@ -12249,8 +12250,10 @@ const runCharacterChatGeneration = async (
 ): Promise<string | GroupGenerationResult> => {
     const models = buildCharacterModelRoute(chatModelSettings, request.personaKey === 'cc');
     if (request.room) {
-        const candidate = await runRoomConversationGeneration(request, latestUserMessage, models);
-        return strictReviewGroupReply(request, latestUserMessage, candidate);
+        return runGroupTurnAdapter({
+            generateCandidate: () => runRoomConversationGeneration(request, latestUserMessage, models),
+            reviewCandidate: candidate => strictReviewGroupReply(request, latestUserMessage, candidate),
+        });
     }
     const trace = createGenerationTrace(String(request.id), 'single', request.conversationKey);
     return runSingleTurnAdapter(createTracedSingleTurnDependencies(trace, {
