@@ -7,6 +7,7 @@ import {
     JEV_QUESTIONS,
     OPENROUTER_DECISIONS_URL,
     classifyUpstreamHttpFailure,
+    extractNetworkCauseCode,
     runOpenRouterDecision,
 } from '../api/_openrouter-decisions.js';
 
@@ -111,15 +112,19 @@ test('server classifies each upstream HTTP failure without reading the upstream 
 
 test('server keeps timeout distinct from ordinary upstream network failures without surfacing error details', async () => {
     let calls = 0;
+    const networkError = Object.assign(new TypeError('private network detail'), {
+        cause: Object.assign(new Error('private socket detail'), { code: 'UND_ERR_CONNECT_TIMEOUT' }),
+    });
+    networkError.stack = 'private stack detail';
     const networkFailure = await runOpenRouterDecision(state, {
         env: { OPENROUTER_API: 'server-secret' },
-        fetchImpl: async () => { calls += 1; throw new Error('private network detail'); },
+        fetchImpl: async () => { calls += 1; throw networkError; },
     });
     const timeoutFailure = await runOpenRouterDecision(state, {
         env: { OPENROUTER_API: 'server-secret' },
         fetchImpl: async () => { calls += 1; throw Object.assign(new Error('private timeout detail'), { name: 'AbortError' }); },
     });
-    assert.deepEqual(networkFailure, { status: 'unavailable', reasonCode: 'UPSTREAM_NETWORK_ERROR' });
+    assert.deepEqual(networkFailure, { status: 'unavailable', reasonCode: 'UPSTREAM_NETWORK_ERROR', networkCode: 'UND_ERR_CONNECT_TIMEOUT' });
     assert.deepEqual(timeoutFailure, { status: 'unavailable', reasonCode: 'TIMEOUT' });
     assert.equal(calls, 2);
     for (const response of [networkFailure, timeoutFailure]) {
@@ -127,8 +132,24 @@ test('server keeps timeout distinct from ordinary upstream network failures with
         assert.equal(serialized.includes('server-secret'), false);
         assert.equal(serialized.includes(state.latestUserText), false);
         assert.equal(serialized.includes(state.candidateText), false);
+        assert.equal(serialized.includes(networkError.message), false);
+        assert.equal(serialized.includes(networkError.stack), false);
         assert.equal(serialized.includes('private'), false);
     }
+});
+
+test('server extracts only allowlisted network codes from direct, cause, and aggregate errors', () => {
+    const withCause = (code: string) => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('private cause'), { code }) });
+    assert.equal(extractNetworkCauseCode(Object.assign(new Error('private direct code'), { code: 'UND_ERR_SOCKET' })), 'UND_ERR_SOCKET');
+    for (const code of ['UND_ERR_CONNECT_TIMEOUT', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ERR_TLS_CERT_ALTNAME_INVALID']) {
+        assert.equal(extractNetworkCauseCode(withCause(code)), code);
+    }
+    const aggregate = Object.assign(new Error('private aggregate'), {
+        errors: [Object.assign(new Error('unknown nested'), { code: 'PRIVATE_CODE' }), Object.assign(new Error('private nested'), { code: 'ECONNREFUSED' })],
+    });
+    assert.equal(extractNetworkCauseCode(aggregate), 'ECONNREFUSED');
+    assert.equal(extractNetworkCauseCode(Object.assign(new Error('private unknown'), { code: 'PRIVATE_CODE' })), 'NETWORK_UNKNOWN');
+    assert.equal(extractNetworkCauseCode(new TypeError('fetch failed')), 'NETWORK_UNKNOWN');
 });
 
 test('unauthenticated endpoint caller receives 401 without an upstream request', async () => {

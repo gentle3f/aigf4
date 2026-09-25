@@ -24,9 +24,31 @@ export type JevUnavailableReason =
     | 'UNAUTHENTICATED'
     | 'NETWORK_FAILURE';
 
+export type JevNetworkCode =
+    | 'UND_ERR_CONNECT_TIMEOUT'
+    | 'UND_ERR_HEADERS_TIMEOUT'
+    | 'UND_ERR_BODY_TIMEOUT'
+    | 'UND_ERR_SOCKET'
+    | 'UND_ERR_ABORTED'
+    | 'ECONNRESET'
+    | 'ECONNREFUSED'
+    | 'ETIMEDOUT'
+    | 'ENETUNREACH'
+    | 'EHOSTUNREACH'
+    | 'ENOTFOUND'
+    | 'EAI_AGAIN'
+    | 'CERT_HAS_EXPIRED'
+    | 'DEPTH_ZERO_SELF_SIGNED_CERT'
+    | 'SELF_SIGNED_CERT_IN_CHAIN'
+    | 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
+    | 'ERR_TLS_CERT_ALTNAME_INVALID'
+    | 'ERR_SSL_WRONG_VERSION_NUMBER'
+    | 'NETWORK_UNKNOWN';
+
 export interface JevShadowResult {
     status: 'ok' | 'unavailable' | 'aborted';
     reasonCode?: JevUnavailableReason;
+    networkCode?: JevNetworkCode;
     model?: string;
     route?: {
         choice: 'clean' | 'full_review';
@@ -55,6 +77,13 @@ const unavailableReasons = new Set<JevUnavailableReason>([
     'UPSTREAM_NETWORK_ERROR', 'MALFORMED_RESPONSE', 'TIMEOUT', 'UNAUTHENTICATED', 'NETWORK_FAILURE',
 ]);
 
+const networkCodes = new Set<JevNetworkCode>([
+    'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_ABORTED',
+    'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN',
+    'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+    'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_SSL_WRONG_VERSION_NUMBER', 'NETWORK_UNKNOWN',
+]);
+
 const isProbability = (value: unknown): value is number => (
     typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
 );
@@ -68,7 +97,10 @@ export const normalizeJevShadowResult = (value: unknown): JevShadowResult | null
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     const response = value as Record<string, unknown>;
     if (response.status === 'unavailable' && typeof response.reasonCode === 'string' && unavailableReasons.has(response.reasonCode as JevUnavailableReason)) {
-        return { status: 'unavailable', reasonCode: response.reasonCode as JevUnavailableReason };
+        const reasonCode = response.reasonCode as JevUnavailableReason;
+        if (response.networkCode === undefined) return { status: 'unavailable', reasonCode };
+        if (reasonCode !== 'UPSTREAM_NETWORK_ERROR' || typeof response.networkCode !== 'string' || !networkCodes.has(response.networkCode as JevNetworkCode)) return null;
+        return { status: 'unavailable', reasonCode, networkCode: response.networkCode as JevNetworkCode };
     }
     if (response.status !== 'ok' || typeof response.model !== 'string') return null;
     const route = response.route as Record<string, unknown> | undefined;

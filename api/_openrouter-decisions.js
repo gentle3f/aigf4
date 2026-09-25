@@ -104,7 +104,42 @@ export const isValidReviewState = state => isPlainObject(state)
   && typeof state.candidateText === 'string'
   && (state.proposedScene === undefined || isProposedScene(state.proposedScene));
 
-const unavailable = reasonCode => ({ status: 'unavailable', reasonCode });
+const unavailable = (reasonCode, details) => ({ status: 'unavailable', reasonCode, ...details });
+
+const networkCauseCodes = new Set([
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_ABORTED',
+  'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN',
+  'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_SSL_WRONG_VERSION_NUMBER',
+]);
+
+const safeProperty = (value, key) => {
+  try {
+    return value && typeof value === 'object' ? value[key] : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+export const extractNetworkCauseCode = error => {
+  const visited = new Set();
+  const findCode = value => {
+    if (!value || typeof value !== 'object' || visited.has(value)) return undefined;
+    visited.add(value);
+    const code = safeProperty(value, 'code');
+    if (typeof code === 'string' && networkCauseCodes.has(code)) return code;
+    const causeCode = findCode(safeProperty(value, 'cause'));
+    if (causeCode) return causeCode;
+    const errors = safeProperty(value, 'errors');
+    if (!Array.isArray(errors)) return undefined;
+    for (const nestedError of errors) {
+      const nestedCode = findCode(nestedError);
+      if (nestedCode) return nestedCode;
+    }
+    return undefined;
+  };
+  return findCode(error) || 'NETWORK_UNKNOWN';
+};
 
 export const classifyUpstreamHttpFailure = status => {
   const reasonCodes = {
@@ -213,7 +248,8 @@ export const runOpenRouterDecision = async (state, {
     }
     return normalizeDecisionsResponse(body) || unavailable('MALFORMED_RESPONSE');
   } catch (error) {
-    return unavailable(error instanceof Error && error.name === 'AbortError' ? 'TIMEOUT' : 'UPSTREAM_NETWORK_ERROR');
+    if (error instanceof Error && error.name === 'AbortError') return unavailable('TIMEOUT');
+    return unavailable('UPSTREAM_NETWORK_ERROR', { networkCode: extractNetworkCauseCode(error) });
   } finally {
     clearTimeout(timeout);
   }

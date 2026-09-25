@@ -27,7 +27,7 @@ test('shadow comparison records are metadata-only and use calibration semantics'
     falseNegative.recordGemmaDecision('revise');
     const fullReview = startJevShadowEvaluation({ requestId: 'three', mode: 'single', ccMode: true, state, signal: new AbortController().signal, evaluate: async () => ok('full_review') });
     fullReview.recordGemmaDecision('keep');
-    const unavailable = startJevShadowEvaluation({ requestId: 'four', mode: 'single', ccMode: false, state, signal: new AbortController().signal, evaluate: async () => ({ status: 'unavailable' as const, reasonCode: 'NETWORK_FAILURE' }) });
+    const unavailable = startJevShadowEvaluation({ requestId: 'four', mode: 'single', ccMode: false, state, signal: new AbortController().signal, evaluate: async () => ({ status: 'unavailable' as const, reasonCode: 'UPSTREAM_NETWORK_ERROR', networkCode: 'ENOTFOUND' as const }) });
     unavailable.recordGemmaDecision('unavailable');
     await flush();
     const records = getJevShadowRecordsForTest();
@@ -36,6 +36,7 @@ test('shadow comparison records are metadata-only and use calibration semantics'
     ]);
     assert.equal(JSON.stringify(records).includes('private user text'), false);
     assert.equal(JSON.stringify(records).includes('private candidate text'), false);
+    assert.equal(records.at(-1)?.networkCode, 'ENOTFOUND');
 });
 
 test('pending or failed shadow never blocks the existing Gemma critical path', async () => {

@@ -7,6 +7,7 @@ export interface JevShadowRecord {
     mode: 'single' | 'group';
     ccMode: boolean;
     status: 'ok' | 'unavailable' | 'aborted';
+    networkCode?: JevShadowResult['networkCode'];
     latencyMs: number;
     servedModel?: string;
     routeChoice?: 'clean' | 'full_review';
@@ -85,6 +86,7 @@ export const startJevShadowEvaluation = ({
             mode,
             ccMode,
             status: result.status,
+            networkCode: result.networkCode,
             latencyMs: Math.max(0, Math.round(now() - startedAt)),
             gemmaDecision,
         };

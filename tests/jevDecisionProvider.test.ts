@@ -51,4 +51,9 @@ test('provider accepts only the expanded closed upstream failure reason-code set
         status: 'unavailable', reasonCode: 'UPSTREAM_PAYMENT_REQUIRED',
     });
     assert.equal(normalizeJevShadowResult({ status: 'unavailable', reasonCode: 'UPSTREAM_599' }), null);
+    assert.deepEqual(normalizeJevShadowResult({ status: 'unavailable', reasonCode: 'UPSTREAM_NETWORK_ERROR', networkCode: 'ECONNRESET' }), {
+        status: 'unavailable', reasonCode: 'UPSTREAM_NETWORK_ERROR', networkCode: 'ECONNRESET',
+    });
+    assert.equal(normalizeJevShadowResult({ status: 'unavailable', reasonCode: 'UPSTREAM_NETWORK_ERROR', networkCode: 'PRIVATE_NETWORK_DETAIL' }), null);
+    assert.equal(normalizeJevShadowResult({ status: 'unavailable', reasonCode: 'TIMEOUT', networkCode: 'ECONNRESET' }), null);
 });
