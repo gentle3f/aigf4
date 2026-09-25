@@ -171,6 +171,7 @@ import {
 } from "./engine/reviewApplication.js";
 import { runReviewPipeline } from "./engine/review/reviewPipeline.js";
 import type { ReviewPipelineAttemptContext } from "./engine/review/reviewPipeline.js";
+import { requestStrictReviewCompletion } from "./engine/review/strictReviewAdapter.js";
 import { runGroupTurnAdapter } from "./engine/groupTurnAdapter.js";
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import {
@@ -12061,13 +12062,10 @@ const requestStrictReviewDecision = async (
                 promptComponent('strict-review-user-and-candidate', candidateAndUser, 1),
             ], messages.length, 2);
             requestStartedAt = performance.now();
-            const result = await generateChatTextWithTimeout({
+            const result = await requestStrictReviewCompletion({
+                requestText: generateChatTextWithTimeout,
                 model,
                 messages,
-                temperature: 0.18,
-                topP: 0.82,
-                repetitionPenalty: 1.02,
-                stop: [],
                 responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,
                 promptCacheKey,
                 signal: request.controller.signal,

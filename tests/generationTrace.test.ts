@@ -299,10 +299,12 @@ test('production strict-review source records one terminal attempt per reviewer 
         source.indexOf('const runCharacterChatGeneration'),
     );
 
-    assert.equal((reviewRequest.match(/const result = await generateChatTextWithTimeout\(/g) || []).length, 1);
+    assert.equal((reviewRequest.match(/const result = await requestStrictReviewCompletion\(/g) || []).length, 1);
+    assert.doesNotMatch(reviewRequest, /const result = await generateChatTextWithTimeout\(/);
     assert.match(reviewRequest, /const runAttempt = async \(\{ model, attemptIndex, isFallback \}: ReviewPipelineAttemptContext\) => \{/);
     assert.match(reviewRequest, /return runReviewPipeline\(\{\s*reviewerModels,\s*runAttempt,\s*\}\);/s);
     assert.match(reviewRequest, /let attemptRecorded = false;/);
+    assert.match(reviewRequest, /requestText: generateChatTextWithTimeout,[\s\S]*responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,[\s\S]*promptCacheKey,[\s\S]*signal: request\.controller\.signal,/);
     assert.match(reviewRequest, /outcome: 'invalid',\s*errorCode: 'INVALID_RESPONSE',[\s\S]*attemptRecorded = true;\s*throw new Error\(`Invalid strict review from \$\{model\}\.`\);/);
     assert.match(reviewRequest, /if \(!attemptRecorded && requestStartedAt !== null\) \{[\s\S]*\.\.\.failure,/);
     assert.match(reviewRequest, /return null;/);
@@ -311,6 +313,7 @@ test('production strict-review source records one terminal attempt per reviewer 
     assert.match(groupReview, /requestStrictReviewDecision\([\s\S]*serializedCandidate,\s*trace,/);
     assert.match(source, /import \{ runReviewPipeline \} from "\.\/engine\/review\/reviewPipeline\.js";/);
     assert.match(source, /import type \{ ReviewPipelineAttemptContext \} from "\.\/engine\/review\/reviewPipeline\.js";/);
+    assert.match(source, /import \{ requestStrictReviewCompletion \} from "\.\/engine\/review\/strictReviewAdapter\.js";/);
 });
 
 test('production group generation records one terminal attempt per actual request and keeps review attempts separate', () => {
