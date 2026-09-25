@@ -298,36 +298,30 @@ test('production strict-review source records one terminal attempt per reviewer 
         source.indexOf('const strictReviewGroupReply'),
         source.indexOf('const runCharacterChatGeneration'),
     );
-    const executorSource = readFileSync(new URL('../engine/review/reviewAttemptExecutor.ts', import.meta.url), 'utf8');
+    const coordinatorSource = readFileSync(new URL('../engine/review/reviewAttemptCoordinator.ts', import.meta.url), 'utf8');
 
-    assert.equal((reviewRequest.match(/const result = await requestStrictReviewCompletion\(/g) || []).length, 1);
-    assert.doesNotMatch(reviewRequest, /const result = await generateChatTextWithTimeout\(/);
     assert.match(reviewRequest, /const runAttempt = async \(\{ model, attemptIndex, isFallback \}: ReviewPipelineAttemptContext\) => \{/);
     assert.match(reviewRequest, /return runReviewPipeline\(\{\s*reviewerModels,\s*runAttempt,\s*\}\);/s);
-    assert.equal((reviewRequest.match(/runStrictReviewAttempt\(/g) || []).length, 1);
-    assert.equal((reviewRequest.match(/buildStrictReviewRequest\(/g) || []).length, 1);
-    assert.match(reviewRequest, /const reviewHistory = getStrictReviewHistory\(request, latestUserMessage\);[\s\S]*buildStrictReviewRequest\(\{[\s\S]*editorPrompt: STRICT_REVIEW_EDITOR_PROMPT,[\s\S]*authoritativePrompt,[\s\S]*reviewHistory,[\s\S]*latestUserMessage,[\s\S]*candidateResponse,/);
-    assert.doesNotMatch(reviewRequest, /NEWEST USER MESSAGE:|CANDIDATE RESPONSE TO AUDIT:|Return the strict review JSON now\./);
-    assert.match(reviewRequest, /parseResult: parseStrictReviewDecision,[\s\S]*recordAttempt: attempt => recordStrictReviewAttempt\(trace, attempt\),[\s\S]*classifyFailure: error => getStrictReviewAttemptFailure\(request, error\),[\s\S]*shouldRethrow: error => isAbortError\(error\) && request\.controller\.signal\.aborted,/);
-    assert.match(reviewRequest, /onParseTiming: parseStartedAt => markChatPerformance\('strict-review:parse', parseStartedAt\),/);
-    assert.match(reviewRequest, /requestText: generateChatTextWithTimeout,[\s\S]*responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,[\s\S]*promptCacheKey,[\s\S]*signal: request\.controller\.signal,/);
+    assert.equal((reviewRequest.match(/runPreparedStrictReviewAttempt\(/g) || []).length, 1);
+    assert.match(reviewRequest, /applyChatRuntimeState\('retrying', isFallback \? '重新檢查中\.\.\.' : '檢查回覆中\.\.\.'\);/);
+    assert.match(reviewRequest, /promptCacheKey = createConversationPromptCacheKey\(request\.conversationKey, 'review'\)/);
+    assert.match(reviewRequest, /getReviewHistory: \(\) => getStrictReviewHistory\(request, latestUserMessage\),[\s\S]*requestText: generateChatTextWithTimeout,[\s\S]*recordAttempt: attempt => recordStrictReviewAttempt\(trace, attempt\),[\s\S]*classifyFailure: error => getStrictReviewAttemptFailure\(request, error\),[\s\S]*shouldRethrow: error => isAbortError\(error\) && request\.controller\.signal\.aborted,/);
+    assert.doesNotMatch(reviewRequest, /buildStrictReviewRequest\(|requestStrictReviewCompletion\(|runStrictReviewAttempt\(/);
     assert.match(reviewRequest, /onSuccess: \(result, decision\) => \{[\s\S]*markStrictReview\(trace,[\s\S]*console\.info\('\[aigf4 strict review\]'/);
-    assert.match(reviewRequest, /try \{[\s\S]*const reviewHistory = getStrictReviewHistory\(request, latestUserMessage\);[\s\S]*\} catch \(error\) \{[\s\S]*if \(isAbortError\(error\) && request\.controller\.signal\.aborted\) throw error;[\s\S]*handleNonFatalFailure\(error\);[\s\S]*return null;/);
     assert.match(reviewRequest, /onFailure: handleNonFatalFailure,/);
     assert.match(singleReview, /requestStrictReviewDecision\([\s\S]*trace,/);
     assert.match(groupReview, /candidate: GroupGenerationResult,\s*trace\?: GenerationTrace,/);
     assert.match(groupReview, /requestStrictReviewDecision\([\s\S]*serializedCandidate,\s*trace,/);
     assert.match(source, /import \{ runReviewPipeline \} from "\.\/engine\/review\/reviewPipeline\.js";/);
     assert.match(source, /import type \{ ReviewPipelineAttemptContext \} from "\.\/engine\/review\/reviewPipeline\.js";/);
-    assert.match(source, /import \{ requestStrictReviewCompletion \} from "\.\/engine\/review\/strictReviewAdapter\.js";/);
-    assert.match(source, /import \{ buildStrictReviewRequest \} from "\.\/engine\/review\/reviewRequestBuilder\.js";/);
-    assert.match(source, /import \{ parseStrictReviewDecision \} from "\.\/engine\/review\/reviewResultParser\.js";/);
-    assert.match(source, /import \{ runStrictReviewAttempt \} from "\.\/engine\/review\/reviewAttemptExecutor\.js";/);
-    assert.match(executorSource, /let requestStartedAt: number \| null = null;\s*let attemptRecorded = false;/);
-    assert.match(executorSource, /outcome: 'invalid',\s*errorCode: 'INVALID_RESPONSE',[\s\S]*attemptRecorded = true;\s*throw new Error\(`Invalid strict review from \$\{context\.model\}\.`\);/);
-    assert.match(executorSource, /if \(!attemptRecorded && requestStartedAt !== null\) \{[\s\S]*\.\.\.dependencies\.classifyFailure\(error\),/);
-    assert.match(executorSource, /if \(dependencies\.shouldRethrow\(error\)\) throw error;/);
-    assert.doesNotMatch(executorSource, /generateChatTextWithTimeout|requestStrictReviewCompletion|runReviewPipeline|ActiveChatRequest|reviewerModels/);
+    assert.match(source, /import \{ runPreparedStrictReviewAttempt \} from "\.\/engine\/review\/reviewAttemptCoordinator\.js";/);
+    assert.match(coordinatorSource, /import \{ buildStrictReviewRequest \} from '\.\/reviewRequestBuilder\.js';/);
+    assert.match(coordinatorSource, /import \{ requestStrictReviewCompletion \} from '\.\/strictReviewAdapter\.js';/);
+    assert.match(coordinatorSource, /import \{ parseStrictReviewDecision \} from '\.\/reviewResultParser\.js';/);
+    assert.match(coordinatorSource, /import \{ runStrictReviewAttempt \} from '\.\/reviewAttemptExecutor\.js';/);
+    assert.equal((coordinatorSource.match(/requestStrictReviewCompletion\(/g) || []).length, 1);
+    assert.equal((coordinatorSource.match(/runStrictReviewAttempt\(/g) || []).length, 1);
+    assert.doesNotMatch(coordinatorSource, /ActiveChatRequest|reviewerModels|buildStrictReviewModelRoute|memoryManager|roomManager|wardrobe|Supabase/);
 });
 
 test('strict-review result parser remains pure and transport-free', () => {

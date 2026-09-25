@@ -164,16 +164,13 @@ import type { ChatModelSettings } from "./chatModelSettings.js";
 import {
     STRICT_REVIEW_RESPONSE_FORMAT,
 } from "./strictReview.js";
-import { parseStrictReviewDecision } from "./engine/review/reviewResultParser.js";
 import {
     applyGroupStrictReview,
     applySingleStrictReview,
 } from "./engine/reviewApplication.js";
 import { runReviewPipeline } from "./engine/review/reviewPipeline.js";
 import type { ReviewPipelineAttemptContext } from "./engine/review/reviewPipeline.js";
-import { requestStrictReviewCompletion } from "./engine/review/strictReviewAdapter.js";
-import { buildStrictReviewRequest } from "./engine/review/reviewRequestBuilder.js";
-import { runStrictReviewAttempt } from "./engine/review/reviewAttemptExecutor.js";
+import { runPreparedStrictReviewAttempt } from "./engine/review/reviewAttemptCoordinator.js";
 import { runGroupTurnAdapter } from "./engine/groupTurnAdapter.js";
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import {
@@ -12040,55 +12037,42 @@ const requestStrictReviewDecision = async (
                 reason,
             });
         };
-        let reviewStartedAt: number;
-        let messages: VeniceMessage[];
-        try {
-            markChatPerformance('strict-review:prepare', preparationStartedAt);
-            reviewStartedAt = performance.now();
-            markChatPerformance('strict-review:request-start');
-            const reviewHistory = getStrictReviewHistory(request, latestUserMessage);
-            const requestBody = buildStrictReviewRequest({
-                editorPrompt: STRICT_REVIEW_EDITOR_PROMPT,
-                authoritativePrompt,
-                reviewHistory,
-                latestUserMessage,
-                candidateResponse,
-            });
-            messages = requestBody.messages;
-            markVeniceRequestAggregate('strict-review:request-meta', model, messages, attemptIndex, { fallback: isFallback });
-            markPromptComponentAccounting('strict-review', [
-                promptComponent('strict-review-editor', STRICT_REVIEW_EDITOR_PROMPT),
-                promptComponent('strict-review-authoritative-context', authoritativePrompt),
-                {
-                    name: 'strict-review-history',
-                    chars: getVeniceMessageAggregate(reviewHistory),
-                    messages: reviewHistory.length,
-                },
-                promptComponent('strict-review-user-and-candidate', requestBody.candidateAndUser, 1),
-            ], messages.length, 2);
-        } catch (error) {
-            if (isAbortError(error) && request.controller.signal.aborted) throw error;
-            handleNonFatalFailure(error);
-            return null;
-        }
-        return runStrictReviewAttempt({ model, attemptIndex, isFallback }, {
-            executeRequest: async () => {
-                const result = await requestStrictReviewCompletion({
-                    requestText: generateChatTextWithTimeout,
-                    model,
-                    messages,
-                    responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,
-                    promptCacheKey,
-                    signal: request.controller.signal,
-                });
-                markChatPerformance('strict-review:request', reviewStartedAt);
-                markVeniceRequestAggregate('strict-review:response-meta', result.model, messages, attemptIndex, { fallback: isFallback }, result);
-                return result;
-            },
-            parseResult: parseStrictReviewDecision,
+        return runPreparedStrictReviewAttempt({
+            model,
+            attemptIndex,
+            isFallback,
+            editorPrompt: STRICT_REVIEW_EDITOR_PROMPT,
+            authoritativePrompt,
+            latestUserMessage,
+            candidateResponse,
+            promptCacheKey,
+            signal: request.controller.signal,
+            responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,
+        }, {
+            getReviewHistory: () => getStrictReviewHistory(request, latestUserMessage),
+            requestText: generateChatTextWithTimeout,
             recordAttempt: attempt => recordStrictReviewAttempt(trace, attempt),
             classifyFailure: error => getStrictReviewAttemptFailure(request, error),
             shouldRethrow: error => isAbortError(error) && request.controller.signal.aborted,
+            onPrepare: () => markChatPerformance('strict-review:prepare', preparationStartedAt),
+            onRequestStarted: () => markChatPerformance('strict-review:request-start'),
+            onRequestPrepared: prepared => {
+                markVeniceRequestAggregate('strict-review:request-meta', model, prepared.messages, attemptIndex, { fallback: isFallback });
+                markPromptComponentAccounting('strict-review', [
+                    promptComponent('strict-review-editor', STRICT_REVIEW_EDITOR_PROMPT),
+                    promptComponent('strict-review-authoritative-context', authoritativePrompt),
+                    {
+                        name: 'strict-review-history',
+                        chars: getVeniceMessageAggregate(prepared.reviewHistory),
+                        messages: prepared.reviewHistory.length,
+                    },
+                    promptComponent('strict-review-user-and-candidate', prepared.candidateAndUser, 1),
+                ], prepared.messages.length, 2);
+            },
+            onResponse: ({ result, messages, reviewStartedAt }) => {
+                markChatPerformance('strict-review:request', reviewStartedAt);
+                markVeniceRequestAggregate('strict-review:response-meta', result.model, messages, attemptIndex, { fallback: isFallback }, result);
+            },
             onParseTiming: parseStartedAt => markChatPerformance('strict-review:parse', parseStartedAt),
             onSuccess: (result, decision) => {
                 try {
