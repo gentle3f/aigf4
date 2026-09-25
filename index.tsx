@@ -169,6 +169,8 @@ import {
     applyGroupStrictReview,
     applySingleStrictReview,
 } from "./engine/reviewApplication.js";
+import { runReviewPipeline } from "./engine/review/reviewPipeline.js";
+import type { ReviewPipelineAttemptContext } from "./engine/review/reviewPipeline.js";
 import { runGroupTurnAdapter } from "./engine/groupTurnAdapter.js";
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import {
@@ -12024,9 +12026,8 @@ const requestStrictReviewDecision = async (
     const preparationStartedAt = performance.now();
     const reviewerModels = buildStrictReviewModelRoute(chatModelSettings, request.personaKey === 'cc');
     const promptCacheKey = createConversationPromptCacheKey(request.conversationKey, 'review');
-    for (let index = 0; index < reviewerModels.length; index += 1) {
-        const model = reviewerModels[index];
-        applyChatRuntimeState('retrying', index === 0 ? '檢查回覆中...' : '重新檢查中...');
+    const runAttempt = async ({ model, attemptIndex, isFallback }: ReviewPipelineAttemptContext) => {
+        applyChatRuntimeState('retrying', isFallback ? '重新檢查中...' : '檢查回覆中...');
         let requestStartedAt: number | null = null;
         let attemptRecorded = false;
         try {
@@ -12048,7 +12049,7 @@ const requestStrictReviewDecision = async (
                     content: candidateAndUser,
                 },
             ];
-            markVeniceRequestAggregate('strict-review:request-meta', model, messages, index + 1, { fallback: index > 0 });
+            markVeniceRequestAggregate('strict-review:request-meta', model, messages, attemptIndex, { fallback: isFallback });
             markPromptComponentAccounting('strict-review', [
                 promptComponent('strict-review-editor', STRICT_REVIEW_EDITOR_PROMPT),
                 promptComponent('strict-review-authoritative-context', authoritativePrompt),
@@ -12072,14 +12073,14 @@ const requestStrictReviewDecision = async (
                 signal: request.controller.signal,
             });
             markChatPerformance('strict-review:request', reviewStartedAt);
-            markVeniceRequestAggregate('strict-review:response-meta', result.model, messages, index + 1, { fallback: index > 0 }, result);
+            markVeniceRequestAggregate('strict-review:response-meta', result.model, messages, attemptIndex, { fallback: isFallback }, result);
             const parseStartedAt = performance.now();
             const decision = parseStrictReviewDecision(result.text);
             markChatPerformance('strict-review:parse', parseStartedAt);
             if (!decision) {
                 recordStrictReviewAttempt(trace, {
                     model: result.model || model,
-                    attemptIndex: index + 1,
+                    attemptIndex,
                     latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
                     promptTokens: result.promptTokens,
                     completionTokens: result.completionTokens,
@@ -12092,7 +12093,7 @@ const requestStrictReviewDecision = async (
             }
             recordStrictReviewAttempt(trace, {
                 model: result.model || model,
-                attemptIndex: index + 1,
+                attemptIndex,
                 latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
                 promptTokens: result.promptTokens,
                 completionTokens: result.completionTokens,
@@ -12111,7 +12112,7 @@ const requestStrictReviewDecision = async (
             const parsedFormat = /<revision>[\s\S]*<\/revision>/iu.test(result.text)
                 ? 'tagged'
                 : /^\s*\{/u.test(result.text) ? 'json' : 'keep-tag';
-            markChatPerformance(`strict-review:decision model=${result.model} attempt=${index + 1} retry=${index > 0} fallback=${index > 0} decision=${decision.decision} format=${parsedFormat}`);
+            markChatPerformance(`strict-review:decision model=${result.model} attempt=${attemptIndex} retry=${isFallback} fallback=${isFallback} decision=${decision.decision} format=${parsedFormat}`);
             console.info('[aigf4 strict review]', {
                 requestId: request.id,
                 model: result.model,
@@ -12126,22 +12127,26 @@ const requestStrictReviewDecision = async (
                 const failure = getStrictReviewAttemptFailure(request, error);
                 recordStrictReviewAttempt(trace, {
                     model,
-                    attemptIndex: index + 1,
+                    attemptIndex,
                     latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
                     ...failure,
                 });
             }
             if (isAbortError(error) && request.controller.signal.aborted) throw error;
             const reason = error instanceof Error ? error.message : String(error);
-            markChatPerformance(`strict-review:attempt-error model=${model} attempt=${index + 1} retry=${index > 0} fallback=${index > 0} timeout=${reason === CHAT_MODEL_TIMEOUT_ERROR}`);
+            markChatPerformance(`strict-review:attempt-error model=${model} attempt=${attemptIndex} retry=${isFallback} fallback=${isFallback} timeout=${reason === CHAT_MODEL_TIMEOUT_ERROR}`);
             console.warn('[aigf4 strict review unavailable]', {
                 requestId: request.id,
                 model,
                 reason,
             });
+            return null;
         }
-    }
-    return null;
+    };
+    return runReviewPipeline({
+        reviewerModels,
+        runAttempt,
+    });
 };
 
 const strictReviewSingleReply = async (

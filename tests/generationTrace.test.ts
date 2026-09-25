@@ -300,6 +300,8 @@ test('production strict-review source records one terminal attempt per reviewer 
     );
 
     assert.equal((reviewRequest.match(/const result = await generateChatTextWithTimeout\(/g) || []).length, 1);
+    assert.match(reviewRequest, /const runAttempt = async \(\{ model, attemptIndex, isFallback \}: ReviewPipelineAttemptContext\) => \{/);
+    assert.match(reviewRequest, /return runReviewPipeline\(\{\s*reviewerModels,\s*runAttempt,\s*\}\);/s);
     assert.match(reviewRequest, /let attemptRecorded = false;/);
     assert.match(reviewRequest, /outcome: 'invalid',\s*errorCode: 'INVALID_RESPONSE',[\s\S]*attemptRecorded = true;\s*throw new Error\(`Invalid strict review from \$\{model\}\.`\);/);
     assert.match(reviewRequest, /if \(!attemptRecorded && requestStartedAt !== null\) \{[\s\S]*\.\.\.failure,/);
@@ -307,6 +309,8 @@ test('production strict-review source records one terminal attempt per reviewer 
     assert.match(singleReview, /requestStrictReviewDecision\([\s\S]*trace,/);
     assert.match(groupReview, /candidate: GroupGenerationResult,\s*trace\?: GenerationTrace,/);
     assert.match(groupReview, /requestStrictReviewDecision\([\s\S]*serializedCandidate,\s*trace,/);
+    assert.match(source, /import \{ runReviewPipeline \} from "\.\/engine\/review\/reviewPipeline\.js";/);
+    assert.match(source, /import type \{ ReviewPipelineAttemptContext \} from "\.\/engine\/review\/reviewPipeline\.js";/);
 });
 
 test('production group generation records one terminal attempt per actual request and keeps review attempts separate', () => {
