@@ -5,6 +5,7 @@ import {
     MAX_RECENT_GENERATION_TRACES,
     classifyGenerationAttemptFailure,
     classifySingleGenerationAttempt,
+    classifyStrictReviewAttemptFailure,
     clearRecentGenerationTracesForTesting,
     createTracedSingleTurnDependencies,
     createGenerationTrace,
@@ -13,10 +14,11 @@ import {
     markGenerationAttempt,
     markGenerationRoute,
     markStrictReview,
+    markStrictReviewAttempt,
     recordGenerationTrace,
 } from '../engine/observability/generationTrace.js';
 import { runSingleTurnAdapter } from '../engine/singleTurnAdapter.js';
-import { getGenerationAttemptCount } from '../chatModelSettings.js';
+import { buildStrictReviewModelRoute, getGenerationAttemptCount } from '../chatModelSettings.js';
 
 const abortError = () => Object.assign(new Error('aborted'), { name: 'AbortError' });
 
@@ -88,6 +90,42 @@ test('attempt failures use only closed sanitized error codes', () => {
     });
 });
 
+test('strict-review failures use the same closed error-code policy', () => {
+    assert.deepEqual(classifyStrictReviewAttemptFailure(false, false), {
+        outcome: 'error', errorCode: 'UNKNOWN',
+    });
+    assert.deepEqual(classifyStrictReviewAttemptFailure(false, true), {
+        outcome: 'error', errorCode: 'TIMEOUT',
+    });
+    assert.deepEqual(classifyStrictReviewAttemptFailure(true, true), {
+        outcome: 'aborted', errorCode: 'ABORTED',
+    });
+});
+
+test('strict-review attempts preserve reviewer order and metadata without review content', () => {
+    const trace = createGenerationTrace('review-attempts', 'single', 'conversation-a');
+    markStrictReviewAttempt(trace, {
+        model: 'reviewer-a', attemptIndex: 1, latencyMs: 12,
+        promptTokens: 100, completionTokens: 20, finishReason: 'stop',
+        outcome: 'invalid', errorCode: 'INVALID_RESPONSE',
+    });
+    markStrictReviewAttempt(trace, {
+        model: 'reviewer-b', attemptIndex: 2, latencyMs: 9,
+        promptTokens: 102, completionTokens: 18, finishReason: 'stop', outcome: 'keep',
+    });
+    markStrictReview(trace, {
+        ran: true, model: 'reviewer-b', decision: 'keep', attempts: trace.strictReview?.attempts,
+    });
+
+    assert.deepEqual(trace.strictReview?.attempts?.map(({ attemptIndex, outcome, errorCode }) => ({
+        attemptIndex, outcome, errorCode,
+    })), [
+        { attemptIndex: 1, outcome: 'invalid', errorCode: 'INVALID_RESPONSE' },
+        { attemptIndex: 2, outcome: 'keep', errorCode: undefined },
+    ]);
+    assert.doesNotMatch(JSON.stringify(trace), /latest user text|candidate text|revised response|review issues|system prompt|history|memory|wardrobe|provider body|raw error/i);
+});
+
 test('single generation attempts retain chronological metadata without private content', () => {
     const trace = createGenerationTrace('attempt-order', 'single', 'conversation-a');
     markGenerationAttempt(trace, {
@@ -139,6 +177,14 @@ test('production attempt cardinality remains primary plus repair, then one per f
     assert.deepEqual(trace.attempts.map(attempt => attempt.phase), ['primary', 'repair', 'fallback']);
 });
 
+test('strict-review route cardinality remains normal three reviewers and Cc four reviewers', () => {
+    const settings = {
+        primary: 'primary', qualityFallback: 'quality', emergencyFallback: 'emergency', ccPrimary: 'cc',
+    };
+    assert.deepEqual(buildStrictReviewModelRoute(settings, false), ['quality', 'primary', 'emergency']);
+    assert.deepEqual(buildStrictReviewModelRoute(settings, true), ['cc', 'quality', 'primary', 'emergency']);
+});
+
 test('production single-generation source records an invalid response once before its retry catch', () => {
     const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
     const singleGeneration = source.slice(
@@ -169,6 +215,30 @@ test('production continuation source increments the trace index before each requ
     assert.match(continuation, /const failure = getSingleGenerationAttemptFailure\(error\);[\s\S]*\.\.\.failure,/);
     assert.match(singleGeneration, /continuationCount \+= 1;\s*const continuation = await continueTruncatedChatReply\([\s\S]*continuationCount,/);
     assert.match(singleGeneration, /continuationCount < CHAT_MAX_AUTO_CONTINUES[\s\S]*finishReason === 'length'/);
+});
+
+test('production strict-review source records one terminal attempt per reviewer request and leaves group untraced', () => {
+    const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
+    const reviewRequest = source.slice(
+        source.indexOf('const requestStrictReviewDecision'),
+        source.indexOf('const strictReviewSingleReply'),
+    );
+    const singleReview = source.slice(
+        source.indexOf('const strictReviewSingleReply'),
+        source.indexOf('const strictReviewGroupReply'),
+    );
+    const groupReview = source.slice(
+        source.indexOf('const strictReviewGroupReply'),
+        source.indexOf('const runCharacterChatGeneration'),
+    );
+
+    assert.equal((reviewRequest.match(/const result = await generateChatTextWithTimeout\(/g) || []).length, 1);
+    assert.match(reviewRequest, /let attemptRecorded = false;/);
+    assert.match(reviewRequest, /outcome: 'invalid',\s*errorCode: 'INVALID_RESPONSE',[\s\S]*attemptRecorded = true;\s*throw new Error\(`Invalid strict review from \$\{model\}\.`\);/);
+    assert.match(reviewRequest, /if \(!attemptRecorded && requestStartedAt !== null\) \{[\s\S]*\.\.\.failure,/);
+    assert.match(reviewRequest, /return null;/);
+    assert.match(singleReview, /requestStrictReviewDecision\([\s\S]*trace,/);
+    assert.doesNotMatch(groupReview, /requestStrictReviewDecision\([\s\S]*trace/);
 });
 
 test('broad single-turn trace preserves generate-review return semantics and records timings', async () => {

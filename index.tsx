@@ -173,11 +173,18 @@ import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import {
     classifyGenerationAttemptFailure,
     classifySingleGenerationAttempt,
+    classifyStrictReviewAttemptFailure,
     createGenerationTrace,
     createTracedSingleTurnDependencies,
     markGenerationAttempt,
+    markStrictReview,
+    markStrictReviewAttempt,
 } from "./engine/observability/generationTrace.js";
-import type { GenerationAttemptTrace, GenerationTrace } from "./engine/observability/generationTrace.js";
+import type {
+    GenerationAttemptTrace,
+    GenerationTrace,
+    StrictReviewAttemptTrace,
+} from "./engine/observability/generationTrace.js";
 import { scheduleReplyVisibleHaptic } from "./chatHaptics.js";
 import { createVisibilityAwareTimeout } from "./visibilityAwareTimeout.js";
 import {
@@ -10729,6 +10736,23 @@ const recordSingleGenerationAttempt = (
     } catch { /* Trace recording is strictly observational. */ }
 };
 
+const getStrictReviewAttemptFailure = (
+    request: ActiveChatRequest,
+    error: unknown,
+) => classifyStrictReviewAttemptFailure(
+    isAbortError(error) && request.controller.signal.aborted,
+    error instanceof Error && error.message === CHAT_MODEL_TIMEOUT_ERROR,
+);
+
+const recordStrictReviewAttempt = (
+    trace: GenerationTrace | undefined,
+    attempt: StrictReviewAttemptTrace,
+) => {
+    try {
+        if (trace) markStrictReviewAttempt(trace, attempt);
+    } catch { /* Trace recording is strictly observational. */ }
+};
+
 const continueTruncatedChatReply = async (
     request: ActiveChatRequest,
     model: string,
@@ -11931,6 +11955,7 @@ const requestStrictReviewDecision = async (
     latestUserMessage: string,
     authoritativePrompt: string,
     candidateResponse: string,
+    trace?: GenerationTrace,
 ) => {
     const preparationStartedAt = performance.now();
     const reviewerModels = buildStrictReviewModelRoute(chatModelSettings, request.personaKey === 'cc');
@@ -11938,6 +11963,8 @@ const requestStrictReviewDecision = async (
     for (let index = 0; index < reviewerModels.length; index += 1) {
         const model = reviewerModels[index];
         applyChatRuntimeState('retrying', index === 0 ? '檢查回覆中...' : '重新檢查中...');
+        let requestStartedAt: number | null = null;
+        let attemptRecorded = false;
         try {
             markChatPerformance('strict-review:prepare', preparationStartedAt);
             const reviewStartedAt = performance.now();
@@ -11968,6 +11995,7 @@ const requestStrictReviewDecision = async (
                 },
                 promptComponent('strict-review-user-and-candidate', candidateAndUser, 1),
             ], messages.length, 2);
+            requestStartedAt = performance.now();
             const result = await generateChatTextWithTimeout({
                 model,
                 messages,
@@ -11984,7 +12012,38 @@ const requestStrictReviewDecision = async (
             const parseStartedAt = performance.now();
             const decision = parseStrictReviewDecision(result.text);
             markChatPerformance('strict-review:parse', parseStartedAt);
-            if (!decision) throw new Error(`Invalid strict review from ${model}.`);
+            if (!decision) {
+                recordStrictReviewAttempt(trace, {
+                    model: result.model || model,
+                    attemptIndex: index + 1,
+                    latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+                    promptTokens: result.promptTokens,
+                    completionTokens: result.completionTokens,
+                    finishReason: result.finishReason ?? null,
+                    outcome: 'invalid',
+                    errorCode: 'INVALID_RESPONSE',
+                });
+                attemptRecorded = true;
+                throw new Error(`Invalid strict review from ${model}.`);
+            }
+            recordStrictReviewAttempt(trace, {
+                model: result.model || model,
+                attemptIndex: index + 1,
+                latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+                promptTokens: result.promptTokens,
+                completionTokens: result.completionTokens,
+                finishReason: result.finishReason ?? null,
+                outcome: decision.decision,
+            });
+            attemptRecorded = true;
+            try {
+                if (trace) markStrictReview(trace, {
+                    ran: true,
+                    model: result.model || model,
+                    decision: decision.decision,
+                    attempts: trace.strictReview?.attempts,
+                });
+            } catch { /* Strict-review tracing is strictly observational. */ }
             const parsedFormat = /<revision>[\s\S]*<\/revision>/iu.test(result.text)
                 ? 'tagged'
                 : /^\s*\{/u.test(result.text) ? 'json' : 'keep-tag';
@@ -11999,6 +12058,15 @@ const requestStrictReviewDecision = async (
             });
             return decision;
         } catch (error) {
+            if (!attemptRecorded && requestStartedAt !== null) {
+                const failure = getStrictReviewAttemptFailure(request, error);
+                recordStrictReviewAttempt(trace, {
+                    model,
+                    attemptIndex: index + 1,
+                    latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+                    ...failure,
+                });
+            }
             if (isAbortError(error) && request.controller.signal.aborted) throw error;
             const reason = error instanceof Error ? error.message : String(error);
             markChatPerformance(`strict-review:attempt-error model=${model} attempt=${index + 1} retry=${index > 0} fallback=${index > 0} timeout=${reason === CHAT_MODEL_TIMEOUT_ERROR}`);
@@ -12016,6 +12084,7 @@ const strictReviewSingleReply = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
     candidate: string,
+    trace?: GenerationTrace,
 ) => {
     const history = memoryManager.getChatHistory(request.conversationKey);
     const establishedNpcNames = collectEstablishedNpcNames(
@@ -12049,6 +12118,7 @@ const strictReviewSingleReply = async (
         latestUserMessage,
         authoritativePrompt,
         `${candidate}\n<wardrobe>${JSON.stringify(request.pendingWardrobeState || request.wardrobeState)}</wardrobe>`,
+        trace,
     );
     return applySingleStrictReview(candidate, decision, revisedResponse => {
         const revisedWardrobe = extractWardrobeEnvelope(
@@ -12185,7 +12255,7 @@ const runCharacterChatGeneration = async (
     const trace = createGenerationTrace(String(request.id), 'single', request.conversationKey);
     return runSingleTurnAdapter(createTracedSingleTurnDependencies(trace, {
         generateCandidate: () => runConversationGeneration(request, latestUserMessage, models, false, trace),
-        reviewCandidate: candidate => strictReviewSingleReply(request, latestUserMessage, candidate),
+        reviewCandidate: candidate => strictReviewSingleReply(request, latestUserMessage, candidate, trace),
     }, {
         isAbortError,
     }));

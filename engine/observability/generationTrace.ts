@@ -30,6 +30,7 @@ export interface GenerationTrace {
         model?: string;
         decision?: 'keep' | 'revise';
         latencyMs?: number;
+        attempts?: StrictReviewAttemptTrace[];
     };
     stages?: {
         generationLatencyMs?: number;
@@ -52,6 +53,17 @@ export interface GenerationAttemptTrace {
     completionTokens?: number;
     finishReason?: string | null;
     outcome: 'accepted' | 'invalid' | 'error' | 'aborted';
+    errorCode?: GenerationAttemptErrorCode;
+}
+
+export interface StrictReviewAttemptTrace {
+    model: string;
+    attemptIndex: number;
+    latencyMs?: number;
+    promptTokens?: number;
+    completionTokens?: number;
+    finishReason?: string | null;
+    outcome: 'keep' | 'revise' | 'invalid' | 'error' | 'aborted';
     errorCode?: GenerationAttemptErrorCode;
 }
 
@@ -108,11 +120,39 @@ export const classifyGenerationAttemptFailure = (
     return { outcome: 'error', errorCode: 'UNKNOWN' };
 };
 
+export const classifyStrictReviewAttemptFailure = (
+    aborted: boolean,
+    timedOut: boolean,
+): Pick<StrictReviewAttemptTrace, 'outcome' | 'errorCode'> => {
+    if (aborted) return { outcome: 'aborted', errorCode: 'ABORTED' };
+    if (timedOut) return { outcome: 'error', errorCode: 'TIMEOUT' };
+    return { outcome: 'error', errorCode: 'UNKNOWN' };
+};
+
 export const markStrictReview = (
     trace: GenerationTrace,
     review: GenerationTrace['strictReview'],
 ) => {
-    trace.strictReview = review ? { ...review } : { ran: false };
+    try {
+        trace.strictReview = review ? {
+            ...review,
+            attempts: review.attempts?.map(attempt => ({ ...attempt })),
+        } : { ran: false };
+    } catch { /* Strict-review tracing is strictly observational. */ }
+};
+
+export const markStrictReviewAttempt = (
+    trace: GenerationTrace,
+    attempt: StrictReviewAttemptTrace,
+) => {
+    try {
+        const review = trace.strictReview || { ran: true };
+        trace.strictReview = {
+            ...review,
+            ran: true,
+            attempts: [...(review.attempts || []), { ...attempt }],
+        };
+    } catch { /* Strict-review tracing is strictly observational. */ }
 };
 
 export const finalizeGenerationTrace = (
@@ -147,7 +187,10 @@ const cloneGenerationTrace = (trace: GenerationTrace): GenerationTrace => ({
     context: trace.context ? { ...trace.context } : undefined,
     attempts: trace.attempts.map(attempt => ({ ...attempt })),
     decision: trace.decision ? { ...trace.decision } : undefined,
-    strictReview: trace.strictReview ? { ...trace.strictReview } : undefined,
+    strictReview: trace.strictReview ? {
+        ...trace.strictReview,
+        attempts: trace.strictReview.attempts?.map(attempt => ({ ...attempt })),
+    } : undefined,
     stages: trace.stages ? { ...trace.stages } : undefined,
     final: trace.final ? { ...trace.final } : undefined,
 });

@@ -85,9 +85,9 @@ test('CASE H: the adapter is a pure dependency seam with no persistence capabili
     ]);
 });
 
-test('Cc single chat passes the optional trace to generation while the group branch remains direct', () => {
+test('Cc single chat passes one optional trace to generation and review while the group branch remains direct', () => {
     const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
-    assert.match(source, /const trace = createGenerationTrace\(String\(request\.id\), 'single', request\.conversationKey\);\s*return runSingleTurnAdapter\(createTracedSingleTurnDependencies\(trace, \{\s*generateCandidate: \(\) => runConversationGeneration\(request, latestUserMessage, models, false, trace\),\s*reviewCandidate: candidate => strictReviewSingleReply\(request, latestUserMessage, candidate\),\s*\}, \{\s*isAbortError,\s*\}\)\);/s);
+    assert.match(source, /const trace = createGenerationTrace\(String\(request\.id\), 'single', request\.conversationKey\);\s*return runSingleTurnAdapter\(createTracedSingleTurnDependencies\(trace, \{\s*generateCandidate: \(\) => runConversationGeneration\(request, latestUserMessage, models, false, trace\),\s*reviewCandidate: candidate => strictReviewSingleReply\(request, latestUserMessage, candidate, trace\),\s*\}, \{\s*isAbortError,\s*\}\)\);/s);
     assert.match(source, /if \(request\.room\) \{\s*const candidate = await runRoomConversationGeneration\(request, latestUserMessage, models\);\s*return strictReviewGroupReply\(request, latestUserMessage, candidate\);\s*\}/s);
     const characterGeneration = source.slice(source.indexOf('const runCharacterChatGeneration'));
     const groupBranch = characterGeneration.slice(
