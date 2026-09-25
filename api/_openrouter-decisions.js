@@ -1,7 +1,10 @@
+import https from 'node:https';
+
 export const OPENROUTER_DECISIONS_URL = 'https://openrouter.ai/api/alpha/decisions';
 export const JEV_MODEL = 'typesafe/jev-1.13';
 export const JEV_SHADOW_TIMEOUT_MS = 2_500;
 export const MAX_REVIEW_STATE_CHARS = 48_000;
+export const MAX_DECISIONS_RESPONSE_BYTES = 256 * 1024;
 
 const signalKeys = {
   identityConflict: 'identity_conflict',
@@ -208,8 +211,74 @@ export const normalizeDecisionsResponse = body => {
   return normalized;
 };
 
+export const requestOpenRouterViaHttps = ({
+  apiKey,
+  requestBody,
+  timeoutMs = JEV_SHADOW_TIMEOUT_MS,
+  requestImpl = https.request,
+  setTimeoutImpl = setTimeout,
+  clearTimeoutImpl = clearTimeout,
+} = {}) => new Promise((resolve, reject) => {
+  let request;
+  let settled = false;
+  const finish = (callback, value) => {
+    if (settled) return;
+    settled = true;
+    clearTimeoutImpl(timeout);
+    callback(value);
+  };
+  const timeoutError = Object.assign(new Error(), { name: 'AbortError' });
+  const timeout = setTimeoutImpl(() => {
+    try {
+      request?.destroy(timeoutError);
+    } catch {
+      // The normalized timeout result must not depend on a request teardown failure.
+    }
+    finish(reject, timeoutError);
+  }, timeoutMs);
+
+  try {
+    request = requestImpl(OPENROUTER_DECISIONS_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(requestBody),
+      },
+    }, response => {
+      const statusCode = response.statusCode;
+      if (typeof statusCode !== 'number') return finish(resolve, { statusCode: 0 });
+      if (statusCode < 200 || statusCode >= 300) {
+        response.once('error', () => undefined);
+        response.resume?.();
+        return finish(resolve, { statusCode });
+      }
+
+      let size = 0;
+      const chunks = [];
+      response.on('data', chunk => {
+        if (settled) return;
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        size += bytes.length;
+        if (size > MAX_DECISIONS_RESPONSE_BYTES) {
+          response.destroy?.();
+          finish(resolve, { statusCode, bodyTooLarge: true });
+          return;
+        }
+        chunks.push(bytes);
+      });
+      response.once('end', () => finish(resolve, { statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+      response.once('error', error => finish(reject, error));
+    });
+    request.once('error', error => finish(reject, error));
+    request.end(requestBody);
+  } catch (error) {
+    finish(reject, error);
+  }
+});
+
 export const runOpenRouterDecision = async (state, {
-  fetchImpl = fetch,
+  transportImpl = requestOpenRouterViaHttps,
   env = process.env,
   timeoutMs = JEV_SHADOW_TIMEOUT_MS,
 } = {}) => {
@@ -227,22 +296,14 @@ export const runOpenRouterDecision = async (state, {
   const apiKey = env.OPENROUTER_API || env.OPENROUTER_API_KEY;
   if (!apiKey) return unavailable('MISSING_CREDENTIALS');
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const requestBody = JSON.stringify({ model: JEV_MODEL, state, questions: JEV_QUESTIONS });
   try {
-    const upstream = await fetchImpl(OPENROUTER_DECISIONS_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ model: JEV_MODEL, state, questions: JEV_QUESTIONS }),
-      signal: controller.signal,
-    });
-    if (!upstream.ok) return unavailable(classifyUpstreamHttpFailure(upstream.status));
+    const upstream = await transportImpl({ apiKey, requestBody, timeoutMs });
+    if (upstream.statusCode < 200 || upstream.statusCode >= 300) return unavailable(classifyUpstreamHttpFailure(upstream.statusCode));
+    if (upstream.bodyTooLarge) return unavailable('MALFORMED_RESPONSE');
     let body;
     try {
-      body = await upstream.json();
+      body = JSON.parse(upstream.body);
     } catch {
       return unavailable('MALFORMED_RESPONSE');
     }
@@ -250,7 +311,5 @@ export const runOpenRouterDecision = async (state, {
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') return unavailable('TIMEOUT');
     return unavailable('UPSTREAM_NETWORK_ERROR', { networkCode: extractNetworkCauseCode(error) });
-  } finally {
-    clearTimeout(timeout);
   }
 };
