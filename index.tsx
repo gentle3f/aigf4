@@ -12257,6 +12257,7 @@ const strictReviewGroupReply = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
     candidate: GroupGenerationResult,
+    trace?: GenerationTrace,
 ) => {
     if (!request.room) return candidate;
     const serializedCandidate = serializeGroupGenerationForReview(candidate);
@@ -12271,6 +12272,7 @@ const strictReviewGroupReply = async (
             'STRICT REVISION FORMAT: revised_response must contain one complete <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate> envelope.',
         ].join('\n\n'),
         serializedCandidate,
+        trace,
     );
     return applyGroupStrictReview(candidate, decision, revisedResponse => {
         try {
@@ -12316,7 +12318,7 @@ const runCharacterChatGeneration = async (
         const trace = createGenerationTrace(String(request.id), 'group', request.conversationKey);
         return runGroupTurnAdapter(createTracedGroupTurnDependencies(trace, {
             generateCandidate: () => runRoomConversationGeneration(request, latestUserMessage, models, trace),
-            reviewCandidate: candidate => strictReviewGroupReply(request, latestUserMessage, candidate),
+            reviewCandidate: candidate => strictReviewGroupReply(request, latestUserMessage, candidate, trace),
         }, {
             isAbortError,
         }));

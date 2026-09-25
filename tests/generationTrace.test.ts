@@ -128,6 +128,42 @@ test('strict-review attempts preserve reviewer order and metadata without review
     assert.doesNotMatch(JSON.stringify(trace), /latest user text|candidate text|revised response|review issues|system prompt|history|memory|wardrobe|provider body|raw error/i);
 });
 
+test('group review attempts remain separate from generation attempts across terminal outcomes', () => {
+    const trace = createGenerationTrace('group-review-attempts', 'group', 'room-a');
+    markGenerationAttempt(trace, {
+        phase: 'primary', model: 'generation-primary', routeIndex: 0, attemptIndex: 1,
+        outcome: 'accepted',
+    });
+    markStrictReviewAttempt(trace, {
+        model: 'reviewer-a', attemptIndex: 1, latencyMs: 11,
+        promptTokens: 100, completionTokens: 20, finishReason: 'stop',
+        outcome: 'invalid', errorCode: 'INVALID_RESPONSE',
+    });
+    markStrictReviewAttempt(trace, {
+        model: 'reviewer-b', attemptIndex: 2, latencyMs: 8,
+        outcome: 'error', errorCode: 'TIMEOUT',
+    });
+    markStrictReviewAttempt(trace, {
+        model: 'reviewer-c', attemptIndex: 3, latencyMs: 9,
+        promptTokens: 102, completionTokens: 22, finishReason: 'stop', outcome: 'revise',
+    });
+    markStrictReview(trace, {
+        ran: true, model: 'reviewer-c', decision: 'revise', attempts: trace.strictReview?.attempts,
+    });
+
+    assert.deepEqual(trace.attempts.map(({ phase, model, outcome }) => ({ phase, model, outcome })), [
+        { phase: 'primary', model: 'generation-primary', outcome: 'accepted' },
+    ]);
+    assert.deepEqual(trace.strictReview?.attempts?.map(({ attemptIndex, outcome, errorCode }) => ({
+        attemptIndex, outcome, errorCode,
+    })), [
+        { attemptIndex: 1, outcome: 'invalid', errorCode: 'INVALID_RESPONSE' },
+        { attemptIndex: 2, outcome: 'error', errorCode: 'TIMEOUT' },
+        { attemptIndex: 3, outcome: 'revise', errorCode: undefined },
+    ]);
+    assert.doesNotMatch(JSON.stringify(trace), /group candidate|revised response|review issues|raw timeout/i);
+});
+
 test('single generation attempts retain chronological metadata without private content', () => {
     const trace = createGenerationTrace('attempt-order', 'single', 'conversation-a');
     markGenerationAttempt(trace, {
@@ -248,7 +284,7 @@ test('production continuation source increments the trace index before each requ
     assert.match(singleGeneration, /continuationCount < CHAT_MAX_AUTO_CONTINUES[\s\S]*finishReason === 'length'/);
 });
 
-test('production strict-review source records one terminal attempt per reviewer request and leaves group untraced', () => {
+test('production strict-review source records one terminal attempt per reviewer request for single and group paths', () => {
     const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
     const reviewRequest = source.slice(
         source.indexOf('const requestStrictReviewDecision'),
@@ -269,10 +305,11 @@ test('production strict-review source records one terminal attempt per reviewer 
     assert.match(reviewRequest, /if \(!attemptRecorded && requestStartedAt !== null\) \{[\s\S]*\.\.\.failure,/);
     assert.match(reviewRequest, /return null;/);
     assert.match(singleReview, /requestStrictReviewDecision\([\s\S]*trace,/);
-    assert.doesNotMatch(groupReview, /requestStrictReviewDecision\([\s\S]*trace/);
+    assert.match(groupReview, /candidate: GroupGenerationResult,\s*trace\?: GenerationTrace,/);
+    assert.match(groupReview, /requestStrictReviewDecision\([\s\S]*serializedCandidate,\s*trace,/);
 });
 
-test('production group generation records one terminal attempt per actual request without tracing strict review', () => {
+test('production group generation records one terminal attempt per actual request and keeps review attempts separate', () => {
     const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
     const groupGeneration = source.slice(
         source.indexOf('const runRoomConversationGeneration'),
@@ -292,7 +329,8 @@ test('production group generation records one terminal attempt per actual reques
     assert.match(groupGeneration, /if \(!attemptRecorded && requestStartedAt !== null\) \{[\s\S]*if \(result\) \{[\s\S]*outcome: 'invalid',[\s\S]*errorCode: 'INVALID_RESPONSE',[\s\S]*attemptRecorded = true;/);
     assert.match(groupGeneration, /const failure = getGroupGenerationAttemptFailure\(error\);[\s\S]*\.\.\.failure,/);
     assert.match(groupGeneration, /if \(isAbortError\(error\)\) throw error;/);
-    assert.doesNotMatch(groupReview, /requestStrictReviewDecision\([\s\S]*trace/);
+    assert.match(groupReview, /requestStrictReviewDecision\([\s\S]*serializedCandidate,\s*trace,/);
+    assert.doesNotMatch(groupGeneration, /markStrictReviewAttempt/);
 });
 
 test('broad single-turn trace preserves generate-review return semantics and records timings', async () => {
