@@ -103,12 +103,12 @@ test('prepares one keep request with exact builder identity, transport settings,
 
 test('returns revise with one request and one terminal revise trace', async () => {
     const fixture = createFixture({ requestText: async () => {
-        return result('{"decision":"revise","issues":["voice"],"revised_response":"replacement"}');
+        return result('{"decision":"revise","issues":["persona_voice"],"revised_response":"replacement"}');
     } });
 
     const decision = await runPreparedStrictReviewAttempt(input, fixture.dependencies);
 
-    assert.deepEqual(decision, { decision: 'revise', issues: ['voice'], revisedResponse: 'replacement' });
+    assert.deepEqual(decision, { decision: 'revise', issues: ['persona_voice'], revisedResponse: 'replacement' });
     assert.equal(fixture.requestOptions.length, 1);
     assert.equal(fixture.records.length, 1);
     assert.equal(fixture.records[0]?.outcome, 'revise');

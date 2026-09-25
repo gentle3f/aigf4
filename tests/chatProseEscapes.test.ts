@@ -20,16 +20,16 @@ test('preserves legitimate backslashes in paths and code', () => {
 test('normalizes raw tagged revisions while JSON revisions keep JSON decoding', () => {
     assert.deepEqual(parseStrictReviewDecision('<revision>她說：\\"好。\\"</revision>'), {
         decision: 'revise',
-        issues: ['strict-review'],
+        issues: ['other'],
         revisedResponse: '她說："好。"',
     });
     assert.deepEqual(parseStrictReviewDecision(JSON.stringify({
         decision: 'revise',
-        issues: [],
+        issues: ['other'],
         revised_response: '她說：「好。」',
     })), {
         decision: 'revise',
-        issues: [],
+        issues: ['other'],
         revisedResponse: '她說：「好。」',
     });
     assert.equal(cleanVeniceChatReply('她說：\\"我會等你。\\"'), '她說："我會等你。"');

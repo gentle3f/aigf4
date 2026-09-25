@@ -1,4 +1,5 @@
 import { normalizeArtificialProseEscapes } from '../../chatProseEscapes.js';
+import { sanitizeStrictReviewIssueCodes } from '../../strictReview.js';
 import type { StrictReviewDecision } from '../../strictReview.js';
 
 const stripFence = (value: string) => value
@@ -14,7 +15,7 @@ export const parseStrictReviewDecision = (raw: string): StrictReviewDecision | n
     }
     const taggedRevision = text.match(/<revision>\s*([\s\S]*?)\s*<\/revision>/iu)?.[1]?.trim();
     if (taggedRevision) {
-        return { decision: 'revise', issues: ['strict-review'], revisedResponse: normalizeArtificialProseEscapes(taggedRevision) };
+        return { decision: 'revise', issues: ['other'], revisedResponse: normalizeArtificialProseEscapes(taggedRevision) };
     }
 
     try {
@@ -30,13 +31,9 @@ export const parseStrictReviewDecision = (raw: string): StrictReviewDecision | n
             ? parsed.revised_response.trim()
             : typeof parsed.revisedResponse === 'string' ? parsed.revisedResponse.trim() : '';
         if (decision === 'revise' && !revisedResponse) return null;
-        return {
-            decision,
-            issues: Array.isArray(parsed.issues)
-                ? parsed.issues.filter((issue): issue is string => typeof issue === 'string').slice(0, 8)
-                : [],
-            revisedResponse,
-        };
+        if (decision === 'keep') return { decision: 'keep', issues: [], revisedResponse: '' };
+        const issues = sanitizeStrictReviewIssueCodes(parsed.issues);
+        return { decision, issues: issues.length ? issues : ['other'], revisedResponse };
     } catch {
         return null;
     }

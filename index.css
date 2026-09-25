@@ -1275,6 +1275,22 @@ body.app-body {
     font-size: 1rem;
 }
 
+.jev-shadow-reasons {
+    margin: 0 0 14px;
+    padding: 10px;
+    border: 1px solid #d9e8e2;
+    border-radius: 10px;
+    color: #163d35;
+    background: #fff;
+    font-size: 0.8rem;
+}
+
+.jev-shadow-reasons p {
+    margin-top: 5px;
+    color: var(--wa-muted);
+    line-height: 1.5;
+}
+
 .jev-shadow-table-wrap {
     overflow-x: auto;
     border: 1px solid #d9e8e2;

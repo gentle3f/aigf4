@@ -10,33 +10,33 @@ test('parses the supported keep tag after fence stripping and trimming', () => {
     });
 });
 
-test('parses a non-empty tagged revision with its existing defaults and normalization', () => {
+test('parses a non-empty tagged revision with a closed fallback reason and normalization', () => {
     assert.deepEqual(parseStrictReviewDecision('before <revision>  He said, \\"hello\\".  </revision> after'), {
         decision: 'revise',
-        issues: ['strict-review'],
+        issues: ['other'],
         revisedResponse: 'He said, "hello".',
     });
 });
 
-test('parses JSON revisions with the existing whitespace and issues normalization', () => {
+test('parses JSON revisions with only recognized, deduplicated closed issue codes', () => {
     assert.deepEqual(parseStrictReviewDecision(JSON.stringify({
         decision: 'revise',
-        issues: ['voice', 1, '', null, 'continuity', 'a', 'b', 'c', 'd', 'e', 'f'],
+        issues: ['persona_voice', 1, '', null, 'continuity', 'continuity', 'user_agency', 'unknown'],
         revised_response: '  revised response  ',
     })), {
         decision: 'revise',
-        issues: ['voice', '', 'continuity', 'a', 'b', 'c', 'd', 'e'],
+        issues: ['persona_voice', 'continuity', 'user_agency'],
         revisedResponse: 'revised response',
     });
 });
 
-test('uses the existing camel-case revision fallback and preserves keep JSON revisions', () => {
+test('uses the existing camel-case revision fallback and normalizes keep responses', () => {
     assert.deepEqual(parseStrictReviewDecision(JSON.stringify({
         decision: 'revise',
         revisedResponse: '  camel revision  ',
     })), {
         decision: 'revise',
-        issues: [],
+        issues: ['other'],
         revisedResponse: 'camel revision',
     });
     assert.deepEqual(parseStrictReviewDecision(JSON.stringify({
@@ -45,8 +45,8 @@ test('uses the existing camel-case revision fallback and preserves keep JSON rev
         revised_response: '  retained by parser  ',
     })), {
         decision: 'keep',
-        issues: ['retained'],
-        revisedResponse: 'retained by parser',
+        issues: [],
+        revisedResponse: '',
     });
 });
 
@@ -65,7 +65,7 @@ test('rejects empty, malformed, incomplete, and unsupported decisions exactly as
     });
 });
 
-test('keeps the existing missing-field and non-string issues behaviour', () => {
+test('keeps only closed issue codes and falls back safely when revise has none', () => {
     assert.deepEqual(parseStrictReviewDecision('{"decision":"keep"}'), {
         decision: 'keep',
         issues: [],
@@ -75,5 +75,10 @@ test('keeps the existing missing-field and non-string issues behaviour', () => {
         decision: 'keep',
         issues: [],
         revisedResponse: '',
+    });
+    assert.deepEqual(parseStrictReviewDecision('{"decision":"revise","issues":["free form", "PRIVATE_GEMMA_RAW_ISSUE_SENTINEL"],"revised_response":"valid replacement"}'), {
+        decision: 'revise',
+        issues: ['other'],
+        revisedResponse: 'valid replacement',
     });
 });

@@ -88,8 +88,8 @@ test('CASE 2 and CASE 3: Phase 2 generation plans are derived from the existing 
 });
 
 test('CASE 4 and CASE 5: strict-review transport parses keep and revise decisions', () => {
-    assert.deepEqual(parseStrictReviewDecision('{"decision":"revise","issues":["voice"],"revised_response":"revised"}'), {
-        decision: 'revise', issues: ['voice'], revisedResponse: 'revised',
+    assert.deepEqual(parseStrictReviewDecision('{"decision":"revise","issues":["persona_voice"],"revised_response":"revised"}'), {
+        decision: 'revise', issues: ['persona_voice'], revisedResponse: 'revised',
     });
     assert.equal(parseStrictReviewDecision('{"decision":"revise","issues":[],"revised_response":""}'), null);
     assert.deepEqual(parseStrictReviewDecision('<keep/>'), { decision: 'keep', issues: [], revisedResponse: '' });
@@ -97,7 +97,7 @@ test('CASE 4 and CASE 5: strict-review transport parses keep and revise decision
 
 test('CASE 4 and CASE 5: single strict review only replaces a candidate with a valid revision', () => {
     const candidate = { text: 'candidate', wardrobe: 'original' };
-    const revise = { decision: 'revise' as const, issues: ['voice'], revisedResponse: 'revision' };
+    const revise = { decision: 'revise' as const, issues: ['persona_voice'], revisedResponse: 'revision' };
 
     assert.equal(
         applySingleStrictReview(candidate, { decision: 'keep', issues: [], revisedResponse: '' }, () => null),

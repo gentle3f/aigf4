@@ -1,4 +1,6 @@
 import type { ReviewState } from '../contracts.js';
+import { sanitizeStrictReviewIssueCodes } from '../../strictReview.js';
+import type { StrictReviewIssueCode } from '../../strictReview.js';
 import { evaluateJevShadow, normalizeJevShadowResult } from './jevDecisionProvider.js';
 import type { JevShadowResult } from './jevDecisionProvider.js';
 
@@ -20,12 +22,13 @@ export interface JevShadowRecord {
     usageOutputTokens?: number;
     usageCost?: number;
     gemmaDecision?: 'keep' | 'revise' | 'unavailable';
+    gemmaIssueCodes?: StrictReviewIssueCode[];
     comparison?: 'agree' | 'disagree' | 'unknown';
     falseNegativeCandidate?: boolean;
 }
 
 export interface JevShadowTracker {
-    recordGemmaDecision(decision: 'keep' | 'revise' | 'unavailable'): void;
+    recordGemmaDecision(decision: 'keep' | 'revise' | 'unavailable', issueCodes?: readonly StrictReviewIssueCode[]): void;
 }
 
 const MAX_JEV_SHADOW_RECORDS = 50;
@@ -65,6 +68,7 @@ const cloneRecord = (record: JevShadowRecord): JevShadowRecord => ({
     usageOutputTokens: record.usageOutputTokens,
     usageCost: record.usageCost,
     gemmaDecision: record.gemmaDecision,
+    gemmaIssueCodes: record.gemmaIssueCodes ? [...record.gemmaIssueCodes] : undefined,
     comparison: record.comparison,
     falseNegativeCandidate: record.falseNegativeCandidate,
 });
@@ -95,11 +99,24 @@ export const startJevShadowEvaluation = ({
 }): JevShadowTracker => {
     const startedAt = now();
     let gemmaDecision: JevShadowRecord['gemmaDecision'];
+    let gemmaIssueCodes: StrictReviewIssueCode[] | undefined;
     let storedRecord: JevShadowRecord | undefined;
-    const setGemmaDecision = (decision: NonNullable<JevShadowRecord['gemmaDecision']>) => {
+    const setGemmaDecision = (
+        decision: NonNullable<JevShadowRecord['gemmaDecision']>,
+        issueCodes?: readonly StrictReviewIssueCode[],
+    ) => {
         gemmaDecision = decision;
+        gemmaIssueCodes = decision === 'unavailable'
+            ? undefined
+            : decision === 'keep'
+                ? []
+                : (() => {
+                    const sanitized = sanitizeStrictReviewIssueCodes(issueCodes);
+                    return sanitized.length ? sanitized : ['other'];
+                })();
         if (storedRecord) {
             storedRecord.gemmaDecision = decision;
+            storedRecord.gemmaIssueCodes = gemmaIssueCodes ? [...gemmaIssueCodes] : undefined;
             refreshComparison(storedRecord);
         }
     };
@@ -112,6 +129,7 @@ export const startJevShadowEvaluation = ({
             status: result.status,
             latencyMs: Math.max(0, Math.round(now() - startedAt)),
             gemmaDecision,
+            gemmaIssueCodes: gemmaIssueCodes ? [...gemmaIssueCodes] : undefined,
         };
         if (result.status === 'unavailable') {
             const sanitized = normalizeJevShadowResult({
@@ -146,6 +164,7 @@ export const startJevShadowEvaluation = ({
             status: 'unavailable',
             latencyMs: Math.max(0, Math.round(now() - startedAt)),
             gemmaDecision,
+            gemmaIssueCodes: gemmaIssueCodes ? [...gemmaIssueCodes] : undefined,
         };
         refreshComparison(record);
         storedRecord = record;

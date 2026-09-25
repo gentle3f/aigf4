@@ -26,7 +26,7 @@ test('shadow comparison records are metadata-only and use calibration semantics'
     const clean = startJevShadowEvaluation({ requestId: 'one', mode: 'single', ccMode: false, state, signal: new AbortController().signal, evaluate: async () => ok('clean') });
     clean.recordGemmaDecision('keep');
     const falseNegative = startJevShadowEvaluation({ requestId: 'two', mode: 'group', ccMode: false, state, signal: new AbortController().signal, evaluate: async () => ok('clean') });
-    falseNegative.recordGemmaDecision('revise');
+    falseNegative.recordGemmaDecision('revise', ['identity', 'continuity']);
     const fullReview = startJevShadowEvaluation({ requestId: 'three', mode: 'single', ccMode: true, state, signal: new AbortController().signal, evaluate: async () => ok('full_review') });
     fullReview.recordGemmaDecision('keep');
     const unavailable = startJevShadowEvaluation({ requestId: 'four', mode: 'single', ccMode: false, state, signal: new AbortController().signal, evaluate: async () => ({ status: 'unavailable' as const, reasonCode: 'UPSTREAM_NETWORK_ERROR', networkCode: 'ENOTFOUND' as const }) });
@@ -40,8 +40,24 @@ test('shadow comparison records are metadata-only and use calibration semantics'
     assert.equal(JSON.stringify(records).includes('private candidate text'), false);
     assert.equal(records.at(-1)?.networkCode, 'ENOTFOUND');
     assert.equal(records.at(-1)?.reasonCode, 'UPSTREAM_NETWORK_ERROR');
+    assert.deepEqual(records[1]?.gemmaIssueCodes, ['identity', 'continuity']);
     records[0]!.signals!.identityConflict = 1;
     assert.equal(getJevShadowRecords()[0]?.signals?.identityConflict, 0);
+    records[1]!.gemmaIssueCodes![0] = 'other';
+    assert.deepEqual(getJevShadowRecords()[1]?.gemmaIssueCodes, ['identity', 'continuity']);
+});
+
+test('Gemma reason metadata keeps only closed codes and does not retain raw review content', async () => {
+    clearJevShadowRecords();
+    const tracker = startJevShadowEvaluation({ requestId: 'issues', mode: 'single', ccMode: false, state, signal: new AbortController().signal, evaluate: async () => ok('clean') });
+    tracker.recordGemmaDecision('revise', ['identity', 'PRIVATE_GEMMA_RAW_ISSUE_SENTINEL' as never, 'identity']);
+    await flush();
+    const serialized = JSON.stringify(getJevShadowRecords());
+    assert.match(serialized, /identity/);
+    assert.equal(serialized.includes('PRIVATE_GEMMA_RAW_ISSUE_SENTINEL'), false);
+    assert.equal(serialized.includes('PRIVATE_REVISED_RESPONSE_SENTINEL'), false);
+    assert.equal(serialized.includes('PRIVATE_USER_TEXT_SENTINEL'), false);
+    assert.equal(serialized.includes('PRIVATE_CANDIDATE_TEXT_SENTINEL'), false);
 });
 
 test('public collector snapshot is capped, clearable, and keeps only recognized unavailable codes', async () => {
@@ -113,4 +129,6 @@ test('strict-review source starts shadow before unchanged Gemma request for sing
     assert.match(review, /const shadow = startStrictReviewShadow\(request, latestUserMessage, serializedCandidate, 'group', candidate\.scene\);\s*let decision;\s*try \{\s*decision = await requestStrictReviewDecision\(/s);
     assert.equal((review.match(/startStrictReviewShadow\(/g) || []).length, 2);
     assert.match(source, /ccMode: request\.personaKey === 'cc'/);
+    assert.equal((review.match(/recordGemmaDecision\(decision\?\.decision \|\| 'unavailable', decision\?\.issues\)/g) || []).length, 2);
+    assert.doesNotMatch(review, /gemmaIssueCodes.*applySingleStrictReview|gemmaIssueCodes.*applyGroupStrictReview/s);
 });

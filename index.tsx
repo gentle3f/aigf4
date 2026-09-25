@@ -163,6 +163,7 @@ import {
 import type { ChatModelSettings } from "./chatModelSettings.js";
 import {
     STRICT_REVIEW_RESPONSE_FORMAT,
+    STRICT_REVIEW_ISSUE_CODES,
 } from "./strictReview.js";
 import {
     applyGroupStrictReview,
@@ -12007,6 +12008,7 @@ const STRICT_REVIEW_EDITOR_PROMPT = [
     'Treat the authoritative wardrobe ledger as physical fact. Do not change the user or any character outfit unless the newest turn visibly establishes that change.',
     'For group output, narration must stay external third-person and cannot use 我 / 我們 / 我哋 / I / me / my for a character or user. First person belongs only inside a labelled character dialogue line.',
     'KEEP a strong response. Do not rewrite merely to impose your own prose style. REVISE only when there is at least one concrete defect.',
+    `issues must contain only these label codes: ${STRICT_REVIEW_ISSUE_CODES.join(', ')}. Use the narrowest applicable code(s), use other only when no named code fits, and return issues: [] for KEEP. These labels do not lower the concrete-defect threshold or create new review criteria.`,
     'When revising, preserve all valid detail, emotional intensity, relationship development, consensual adult intimacy and regional voice. Do not sanitize, moralize, summarize, shorten into a minimal answer, add meta-commentary, or mention this review.',
     'Return only the requested JSON. For keep, revised_response must be an empty string. For revise, revised_response must be the complete replacement response, never notes or a partial patch.',
 ].join('\n');
@@ -12184,7 +12186,7 @@ const strictReviewSingleReply = async (
         shadow.recordGemmaDecision('unavailable');
         throw error;
     }
-    shadow.recordGemmaDecision(decision?.decision || 'unavailable');
+    shadow.recordGemmaDecision(decision?.decision || 'unavailable', decision?.issues);
     return applySingleStrictReview(candidate, decision, revisedResponse => {
         const revisedWardrobe = extractWardrobeEnvelope(
             revisedResponse,
@@ -12282,7 +12284,7 @@ const strictReviewGroupReply = async (
         shadow.recordGemmaDecision('unavailable');
         throw error;
     }
-    shadow.recordGemmaDecision(decision?.decision || 'unavailable');
+    shadow.recordGemmaDecision(decision?.decision || 'unavailable', decision?.issues);
     return applyGroupStrictReview(candidate, decision, revisedResponse => {
         try {
             const revision = normalizeGroupGenerationTraditional(
@@ -17494,10 +17496,22 @@ const openJevShadowDiagnostics = () => {
         addStat('Jev clean / full review', `${summary.route.clean} / ${summary.route.fullReview}`);
         addStat('Gemma keep / revise', `${summary.gemma.keep} / ${summary.gemma.revise}`);
         addStat('Agree / disagree', `${summary.comparison.agree} / ${summary.comparison.disagree}`);
-        addStat('FN candidates', String(summary.falseNegativeCandidates), 'Jev clean + Gemma revise; calibration candidate only.');
+        addStat('Jev clean / Gemma revise', String(summary.falseNegativeCandidates), 'Comparator disagreement only; not proven false negatives.');
         addStat('Avg Jev latency', `${summary.performance.averageLatencyMs} ms`);
         addStat('Total Jev cost', `$${formatJevCost(summary.usage.totalCost)}`);
         content.append(stats);
+
+        const nonZeroGemmaIssues = Object.entries(summary.gemmaIssues).filter(([, count]) => count > 0);
+        if (nonZeroGemmaIssues.length) {
+            const reasons = document.createElement('div');
+            reasons.className = 'jev-shadow-reasons';
+            const title = document.createElement('strong');
+            title.textContent = 'Gemma revise reasons';
+            const list = document.createElement('p');
+            list.textContent = nonZeroGemmaIssues.map(([code, count]) => `${code} ${count}`).join(' · ');
+            reasons.append(title, list);
+            content.append(reasons);
+        }
 
         if (!records.length) {
             const empty = document.createElement('p');
@@ -17530,7 +17544,7 @@ const openJevShadowDiagnostics = () => {
             addCell(record.requestId);
             addCell(`${record.mode} · Cc ${record.ccMode ? 'yes' : 'no'}`);
             addCell(record.reasonCode ? `${record.status} · ${record.reasonCode}${record.networkCode ? ` · ${record.networkCode}` : ''}` : record.status);
-            addCell(`${record.routeChoice || '—'} / ${record.gemmaDecision || '—'}`);
+            addCell(`${record.routeChoice || '—'} / ${record.gemmaDecision || '—'}${record.gemmaIssueCodes?.length ? ` · ${record.gemmaIssueCodes.join(', ')}` : ''}`);
             addCell(`${record.comparison || 'unknown'}${record.falseNegativeCandidate ? ' · FN' : ''}`);
             addCell(`${record.latencyMs} ms`);
             addCell(`${formatJevNumber(record.usageInputTokens)} / ${formatJevNumber(record.usageOutputTokens)}`);
