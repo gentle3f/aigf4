@@ -85,16 +85,17 @@ test('CASE H: the adapter is a pure dependency seam with no persistence capabili
     ]);
 });
 
-test('Cc single chat passes one optional trace to generation and review while group uses its separate untraced adapter', () => {
+test('Cc single chat keeps its existing trace path while group uses a separate broad trace adapter', () => {
     const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
     assert.match(source, /const trace = createGenerationTrace\(String\(request\.id\), 'single', request\.conversationKey\);\s*return runSingleTurnAdapter\(createTracedSingleTurnDependencies\(trace, \{\s*generateCandidate: \(\) => runConversationGeneration\(request, latestUserMessage, models, false, trace\),\s*reviewCandidate: candidate => strictReviewSingleReply\(request, latestUserMessage, candidate, trace\),\s*\}, \{\s*isAbortError,\s*\}\)\);/s);
-    assert.match(source, /if \(request\.room\) \{\s*return runGroupTurnAdapter\(\{\s*generateCandidate: \(\) => runRoomConversationGeneration\(request, latestUserMessage, models\),\s*reviewCandidate: candidate => strictReviewGroupReply\(request, latestUserMessage, candidate\),\s*\}\);\s*\}/s);
+    assert.match(source, /if \(request\.room\) \{\s*const trace = createGenerationTrace\(String\(request\.id\), 'group', request\.conversationKey\);\s*return runGroupTurnAdapter\(createTracedGroupTurnDependencies\(trace, \{\s*generateCandidate: \(\) => runRoomConversationGeneration\(request, latestUserMessage, models\),\s*reviewCandidate: candidate => strictReviewGroupReply\(request, latestUserMessage, candidate\),\s*\}, \{\s*isAbortError,\s*\}\)\);\s*\}/s);
     const characterGeneration = source.slice(source.indexOf('const runCharacterChatGeneration'));
+    const groupBranchStart = characterGeneration.indexOf('if (request.room) {');
     const groupBranch = characterGeneration.slice(
-        characterGeneration.indexOf('if (request.room) {'),
-        characterGeneration.indexOf("const trace = createGenerationTrace"),
+        groupBranchStart,
+        characterGeneration.indexOf("const trace = createGenerationTrace(String(request.id), 'single'", groupBranchStart),
     );
-    assert.doesNotMatch(groupBranch, /GenerationTrace|createGenerationTrace|createTracedSingleTurnDependencies|markGenerationAttempt|markStrictReviewAttempt|recordGenerationTrace/);
+    assert.doesNotMatch(groupBranch, /markGenerationAttempt|markStrictReviewAttempt|recordGenerationTrace/);
     const strictReviewBranch = source.slice(source.indexOf('const strictReviewSingleReply'), source.indexOf('const runCharacterChatGeneration'));
     assert.doesNotMatch(strictReviewBranch, /markGenerationAttempt|recordSingleGenerationAttempt/);
 });

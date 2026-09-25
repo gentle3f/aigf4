@@ -7,6 +7,7 @@ import {
     classifySingleGenerationAttempt,
     classifyStrictReviewAttemptFailure,
     clearRecentGenerationTracesForTesting,
+    createTracedGroupTurnDependencies,
     createTracedSingleTurnDependencies,
     createGenerationTrace,
     finalizeGenerationTrace,
@@ -18,6 +19,7 @@ import {
     recordGenerationTrace,
 } from '../engine/observability/generationTrace.js';
 import { runSingleTurnAdapter } from '../engine/singleTurnAdapter.js';
+import { runGroupTurnAdapter } from '../engine/groupTurnAdapter.js';
 import { buildStrictReviewModelRoute, getGenerationAttemptCount } from '../chatModelSettings.js';
 
 const abortError = () => Object.assign(new Error('aborted'), { name: 'AbortError' });
@@ -313,6 +315,96 @@ test('broad single-turn trace preserves review aborts', async () => {
         received => received === error,
     );
     assert.equal(trace.final?.outcome, 'aborted');
+});
+
+test('broad group trace records only seam timings and returns the exact reviewed result', async () => {
+    let now = 0;
+    const trace = createGenerationTrace('group-success', 'group', 'room-a');
+    const candidate = { text: 'private candidate', scene: { location: 'private scene' } };
+    const reviewed = { text: 'private reviewed', scene: candidate.scene };
+    let generated = 0;
+    let reviewInput: typeof candidate | undefined;
+    const result = await runGroupTurnAdapter(createTracedGroupTurnDependencies(trace, {
+        generateCandidate: async () => { generated += 1; now = 13; return candidate; },
+        reviewCandidate: async value => { reviewInput = value; now = 29; return reviewed; },
+    }, { now: () => now, record: () => undefined }));
+
+    assert.equal(generated, 1);
+    assert.equal(reviewInput, candidate);
+    assert.equal(result, reviewed);
+    assert.deepEqual(trace.stages, { generationLatencyMs: 13, reviewLatencyMs: 16 });
+    assert.deepEqual(trace.final, { totalLatencyMs: 29, outcome: 'accepted' });
+    assert.deepEqual(trace.attempts, []);
+    assert.equal(trace.strictReview, undefined);
+    assert.doesNotMatch(JSON.stringify(trace), /private candidate|private reviewed|private scene|prompt|memory|wardrobe|api key|raw error/i);
+});
+
+test('broad group trace preserves generation errors and aborts without review', async () => {
+    for (const [error, expectedOutcome] of [
+        [new Error('generation failed'), 'error'],
+        [abortError(), 'aborted'],
+    ] as const) {
+        let now = 0;
+        const trace = createGenerationTrace(`group-generation-${expectedOutcome}`, 'group');
+        let reviewed = false;
+        await assert.rejects(
+            runGroupTurnAdapter(createTracedGroupTurnDependencies(trace, {
+                generateCandidate: async () => { now = 7; throw error; },
+                reviewCandidate: async candidate => { reviewed = true; return candidate; },
+            }, {
+                now: () => now,
+                isAbortError: received => received === error && error.name === 'AbortError',
+                record: () => undefined,
+            })),
+            received => received === error,
+        );
+        assert.equal(reviewed, false);
+        assert.equal(trace.stages?.generationLatencyMs, 7);
+        assert.equal(trace.final?.outcome, expectedOutcome);
+        assert.deepEqual(trace.attempts, []);
+        assert.equal(trace.strictReview, undefined);
+    }
+});
+
+test('broad group trace preserves review errors and aborts after generation timing', async () => {
+    for (const [error, expectedOutcome] of [
+        [new Error('review failed'), 'error'],
+        [abortError(), 'aborted'],
+    ] as const) {
+        let now = 0;
+        const trace = createGenerationTrace(`group-review-${expectedOutcome}`, 'group');
+        await assert.rejects(
+            runGroupTurnAdapter(createTracedGroupTurnDependencies(trace, {
+                generateCandidate: async () => { now = 11; return { text: 'candidate' }; },
+                reviewCandidate: async () => { now = 23; throw error; },
+            }, {
+                now: () => now,
+                isAbortError: received => received === error && error.name === 'AbortError',
+                record: () => undefined,
+            })),
+            received => received === error,
+        );
+        assert.deepEqual(trace.stages, { generationLatencyMs: 11, reviewLatencyMs: 12 });
+        assert.deepEqual(trace.final, { totalLatencyMs: 23, outcome: expectedOutcome });
+        assert.deepEqual(trace.attempts, []);
+        assert.equal(trace.strictReview, undefined);
+    }
+});
+
+test('single and group traces coexist in the shared bounded collector', () => {
+    clearRecentGenerationTracesForTesting();
+    const single = createGenerationTrace('single-shared', 'single', 'conversation-a');
+    const group = createGenerationTrace('group-shared', 'group', 'room-a');
+    finalizeGenerationTrace(single, { totalLatencyMs: 1, outcome: 'accepted' });
+    finalizeGenerationTrace(group, { totalLatencyMs: 2, outcome: 'accepted' });
+    recordGenerationTrace(single);
+    recordGenerationTrace(group);
+
+    assert.deepEqual(getRecentGenerationTraces().map(trace => [trace.requestId, trace.mode]), [
+        ['single-shared', 'single'],
+        ['group-shared', 'group'],
+    ]);
+    clearRecentGenerationTracesForTesting();
 });
 
 test('recent trace collector stays bounded and returns metadata-only defensive copies', () => {

@@ -83,16 +83,17 @@ test('group adapter does not expose persistence or state-commit capabilities', a
     ]);
 });
 
-test('group wiring uses the adapter without group tracing and leaves downstream scene commit in getResponse', () => {
+test('group wiring uses the broad trace adapter seam and leaves downstream scene commit in getResponse', () => {
     const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
     const characterGeneration = source.slice(source.indexOf('const runCharacterChatGeneration'));
+    const groupBranchStart = characterGeneration.indexOf('if (request.room) {');
     const groupBranch = characterGeneration.slice(
-        characterGeneration.indexOf('if (request.room) {'),
-        characterGeneration.indexOf("const trace = createGenerationTrace"),
+        groupBranchStart,
+        characterGeneration.indexOf("const trace = createGenerationTrace(String(request.id), 'single'", groupBranchStart),
     );
 
-    assert.match(groupBranch, /return runGroupTurnAdapter\(\{\s*generateCandidate: \(\) => runRoomConversationGeneration\(request, latestUserMessage, models\),\s*reviewCandidate: candidate => strictReviewGroupReply\(request, latestUserMessage, candidate\),\s*\}\);/s);
-    assert.doesNotMatch(groupBranch, /createGenerationTrace|createTracedSingleTurnDependencies|markGenerationAttempt|markStrictReviewAttempt|recordGenerationTrace/);
+    assert.match(groupBranch, /const trace = createGenerationTrace\(String\(request\.id\), 'group', request\.conversationKey\);\s*return runGroupTurnAdapter\(createTracedGroupTurnDependencies\(trace, \{\s*generateCandidate: \(\) => runRoomConversationGeneration\(request, latestUserMessage, models\),\s*reviewCandidate: candidate => strictReviewGroupReply\(request, latestUserMessage, candidate\),\s*\}, \{\s*isAbortError,\s*\}\)\);/s);
+    assert.doesNotMatch(groupBranch, /markGenerationAttempt|markStrictReviewAttempt|recordGenerationTrace/);
     assert.match(characterGeneration, /return runSingleTurnAdapter\(createTracedSingleTurnDependencies\(trace,/);
 
     const getResponse = source.slice(source.indexOf('const getResponse'));

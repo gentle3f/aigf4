@@ -174,6 +174,17 @@ export interface SingleTurnTraceOptions {
     record?: (trace: GenerationTrace) => void;
 }
 
+export interface TracedGroupTurnDependencies<TCandidate> {
+    generateCandidate: () => Promise<TCandidate>;
+    reviewCandidate: (candidate: TCandidate) => Promise<TCandidate>;
+}
+
+export interface GroupTurnTraceOptions {
+    now?: () => number;
+    isAbortError?: (error: unknown) => boolean;
+    record?: (trace: GenerationTrace) => void;
+}
+
 export const MAX_RECENT_GENERATION_TRACES = 50;
 const recentGenerationTraces: GenerationTrace[] = [];
 
@@ -262,6 +273,73 @@ export const createTracedSingleTurnDependencies = <TCandidate>(
     const setStageLatency = (stage: keyof NonNullable<GenerationTrace['stages']>, startedAt: number) => {
         try {
             trace.stages = { ...trace.stages, [stage]: elapsedSince(startedAt, now) };
+        } catch { /* Trace timing is best-effort only. */ }
+    };
+
+    return {
+        generateCandidate: async () => {
+            const generationStartedAt = safeNow(now);
+            try {
+                const candidate = await dependencies.generateCandidate();
+                setStageLatency('generationLatencyMs', generationStartedAt);
+                return candidate;
+            } catch (error) {
+                setStageLatency('generationLatencyMs', generationStartedAt);
+                finish(outcomeFor(error));
+                throw error;
+            }
+        },
+        reviewCandidate: async candidate => {
+            const reviewStartedAt = safeNow(now);
+            try {
+                const reviewed = await dependencies.reviewCandidate(candidate);
+                setStageLatency('reviewLatencyMs', reviewStartedAt);
+                finish('accepted');
+                return reviewed;
+            } catch (error) {
+                setStageLatency('reviewLatencyMs', reviewStartedAt);
+                finish(outcomeFor(error));
+                throw error;
+            }
+        },
+    };
+};
+
+// Group tracing is intentionally a separate broad seam. It records only stage
+// timing and terminal metadata, leaving group attempts and review attempts for
+// later phases without changing the already-live single-turn wrapper.
+export const createTracedGroupTurnDependencies = <TCandidate>(
+    trace: GenerationTrace,
+    dependencies: TracedGroupTurnDependencies<TCandidate>,
+    options: GroupTurnTraceOptions = {},
+): TracedGroupTurnDependencies<TCandidate> => {
+    const now = options.now || (() => performance.now());
+    const startedAt = safeNow(now);
+    let finalized = false;
+
+    const finish = (outcome: NonNullable<GenerationTrace['final']>['outcome']) => {
+        if (finalized) return;
+        finalized = true;
+        try {
+            finalizeGenerationTrace(trace, {
+                totalLatencyMs: elapsedSince(startedAt, now),
+                outcome,
+            });
+            (options.record || recordGenerationTrace)(trace);
+        } catch { /* Trace finalization must not affect the adapter result. */ }
+    };
+
+    const outcomeFor = (error: unknown): 'error' | 'aborted' => {
+        try {
+            return options.isAbortError?.(error) ? 'aborted' : 'error';
+        } catch {
+            return 'error';
+        }
+    };
+
+    const setStageLatency = (stage: keyof NonNullable<GenerationTrace['stages']>, stageStartedAt: number) => {
+        try {
+            trace.stages = { ...trace.stages, [stage]: elapsedSince(stageStartedAt, now) };
         } catch { /* Trace timing is best-effort only. */ }
     };
 

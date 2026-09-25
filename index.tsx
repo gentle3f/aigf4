@@ -176,6 +176,7 @@ import {
     classifySingleGenerationAttempt,
     classifyStrictReviewAttemptFailure,
     createGenerationTrace,
+    createTracedGroupTurnDependencies,
     createTracedSingleTurnDependencies,
     markGenerationAttempt,
     markStrictReview,
@@ -12250,10 +12251,13 @@ const runCharacterChatGeneration = async (
 ): Promise<string | GroupGenerationResult> => {
     const models = buildCharacterModelRoute(chatModelSettings, request.personaKey === 'cc');
     if (request.room) {
-        return runGroupTurnAdapter({
+        const trace = createGenerationTrace(String(request.id), 'group', request.conversationKey);
+        return runGroupTurnAdapter(createTracedGroupTurnDependencies(trace, {
             generateCandidate: () => runRoomConversationGeneration(request, latestUserMessage, models),
             reviewCandidate: candidate => strictReviewGroupReply(request, latestUserMessage, candidate),
-        });
+        }, {
+            isAbortError,
+        }));
     }
     const trace = createGenerationTrace(String(request.id), 'single', request.conversationKey);
     return runSingleTurnAdapter(createTracedSingleTurnDependencies(trace, {
