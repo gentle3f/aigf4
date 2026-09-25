@@ -171,6 +171,8 @@ import {
 import { runReviewPipeline } from "./engine/review/reviewPipeline.js";
 import type { ReviewPipelineAttemptContext } from "./engine/review/reviewPipeline.js";
 import { runPreparedStrictReviewAttempt } from "./engine/review/reviewAttemptCoordinator.js";
+import { buildReviewState } from "./engine/review/reviewState.js";
+import { startJevShadowEvaluation } from "./engine/review/jevShadow.js";
 import { runGroupTurnAdapter } from "./engine/groupTurnAdapter.js";
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import {
@@ -12105,6 +12107,28 @@ const requestStrictReviewDecision = async (
     });
 };
 
+const startStrictReviewShadow = (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+    candidateText: string,
+    mode: 'single' | 'group',
+    proposedScene?: RoomSceneState,
+) => startJevShadowEvaluation({
+    requestId: String(request.id),
+    mode,
+    ccMode: request.personaKey === 'cc',
+    signal: request.controller.signal,
+    state: buildReviewState({
+        latestUserText: latestUserMessage,
+        candidateText,
+        personaKey: request.personaKey,
+        persona: request.persona,
+        room: request.room,
+        wardrobe: request.pendingWardrobeState || request.wardrobeState,
+        proposedScene,
+    }),
+});
+
 const strictReviewSingleReply = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
@@ -12138,13 +12162,21 @@ const strictReviewSingleReply = async (
         buildNpcContinuityRequirement(establishedNpcNames),
         buildNpcSpeechRequirement(addressedNpcNames),
     ].filter(Boolean).join('\n\n');
-    const decision = await requestStrictReviewDecision(
-        request,
-        latestUserMessage,
-        authoritativePrompt,
-        `${candidate}\n<wardrobe>${JSON.stringify(request.pendingWardrobeState || request.wardrobeState)}</wardrobe>`,
-        trace,
-    );
+    const shadow = startStrictReviewShadow(request, latestUserMessage, candidate, 'single');
+    let decision;
+    try {
+        decision = await requestStrictReviewDecision(
+            request,
+            latestUserMessage,
+            authoritativePrompt,
+            `${candidate}\n<wardrobe>${JSON.stringify(request.pendingWardrobeState || request.wardrobeState)}</wardrobe>`,
+            trace,
+        );
+    } catch (error) {
+        shadow.recordGemmaDecision('unavailable');
+        throw error;
+    }
+    shadow.recordGemmaDecision(decision?.decision || 'unavailable');
     return applySingleStrictReview(candidate, decision, revisedResponse => {
         const revisedWardrobe = extractWardrobeEnvelope(
             revisedResponse,
@@ -12222,19 +12254,27 @@ const strictReviewGroupReply = async (
 ) => {
     if (!request.room) return candidate;
     const serializedCandidate = serializeGroupGenerationForReview(candidate);
-    const decision = await requestStrictReviewDecision(
-        request,
-        latestUserMessage,
-        [
-            buildGroupSystemPrompt(request.room, latestUserMessage),
-            request.surpriseEvent
-                ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
-                : '',
-            'STRICT REVISION FORMAT: revised_response must contain one complete <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate> envelope.',
-        ].join('\n\n'),
-        serializedCandidate,
-        trace,
-    );
+    const shadow = startStrictReviewShadow(request, latestUserMessage, serializedCandidate, 'group', candidate.scene);
+    let decision;
+    try {
+        decision = await requestStrictReviewDecision(
+            request,
+            latestUserMessage,
+            [
+                buildGroupSystemPrompt(request.room, latestUserMessage),
+                request.surpriseEvent
+                    ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
+                    : '',
+                'STRICT REVISION FORMAT: revised_response must contain one complete <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate> envelope.',
+            ].join('\n\n'),
+            serializedCandidate,
+            trace,
+        );
+    } catch (error) {
+        shadow.recordGemmaDecision('unavailable');
+        throw error;
+    }
+    shadow.recordGemmaDecision(decision?.decision || 'unavailable');
     return applyGroupStrictReview(candidate, decision, revisedResponse => {
         try {
             const revision = normalizeGroupGenerationTraditional(
