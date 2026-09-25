@@ -172,6 +172,7 @@ import {
 import { runReviewPipeline } from "./engine/review/reviewPipeline.js";
 import type { ReviewPipelineAttemptContext } from "./engine/review/reviewPipeline.js";
 import { requestStrictReviewCompletion } from "./engine/review/strictReviewAdapter.js";
+import { buildStrictReviewRequest } from "./engine/review/reviewRequestBuilder.js";
 import { runGroupTurnAdapter } from "./engine/groupTurnAdapter.js";
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import {
@@ -12036,20 +12037,13 @@ const requestStrictReviewDecision = async (
             const reviewStartedAt = performance.now();
             markChatPerformance('strict-review:request-start');
             const reviewHistory = getStrictReviewHistory(request, latestUserMessage);
-            const candidateAndUser = [
-                `NEWEST USER MESSAGE:\n${latestUserMessage}`,
-                `CANDIDATE RESPONSE TO AUDIT:\n${candidateResponse}`,
-                'Return the strict review JSON now.',
-            ].join('\n\n');
-            const messages: VeniceMessage[] = [
-                { role: 'system', content: STRICT_REVIEW_EDITOR_PROMPT },
-                { role: 'system', content: `AUTHORITATIVE CHARACTER AND CONTINUITY RULES:\n${authoritativePrompt}` },
-                ...reviewHistory,
-                {
-                    role: 'user',
-                    content: candidateAndUser,
-                },
-            ];
+            const { messages, candidateAndUser } = buildStrictReviewRequest({
+                editorPrompt: STRICT_REVIEW_EDITOR_PROMPT,
+                authoritativePrompt,
+                reviewHistory,
+                latestUserMessage,
+                candidateResponse,
+            });
             markVeniceRequestAggregate('strict-review:request-meta', model, messages, attemptIndex, { fallback: isFallback });
             markPromptComponentAccounting('strict-review', [
                 promptComponent('strict-review-editor', STRICT_REVIEW_EDITOR_PROMPT),

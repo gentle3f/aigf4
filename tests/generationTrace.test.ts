@@ -303,6 +303,9 @@ test('production strict-review source records one terminal attempt per reviewer 
     assert.doesNotMatch(reviewRequest, /const result = await generateChatTextWithTimeout\(/);
     assert.match(reviewRequest, /const runAttempt = async \(\{ model, attemptIndex, isFallback \}: ReviewPipelineAttemptContext\) => \{/);
     assert.match(reviewRequest, /return runReviewPipeline\(\{\s*reviewerModels,\s*runAttempt,\s*\}\);/s);
+    assert.equal((reviewRequest.match(/buildStrictReviewRequest\(/g) || []).length, 1);
+    assert.match(reviewRequest, /const reviewHistory = getStrictReviewHistory\(request, latestUserMessage\);[\s\S]*buildStrictReviewRequest\(\{[\s\S]*editorPrompt: STRICT_REVIEW_EDITOR_PROMPT,[\s\S]*authoritativePrompt,[\s\S]*reviewHistory,[\s\S]*latestUserMessage,[\s\S]*candidateResponse,/);
+    assert.doesNotMatch(reviewRequest, /NEWEST USER MESSAGE:|CANDIDATE RESPONSE TO AUDIT:|Return the strict review JSON now\./);
     assert.match(reviewRequest, /let attemptRecorded = false;/);
     assert.match(reviewRequest, /requestText: generateChatTextWithTimeout,[\s\S]*responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,[\s\S]*promptCacheKey,[\s\S]*signal: request\.controller\.signal,/);
     assert.match(reviewRequest, /outcome: 'invalid',\s*errorCode: 'INVALID_RESPONSE',[\s\S]*attemptRecorded = true;\s*throw new Error\(`Invalid strict review from \$\{model\}\.`\);/);
@@ -314,6 +317,7 @@ test('production strict-review source records one terminal attempt per reviewer 
     assert.match(source, /import \{ runReviewPipeline \} from "\.\/engine\/review\/reviewPipeline\.js";/);
     assert.match(source, /import type \{ ReviewPipelineAttemptContext \} from "\.\/engine\/review\/reviewPipeline\.js";/);
     assert.match(source, /import \{ requestStrictReviewCompletion \} from "\.\/engine\/review\/strictReviewAdapter\.js";/);
+    assert.match(source, /import \{ buildStrictReviewRequest \} from "\.\/engine\/review\/reviewRequestBuilder\.js";/);
 });
 
 test('production group generation records one terminal attempt per actual request and keeps review attempts separate', () => {
