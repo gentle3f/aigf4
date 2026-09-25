@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
+    clearJevShadowRecords,
     clearJevShadowRecordsForTest,
+    getJevShadowRecords,
     getJevShadowRecordsForTest,
     startJevShadowEvaluation,
 } from '../engine/review/jevShadow.js';
@@ -37,6 +39,22 @@ test('shadow comparison records are metadata-only and use calibration semantics'
     assert.equal(JSON.stringify(records).includes('private user text'), false);
     assert.equal(JSON.stringify(records).includes('private candidate text'), false);
     assert.equal(records.at(-1)?.networkCode, 'ENOTFOUND');
+    assert.equal(records.at(-1)?.reasonCode, 'UPSTREAM_NETWORK_ERROR');
+    records[0]!.signals!.identityConflict = 1;
+    assert.equal(getJevShadowRecords()[0]?.signals?.identityConflict, 0);
+});
+
+test('public collector snapshot is capped, clearable, and keeps only recognized unavailable codes', async () => {
+    clearJevShadowRecords();
+    startJevShadowEvaluation({
+        requestId: 'sanitized', mode: 'single', ccMode: false, state, signal: new AbortController().signal,
+        evaluate: async () => ({ status: 'unavailable', reasonCode: 'private upstream text' } as never),
+    });
+    await flush();
+    assert.equal(getJevShadowRecords()[0]?.reasonCode, undefined);
+    assert.equal(JSON.stringify(getJevShadowRecords()).includes('private upstream text'), false);
+    clearJevShadowRecords();
+    assert.deepEqual(getJevShadowRecords(), []);
 });
 
 test('pending or failed shadow never blocks the existing Gemma critical path', async () => {

@@ -172,7 +172,15 @@ import { runReviewPipeline } from "./engine/review/reviewPipeline.js";
 import type { ReviewPipelineAttemptContext } from "./engine/review/reviewPipeline.js";
 import { runPreparedStrictReviewAttempt } from "./engine/review/reviewAttemptCoordinator.js";
 import { buildReviewState } from "./engine/review/reviewState.js";
-import { startJevShadowEvaluation } from "./engine/review/jevShadow.js";
+import {
+    clearJevShadowRecords,
+    getJevShadowRecords,
+    startJevShadowEvaluation,
+} from "./engine/review/jevShadow.js";
+import {
+    createJevShadowDiagnosticsExport,
+    summarizeJevShadowRecords,
+} from "./engine/review/jevShadowDiagnostics.js";
 import { runGroupTurnAdapter } from "./engine/groupTurnAdapter.js";
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import {
@@ -17432,7 +17440,151 @@ const openExperienceDraft = async (direct = false) => {
     if (!direct) void generate('請提供三個可直接放進輸入框的接戲建議。');
 };
 
+const formatJevNumber = (value: number | undefined, fractionDigits = 0) => value === undefined ? '—' : value.toFixed(fractionDigits);
+const formatJevCost = (value: number | undefined) => value === undefined ? '—' : value < 0.01 ? value.toFixed(6) : value.toFixed(4);
+
+const openJevShadowDiagnostics = () => {
+    const dialog = experienceDialog('Jev Shadow');
+    dialog.classList.add('jev-shadow-dialog');
+    moreOptionsMenu.classList.add('hidden');
+
+    const subtitle = document.createElement('p');
+    subtitle.className = 'jev-shadow-subtitle';
+    subtitle.textContent = 'Shadow only · Gemma remains authoritative';
+    const controls = document.createElement('div');
+    controls.className = 'jev-shadow-controls';
+    const refresh = document.createElement('button');
+    refresh.type = 'button';
+    refresh.textContent = '重新整理';
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.textContent = '複製 JSON';
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.textContent = '清除本頁記錄';
+    controls.append(refresh, copy, clear);
+    const status = document.createElement('p');
+    status.className = 'jev-shadow-action-status';
+    const content = document.createElement('div');
+    content.className = 'jev-shadow-content';
+
+    const render = () => {
+        const records = getJevShadowRecords();
+        const summary = summarizeJevShadowRecords(records);
+        content.replaceChildren();
+        const stats = document.createElement('div');
+        stats.className = 'jev-shadow-summary';
+        const addStat = (label: string, value: string, note?: string) => {
+            const card = document.createElement('div');
+            card.className = 'jev-shadow-stat';
+            const title = document.createElement('small');
+            title.textContent = label;
+            const number = document.createElement('strong');
+            number.textContent = value;
+            card.append(title, number);
+            if (note) {
+                const detail = document.createElement('small');
+                detail.textContent = note;
+                card.append(detail);
+            }
+            stats.append(card);
+        };
+        addStat('Records', String(summary.totalRecords));
+        addStat('OK / unavailable', `${summary.status.ok} / ${summary.status.unavailable}`);
+        addStat('Jev clean / full review', `${summary.route.clean} / ${summary.route.fullReview}`);
+        addStat('Gemma keep / revise', `${summary.gemma.keep} / ${summary.gemma.revise}`);
+        addStat('Agree / disagree', `${summary.comparison.agree} / ${summary.comparison.disagree}`);
+        addStat('FN candidates', String(summary.falseNegativeCandidates), 'Jev clean + Gemma revise; calibration candidate only.');
+        addStat('Avg Jev latency', `${summary.performance.averageLatencyMs} ms`);
+        addStat('Total Jev cost', `$${formatJevCost(summary.usage.totalCost)}`);
+        content.append(stats);
+
+        if (!records.length) {
+            const empty = document.createElement('p');
+            empty.className = 'jev-shadow-empty';
+            empty.textContent = 'No Jev shadow observations in this page session yet. Records are intentionally in-memory only and reset when page reloads.';
+            content.append(empty);
+            return;
+        }
+
+        const tableWrap = document.createElement('div');
+        tableWrap.className = 'jev-shadow-table-wrap';
+        const table = document.createElement('table');
+        table.className = 'jev-shadow-table';
+        const head = document.createElement('thead');
+        const headerRow = document.createElement('tr');
+        ['Request', 'Mode', 'Status', 'Jev / Gemma', 'Comparison', 'Latency', 'Tokens', 'Cost'].forEach(label => {
+            const cell = document.createElement('th');
+            cell.textContent = label;
+            headerRow.append(cell);
+        });
+        head.append(headerRow);
+        const body = document.createElement('tbody');
+        records.slice().reverse().forEach(record => {
+            const row = document.createElement('tr');
+            const addCell = (text: string) => {
+                const cell = document.createElement('td');
+                cell.textContent = text;
+                row.append(cell);
+            };
+            addCell(record.requestId);
+            addCell(`${record.mode} · Cc ${record.ccMode ? 'yes' : 'no'}`);
+            addCell(record.reasonCode ? `${record.status} · ${record.reasonCode}${record.networkCode ? ` · ${record.networkCode}` : ''}` : record.status);
+            addCell(`${record.routeChoice || '—'} / ${record.gemmaDecision || '—'}`);
+            addCell(`${record.comparison || 'unknown'}${record.falseNegativeCandidate ? ' · FN' : ''}`);
+            addCell(`${record.latencyMs} ms`);
+            addCell(`${formatJevNumber(record.usageInputTokens)} / ${formatJevNumber(record.usageOutputTokens)}`);
+            addCell(`$${formatJevCost(record.usageCost)}`);
+            body.append(row);
+
+            const detailRow = document.createElement('tr');
+            detailRow.className = 'jev-shadow-detail-row';
+            const detail = document.createElement('td');
+            detail.colSpan = 8;
+            const signals = record.signals;
+            detail.textContent = [
+                `model: ${record.servedModel || '—'}`,
+                `probabilities clean/full: ${formatJevNumber(record.routeCleanProbability, 2)} / ${formatJevNumber(record.routeFullReviewProbability, 2)}`,
+                `confidence: ${formatJevNumber(record.routeConfidence, 2)}`,
+                `signals identity/speaker/reality/memory/state/agency/continuity: ${signals ? [
+                    signals.identityConflict,
+                    signals.speakerOwnershipViolation,
+                    signals.realityLayerViolation,
+                    signals.memoryConflict,
+                    signals.stateConflict,
+                    signals.userAgencyViolation,
+                    signals.continuityViolation,
+                ].map(value => formatJevNumber(value, 2)).join(' / ') : '—'}`,
+            ].join(' · ');
+            detailRow.append(detail);
+            body.append(detailRow);
+        });
+        table.append(head, body);
+        tableWrap.append(table);
+        content.append(tableWrap);
+    };
+
+    refresh.onclick = () => { status.textContent = ''; render(); };
+    copy.onclick = async () => {
+        try {
+            await navigator.clipboard.writeText(JSON.stringify(createJevShadowDiagnosticsExport(getJevShadowRecords())));
+            status.textContent = '已複製目前頁面 session 的安全診斷 metadata。';
+        } catch {
+            status.textContent = '未能複製 JSON；請確認瀏覽器允許剪貼簿存取。';
+        }
+    };
+    clear.onclick = () => {
+        if (!confirm('清除這個頁面 session 的 Jev shadow 診斷記錄？此操作不會影響聊天或雲端資料。')) return;
+        clearJevShadowRecords();
+        status.textContent = '已清除本頁記錄。';
+        render();
+    };
+    dialog.append(subtitle, controls, status, content);
+    render();
+};
+
 [
+    ['Jev Shadow', openJevShadowDiagnostics],
     ['最近文字用量', () => {
         const dialog = experienceDialog('最近文字用量（這部裝置）');
         moreOptionsMenu.classList.add('hidden');

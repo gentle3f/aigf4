@@ -1217,6 +1217,99 @@ body.app-body {
     background: rgba(11, 20, 26, 0.48);
 }
 
+.jev-shadow-dialog {
+    width: min(96vw, 980px) !important;
+}
+
+.jev-shadow-subtitle,
+.jev-shadow-action-status,
+.jev-shadow-empty {
+    color: var(--wa-muted);
+    font-size: 0.82rem;
+    line-height: 1.5;
+}
+
+.jev-shadow-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 14px 0 6px;
+}
+
+.jev-shadow-controls button {
+    border: 1px solid #a5cfc2;
+    border-radius: 999px;
+    padding: 8px 12px;
+    color: #126e5d;
+    background: #fff;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+
+.jev-shadow-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 8px;
+    margin: 14px 0;
+}
+
+.jev-shadow-stat {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+    padding: 10px;
+    border: 1px solid #d9e8e2;
+    border-radius: 10px;
+    background: #fff;
+}
+
+.jev-shadow-stat small {
+    color: var(--wa-muted);
+    font-size: 0.7rem;
+    line-height: 1.35;
+}
+
+.jev-shadow-stat strong {
+    color: #163d35;
+    font-size: 1rem;
+}
+
+.jev-shadow-table-wrap {
+    overflow-x: auto;
+    border: 1px solid #d9e8e2;
+    border-radius: 10px;
+    background: #fff;
+}
+
+.jev-shadow-table {
+    width: 100%;
+    min-width: 760px;
+    border-collapse: collapse;
+    color: #163d35;
+    font-size: 0.72rem;
+    text-align: left;
+}
+
+.jev-shadow-table th,
+.jev-shadow-table td {
+    padding: 8px;
+    vertical-align: top;
+    border-bottom: 1px solid #e8efec;
+}
+
+.jev-shadow-table th {
+    color: #527169;
+    background: #f2f8f5;
+    font-weight: 750;
+}
+
+.jev-shadow-detail-row td {
+    color: #627771;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
 .wa-sheet {
     display: flex;
     width: min(100%, 480px);

@@ -1,5 +1,5 @@
 import type { ReviewState } from '../contracts.js';
-import { evaluateJevShadow } from './jevDecisionProvider.js';
+import { evaluateJevShadow, normalizeJevShadowResult } from './jevDecisionProvider.js';
 import type { JevShadowResult } from './jevDecisionProvider.js';
 
 export interface JevShadowRecord {
@@ -7,6 +7,7 @@ export interface JevShadowRecord {
     mode: 'single' | 'group';
     ccMode: boolean;
     status: 'ok' | 'unavailable' | 'aborted';
+    reasonCode?: JevShadowResult['reasonCode'];
     networkCode?: JevShadowResult['networkCode'];
     latencyMs: number;
     servedModel?: string;
@@ -45,12 +46,35 @@ const store = (record: JevShadowRecord) => {
     if (recentRecords.length > MAX_JEV_SHADOW_RECORDS) recentRecords.splice(0, recentRecords.length - MAX_JEV_SHADOW_RECORDS);
 };
 
-export const getJevShadowRecordsForTest = (): JevShadowRecord[] => recentRecords.map(record => ({
-    ...record,
+// This explicit whitelist is the public diagnostics boundary. Never add review text or state here.
+const cloneRecord = (record: JevShadowRecord): JevShadowRecord => ({
+    requestId: record.requestId,
+    mode: record.mode,
+    ccMode: record.ccMode,
+    status: record.status,
+    reasonCode: record.reasonCode,
+    networkCode: record.networkCode,
+    latencyMs: record.latencyMs,
+    servedModel: record.servedModel,
+    routeChoice: record.routeChoice,
+    routeConfidence: record.routeConfidence,
+    routeCleanProbability: record.routeCleanProbability,
+    routeFullReviewProbability: record.routeFullReviewProbability,
     signals: record.signals ? { ...record.signals } : undefined,
-}));
+    usageInputTokens: record.usageInputTokens,
+    usageOutputTokens: record.usageOutputTokens,
+    usageCost: record.usageCost,
+    gemmaDecision: record.gemmaDecision,
+    comparison: record.comparison,
+    falseNegativeCandidate: record.falseNegativeCandidate,
+});
 
-export const clearJevShadowRecordsForTest = () => { recentRecords.splice(0, recentRecords.length); };
+export const getJevShadowRecords = (): JevShadowRecord[] => recentRecords.map(cloneRecord);
+
+export const clearJevShadowRecords = () => { recentRecords.splice(0, recentRecords.length); };
+
+export const getJevShadowRecordsForTest = getJevShadowRecords;
+export const clearJevShadowRecordsForTest = clearJevShadowRecords;
 
 export const startJevShadowEvaluation = ({
     requestId,
@@ -86,10 +110,20 @@ export const startJevShadowEvaluation = ({
             mode,
             ccMode,
             status: result.status,
-            networkCode: result.networkCode,
             latencyMs: Math.max(0, Math.round(now() - startedAt)),
             gemmaDecision,
         };
+        if (result.status === 'unavailable') {
+            const sanitized = normalizeJevShadowResult({
+                status: 'unavailable',
+                reasonCode: result.reasonCode,
+                networkCode: result.networkCode,
+            });
+            if (sanitized?.status === 'unavailable') {
+                record.reasonCode = sanitized.reasonCode;
+                record.networkCode = sanitized.networkCode;
+            }
+        }
         if (result.status === 'ok' && result.route && result.signals) {
             record.servedModel = result.model;
             record.routeChoice = result.route.choice;
