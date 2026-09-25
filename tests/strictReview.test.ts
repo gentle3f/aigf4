@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseStrictReviewDecision } from '../strictReview.js';
+import { parseStrictReviewDecision } from '../engine/review/reviewResultParser.js';
 
 test('parses keep and revised strict-review responses', () => {
     assert.deepEqual(parseStrictReviewDecision('<keep/>'), {

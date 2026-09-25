@@ -10,7 +10,7 @@ import { applyGroupStrictReview, applySingleStrictReview } from '../engine/revie
 import { parseGroupGeneration, selectGroupHistorySinceCurrentRealityLayer } from '../groupChat.js';
 import type { ChatMessage } from '../managers.js';
 import type { ChatRoom, RoomMember } from '../roomManager.js';
-import { parseStrictReviewDecision } from '../strictReview.js';
+import { parseStrictReviewDecision } from '../engine/review/reviewResultParser.js';
 
 const defaults = {
     primary: 'default-primary',

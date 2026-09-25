@@ -306,6 +306,8 @@ test('production strict-review source records one terminal attempt per reviewer 
     assert.equal((reviewRequest.match(/buildStrictReviewRequest\(/g) || []).length, 1);
     assert.match(reviewRequest, /const reviewHistory = getStrictReviewHistory\(request, latestUserMessage\);[\s\S]*buildStrictReviewRequest\(\{[\s\S]*editorPrompt: STRICT_REVIEW_EDITOR_PROMPT,[\s\S]*authoritativePrompt,[\s\S]*reviewHistory,[\s\S]*latestUserMessage,[\s\S]*candidateResponse,/);
     assert.doesNotMatch(reviewRequest, /NEWEST USER MESSAGE:|CANDIDATE RESPONSE TO AUDIT:|Return the strict review JSON now\./);
+    assert.equal((reviewRequest.match(/parseStrictReviewDecision\(result\.text\)/g) || []).length, 1);
+    assert.match(reviewRequest, /const parseStartedAt = performance\.now\(\);\s*const decision = parseStrictReviewDecision\(result\.text\);\s*markChatPerformance\('strict-review:parse', parseStartedAt\);/);
     assert.match(reviewRequest, /let attemptRecorded = false;/);
     assert.match(reviewRequest, /requestText: generateChatTextWithTimeout,[\s\S]*responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,[\s\S]*promptCacheKey,[\s\S]*signal: request\.controller\.signal,/);
     assert.match(reviewRequest, /outcome: 'invalid',\s*errorCode: 'INVALID_RESPONSE',[\s\S]*attemptRecorded = true;\s*throw new Error\(`Invalid strict review from \$\{model\}\.`\);/);
@@ -318,6 +320,14 @@ test('production strict-review source records one terminal attempt per reviewer 
     assert.match(source, /import type \{ ReviewPipelineAttemptContext \} from "\.\/engine\/review\/reviewPipeline\.js";/);
     assert.match(source, /import \{ requestStrictReviewCompletion \} from "\.\/engine\/review\/strictReviewAdapter\.js";/);
     assert.match(source, /import \{ buildStrictReviewRequest \} from "\.\/engine\/review\/reviewRequestBuilder\.js";/);
+    assert.match(source, /import \{ parseStrictReviewDecision \} from "\.\/engine\/review\/reviewResultParser\.js";/);
+});
+
+test('strict-review result parser remains pure and transport-free', () => {
+    const source = readFileSync(new URL('../engine/review/reviewResultParser.ts', import.meta.url), 'utf8');
+
+    assert.match(source, /export const parseStrictReviewDecision = \(/);
+    assert.doesNotMatch(source, /generateChatTextWithTimeout|requestStrictReviewCompletion|recordStrictReviewAttempt|runReviewPipeline|ActiveChatRequest/);
 });
 
 test('production group generation records one terminal attempt per actual request and keeps review attempts separate', () => {

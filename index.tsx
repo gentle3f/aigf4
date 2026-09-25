@@ -162,9 +162,9 @@ import {
 } from "./chatModelSettings.js";
 import type { ChatModelSettings } from "./chatModelSettings.js";
 import {
-    parseStrictReviewDecision,
     STRICT_REVIEW_RESPONSE_FORMAT,
 } from "./strictReview.js";
+import { parseStrictReviewDecision } from "./engine/review/reviewResultParser.js";
 import {
     applyGroupStrictReview,
     applySingleStrictReview,

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { normalizeArtificialProseEscapes } from '../chatProseEscapes.js';
 import { cleanVeniceChatReply } from '../venice.js';
-import { parseStrictReviewDecision } from '../strictReview.js';
+import { parseStrictReviewDecision } from '../engine/review/reviewResultParser.js';
 
 test('removes artificial JSON quote escapes from normal prose only', () => {
     assert.equal(normalizeArtificialProseEscapes('她說：\\"我喺度。\\"'), '她說："我喺度。"');
