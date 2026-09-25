@@ -7,6 +7,18 @@ export type JevUnavailableReason =
     | 'MODEL_NOT_ALLOWED'
     | 'OVERSIZE'
     | 'UPSTREAM_FAILURE'
+    | 'UPSTREAM_BAD_REQUEST'
+    | 'UPSTREAM_UNAUTHORIZED'
+    | 'UPSTREAM_PAYMENT_REQUIRED'
+    | 'UPSTREAM_FORBIDDEN'
+    | 'UPSTREAM_NOT_FOUND'
+    | 'UPSTREAM_REQUEST_TIMEOUT'
+    | 'UPSTREAM_TOO_LARGE'
+    | 'UPSTREAM_UNPROCESSABLE'
+    | 'UPSTREAM_RATE_LIMITED'
+    | 'UPSTREAM_SERVER_ERROR'
+    | 'UPSTREAM_HTTP_ERROR'
+    | 'UPSTREAM_NETWORK_ERROR'
     | 'MALFORMED_RESPONSE'
     | 'TIMEOUT'
     | 'UNAUTHENTICATED'
@@ -35,6 +47,14 @@ export interface JevShadowResult {
 
 export type JevFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
+const unavailableReasons = new Set<JevUnavailableReason>([
+    'INVALID_REQUEST', 'INVALID_STATE', 'MISSING_CREDENTIALS', 'MODEL_NOT_ALLOWED', 'OVERSIZE',
+    'UPSTREAM_FAILURE', 'UPSTREAM_BAD_REQUEST', 'UPSTREAM_UNAUTHORIZED', 'UPSTREAM_PAYMENT_REQUIRED',
+    'UPSTREAM_FORBIDDEN', 'UPSTREAM_NOT_FOUND', 'UPSTREAM_REQUEST_TIMEOUT', 'UPSTREAM_TOO_LARGE',
+    'UPSTREAM_UNPROCESSABLE', 'UPSTREAM_RATE_LIMITED', 'UPSTREAM_SERVER_ERROR', 'UPSTREAM_HTTP_ERROR',
+    'UPSTREAM_NETWORK_ERROR', 'MALFORMED_RESPONSE', 'TIMEOUT', 'UNAUTHENTICATED', 'NETWORK_FAILURE',
+]);
+
 const isProbability = (value: unknown): value is number => (
     typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
 );
@@ -47,7 +67,7 @@ const isUsage = (value: unknown): value is NonNullable<JevShadowResult['usage']>
 export const normalizeJevShadowResult = (value: unknown): JevShadowResult | null => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     const response = value as Record<string, unknown>;
-    if (response.status === 'unavailable' && typeof response.reasonCode === 'string') {
+    if (response.status === 'unavailable' && typeof response.reasonCode === 'string' && unavailableReasons.has(response.reasonCode as JevUnavailableReason)) {
         return { status: 'unavailable', reasonCode: response.reasonCode as JevUnavailableReason };
     }
     if (response.status !== 'ok' || typeof response.model !== 'string') return null;

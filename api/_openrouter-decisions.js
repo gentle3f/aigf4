@@ -106,6 +106,22 @@ export const isValidReviewState = state => isPlainObject(state)
 
 const unavailable = reasonCode => ({ status: 'unavailable', reasonCode });
 
+export const classifyUpstreamHttpFailure = status => {
+  const reasonCodes = {
+    400: 'UPSTREAM_BAD_REQUEST',
+    401: 'UPSTREAM_UNAUTHORIZED',
+    402: 'UPSTREAM_PAYMENT_REQUIRED',
+    403: 'UPSTREAM_FORBIDDEN',
+    404: 'UPSTREAM_NOT_FOUND',
+    408: 'UPSTREAM_REQUEST_TIMEOUT',
+    413: 'UPSTREAM_TOO_LARGE',
+    422: 'UPSTREAM_UNPROCESSABLE',
+    429: 'UPSTREAM_RATE_LIMITED',
+  };
+  if (reasonCodes[status]) return reasonCodes[status];
+  return status >= 500 && status <= 599 ? 'UPSTREAM_SERVER_ERROR' : 'UPSTREAM_HTTP_ERROR';
+};
+
 const normalizeUsage = usage => {
   if (!isPlainObject(usage)) return undefined;
   const inputTokens = usage.input_tokens;
@@ -188,7 +204,7 @@ export const runOpenRouterDecision = async (state, {
       body: JSON.stringify({ model: JEV_MODEL, state, questions: JEV_QUESTIONS }),
       signal: controller.signal,
     });
-    if (!upstream.ok) return unavailable('UPSTREAM_FAILURE');
+    if (!upstream.ok) return unavailable(classifyUpstreamHttpFailure(upstream.status));
     let body;
     try {
       body = await upstream.json();
@@ -197,7 +213,7 @@ export const runOpenRouterDecision = async (state, {
     }
     return normalizeDecisionsResponse(body) || unavailable('MALFORMED_RESPONSE');
   } catch (error) {
-    return unavailable(error instanceof Error && error.name === 'AbortError' ? 'TIMEOUT' : 'UPSTREAM_FAILURE');
+    return unavailable(error instanceof Error && error.name === 'AbortError' ? 'TIMEOUT' : 'UPSTREAM_NETWORK_ERROR');
   } finally {
     clearTimeout(timeout);
   }

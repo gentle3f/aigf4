@@ -6,6 +6,7 @@ import {
     JEV_MODEL,
     JEV_QUESTIONS,
     OPENROUTER_DECISIONS_URL,
+    classifyUpstreamHttpFailure,
     runOpenRouterDecision,
 } from '../api/_openrouter-decisions.js';
 
@@ -85,6 +86,49 @@ test('server normalizes malformed upstream responses without echoing state', asy
     assert.deepEqual(response, { status: 'unavailable', reasonCode: 'MALFORMED_RESPONSE' });
     assert.equal(JSON.stringify(response).includes('compat-secret'), false);
     assert.equal(JSON.stringify(response).includes(state.latestUserText), false);
+});
+
+test('server classifies each upstream HTTP failure without reading the upstream body', async () => {
+    const expected = new Map([
+        [400, 'UPSTREAM_BAD_REQUEST'], [401, 'UPSTREAM_UNAUTHORIZED'], [402, 'UPSTREAM_PAYMENT_REQUIRED'],
+        [403, 'UPSTREAM_FORBIDDEN'], [404, 'UPSTREAM_NOT_FOUND'], [408, 'UPSTREAM_REQUEST_TIMEOUT'],
+        [413, 'UPSTREAM_TOO_LARGE'], [422, 'UPSTREAM_UNPROCESSABLE'], [429, 'UPSTREAM_RATE_LIMITED'],
+        [500, 'UPSTREAM_SERVER_ERROR'], [502, 'UPSTREAM_SERVER_ERROR'], [503, 'UPSTREAM_SERVER_ERROR'],
+        [529, 'UPSTREAM_SERVER_ERROR'], [418, 'UPSTREAM_HTTP_ERROR'],
+    ]);
+    for (const [status, reasonCode] of expected) {
+        let bodyRead = false;
+        const response = await runOpenRouterDecision(state, {
+            env: { OPENROUTER_API: 'server-secret' },
+            fetchImpl: async () => ({ ok: false, status, json: async () => { bodyRead = true; return { error: 'private upstream body' }; } }) as Response,
+        });
+        assert.deepEqual(response, { status: 'unavailable', reasonCode });
+        assert.equal(bodyRead, false);
+        assert.equal(JSON.stringify(response).includes('private upstream body'), false);
+    }
+    assert.equal(classifyUpstreamHttpFailure(418), 'UPSTREAM_HTTP_ERROR');
+});
+
+test('server keeps timeout distinct from ordinary upstream network failures without surfacing error details', async () => {
+    let calls = 0;
+    const networkFailure = await runOpenRouterDecision(state, {
+        env: { OPENROUTER_API: 'server-secret' },
+        fetchImpl: async () => { calls += 1; throw new Error('private network detail'); },
+    });
+    const timeoutFailure = await runOpenRouterDecision(state, {
+        env: { OPENROUTER_API: 'server-secret' },
+        fetchImpl: async () => { calls += 1; throw Object.assign(new Error('private timeout detail'), { name: 'AbortError' }); },
+    });
+    assert.deepEqual(networkFailure, { status: 'unavailable', reasonCode: 'UPSTREAM_NETWORK_ERROR' });
+    assert.deepEqual(timeoutFailure, { status: 'unavailable', reasonCode: 'TIMEOUT' });
+    assert.equal(calls, 2);
+    for (const response of [networkFailure, timeoutFailure]) {
+        const serialized = JSON.stringify(response);
+        assert.equal(serialized.includes('server-secret'), false);
+        assert.equal(serialized.includes(state.latestUserText), false);
+        assert.equal(serialized.includes(state.candidateText), false);
+        assert.equal(serialized.includes('private'), false);
+    }
 });
 
 test('unauthenticated endpoint caller receives 401 without an upstream request', async () => {

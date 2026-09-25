@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { evaluateJevShadow } from '../engine/review/jevDecisionProvider.js';
+import { evaluateJevShadow, normalizeJevShadowResult } from '../engine/review/jevDecisionProvider.js';
 
 const state = {
     latestUserText: 'latest', participants: [], relevantMemories: [], candidateText: 'candidate',
@@ -44,4 +44,11 @@ test('provider normalizes HTTP, network, malformed JSON, and abort failures with
     assert.deepEqual(await evaluateJevShadow(state, controller.signal, async () => { throw Object.assign(new Error('abort'), { name: 'AbortError' }); }), {
         status: 'aborted',
     });
+});
+
+test('provider accepts only the expanded closed upstream failure reason-code set', () => {
+    assert.deepEqual(normalizeJevShadowResult({ status: 'unavailable', reasonCode: 'UPSTREAM_PAYMENT_REQUIRED' }), {
+        status: 'unavailable', reasonCode: 'UPSTREAM_PAYMENT_REQUIRED',
+    });
+    assert.equal(normalizeJevShadowResult({ status: 'unavailable', reasonCode: 'UPSTREAM_599' }), null);
 });
