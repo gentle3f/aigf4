@@ -173,6 +173,7 @@ import { runReviewPipeline } from "./engine/review/reviewPipeline.js";
 import type { ReviewPipelineAttemptContext } from "./engine/review/reviewPipeline.js";
 import { requestStrictReviewCompletion } from "./engine/review/strictReviewAdapter.js";
 import { buildStrictReviewRequest } from "./engine/review/reviewRequestBuilder.js";
+import { runStrictReviewAttempt } from "./engine/review/reviewAttemptExecutor.js";
 import { runGroupTurnAdapter } from "./engine/groupTurnAdapter.js";
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import {
@@ -12030,20 +12031,30 @@ const requestStrictReviewDecision = async (
     const promptCacheKey = createConversationPromptCacheKey(request.conversationKey, 'review');
     const runAttempt = async ({ model, attemptIndex, isFallback }: ReviewPipelineAttemptContext) => {
         applyChatRuntimeState('retrying', isFallback ? '重新檢查中...' : '檢查回覆中...');
-        let requestStartedAt: number | null = null;
-        let attemptRecorded = false;
+        const handleNonFatalFailure = (error: unknown) => {
+            const reason = error instanceof Error ? error.message : String(error);
+            markChatPerformance(`strict-review:attempt-error model=${model} attempt=${attemptIndex} retry=${isFallback} fallback=${isFallback} timeout=${reason === CHAT_MODEL_TIMEOUT_ERROR}`);
+            console.warn('[aigf4 strict review unavailable]', {
+                requestId: request.id,
+                model,
+                reason,
+            });
+        };
+        let reviewStartedAt: number;
+        let messages: VeniceMessage[];
         try {
             markChatPerformance('strict-review:prepare', preparationStartedAt);
-            const reviewStartedAt = performance.now();
+            reviewStartedAt = performance.now();
             markChatPerformance('strict-review:request-start');
             const reviewHistory = getStrictReviewHistory(request, latestUserMessage);
-            const { messages, candidateAndUser } = buildStrictReviewRequest({
+            const requestBody = buildStrictReviewRequest({
                 editorPrompt: STRICT_REVIEW_EDITOR_PROMPT,
                 authoritativePrompt,
                 reviewHistory,
                 latestUserMessage,
                 candidateResponse,
             });
+            messages = requestBody.messages;
             markVeniceRequestAggregate('strict-review:request-meta', model, messages, attemptIndex, { fallback: isFallback });
             markPromptComponentAccounting('strict-review', [
                 promptComponent('strict-review-editor', STRICT_REVIEW_EDITOR_PROMPT),
@@ -12053,87 +12064,56 @@ const requestStrictReviewDecision = async (
                     chars: getVeniceMessageAggregate(reviewHistory),
                     messages: reviewHistory.length,
                 },
-                promptComponent('strict-review-user-and-candidate', candidateAndUser, 1),
+                promptComponent('strict-review-user-and-candidate', requestBody.candidateAndUser, 1),
             ], messages.length, 2);
-            requestStartedAt = performance.now();
-            const result = await requestStrictReviewCompletion({
-                requestText: generateChatTextWithTimeout,
-                model,
-                messages,
-                responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,
-                promptCacheKey,
-                signal: request.controller.signal,
-            });
-            markChatPerformance('strict-review:request', reviewStartedAt);
-            markVeniceRequestAggregate('strict-review:response-meta', result.model, messages, attemptIndex, { fallback: isFallback }, result);
-            const parseStartedAt = performance.now();
-            const decision = parseStrictReviewDecision(result.text);
-            markChatPerformance('strict-review:parse', parseStartedAt);
-            if (!decision) {
-                recordStrictReviewAttempt(trace, {
-                    model: result.model || model,
-                    attemptIndex,
-                    latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
-                    promptTokens: result.promptTokens,
-                    completionTokens: result.completionTokens,
-                    finishReason: result.finishReason ?? null,
-                    outcome: 'invalid',
-                    errorCode: 'INVALID_RESPONSE',
-                });
-                attemptRecorded = true;
-                throw new Error(`Invalid strict review from ${model}.`);
-            }
-            recordStrictReviewAttempt(trace, {
-                model: result.model || model,
-                attemptIndex,
-                latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
-                promptTokens: result.promptTokens,
-                completionTokens: result.completionTokens,
-                finishReason: result.finishReason ?? null,
-                outcome: decision.decision,
-            });
-            attemptRecorded = true;
-            try {
-                if (trace) markStrictReview(trace, {
-                    ran: true,
-                    model: result.model || model,
-                    decision: decision.decision,
-                    attempts: trace.strictReview?.attempts,
-                });
-            } catch { /* Strict-review tracing is strictly observational. */ }
-            const parsedFormat = /<revision>[\s\S]*<\/revision>/iu.test(result.text)
-                ? 'tagged'
-                : /^\s*\{/u.test(result.text) ? 'json' : 'keep-tag';
-            markChatPerformance(`strict-review:decision model=${result.model} attempt=${attemptIndex} retry=${isFallback} fallback=${isFallback} decision=${decision.decision} format=${parsedFormat}`);
-            console.info('[aigf4 strict review]', {
-                requestId: request.id,
-                model: result.model,
-                decision: decision.decision,
-                issues: decision.issues,
-                promptTokens: result.promptTokens,
-                completionTokens: result.completionTokens,
-            });
-            return decision;
         } catch (error) {
-            if (!attemptRecorded && requestStartedAt !== null) {
-                const failure = getStrictReviewAttemptFailure(request, error);
-                recordStrictReviewAttempt(trace, {
-                    model,
-                    attemptIndex,
-                    latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
-                    ...failure,
-                });
-            }
             if (isAbortError(error) && request.controller.signal.aborted) throw error;
-            const reason = error instanceof Error ? error.message : String(error);
-            markChatPerformance(`strict-review:attempt-error model=${model} attempt=${attemptIndex} retry=${isFallback} fallback=${isFallback} timeout=${reason === CHAT_MODEL_TIMEOUT_ERROR}`);
-            console.warn('[aigf4 strict review unavailable]', {
-                requestId: request.id,
-                model,
-                reason,
-            });
+            handleNonFatalFailure(error);
             return null;
         }
+        return runStrictReviewAttempt({ model, attemptIndex, isFallback }, {
+            executeRequest: async () => {
+                const result = await requestStrictReviewCompletion({
+                    requestText: generateChatTextWithTimeout,
+                    model,
+                    messages,
+                    responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,
+                    promptCacheKey,
+                    signal: request.controller.signal,
+                });
+                markChatPerformance('strict-review:request', reviewStartedAt);
+                markVeniceRequestAggregate('strict-review:response-meta', result.model, messages, attemptIndex, { fallback: isFallback }, result);
+                return result;
+            },
+            parseResult: parseStrictReviewDecision,
+            recordAttempt: attempt => recordStrictReviewAttempt(trace, attempt),
+            classifyFailure: error => getStrictReviewAttemptFailure(request, error),
+            shouldRethrow: error => isAbortError(error) && request.controller.signal.aborted,
+            onParseTiming: parseStartedAt => markChatPerformance('strict-review:parse', parseStartedAt),
+            onSuccess: (result, decision) => {
+                try {
+                    if (trace) markStrictReview(trace, {
+                        ran: true,
+                        model: result.model || model,
+                        decision: decision.decision,
+                        attempts: trace.strictReview?.attempts,
+                    });
+                } catch { /* Strict-review tracing is strictly observational. */ }
+                const parsedFormat = /<revision>[\s\S]*<\/revision>/iu.test(result.text)
+                    ? 'tagged'
+                    : /^\s*\{/u.test(result.text) ? 'json' : 'keep-tag';
+                markChatPerformance(`strict-review:decision model=${result.model} attempt=${attemptIndex} retry=${isFallback} fallback=${isFallback} decision=${decision.decision} format=${parsedFormat}`);
+                console.info('[aigf4 strict review]', {
+                    requestId: request.id,
+                    model: result.model,
+                    decision: decision.decision,
+                    issues: decision.issues,
+                    promptTokens: result.promptTokens,
+                    completionTokens: result.completionTokens,
+                });
+            },
+            onFailure: handleNonFatalFailure,
+        });
     };
     return runReviewPipeline({
         reviewerModels,
