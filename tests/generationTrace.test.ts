@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
     MAX_RECENT_GENERATION_TRACES,
@@ -15,6 +16,7 @@ import {
     recordGenerationTrace,
 } from '../engine/observability/generationTrace.js';
 import { runSingleTurnAdapter } from '../engine/singleTurnAdapter.js';
+import { getGenerationAttemptCount } from '../chatModelSettings.js';
 
 const abortError = () => Object.assign(new Error('aborted'), { name: 'AbortError' });
 
@@ -119,6 +121,54 @@ test('attempt recording is best-effort when an observational trace is immutable'
         phase: 'primary', model: 'model', outcome: 'error', errorCode: 'TIMEOUT',
     }));
     assert.equal(trace.attempts.length, 0);
+});
+
+test('production attempt cardinality remains primary plus repair, then one per fallback', () => {
+    assert.equal(getGenerationAttemptCount(0), 2);
+    assert.equal(getGenerationAttemptCount(1), 1);
+    assert.equal(getGenerationAttemptCount(2), 1);
+
+    const trace = createGenerationTrace('route-cardinality', 'single');
+    [0, 0, 1].forEach((routeIndex, offset) => markGenerationAttempt(trace, {
+        phase: classifySingleGenerationAttempt(routeIndex, routeIndex === 0 ? offset + 1 : 1),
+        model: `model-${routeIndex}`,
+        routeIndex,
+        attemptIndex: routeIndex === 0 ? offset + 1 : 1,
+        outcome: offset === 0 ? 'invalid' : 'accepted',
+    }));
+    assert.deepEqual(trace.attempts.map(attempt => attempt.phase), ['primary', 'repair', 'fallback']);
+});
+
+test('production single-generation source records an invalid response once before its retry catch', () => {
+    const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
+    const singleGeneration = source.slice(
+        source.indexOf('const runConversationGeneration'),
+        source.indexOf('type CharacterPhotoProposalDraft'),
+    );
+
+    assert.match(singleGeneration, /let attemptRecorded = false;/);
+    assert.match(singleGeneration, /outcome: 'invalid',\s*errorCode: 'INVALID_RESPONSE',[\s\S]*attemptRecorded = true;\s*throw new Error\(`Invalid reply from \$\{model\}\.`\);/);
+    assert.match(singleGeneration, /if \(!attemptRecorded && requestStartedAt !== null\) \{[\s\S]*\.\.\.failure,/);
+    assert.equal((singleGeneration.match(/const result = await generateChatTextWithTimeout\(/g) || []).length, 1);
+});
+
+test('production continuation source increments the trace index before each request and records each terminal path once', () => {
+    const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
+    const continuation = source.slice(
+        source.indexOf('const continueTruncatedChatReply'),
+        source.indexOf('const getRecentAssistantRepliesForPersona'),
+    );
+    const singleGeneration = source.slice(
+        source.indexOf('const runConversationGeneration'),
+        source.indexOf('type CharacterPhotoProposalDraft'),
+    );
+
+    assert.equal((continuation.match(/await generateChatTextWithTimeout\(/g) || []).length, 1);
+    assert.match(continuation, /outcome: 'invalid',\s*errorCode: 'INVALID_RESPONSE',[\s\S]*return null;/);
+    assert.match(continuation, /outcome: 'accepted',/);
+    assert.match(continuation, /const failure = getSingleGenerationAttemptFailure\(error\);[\s\S]*\.\.\.failure,/);
+    assert.match(singleGeneration, /continuationCount \+= 1;\s*const continuation = await continueTruncatedChatReply\([\s\S]*continuationCount,/);
+    assert.match(singleGeneration, /continuationCount < CHAT_MAX_AUTO_CONTINUES[\s\S]*finishReason === 'length'/);
 });
 
 test('broad single-turn trace preserves generate-review return semantics and records timings', async () => {
