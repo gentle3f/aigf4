@@ -171,9 +171,13 @@ import {
 } from "./engine/reviewApplication.js";
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import {
+    classifyGenerationAttemptFailure,
+    classifySingleGenerationAttempt,
     createGenerationTrace,
     createTracedSingleTurnDependencies,
+    markGenerationAttempt,
 } from "./engine/observability/generationTrace.js";
+import type { GenerationAttemptTrace, GenerationTrace } from "./engine/observability/generationTrace.js";
 import { scheduleReplyVisibleHaptic } from "./chatHaptics.js";
 import { createVisibilityAwareTimeout } from "./visibilityAwareTimeout.js";
 import {
@@ -10708,6 +10712,23 @@ const getLatestUserVeniceContent = (
     ];
 };
 
+const getSingleGenerationAttemptFailure = (
+    error: unknown,
+) => classifyGenerationAttemptFailure(
+    isAbortError(error),
+    error instanceof Error && error.message === CHAT_MODEL_TIMEOUT_ERROR,
+);
+
+// Trace mutation is always optional and must never influence a chat request.
+const recordSingleGenerationAttempt = (
+    trace: GenerationTrace | undefined,
+    attempt: GenerationAttemptTrace,
+) => {
+    try {
+        if (trace) markGenerationAttempt(trace, attempt);
+    } catch { /* Trace recording is strictly observational. */ }
+};
+
 const continueTruncatedChatReply = async (
     request: ActiveChatRequest,
     model: string,
@@ -10715,6 +10736,9 @@ const continueTruncatedChatReply = async (
     partialReply: string,
     systemPrompt: string,
     assistantMode: boolean,
+    trace?: GenerationTrace,
+    routeIndex?: number,
+    attemptIndex?: number,
 ): Promise<{ text: string; finishReason: string | null } | null> => {
     const continuationStartedAt = performance.now();
     markChatPerformance('generation:continuation-request-start');
@@ -10735,14 +10759,29 @@ const continueTruncatedChatReply = async (
         },
     ];
     markVeniceRequestAggregate('generation:continuation:request-meta', model, messages, 1, { continuation: true });
-    const result = await generateChatTextWithTimeout({
-        model,
-        messages,
-        temperature: 0.72,
-        topP: 0.9,
-        repetitionPenalty: 1.02,
-        signal: request.controller.signal,
-    });
+    const requestStartedAt = performance.now();
+    let result: Awaited<ReturnType<typeof generateChatTextWithTimeout>>;
+    try {
+        result = await generateChatTextWithTimeout({
+            model,
+            messages,
+            temperature: 0.72,
+            topP: 0.9,
+            repetitionPenalty: 1.02,
+            signal: request.controller.signal,
+        });
+    } catch (error) {
+        const failure = getSingleGenerationAttemptFailure(error);
+        recordSingleGenerationAttempt(trace, {
+            phase: 'continuation',
+            model,
+            routeIndex,
+            attemptIndex,
+            latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+            ...failure,
+        });
+        throw error;
+    }
     markChatPerformance('generation:continuation', continuationStartedAt);
     markVeniceRequestAggregate('generation:continuation:response-meta', result.model, messages, 1, { continuation: true }, result);
 
@@ -10760,8 +10799,32 @@ const continueTruncatedChatReply = async (
         ? cleanVeniceAssistantReply(result.text)
         : cleanVeniceChatReply(result.text);
     if (!cleanedContinuation || (!assistantMode && isInvalidVeniceChatReply(cleanedContinuation))) {
+        recordSingleGenerationAttempt(trace, {
+            phase: 'continuation',
+            model: result.model || model,
+            routeIndex,
+            attemptIndex,
+            latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+            promptTokens: result.promptTokens,
+            completionTokens: result.completionTokens,
+            finishReason: result.finishReason ?? null,
+            outcome: 'invalid',
+            errorCode: 'INVALID_RESPONSE',
+        });
         return null;
     }
+
+    recordSingleGenerationAttempt(trace, {
+        phase: 'continuation',
+        model: result.model || model,
+        routeIndex,
+        attemptIndex,
+        latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+        promptTokens: result.promptTokens,
+        completionTokens: result.completionTokens,
+        finishReason: result.finishReason ?? null,
+        outcome: 'accepted',
+    });
 
     return {
         text: cleanedContinuation,
@@ -10809,6 +10872,7 @@ const runConversationGeneration = async (
     latestUserMessage: string,
     models: string[],
     assistantMode: boolean,
+    trace?: GenerationTrace,
 ): Promise<string> => {
     const preparationStartedAt = performance.now();
     let lastError: Error | null = null;
@@ -10899,9 +10963,12 @@ const runConversationGeneration = async (
             const isRepairAttempt = attempt > 0;
             const detail = index === 0 && !isRepairAttempt ? '思考中...' : '重新思考中...';
             applyChatRuntimeState(index === 0 && !isRepairAttempt ? 'generating' : 'retrying', detail);
+            let requestStartedAt: number | null = null;
+            let attemptRecorded = false;
+            const attemptPhase = classifySingleGenerationAttempt(index, attempt + 1);
 
             try {
-                const requestStartedAt = performance.now();
+                const performanceStartedAt = performance.now();
                 markChatPerformance(
                     index === 0 && !isRepairAttempt
                         ? 'generation:primary-request-start'
@@ -10946,6 +11013,7 @@ const runConversationGeneration = async (
                     }] : []),
                 ], messages.length, isRepairAttempt ? 2 : 1);
 
+                requestStartedAt = performance.now();
                 const result = await generateChatTextWithTimeout({
                     model,
                     messages,
@@ -10959,7 +11027,7 @@ const runConversationGeneration = async (
                     index === 0 && !isRepairAttempt
                         ? 'generation:primary'
                         : isRepairAttempt ? 'generation:repair' : 'generation:fallback',
-                    requestStartedAt,
+                    performanceStartedAt,
                 );
                 markVeniceRequestAggregate(
                     `${generationPhase}:response-meta`,
@@ -10988,8 +11056,34 @@ const runConversationGeneration = async (
                     ? cleanVeniceAssistantReply(result.text)
                     : cleanVeniceChatReply(wardrobeEnvelope!.visibleText);
                 if (!cleanedText || (!assistantMode && isInvalidVeniceChatReply(cleanedText))) {
+                    recordSingleGenerationAttempt(trace, {
+                        phase: attemptPhase,
+                        model: result.model || model,
+                        routeIndex: index,
+                        attemptIndex: attempt + 1,
+                        latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+                        promptTokens: result.promptTokens,
+                        completionTokens: result.completionTokens,
+                        finishReason: result.finishReason ?? null,
+                        outcome: 'invalid',
+                        errorCode: 'INVALID_RESPONSE',
+                    });
+                    attemptRecorded = true;
                     throw new Error(`Invalid reply from ${model}.`);
                 }
+
+                recordSingleGenerationAttempt(trace, {
+                    phase: attemptPhase,
+                    model: result.model || model,
+                    routeIndex: index,
+                    attemptIndex: attempt + 1,
+                    latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+                    promptTokens: result.promptTokens,
+                    completionTokens: result.completionTokens,
+                    finishReason: result.finishReason ?? null,
+                    outcome: 'accepted',
+                });
+                attemptRecorded = true;
 
                 let continuationCount = 0;
                 let finishReason = result.finishReason;
@@ -11005,6 +11099,9 @@ const runConversationGeneration = async (
                         cleanedText,
                         systemPrompt,
                         assistantMode,
+                        trace,
+                        index,
+                        continuationCount,
                     );
                     if (!continuation) {
                         break;
@@ -11077,6 +11174,17 @@ const runConversationGeneration = async (
                 }
                 return cleanedText;
             } catch (error) {
+                if (!attemptRecorded && requestStartedAt !== null) {
+                    const failure = getSingleGenerationAttemptFailure(error);
+                    recordSingleGenerationAttempt(trace, {
+                        phase: attemptPhase,
+                        model,
+                        routeIndex: index,
+                        attemptIndex: attempt + 1,
+                        latencyMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+                        ...failure,
+                    });
+                }
                 if (isAbortError(error)) {
                     throw error;
                 }
@@ -12076,7 +12184,7 @@ const runCharacterChatGeneration = async (
     }
     const trace = createGenerationTrace(String(request.id), 'single', request.conversationKey);
     return runSingleTurnAdapter(createTracedSingleTurnDependencies(trace, {
-        generateCandidate: () => runConversationGeneration(request, latestUserMessage, models, false),
+        generateCandidate: () => runConversationGeneration(request, latestUserMessage, models, false, trace),
         reviewCandidate: candidate => strictReviewSingleReply(request, latestUserMessage, candidate),
     }, {
         isAbortError,

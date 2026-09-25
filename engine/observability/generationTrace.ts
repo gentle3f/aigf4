@@ -52,8 +52,16 @@ export interface GenerationAttemptTrace {
     completionTokens?: number;
     finishReason?: string | null;
     outcome: 'accepted' | 'invalid' | 'error' | 'aborted';
-    errorCode?: string;
+    errorCode?: GenerationAttemptErrorCode;
 }
+
+// This is deliberately closed so that provider or runtime error text can
+// never enter a live trace.
+export type GenerationAttemptErrorCode =
+    | 'ABORTED'
+    | 'TIMEOUT'
+    | 'INVALID_RESPONSE'
+    | 'UNKNOWN';
 
 export const createGenerationTrace = (
     requestId: string,
@@ -76,7 +84,28 @@ export const markGenerationAttempt = (
     trace: GenerationTrace,
     attempt: GenerationAttemptTrace,
 ) => {
-    trace.attempts.push({ ...attempt });
+    try {
+        trace.attempts.push({ ...attempt });
+    } catch { /* Attempt tracing is strictly observational. */ }
+};
+
+// The production generator already has this route/retry shape. This helper
+// only describes it for metadata; it does not control retries or routing.
+export const classifySingleGenerationAttempt = (
+    routeIndex: number,
+    attemptIndex: number,
+): GenerationAttemptTrace['phase'] => {
+    if (routeIndex === 0) return attemptIndex === 1 ? 'primary' : 'repair';
+    return 'fallback';
+};
+
+export const classifyGenerationAttemptFailure = (
+    aborted: boolean,
+    timedOut: boolean,
+): Pick<GenerationAttemptTrace, 'outcome' | 'errorCode'> => {
+    if (aborted) return { outcome: 'aborted', errorCode: 'ABORTED' };
+    if (timedOut) return { outcome: 'error', errorCode: 'TIMEOUT' };
+    return { outcome: 'error', errorCode: 'UNKNOWN' };
 };
 
 export const markStrictReview = (

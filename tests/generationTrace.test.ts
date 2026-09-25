@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     MAX_RECENT_GENERATION_TRACES,
+    classifyGenerationAttemptFailure,
+    classifySingleGenerationAttempt,
     clearRecentGenerationTracesForTesting,
     createTracedSingleTurnDependencies,
     createGenerationTrace,
@@ -63,6 +65,60 @@ test('GenerationTrace finalization is metadata-only and can represent an aborted
         phase: 'primary', model: 'primary', routeIndex: 0, attemptIndex: 1,
         outcome: 'aborted', errorCode: 'ABORTED',
     }]);
+});
+
+test('single generation attempt phases preserve the production route and retry shape', () => {
+    assert.equal(classifySingleGenerationAttempt(0, 1), 'primary');
+    assert.equal(classifySingleGenerationAttempt(0, 2), 'repair');
+    assert.equal(classifySingleGenerationAttempt(1, 1), 'fallback');
+    assert.equal(classifySingleGenerationAttempt(2, 1), 'fallback');
+});
+
+test('attempt failures use only closed sanitized error codes', () => {
+    assert.deepEqual(classifyGenerationAttemptFailure(false, false), {
+        outcome: 'error', errorCode: 'UNKNOWN',
+    });
+    assert.deepEqual(classifyGenerationAttemptFailure(false, true), {
+        outcome: 'error', errorCode: 'TIMEOUT',
+    });
+    assert.deepEqual(classifyGenerationAttemptFailure(true, true), {
+        outcome: 'aborted', errorCode: 'ABORTED',
+    });
+});
+
+test('single generation attempts retain chronological metadata without private content', () => {
+    const trace = createGenerationTrace('attempt-order', 'single', 'conversation-a');
+    markGenerationAttempt(trace, {
+        phase: 'primary', model: 'returned-primary', routeIndex: 0, attemptIndex: 1,
+        latencyMs: 11, promptTokens: 101, completionTokens: 37, finishReason: 'length',
+        outcome: 'invalid', errorCode: 'INVALID_RESPONSE',
+    });
+    markGenerationAttempt(trace, {
+        phase: 'repair', model: 'returned-primary', routeIndex: 0, attemptIndex: 2,
+        latencyMs: 12, promptTokens: 103, completionTokens: 39, finishReason: 'stop', outcome: 'accepted',
+    });
+    markGenerationAttempt(trace, {
+        phase: 'continuation', model: 'returned-primary', routeIndex: 0, attemptIndex: 1,
+        latencyMs: 8, promptTokens: 120, completionTokens: 18, finishReason: 'stop', outcome: 'accepted',
+    });
+
+    assert.deepEqual(trace.attempts.map(({ phase, routeIndex, attemptIndex, outcome }) => ({
+        phase, routeIndex, attemptIndex, outcome,
+    })), [
+        { phase: 'primary', routeIndex: 0, attemptIndex: 1, outcome: 'invalid' },
+        { phase: 'repair', routeIndex: 0, attemptIndex: 2, outcome: 'accepted' },
+        { phase: 'continuation', routeIndex: 0, attemptIndex: 1, outcome: 'accepted' },
+    ]);
+    assert.doesNotMatch(JSON.stringify(trace), /user text|prompt body|candidate text|response body|memory content|wardrobe text|api key|raw error/i);
+});
+
+test('attempt recording is best-effort when an observational trace is immutable', () => {
+    const trace = createGenerationTrace('immutable', 'single');
+    Object.freeze(trace.attempts);
+    assert.doesNotThrow(() => markGenerationAttempt(trace, {
+        phase: 'primary', model: 'model', outcome: 'error', errorCode: 'TIMEOUT',
+    }));
+    assert.equal(trace.attempts.length, 0);
 });
 
 test('broad single-turn trace preserves generate-review return semantics and records timings', async () => {
