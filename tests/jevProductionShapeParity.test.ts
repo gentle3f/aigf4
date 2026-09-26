@@ -92,3 +92,23 @@ test('parity state evidence is produced by the same bounded helpers', () => {
     assert.equal(typeof buildJevPersonaEvidence, 'function');
     assert.equal(typeof buildJevRecentHistoryText, 'function');
 });
+
+test('complex-history and unproven-replay controls retain their explicitly supplied final history', () => {
+    const continuity = JEV_PRODUCTION_SHAPE_PARITY_CASES.find(item => item.id === 'parity-continuity-complex-history-negative')!;
+    assert.match(continuity.state.recentHistoryText || '', /Aster repaired the blue lantern; Beryl checked it; Cato placed it on the workbench\./);
+
+    const replay = JEV_PRODUCTION_SHAPE_PARITY_CASES.find(item => item.id === 'parity-replay-unproven-complex-negative')!;
+    assert.match(replay.state.recentHistoryText || '', /Aster examined the damaged blue lantern but did not repair it\./);
+    assert.doesNotMatch(replay.state.recentHistoryText || '', /Aster repaired the blue lantern and placed it on the workbench\./);
+    assert.match(replay.state.candidateText, /Aster repairs the blue lantern\./);
+});
+
+test('unspecified-wardrobe control propagates one coherent wardrobe through state and group envelope', () => {
+    const fixture = JEV_PRODUCTION_SHAPE_PARITY_CASES.find(item => item.id === 'parity-wardrobe-unspecified-negative')!;
+    assert.equal(fixture.state.wardrobe?.characters.aster, undefined);
+    assert.equal(fixture.state.proposedScene?.wardrobe?.characters.aster, undefined);
+    assert.match(fixture.state.candidateText, /Aster adjusts a red scarf\./);
+    assert.match(fixture.state.candidateText, /"wardrobe_updates":\{"user":"charcoal jumper","members":\[\]\}/);
+    assert.doesNotMatch(fixture.state.candidateText, /green coat/);
+    assert.doesNotMatch(JSON.stringify(fixture.state), /green coat/);
+});

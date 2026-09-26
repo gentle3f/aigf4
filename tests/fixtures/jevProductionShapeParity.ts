@@ -9,7 +9,7 @@ import {
 import type { Persona, WardrobeState } from '../../managers.js';
 import type { ChatRoom, RoomSceneState } from '../../roomManager.js';
 import type { StrictReviewIssueCode } from '../../strictReview.js';
-import type { JevSyntheticCalibrationCase, JevSyntheticExpected } from './jevSyntheticCalibration.js';
+import type { JevSyntheticCalibrationCase } from './jevSyntheticCalibration.js';
 
 export interface JevProductionShapeParityCase extends JevSyntheticCalibrationCase {
     suite: 'production-shape';
@@ -67,38 +67,50 @@ const groupResult = (segments: GroupGenerationResult['segments'], scene: RoomSce
     text: segments.map(segment => segment.text).join('\n'), segments, scene,
 });
 
-const normalState = (candidateText: string, overrides: Partial<ReviewState> = {}): ReviewState => {
-    const latestUserText = overrides.latestUserText || 'Please describe the next careful step.';
+type SingleFixtureOptions = {
+    latestUserText?: string;
+    recentHistoryText?: string;
+    wardrobe?: WardrobeState;
+};
+
+type GroupFixtureOptions = {
+    latestUserText?: string;
+    recentHistoryText?: string;
+    room?: ChatRoom;
+    wardrobe?: WardrobeState;
+};
+
+const normalState = (candidateText: string, options: SingleFixtureOptions = {}): ReviewState => {
+    const latestUserText = options.latestUserText ?? 'Please describe the next careful step.';
     return buildReviewState({
         mode: 'single', ccMode: false, latestUserText, candidateText, personaKey: 'aster', persona: aster,
-        wardrobe, recentHistoryText: history(latestUserText),
+        wardrobe: options.wardrobe ?? wardrobe, recentHistoryText: options.recentHistoryText ?? history(latestUserText),
     });
 };
 
-const ccState = (candidateText: string, overrides: Partial<ReviewState> = {}): ReviewState => {
-    const latestUserText = overrides.latestUserText || '請你繼續講下一步。';
+const ccState = (candidateText: string, options: SingleFixtureOptions = {}): ReviewState => {
+    const latestUserText = options.latestUserText ?? '請你繼續講下一步。';
     return buildReviewState({
         mode: 'single', ccMode: true, latestUserText, candidateText, personaKey: 'cc', persona: ccPersona,
-        wardrobe, recentHistoryText: history(latestUserText),
+        wardrobe: options.wardrobe ?? wardrobe, recentHistoryText: options.recentHistoryText ?? history(latestUserText),
     });
 };
 
-const groupState = (candidate: GroupGenerationResult, overrides: Partial<ReviewState> = {}): ReviewState => {
-    const latestUserText = overrides.latestUserText || 'What should the group do with the lantern?';
+const copyWardrobe = (value: WardrobeState): WardrobeState => ({ user: value.user, characters: { ...value.characters } });
+
+const groupState = (candidate: GroupGenerationResult, options: GroupFixtureOptions = {}): ReviewState => {
+    const latestUserText = options.latestUserText ?? 'What should the group do with the lantern?';
+    const baseRoom = options.room ?? room;
+    const coherentWardrobe = copyWardrobe(options.wardrobe ?? candidate.scene.wardrobe ?? baseRoom.scene.wardrobe ?? wardrobe);
+    const coherentScene: RoomSceneState = { ...candidate.scene, wardrobe: coherentWardrobe };
+    const coherentRoom: ChatRoom = { ...baseRoom, scene: coherentScene };
+    const coherentCandidate: GroupGenerationResult = { ...candidate, scene: coherentScene };
     return buildReviewState({
-        mode: 'group', ccMode: false, latestUserText, candidateText: serializeGroupGenerationForReview(candidate), personaKey: 'aster',
-        persona: aster, room, wardrobe, proposedScene: candidate.scene, recentHistoryText: history(latestUserText),
+        mode: 'group', ccMode: false, latestUserText, candidateText: serializeGroupGenerationForReview(coherentCandidate), personaKey: 'aster',
+        persona: aster, room: coherentRoom, wardrobe: coherentWardrobe, proposedScene: coherentScene,
+        recentHistoryText: options.recentHistoryText ?? history(latestUserText),
     });
 };
-
-const paired = (
-    id: string,
-    category: StrictReviewIssueCode,
-    expected: JevSyntheticExpected,
-    description: string,
-    state: ReviewState,
-    shapeNotes: string,
-): JevProductionShapeParityCase => ({ id, suite: 'production-shape', category, expected, description, pairId: `parity-${category}-${id.includes('positive') ? 'pair' : 'pair'}`, state, shapeNotes });
 
 const pair = (
     category: StrictReviewIssueCode,
