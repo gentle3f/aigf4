@@ -172,7 +172,7 @@ import {
 import { runReviewPipeline } from "./engine/review/reviewPipeline.js";
 import type { ReviewPipelineAttemptContext } from "./engine/review/reviewPipeline.js";
 import { runPreparedStrictReviewAttempt } from "./engine/review/reviewAttemptCoordinator.js";
-import { buildReviewState } from "./engine/review/reviewState.js";
+import { buildJevRecentHistoryText, buildReviewState } from "./engine/review/reviewState.js";
 import {
     clearJevShadowRecords,
     getJevShadowRecords,
@@ -12122,6 +12122,7 @@ const startStrictReviewShadow = (
     latestUserMessage: string,
     candidateText: string,
     mode: 'single' | 'group',
+    authoritativePrompt: string,
     proposedScene?: RoomSceneState,
 ) => startJevShadowEvaluation({
     requestId: String(request.id),
@@ -12131,11 +12132,18 @@ const startStrictReviewShadow = (
     state: buildReviewState({
         latestUserText: latestUserMessage,
         candidateText,
+        mode,
+        ccMode: request.personaKey === 'cc',
         personaKey: request.personaKey,
         persona: request.persona,
         room: request.room,
         wardrobe: request.pendingWardrobeState || request.wardrobeState,
         proposedScene,
+        authoritativeContext: authoritativePrompt,
+        recentHistoryText: buildJevRecentHistoryText(
+            getStrictReviewHistory(request, latestUserMessage),
+            latestUserMessage,
+        ),
     }),
 });
 
@@ -12172,7 +12180,7 @@ const strictReviewSingleReply = async (
         buildNpcContinuityRequirement(establishedNpcNames),
         buildNpcSpeechRequirement(addressedNpcNames),
     ].filter(Boolean).join('\n\n');
-    const shadow = startStrictReviewShadow(request, latestUserMessage, candidate, 'single');
+    const shadow = startStrictReviewShadow(request, latestUserMessage, candidate, 'single', authoritativePrompt);
     let decision;
     try {
         decision = await requestStrictReviewDecision(
@@ -12264,19 +12272,27 @@ const strictReviewGroupReply = async (
 ) => {
     if (!request.room) return candidate;
     const serializedCandidate = serializeGroupGenerationForReview(candidate);
-    const shadow = startStrictReviewShadow(request, latestUserMessage, serializedCandidate, 'group', candidate.scene);
+    const authoritativePrompt = [
+        buildGroupSystemPrompt(request.room, latestUserMessage),
+        request.surpriseEvent
+            ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
+            : '',
+        'STRICT REVISION FORMAT: revised_response must contain one complete <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate> envelope.',
+    ].join('\n\n');
+    const shadow = startStrictReviewShadow(
+        request,
+        latestUserMessage,
+        serializedCandidate,
+        'group',
+        authoritativePrompt,
+        candidate.scene,
+    );
     let decision;
     try {
         decision = await requestStrictReviewDecision(
             request,
             latestUserMessage,
-            [
-                buildGroupSystemPrompt(request.room, latestUserMessage),
-                request.surpriseEvent
-                    ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
-                    : '',
-                'STRICT REVISION FORMAT: revised_response must contain one complete <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate> envelope.',
-            ].join('\n\n'),
+            authoritativePrompt,
             serializedCandidate,
             trace,
         );
@@ -17560,14 +17576,22 @@ const openJevShadowDiagnostics = () => {
                 `model: ${record.servedModel || '—'}`,
                 `probabilities clean/full: ${formatJevNumber(record.routeCleanProbability, 2)} / ${formatJevNumber(record.routeFullReviewProbability, 2)}`,
                 `confidence: ${formatJevNumber(record.routeConfidence, 2)}`,
-                `signals identity/speaker/reality/memory/state/agency/continuity: ${signals ? [
+                `taxonomy: ${record.taxonomyVersion}`,
+                `signals request/identity/speaker/continuity/reality/wardrobe/state/replay/persona/third-party/agency/ending/group/other: ${signals ? [
+                    signals.requestMismatch,
                     signals.identityConflict,
                     signals.speakerOwnershipViolation,
-                    signals.realityLayerViolation,
-                    signals.memoryConflict,
-                    signals.stateConflict,
-                    signals.userAgencyViolation,
                     signals.continuityViolation,
+                    signals.realityLayerViolation,
+                    signals.wardrobeConflict,
+                    signals.stateConflict,
+                    signals.replayedBeat,
+                    signals.personaVoiceViolation,
+                    signals.thirdPartySpeechViolation,
+                    signals.userAgencyViolation,
+                    signals.incompleteEnding,
+                    signals.groupNarrationViolation,
+                    signals.otherDefect,
                 ].map(value => formatJevNumber(value, 2)).join(' / ') : '—'}`,
             ].join(' · ');
             detailRow.append(detail);

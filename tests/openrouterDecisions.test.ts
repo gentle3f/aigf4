@@ -13,8 +13,11 @@ import {
     requestOpenRouterViaHttps,
     runOpenRouterDecision,
 } from '../api/_openrouter-decisions.js';
+import { STRICT_REVIEW_ISSUE_CODES } from '../strictReview.js';
 
 const state = {
+    mode: 'single',
+    ccMode: false,
     latestUserText: 'latest user text',
     participants: [{ id: 'rose', name: 'Rose', present: true }],
     relevantMemories: [],
@@ -25,13 +28,20 @@ const upstreamBody = () => ({
     model: JEV_MODEL,
     answers: {
         route: { type: 'choice', choice: 'clean', probabilities: { clean: 0.9, full_review: 0.1 }, confidence: 0.9 },
+        request_mismatch: { type: 'noul', noul: 0.01 },
         identity_conflict: { type: 'noul', noul: 0.01 },
         speaker_ownership_violation: { type: 'noul', noul: 0.02 },
-        reality_layer_violation: { type: 'noul', noul: 0.03 },
-        memory_conflict: { type: 'noul', noul: 0.04 },
-        state_conflict: { type: 'noul', noul: 0.05 },
-        user_agency_violation: { type: 'noul', noul: 0.06 },
-        continuity_violation: { type: 'noul', noul: 0.07 },
+        continuity_violation: { type: 'noul', noul: 0.03 },
+        reality_layer_violation: { type: 'noul', noul: 0.04 },
+        wardrobe_conflict: { type: 'noul', noul: 0.05 },
+        state_conflict: { type: 'noul', noul: 0.06 },
+        replayed_beat: { type: 'noul', noul: 0.07 },
+        persona_voice_violation: { type: 'noul', noul: 0.08 },
+        third_party_speech_violation: { type: 'noul', noul: 0.09 },
+        user_agency_violation: { type: 'noul', noul: 0.1 },
+        incomplete_ending: { type: 'noul', noul: 0.11 },
+        group_narration_violation: { type: 'noul', noul: 0.12 },
+        other_defect: { type: 'noul', noul: 0.13 },
     },
     usage: { input_tokens: 12, output_tokens: 3, cost: 0.00001 },
 });
@@ -144,11 +154,32 @@ test('server sends one fixed Decisions request with server-only auth and all fix
     assert.deepEqual(body.state, state);
     assert.deepEqual(Object.keys(body.questions).sort(), Object.keys(JEV_QUESTIONS).sort());
     assert.equal(body.questions.route.type, 'choice');
-    assert.equal(Object.values(body.questions).filter((question: any) => question.type === 'noul').length, 7);
+    assert.equal(Object.values(body.questions).filter((question: any) => question.type === 'noul').length, 14);
     assert.equal(response.status, 'ok');
     assert.equal(response.model, JEV_MODEL);
     assert.equal(JSON.stringify(response).includes('server-secret'), false);
     assert.equal(JSON.stringify(response).includes(state.candidateText), false);
+});
+
+test('Jev V2 questions align to the closed Gemma taxonomy and require concrete evidence', () => {
+    const semanticQuestionKeys = Object.keys(JEV_QUESTIONS).filter(key => key !== 'route');
+    const semanticCategories = semanticQuestionKeys.map(key => ({
+        request_mismatch: 'request_mismatch', identity_conflict: 'identity', speaker_ownership_violation: 'speaker_ownership',
+        continuity_violation: 'continuity', reality_layer_violation: 'reality_layer', wardrobe_conflict: 'wardrobe',
+        state_conflict: 'state', replayed_beat: 'replayed_beat', persona_voice_violation: 'persona_voice',
+        third_party_speech_violation: 'third_party_speech', user_agency_violation: 'user_agency',
+        incomplete_ending: 'incomplete_ending', group_narration_violation: 'group_narration', other_defect: 'other',
+    }[key])).sort();
+    assert.deepEqual(semanticCategories, [...STRICT_REVIEW_ISSUE_CODES].sort());
+    assert.equal('memory_conflict' in JEV_QUESTIONS, false);
+    for (const key of ['group_narration_violation', 'persona_voice_violation', 'replayed_beat', 'request_mismatch', 'incomplete_ending']) assert.ok(key in JEV_QUESTIONS);
+    const routeText = `${JEV_QUESTIONS.route.instructions}\n${JEV_QUESTIONS.route.criteria.clean}`;
+    assert.match(routeText, /actual, concrete material defect/i);
+    assert.match(routeText, /speculative, ambiguous, unsupported/i);
+    assert.match(routeText, /If evidence is insufficient, prefer clean/i);
+    assert.match(routeText, /prose preference\/style/i);
+    assert.match(JEV_QUESTIONS.group_narration_violation.instructions, /state\.mode is group/i);
+    assert.match(JEV_QUESTIONS.group_narration_violation.instructions, /First person inside labelled dialogue is allowed/i);
 });
 
 test('server rejects malformed state, oversize state, missing env, and non-allowlisted models without upstream calls', async () => {
@@ -167,6 +198,31 @@ test('server rejects malformed state, oversize state, missing env, and non-allow
         status: 'unavailable', reasonCode: 'MODEL_NOT_ALLOWED',
     });
     assert.equal(calls, 0);
+});
+
+test('server accepts only the V2 ReviewState envelope fields and valid explicit mode metadata', async () => {
+    let calls = 0;
+    const transportImpl = async () => { calls += 1; return success(upstreamBody()); };
+    const validV2 = {
+        ...state,
+        mode: 'group',
+        ccMode: false,
+        authoritativeContext: 'bounded rules',
+        recentHistoryText: 'ASSISTANT:\ncompleted turn',
+    };
+    assert.equal((await runOpenRouterDecision(validV2, { env: { OPENROUTER_API: 'secret' }, transportImpl })).status, 'ok');
+    for (const invalid of [
+        { ...validV2, mode: 'assistant' },
+        { ...validV2, ccMode: 'false' },
+        { ...validV2, authoritativeContext: ['not text'] },
+        { ...validV2, recentHistoryText: { not: 'text' } },
+        { ...validV2, extraBrowserField: true },
+    ]) {
+        assert.deepEqual(await runOpenRouterDecision(invalid, { env: { OPENROUTER_API: 'secret' }, transportImpl }), {
+            status: 'unavailable', reasonCode: 'INVALID_STATE',
+        });
+    }
+    assert.equal(calls, 1);
 });
 
 test('server normalizes malformed upstream responses without echoing state', async () => {

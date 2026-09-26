@@ -15,6 +15,7 @@ export interface JevShadowDiagnosticsSummary {
 }
 
 const cloneRecord = (record: JevShadowRecord): JevShadowRecord => ({
+    taxonomyVersion: record.taxonomyVersion,
     requestId: record.requestId,
     mode: record.mode,
     ccMode: record.ccMode,

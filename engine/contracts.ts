@@ -60,6 +60,8 @@ export interface ReviewAssessment {
 }
 
 export interface ReviewState {
+    mode: 'single' | 'group';
+    ccMode: boolean;
     latestUserText: string;
     realityLayer?: RoomSceneState['realityLayer'];
     realityEpochId?: string;
@@ -78,6 +80,8 @@ export interface ReviewState {
     }>;
     candidateText: string;
     proposedScene?: RoomSceneState;
+    authoritativeContext?: string;
+    recentHistoryText?: string;
 }
 
 export interface DecisionAssessment extends ReviewAssessment {

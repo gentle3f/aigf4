@@ -23,6 +23,8 @@ test('Engine V2 contracts keep snapshot state read-only at the type boundary', (
 
 test('future decision providers receive semantic state and do not require a provider implementation', async () => {
     const state: ReviewState = {
+        mode: 'single',
+        ccMode: false,
         latestUserText: 'continue',
         realityLayer: 'texting',
         realityEpochId: 'epoch-1',

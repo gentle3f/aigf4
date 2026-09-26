@@ -3,14 +3,17 @@ import test from 'node:test';
 import { evaluateJevShadow, normalizeJevShadowResult } from '../engine/review/jevDecisionProvider.js';
 
 const state = {
+    mode: 'single' as const, ccMode: false,
     latestUserText: 'latest', participants: [], relevantMemories: [], candidateText: 'candidate',
 };
 const valid = {
     status: 'ok', model: 'typesafe/jev-1.13',
     route: { choice: 'full_review', probabilities: { clean: 0.2, full_review: 0.8 }, confidence: 0.8 },
     signals: {
-        identityConflict: 0.1, speakerOwnershipViolation: 0.2, realityLayerViolation: 0.3,
-        memoryConflict: 0.4, stateConflict: 0.5, userAgencyViolation: 0.6, continuityViolation: 0.7,
+        requestMismatch: 0.01, identityConflict: 0.1, speakerOwnershipViolation: 0.2, continuityViolation: 0.3,
+        realityLayerViolation: 0.4, wardrobeConflict: 0.5, stateConflict: 0.6, replayedBeat: 0.7,
+        personaVoiceViolation: 0.8, thirdPartySpeechViolation: 0.9, userAgencyViolation: 0.1,
+        incompleteEnding: 0.2, groupNarrationViolation: 0.3, otherDefect: 0.4,
     },
 };
 
@@ -27,6 +30,21 @@ test('provider sends one same-origin state-only request and forwards caller abor
     assert.deepEqual(JSON.parse(String(received?.body)), { state });
     assert.equal(result.status, 'ok');
     assert.equal(result.route?.choice, 'full_review');
+});
+
+test('provider requires every V2 signal, rejects unknown legacy signal shape, and preserves route and usage validation', () => {
+    assert.equal(normalizeJevShadowResult(valid)?.signals?.groupNarrationViolation, 0.3);
+    for (const signal of Object.keys(valid.signals)) {
+        const incomplete = structuredClone(valid) as any;
+        delete incomplete.signals[signal];
+        assert.equal(normalizeJevShadowResult(incomplete), null, `missing ${signal}`);
+    }
+    const legacy = structuredClone(valid) as any;
+    delete legacy.signals.requestMismatch;
+    legacy.signals.memoryConflict = 0.1;
+    assert.equal(normalizeJevShadowResult(legacy), null);
+    assert.equal(normalizeJevShadowResult({ ...valid, route: { ...valid.route, choice: 'maybe' } }), null);
+    assert.equal(normalizeJevShadowResult({ ...valid, usage: { inputTokens: -1 } }), null);
 });
 
 test('provider normalizes HTTP, network, malformed JSON, and abort failures without raw errors', async () => {

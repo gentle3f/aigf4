@@ -56,13 +56,20 @@ export interface JevShadowResult {
         confidence: number;
     };
     signals?: {
+        requestMismatch: number;
         identityConflict: number;
         speakerOwnershipViolation: number;
-        realityLayerViolation: number;
-        memoryConflict: number;
-        stateConflict: number;
-        userAgencyViolation: number;
         continuityViolation: number;
+        realityLayerViolation: number;
+        wardrobeConflict: number;
+        stateConflict: number;
+        replayedBeat: number;
+        personaVoiceViolation: number;
+        thirdPartySpeechViolation: number;
+        userAgencyViolation: number;
+        incompleteEnding: number;
+        groupNarrationViolation: number;
+        otherDefect: number;
     };
     usage?: { inputTokens?: number; outputTokens?: number; cost?: number };
 }
@@ -111,13 +118,20 @@ export const normalizeJevShadowResult = (value: unknown): JevShadowResult | null
         || !isProbability(probabilities.clean)
         || !isProbability(probabilities.full_review)
         || !isProbability(route.confidence)
+        || !isProbability(signals.requestMismatch)
         || !isProbability(signals.identityConflict)
         || !isProbability(signals.speakerOwnershipViolation)
-        || !isProbability(signals.realityLayerViolation)
-        || !isProbability(signals.memoryConflict)
-        || !isProbability(signals.stateConflict)
-        || !isProbability(signals.userAgencyViolation)
         || !isProbability(signals.continuityViolation)
+        || !isProbability(signals.realityLayerViolation)
+        || !isProbability(signals.wardrobeConflict)
+        || !isProbability(signals.stateConflict)
+        || !isProbability(signals.replayedBeat)
+        || !isProbability(signals.personaVoiceViolation)
+        || !isProbability(signals.thirdPartySpeechViolation)
+        || !isProbability(signals.userAgencyViolation)
+        || !isProbability(signals.incompleteEnding)
+        || !isProbability(signals.groupNarrationViolation)
+        || !isProbability(signals.otherDefect)
         || (response.usage !== undefined && !isUsage(response.usage))) return null;
     return {
         status: 'ok',
@@ -128,13 +142,20 @@ export const normalizeJevShadowResult = (value: unknown): JevShadowResult | null
             confidence: route.confidence,
         },
         signals: {
+            requestMismatch: signals.requestMismatch,
             identityConflict: signals.identityConflict,
             speakerOwnershipViolation: signals.speakerOwnershipViolation,
-            realityLayerViolation: signals.realityLayerViolation,
-            memoryConflict: signals.memoryConflict,
-            stateConflict: signals.stateConflict,
-            userAgencyViolation: signals.userAgencyViolation,
             continuityViolation: signals.continuityViolation,
+            realityLayerViolation: signals.realityLayerViolation,
+            wardrobeConflict: signals.wardrobeConflict,
+            stateConflict: signals.stateConflict,
+            replayedBeat: signals.replayedBeat,
+            personaVoiceViolation: signals.personaVoiceViolation,
+            thirdPartySpeechViolation: signals.thirdPartySpeechViolation,
+            userAgencyViolation: signals.userAgencyViolation,
+            incompleteEnding: signals.incompleteEnding,
+            groupNarrationViolation: signals.groupNarrationViolation,
+            otherDefect: signals.otherDefect,
         },
         usage: response.usage as JevShadowResult['usage'],
     };

@@ -7,51 +7,83 @@ export const MAX_REVIEW_STATE_CHARS = 48_000;
 export const MAX_DECISIONS_RESPONSE_BYTES = 256 * 1024;
 
 const signalKeys = {
+  requestMismatch: 'request_mismatch',
   identityConflict: 'identity_conflict',
   speakerOwnershipViolation: 'speaker_ownership_violation',
-  realityLayerViolation: 'reality_layer_violation',
-  memoryConflict: 'memory_conflict',
-  stateConflict: 'state_conflict',
-  userAgencyViolation: 'user_agency_violation',
   continuityViolation: 'continuity_violation',
+  realityLayerViolation: 'reality_layer_violation',
+  wardrobeConflict: 'wardrobe_conflict',
+  stateConflict: 'state_conflict',
+  replayedBeat: 'replayed_beat',
+  personaVoiceViolation: 'persona_voice_violation',
+  thirdPartySpeechViolation: 'third_party_speech_violation',
+  userAgencyViolation: 'user_agency_violation',
+  incompleteEnding: 'incomplete_ending',
+  groupNarrationViolation: 'group_narration_violation',
+  otherDefect: 'other_defect',
 };
 
 export const JEV_QUESTIONS = {
   route: {
     type: 'choice',
-    instructions: 'Judge whether the candidate response contains a meaningful semantic continuity or state problem that warrants full strict review. Use only the provided structured state. Do not invent missing facts.',
+    instructions: 'Assess an existing actual, concrete material defect in the candidate using only supplied evidence. Do not invent hidden facts, unstated rules, or possible risks. Uncertainty alone is not grounds for full_review; do not escalate several weak speculative concerns. Consensual adult intimacy, explicitness, emotional intensity, and fictional role-play are not defects by themselves. If evidence is insufficient, prefer clean.',
     criteria: {
-      clean: 'No meaningful identity, speaker-ownership, reality-layer, memory, state, wardrobe, user-agency, or continuity conflict is supported by the provided state.',
-      full_review: 'At least one meaningful identity, speaker-ownership, reality-layer, memory, state, wardrobe, user-agency, or continuity concern is supported by the provided state and merits full strict review.',
+      clean: 'No concrete material defect is supported; concerns are speculative, ambiguous, unsupported, or only prose preference/style.',
+      full_review: 'At least one concrete material defect is supported by supplied evidence and warrants correction under the existing strict-review criteria.',
     },
   },
+  request_mismatch: { type: 'noul', instructions: 'High only if candidate materially fails, ignores, or contradicts the newest request. Do not penalize minor emphasis differences. Require concrete supplied evidence.' },
   identity_conflict: {
     type: 'noul',
-    instructions: 'Does the candidate contradict a fixed participant identity, confuse one participant for another, or assign an incompatible identity or role?',
+    instructions: 'High only for a concrete wrong or merged identity, wrong named person, or incompatible fixed role. Require concrete supplied evidence; missing evidence is low.',
   },
   speaker_ownership_violation: {
     type: 'noul',
-    instructions: 'Does the candidate assign speech or actions to the wrong participant or violate who is allowed to speak or act in this turn?',
-  },
-  reality_layer_violation: {
-    type: 'noul',
-    instructions: 'Does the candidate violate the supplied reality layer, for example treating remote texting participants as physically co-present when the state says they are not?',
-  },
-  memory_conflict: {
-    type: 'noul',
-    instructions: 'Does the candidate contradict a relevant memory explicitly supplied in the state? If no relevant memory is supplied, do not infer a conflict.',
-  },
-  state_conflict: {
-    type: 'noul',
-    instructions: 'Does the candidate contradict supplied scene, presence, wardrobe, or other explicit current-state information?',
-  },
-  user_agency_violation: {
-    type: 'noul',
-    instructions: 'Does the candidate improperly invent a consequential choice, action, speech, or commitment for the user that the user did not make?',
+    instructions: 'High only for concrete assignment of speech, action, thought, or first-person ownership to the wrong participant. Require concrete supplied evidence.',
   },
   continuity_violation: {
     type: 'noul',
-    instructions: 'Does the candidate materially contradict the immediately supplied conversation or scene continuity even if the problem does not fit the other categories?',
+    instructions: 'High only for a concrete contradiction with supplied recent completed history or scene continuity that is not better classified elsewhere. Do not infer missing history; unproven repetition is low.',
+  },
+  reality_layer_violation: {
+    type: 'noul',
+    instructions: 'High only for direct conflict with supplied physical, texting, or imagined mode. Require concrete supplied evidence.',
+  },
+  wardrobe_conflict: {
+    type: 'noul',
+    instructions: 'High only for direct contradiction of supplied authoritative wardrobe state. Missing or ambiguous wardrobe evidence is low.',
+  },
+  state_conflict: {
+    type: 'noul',
+    instructions: 'High only for direct contradiction of supplied current location, presence, body position, or other explicit physical or scene state. Require concrete supplied evidence.',
+  },
+  replayed_beat: {
+    type: 'noul',
+    instructions: 'High only when recentHistoryText proves an already-completed instruction, action, or beat is incorrectly replayed. If recent history does not prove repetition, score low.',
+  },
+  persona_voice_violation: {
+    type: 'noul',
+    instructions: 'High only when authoritativeContext contains a clear personality, voice, or regional-language rule and candidate materially violates it. Stylistic preference alone is not a violation.',
+  },
+  third_party_speech_violation: {
+    type: 'noul',
+    instructions: 'High only when supplied authoritative context or newest request establishes a third party should participate, speak, or not be misattributed, and candidate concretely mishandles it.',
+  },
+  user_agency_violation: {
+    type: 'noul',
+    instructions: 'High only when candidate invents consequential user speech, action, choice, or commitment that the user did not make. Normal narration, reactions, sensations, or consensual role-play framing are not automatically agency violations.',
+  },
+  incomplete_ending: {
+    type: 'noul',
+    instructions: 'High only when candidate is materially truncated, cut off, or incomplete. An intentional open-ended conversational ending is not itself a defect.',
+  },
+  group_narration_violation: {
+    type: 'noul',
+    instructions: 'Use state.mode and state.ccMode explicitly. ONLY relevant when state.mode is group: high only if group narration violates the established external-third-person rule, including first-person narration for a character or user outside labelled character dialogue. First person inside labelled dialogue is allowed. For non-group mode score low.',
+  },
+  other_defect: {
+    type: 'noul',
+    instructions: 'High only for a concrete material defect supported by supplied evidence that fits no other category. Do not use this as a vague uncertainty bucket.',
   },
 };
 
@@ -95,8 +127,11 @@ const isProposedScene = value => isPlainObject(value)
 export const isValidReviewState = state => isPlainObject(state)
   && hasOnlyKeys(state, new Set([
     'latestUserText', 'realityLayer', 'realityEpochId', 'sceneSummary', 'participants',
-    'wardrobe', 'relevantMemories', 'candidateText', 'proposedScene',
+    'wardrobe', 'relevantMemories', 'candidateText', 'proposedScene', 'mode', 'ccMode',
+    'authoritativeContext', 'recentHistoryText',
   ]))
+  && ['single', 'group'].includes(state.mode)
+  && typeof state.ccMode === 'boolean'
   && typeof state.latestUserText === 'string'
   && (state.realityLayer === undefined || ['physical', 'texting', 'imagined'].includes(state.realityLayer))
   && isOptionalString(state.realityEpochId)
@@ -105,7 +140,9 @@ export const isValidReviewState = state => isPlainObject(state)
   && (state.wardrobe === undefined || isWardrobe(state.wardrobe))
   && Array.isArray(state.relevantMemories) && state.relevantMemories.every(isMemory)
   && typeof state.candidateText === 'string'
-  && (state.proposedScene === undefined || isProposedScene(state.proposedScene));
+  && (state.proposedScene === undefined || isProposedScene(state.proposedScene))
+  && isOptionalString(state.authoritativeContext)
+  && isOptionalString(state.recentHistoryText);
 
 const unavailable = (reasonCode, details) => ({ status: 'unavailable', reasonCode, ...details });
 

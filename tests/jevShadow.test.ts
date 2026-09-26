@@ -9,14 +9,16 @@ import {
     startJevShadowEvaluation,
 } from '../engine/review/jevShadow.js';
 
-const state = { latestUserText: 'private user text', participants: [], relevantMemories: [], candidateText: 'private candidate text' };
+const state = { mode: 'single' as const, ccMode: false, latestUserText: 'private user text', participants: [], relevantMemories: [], candidateText: 'private candidate text' };
 const ok = (choice: 'clean' | 'full_review') => ({
     status: 'ok' as const,
     model: 'typesafe/jev-1.13',
     route: { choice, probabilities: { clean: choice === 'clean' ? 0.9 : 0.1, full_review: choice === 'full_review' ? 0.9 : 0.1 }, confidence: 0.9 },
     signals: {
-        identityConflict: 0, speakerOwnershipViolation: 0, realityLayerViolation: 0, memoryConflict: 0,
-        stateConflict: 0, userAgencyViolation: 0, continuityViolation: 0,
+        requestMismatch: 0, identityConflict: 0, speakerOwnershipViolation: 0, continuityViolation: 0,
+        realityLayerViolation: 0, wardrobeConflict: 0, stateConflict: 0, replayedBeat: 0,
+        personaVoiceViolation: 0, thirdPartySpeechViolation: 0, userAgencyViolation: 0,
+        incompleteEnding: 0, groupNarrationViolation: 0, otherDefect: 0,
     },
 });
 const flush = () => new Promise<void>(resolve => setTimeout(resolve, 0));
@@ -39,6 +41,7 @@ test('shadow comparison records are metadata-only and use calibration semantics'
     assert.equal(JSON.stringify(records).includes('private user text'), false);
     assert.equal(JSON.stringify(records).includes('private candidate text'), false);
     assert.equal(records.at(-1)?.networkCode, 'ENOTFOUND');
+    assert.equal(records.at(-1)?.taxonomyVersion, 'v2');
     assert.equal(records.at(-1)?.reasonCode, 'UPSTREAM_NETWORK_ERROR');
     assert.deepEqual(records[1]?.gemmaIssueCodes, ['identity', 'continuity']);
     records[0]!.signals!.identityConflict = 1;
@@ -125,10 +128,11 @@ test('clean, full-review, and unavailable shadow outcomes all leave Gemma runnab
 test('strict-review source starts shadow before unchanged Gemma request for single, Cc, and group paths', () => {
     const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
     const review = source.slice(source.indexOf('const strictReviewSingleReply'), source.indexOf('const runCharacterChatGeneration'));
-    assert.match(review, /const shadow = startStrictReviewShadow\(request, latestUserMessage, candidate, 'single'\);\s*let decision;\s*try \{\s*decision = await requestStrictReviewDecision\(/s);
-    assert.match(review, /const shadow = startStrictReviewShadow\(request, latestUserMessage, serializedCandidate, 'group', candidate\.scene\);\s*let decision;\s*try \{\s*decision = await requestStrictReviewDecision\(/s);
+    assert.match(review, /const shadow = startStrictReviewShadow\(request, latestUserMessage, candidate, 'single', authoritativePrompt\);\s*let decision;\s*try \{\s*decision = await requestStrictReviewDecision\(/s);
+    assert.match(review, /const shadow = startStrictReviewShadow\([\s\S]*serializedCandidate,[\s\S]*'group',[\s\S]*authoritativePrompt,[\s\S]*candidate\.scene,[\s\S]*\);\s*let decision;\s*try \{\s*decision = await requestStrictReviewDecision\(/s);
     assert.equal((review.match(/startStrictReviewShadow\(/g) || []).length, 2);
     assert.match(source, /ccMode: request\.personaKey === 'cc'/);
     assert.equal((review.match(/recordGemmaDecision\(decision\?\.decision \|\| 'unavailable', decision\?\.issues\)/g) || []).length, 2);
     assert.doesNotMatch(review, /gemmaIssueCodes.*applySingleStrictReview|gemmaIssueCodes.*applyGroupStrictReview/s);
+    assert.doesNotMatch(review, /routeChoice.*applySingleStrictReview|signals.*applyGroupStrictReview/s);
 });

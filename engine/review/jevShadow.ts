@@ -5,6 +5,7 @@ import { evaluateJevShadow, normalizeJevShadowResult } from './jevDecisionProvid
 import type { JevShadowResult } from './jevDecisionProvider.js';
 
 export interface JevShadowRecord {
+    taxonomyVersion: 'v2';
     requestId: string;
     mode: 'single' | 'group';
     ccMode: boolean;
@@ -51,6 +52,7 @@ const store = (record: JevShadowRecord) => {
 
 // This explicit whitelist is the public diagnostics boundary. Never add review text or state here.
 const cloneRecord = (record: JevShadowRecord): JevShadowRecord => ({
+    taxonomyVersion: record.taxonomyVersion,
     requestId: record.requestId,
     mode: record.mode,
     ccMode: record.ccMode,
@@ -123,6 +125,7 @@ export const startJevShadowEvaluation = ({
 
     void Promise.resolve(evaluate(state, signal)).then((result: JevShadowResult) => {
         const record: JevShadowRecord = {
+            taxonomyVersion: 'v2',
             requestId,
             mode,
             ccMode,
@@ -158,6 +161,7 @@ export const startJevShadowEvaluation = ({
         store(record);
     }).catch(() => {
         const record: JevShadowRecord = {
+            taxonomyVersion: 'v2',
             requestId,
             mode,
             ccMode,
