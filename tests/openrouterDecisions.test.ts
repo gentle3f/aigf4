@@ -160,7 +160,7 @@ test('server sends one fixed Decisions request with server-only auth and all fix
     assert.equal(JSON.stringify(response).includes(state.candidateText), false);
 });
 
-test('Jev V3 questions align to the closed Gemma taxonomy and contain no route decision', () => {
+test('Jev V3 questions are fourteen short proposition-only NOULs with no route decision', () => {
     const semanticQuestionKeys = Object.keys(JEV_QUESTIONS);
     const semanticCategories = semanticQuestionKeys.map(key => ({
         request_mismatch: 'request_mismatch', identity_conflict: 'identity', speaker_ownership_violation: 'speaker_ownership',
@@ -171,10 +171,18 @@ test('Jev V3 questions align to the closed Gemma taxonomy and contain no route d
     }[key])).sort();
     assert.deepEqual(semanticCategories, [...STRICT_REVIEW_ISSUE_CODES].sort());
     assert.equal('memory_conflict' in JEV_QUESTIONS, false);
+    assert.equal(Object.keys(JEV_QUESTIONS).length, 14);
+    assert.equal(Object.values(JEV_QUESTIONS).every(question => question.type === 'noul'), true);
     for (const key of ['group_narration_violation', 'persona_voice_violation', 'replayed_beat', 'request_mismatch', 'incomplete_ending']) assert.ok(key in JEV_QUESTIONS);
     assert.equal('route' in JEV_QUESTIONS, false);
-    assert.match(JEV_QUESTIONS.group_narration_violation.instructions, /state\.mode is group/i);
-    assert.match(JEV_QUESTIONS.group_narration_violation.instructions, /First person inside labelled dialogue is allowed/i);
+    assert.match(JEV_QUESTIONS.group_narration_violation.instructions, /BOTH conditions/i);
+    assert.match(JEV_QUESTIONS.group_narration_violation.instructions, /state\.mode === 'group'/i);
+    assert.match(JEV_QUESTIONS.group_narration_violation.instructions, /first-person narration.*outside labelled character dialogue/i);
+    assert.doesNotMatch(JEV_QUESTIONS.group_narration_violation.instructions, /score near zero/i);
+    for (const question of Object.values(JEV_QUESTIONS)) {
+        assert.ok(question.instructions.length <= 240);
+        assert.doesNotMatch(question.instructions, /High only if|score low|prefer|missing evidence should|evaluate whether/i);
+    }
 });
 
 test('server rejects malformed state, oversize state, missing env, and non-allowlisted models without upstream calls', async () => {

@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "tsx --test tests/**/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "jev:calibrate": "tsx scripts/jevSyntheticCalibration.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

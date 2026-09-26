@@ -24,58 +24,58 @@ const signalKeys = {
 };
 
 export const JEV_QUESTIONS = {
-  request_mismatch: { type: 'noul', instructions: 'Use latestUserText and candidateText only. High only if a specific concrete defect materially fails, ignores, or contradicts the newest request. Minor emphasis differences, ambiguity, speculation, and missing evidence are low.' },
+  request_mismatch: { type: 'noul', instructions: 'Does candidateText materially fail to answer, follow, or respect latestUserText?' },
   identity_conflict: {
     type: 'noul',
-    instructions: 'Use participants, personaEvidence, and candidateText only. High only for a concrete wrong or merged identity, wrong named person, or incompatible fixed role. Missing evidence, ambiguity, and speculation are low.',
+    instructions: 'Does candidateText assign a participant the wrong identity, merge participants, name the wrong person, or give a role that contradicts supplied participant or persona evidence?',
   },
   speaker_ownership_violation: {
     type: 'noul',
-    instructions: 'Use participants, latestUserText, recentHistoryText, and candidateText only. High only for concrete assignment of speech, action, thought, or first-person ownership to the wrong participant. Missing evidence, ambiguity, and speculation are low.',
+    instructions: 'Does candidateText attribute speech, action, thought, or first-person ownership to the wrong participant?',
   },
   continuity_violation: {
     type: 'noul',
-    instructions: 'Use recentHistoryText, current scene facts, and candidateText only; ignore persona style. High only for a concrete contradiction that is not better classified elsewhere. If bounded recent history does not prove it, score low.',
+    instructions: 'Does candidateText contradict a concrete fact established by recentHistoryText or the supplied current scene?',
   },
   reality_layer_violation: {
     type: 'noul',
-    instructions: 'Use realityLayer, explicit scene facts, and candidateText only. High only for direct conflict with supplied physical, texting, or imagined mode. Missing evidence or speculation is low.',
+    instructions: 'Does candidateText behave as though the conversation is in a different reality layer from supplied realityLayer?',
   },
   wardrobe_conflict: {
     type: 'noul',
-    instructions: 'Use wardrobe and candidateText only. High only for direct contradiction of supplied wardrobe state. Do not infer clothing from personaEvidence. Missing or ambiguous wardrobe evidence is low.',
+    instructions: 'Does candidateText state or imply clothing that contradicts the supplied wardrobe state?',
   },
   state_conflict: {
     type: 'noul',
-    instructions: 'Use explicit scene, presence, proposedScene facts, and candidateText only. High only for direct contradiction of location, presence, body position, or other current state. Missing evidence or speculation is low.',
+    instructions: 'Does candidateText contradict the supplied current location, participant presence, body or physical position, or explicit scene state?',
   },
   replayed_beat: {
     type: 'noul',
-    instructions: 'Use recentHistoryText and candidateText only. High only when bounded recent history proves an already-completed instruction, action, or beat is incorrectly replayed. If history does not prove repetition, score low.',
+    instructions: 'Does candidateText incorrectly repeat an action, instruction, or narrative beat that recentHistoryText shows was already completed?',
   },
   persona_voice_violation: {
     type: 'noul',
-    instructions: 'Use personaEvidence and candidateText only. High only when personaEvidence contains a clear personality, voice, or regional-language rule and candidate materially violates it. If evidence is absent or insufficient, score low; stylistic preference alone is low.',
+    instructions: 'Does candidateText materially contradict a clear personality, speaking-style, or regional-language rule stated in personaEvidence?',
   },
   third_party_speech_violation: {
     type: 'noul',
-    instructions: 'Use participants, latestUserText, recentHistoryText, and candidateText only. High only when supplied evidence establishes third-party participation, speech, or attribution and candidate concretely mishandles it. Missing evidence is low.',
+    instructions: 'Does candidateText incorrectly omit, invent, or misattribute required third-party participation or speech established by supplied participants, latestUserText, or recentHistoryText?',
   },
   user_agency_violation: {
     type: 'noul',
-    instructions: 'Use latestUserText and candidateText only. High only when candidate invents consequential user speech, action, choice, or commitment not made by the user. Normal narration, consensual adult intimacy, explicitness, emotional intensity, and fictional role-play are not defects by themselves.',
+    instructions: 'Does candidateText invent a consequential user speech, action, choice, or commitment that latestUserText did not make?',
   },
   incomplete_ending: {
     type: 'noul',
-    instructions: 'Use candidateText structure only. High only when candidate is materially truncated, cut off, or incomplete. An intentional open-ended conversational ending is not a defect.',
+    instructions: 'Is candidateText materially truncated, cut off, or unfinished rather than intentionally open-ended?',
   },
   group_narration_violation: {
     type: 'noul',
-    instructions: 'Use state.mode, state.ccMode, candidateText, and supplied group facts only. ONLY relevant when state.mode is group: high only if external third-person group narration is concretely violated, including first-person narration for a character or user outside labelled character dialogue. First person inside labelled dialogue is allowed. For single mode score near zero unless supplied state is internally inconsistent.',
+    instructions: "Are BOTH conditions true: (1) state.mode === 'group'; and (2) candidateText contains first-person narration for a participant outside labelled character dialogue?",
   },
   other_defect: {
     type: 'noul',
-    instructions: 'High only for a concrete material defect supported by supplied evidence that fits no other category. Do not use this as a vague uncertainty, stylistic preference, or speculation bucket. Consensual adult intimacy, explicitness, and fictional role-play are not defects by themselves.',
+    instructions: 'Does candidateText contain a concrete material conversation defect supported by supplied state that is not described by any other thirteen questions?',
   },
 };
 
