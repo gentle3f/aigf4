@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { JEV_PRODUCTION_SHAPE_PARITY_CASES } from './fixtures/jevProductionShapeParity.js';
 import { JEV_SYNTHETIC_CALIBRATION_CASES } from './fixtures/jevSyntheticCalibration.js';
-import { JEV_FACTOR_ISOLATION_CASES, factorIsolationPersonaEvidence } from './fixtures/jevFactorIsolation.js';
+import { diffIsolationReviewState, JEV_FACTOR_ISOLATION_CASES } from './fixtures/jevFactorIsolation.js';
 import { validateFactorIsolationCorpus } from '../scripts/jevSyntheticCalibration.js';
 
 const CLEAN_IDS = [
@@ -26,11 +26,11 @@ test('clean and production-shape fixture IDs remain frozen', () => {
 });
 
 test('factor-isolation corpus is valid and carries complete safe comparison metadata', () => {
-    assert.equal(JEV_FACTOR_ISOLATION_CASES.length, 50);
+    assert.ok(JEV_FACTOR_ISOLATION_CASES.length >= 35 && JEV_FACTOR_ISOLATION_CASES.length <= 60);
     assert.deepEqual(validateFactorIsolationCorpus(JEV_FACTOR_ISOLATION_CASES), []);
     const variants = JEV_FACTOR_ISOLATION_CASES.filter(item => item.variant === 'variant');
     const counts = Object.fromEntries(['group_narration', 'persona_voice', 'replayed_beat', 'continuity'].map(family => [family, variants.filter(item => item.factorFamily === family).length]));
-    assert.deepEqual(counts, { group_narration: 9, persona_voice: 10, replayed_beat: 10, continuity: 9 });
+    assert.deepEqual(counts, { group_narration: 8, persona_voice: 10, replayed_beat: 10, continuity: 8 });
     const byId = new Map(JEV_FACTOR_ISOLATION_CASES.map(item => [item.id, item]));
     for (const variant of variants) {
         const baseline = byId.get(variant.baselineId || '');
@@ -38,6 +38,9 @@ test('factor-isolation corpus is valid and carries complete safe comparison meta
         assert.equal(variant.category, baseline.category, `${variant.id} category`);
         assert.equal(variant.expected, baseline.expected, `${variant.id} expected`);
         assert.equal(variant.semanticCandidate, baseline.semanticCandidate, `${variant.id} semantic candidate`);
+        assert.deepEqual(diffIsolationReviewState(baseline.state, variant.state), variant.changedDimensions, `${variant.id} final state diff`);
+        assert.equal(variant.changedDimensions.length, 1, `${variant.id} one controlled dimension`);
+        if (!variant.changedDimensions.includes('candidateText')) assert.equal(variant.state.candidateText, baseline.state.candidateText, `${variant.id} candidate frozen`);
     }
 });
 
@@ -53,7 +56,7 @@ test('tricky isolation negatives remain semantically valid without an AI call', 
     }
     for (const fixture of JEV_FACTOR_ISOLATION_CASES.filter(item => item.factorFamily === 'persona_voice' && item.expected === 'negative')) {
         assert.doesNotMatch(fixture.state.candidateText, /\bYo\b/i, fixture.id);
-        assert.ok(factorIsolationPersonaEvidence(fixture).includes('PERSONA RULES:'), fixture.id);
+        assert.match(fixture.state.personaEvidence || '', /PERSONA RULES:/, fixture.id);
     }
     for (const fixture of JEV_FACTOR_ISOLATION_CASES.filter(item => item.factorFamily === 'group_narration' && item.expected === 'negative')) {
         if (/\bI\b/.test(fixture.state.candidateText)) assert.match(fixture.state.candidateText, /Aster Vale: "I /, fixture.id);
@@ -61,4 +64,13 @@ test('tricky isolation negatives remain semantically valid without an AI call', 
     for (const fixture of JEV_FACTOR_ISOLATION_CASES.filter(item => item.factorFamily === 'wardrobe' && item.expected === 'negative')) {
         assert.doesNotMatch(fixture.state.candidateText, /red coat/i, fixture.id);
     }
+});
+
+test('isolation fixtures have no accidental duplicate ReviewStates and the known pairs now differ', () => {
+    for (let index = 0; index < JEV_FACTOR_ISOLATION_CASES.length; index += 1) {
+        for (const other of JEV_FACTOR_ISOLATION_CASES.slice(index + 1)) assert.notDeepEqual(JEV_FACTOR_ISOLATION_CASES[index].state, other.state, `${JEV_FACTOR_ISOLATION_CASES[index].id} / ${other.id}`);
+    }
+    const byId = new Map(JEV_FACTOR_ISOLATION_CASES.map(item => [item.id, item]));
+    assert.notDeepEqual(byId.get('isolation-persona-group-multi-persona')?.state, byId.get('isolation-persona-group-distinct-rules')?.state);
+    assert.notDeepEqual(byId.get('isolation-continuity-participants')?.state, byId.get('isolation-continuity-unresolved')?.state);
 });

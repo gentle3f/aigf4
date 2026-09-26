@@ -14,6 +14,10 @@ The frozen production-shape parity benchmark completed 20 cases. Its group trans
 
 Synthetic clean controls and production-shaped controls each combine several differences at once. This corpus changes one declared factor at a time while preserving the category, expected label, semantic candidate marker, and baseline linkage wherever possible. A measured delta is descriptive calibration evidence only; it cannot prove a real-world causal mechanism.
 
+The initial Phase 4G audit found that metadata equality alone was insufficient: some comparisons changed multiple final `ReviewState` fields, and a few named fixtures were structurally identical. The corrected corpus declares `changedDimensions` and deterministically compares the final state supplied to Jev. True variants must differ from their context-matched baseline in exactly one declared dimension. Normal, Cc, and group persona cases use separate matching baselines. Duplicate final states are prohibited.
+
+Production-shaped envelopes remain useful descriptive anchors, but are explicitly marked `composite-control`. They may change several declared dimensions and are excluded from controlled-factor delta output. This still does not establish real-world causality.
+
 ## Families
 
 - `group_narration`: group mode, chat wrapper, labelled dialogue, first person within a label, scene and NPC tags, full serializer envelope, persona evidence, scene duplication, and role-labelled history.

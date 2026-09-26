@@ -13,6 +13,7 @@ import {
 } from '../tests/fixtures/jevProductionShapeParity.js';
 import {
     FACTOR_ISOLATION_HELPERS,
+    diffIsolationReviewState,
     JEV_FACTOR_ISOLATION_CASES,
     type JevFactorIsolationCase,
 } from '../tests/fixtures/jevFactorIsolation.js';
@@ -102,7 +103,7 @@ export const validateProductionShapeParityCorpus = (cases: readonly typeof JEV_P
 };
 export const validateFactorIsolationCorpus = (cases: readonly JevFactorIsolationCase[]): string[] => {
     const errors = validateCorpus(cases, false);
-    if (cases.length < 35 || cases.length > 50) errors.push('factor-isolation corpus must contain 35 to 50 cases');
+    if (cases.length < 35 || cases.length > 60) errors.push('factor-isolation corpus must contain 35 to 60 cases');
     const familyMinimums: Record<JevFactorIsolationCase['factorFamily'], number> = {
         group_narration: 8, persona_voice: 10, replayed_beat: 10, continuity: 8, wardrobe: 0,
     };
@@ -118,7 +119,12 @@ export const validateFactorIsolationCorpus = (cases: readonly JevFactorIsolation
         if (item.variant === 'variant') {
             const baseline = item.baselineId ? byId.get(item.baselineId) : undefined;
             if (!baseline) errors.push(`missing baseline: ${item.id}`);
-            else if (baseline.factorFamily !== item.factorFamily || baseline.category !== item.category || baseline.expected !== item.expected || baseline.semanticCandidate !== item.semanticCandidate) errors.push(`baseline integrity mismatch: ${item.id}`);
+            else {
+                const actual = diffIsolationReviewState(baseline.state, item.state);
+                if (baseline.factorFamily !== item.factorFamily || baseline.category !== item.category || baseline.expected !== item.expected || baseline.semanticCandidate !== item.semanticCandidate) errors.push(`baseline integrity mismatch: ${item.id}`);
+                if (actual.length !== 1 || JSON.stringify(actual) !== JSON.stringify(item.changedDimensions)) errors.push(`structural diff mismatch: ${item.id}`);
+                if (!item.changedDimensions.includes('candidateText') && baseline.state.candidateText !== item.state.candidateText) errors.push(`candidate changed outside declared dimension: ${item.id}`);
+            }
         }
     }
     return errors;
@@ -163,19 +169,20 @@ export const aggregateSyntheticCalibration = (results: readonly SyntheticCalibra
         [...new Set(results.map(key))].map(value => [value, results.filter(result => key(result) === value).length]),
     );
     const fixtureById = new Map(fixtures.map(item => [item.id, item]));
-    const factorDeltas = results.flatMap(result => {
-        if (!result.baselineId || result.signal === undefined) return [];
+    const controlledFactorDeltas = results.flatMap(result => {
+        if (result.variant !== 'variant' || !result.baselineId || result.signal === undefined) return [];
         const baseline = results.find(item => item.id === result.baselineId);
         if (!baseline || baseline.signal === undefined) return [];
         return [{ id: result.id, factorFamily: result.factorFamily, factor: result.factor, variant: result.variant, baselineId: result.baselineId, expected: result.expected, mode: result.mode, ccMode: result.ccMode, baselineSignal: baseline.signal, variantSignal: result.signal, delta: result.signal - baseline.signal }];
     });
+    const compositeControls = results.filter(result => result.variant === 'composite-control').map(result => ({ id: result.id, factorFamily: result.factorFamily, factor: result.factor, expected: result.expected, mode: result.mode, ccMode: result.ccMode, signal: result.signal, model: result.model, latencyMs: result.latencyMs, reasonCode: result.reasonCode }));
     return { categories, directionalPairs: { compared: pairRows.length, positiveGreaterThanNegative: pairSuccesses, nonDirectionalPairIds: pairRows.filter(entries => {
         const positive = entries.find(entry => entry.expected === 'positive');
         const negative = entries.find(entry => entry.expected === 'negative');
         return !positive || !negative || positive.signal === undefined || negative.signal === undefined || positive.signal <= negative.signal;
     }).map(entries => fixtureById.get(entries[0]?.id || '')?.pairId) }, groups: {
         suite: groupBy(result => result.suite), mode: groupBy(result => result.mode), ccMode: groupBy(result => String(result.ccMode)),
-    }, factorDeltas };
+    }, controlledFactorDeltas, compositeControls };
 };
 
 const readLocalOpenRouterApi = async (): Promise<string | undefined> => {
@@ -246,7 +253,14 @@ const main = async () => {
     const isolationCcCounts = Object.fromEntries(['false', 'true'].map(ccMode => [ccMode, JEV_FACTOR_ISOLATION_CASES.filter(item => String(item.ccMode) === ccMode).length]));
     console.log(`Jev synthetic calibration (${suite}): ${selectedCases.length} fictional cases. clean cases: ${JEV_SYNTHETIC_CALIBRATION_CASES.length}; parity cases: ${JEV_PRODUCTION_SHAPE_PARITY_CASES.length}; isolation cases: ${JEV_FACTOR_ISOLATION_CASES.length}; parity normal non-Cc: ${normalParityCases}; parity Cc: ${ccParityCases}; parity group: ${groupParityCases}.`);
     console.log(`Production helpers reused: ${FACTOR_ISOLATION_HELPERS.join(', ')}. Network calls: 0 unless --live is explicitly supplied.`);
-    if (suite === 'isolation' || suite === 'all') console.log(`Isolation metadata: families ${JSON.stringify(isolationFamilyCounts)}; modes ${JSON.stringify(isolationModeCounts)}; ccMode ${JSON.stringify(isolationCcCounts)}; factors ${JEV_FACTOR_ISOLATION_CASES.map(item => item.factor).join(', ')}.`);
+    if (suite === 'isolation' || suite === 'all') {
+        const controlled = JEV_FACTOR_ISOLATION_CASES.filter(item => item.variant === 'variant').length;
+        const composite = JEV_FACTOR_ISOLATION_CASES.filter(item => item.variant === 'composite-control').length;
+        const positive = JEV_FACTOR_ISOLATION_CASES.filter(item => item.variant === 'positive-control').length;
+        const anchors = JEV_FACTOR_ISOLATION_CASES.filter(item => item.variant === 'anchor').length;
+        const duplicateCount = JEV_FACTOR_ISOLATION_CASES.reduce((count, item, index) => count + JEV_FACTOR_ISOLATION_CASES.slice(index + 1).filter(other => JSON.stringify(other.state) === JSON.stringify(item.state)).length, 0);
+        console.log(`Isolation metadata: controlled variants ${controlled}; composite controls ${composite}; positive controls ${positive}; anchors ${anchors}; controlled delta count ${controlled}; duplicate ReviewState count = ${duplicateCount}; families ${JSON.stringify(isolationFamilyCounts)}; modes ${JSON.stringify(isolationModeCounts)}; ccMode ${JSON.stringify(isolationCcCounts)}; factors ${JEV_FACTOR_ISOLATION_CASES.map(item => item.factor).join(', ')}.`);
+    }
     if (!live) {
         if (jsonOutputPath) throw new Error('--json-out requires --live; no file was written.');
         console.log('Offline validation complete. No OpenRouter request was made. Use --live to run the explicit synthetic calibration.');
