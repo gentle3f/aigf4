@@ -5,7 +5,7 @@ import { evaluateJevShadow, normalizeJevShadowResult } from './jevDecisionProvid
 import type { JevShadowResult } from './jevDecisionProvider.js';
 
 export interface JevShadowRecord {
-    taxonomyVersion: 'v2';
+    taxonomyVersion: 'v3';
     requestId: string;
     mode: 'single' | 'group';
     ccMode: boolean;
@@ -14,18 +14,14 @@ export interface JevShadowRecord {
     networkCode?: JevShadowResult['networkCode'];
     latencyMs: number;
     servedModel?: string;
-    routeChoice?: 'clean' | 'full_review';
-    routeConfidence?: number;
-    routeCleanProbability?: number;
-    routeFullReviewProbability?: number;
     signals?: NonNullable<JevShadowResult['signals']>;
     usageInputTokens?: number;
     usageOutputTokens?: number;
     usageCost?: number;
     gemmaDecision?: 'keep' | 'revise' | 'unavailable';
     gemmaIssueCodes?: StrictReviewIssueCode[];
-    comparison?: 'agree' | 'disagree' | 'unknown';
-    falseNegativeCandidate?: boolean;
+    gemmaComparableIssueCodes?: StrictReviewIssueCode[];
+    gemmaIssueAnomalies?: StrictReviewIssueCode[];
 }
 
 export interface JevShadowTracker {
@@ -35,14 +31,13 @@ export interface JevShadowTracker {
 const MAX_JEV_SHADOW_RECORDS = 50;
 const recentRecords: JevShadowRecord[] = [];
 
-const compare = (route: JevShadowRecord['routeChoice'], gemma: JevShadowRecord['gemmaDecision']) => {
-    if (!route || !gemma || gemma === 'unavailable') return 'unknown' as const;
-    return (route === 'clean') === (gemma === 'keep') ? 'agree' as const : 'disagree' as const;
-};
-
-const refreshComparison = (record: JevShadowRecord) => {
-    record.comparison = compare(record.routeChoice, record.gemmaDecision);
-    record.falseNegativeCandidate = record.routeChoice === 'clean' && record.gemmaDecision === 'revise';
+const classifyGemmaIssueCodes = (mode: JevShadowRecord['mode'], issueCodes: readonly StrictReviewIssueCode[] | undefined) => {
+    const gemmaIssueCodes = sanitizeStrictReviewIssueCodes(issueCodes);
+    const gemmaIssueAnomalies = mode === 'single'
+        ? gemmaIssueCodes.filter(code => code === 'group_narration')
+        : [];
+    const gemmaComparableIssueCodes = gemmaIssueCodes.filter(code => code !== 'group_narration' || mode !== 'single');
+    return { gemmaIssueCodes, gemmaComparableIssueCodes, gemmaIssueAnomalies };
 };
 
 const store = (record: JevShadowRecord) => {
@@ -61,18 +56,14 @@ const cloneRecord = (record: JevShadowRecord): JevShadowRecord => ({
     networkCode: record.networkCode,
     latencyMs: record.latencyMs,
     servedModel: record.servedModel,
-    routeChoice: record.routeChoice,
-    routeConfidence: record.routeConfidence,
-    routeCleanProbability: record.routeCleanProbability,
-    routeFullReviewProbability: record.routeFullReviewProbability,
     signals: record.signals ? { ...record.signals } : undefined,
     usageInputTokens: record.usageInputTokens,
     usageOutputTokens: record.usageOutputTokens,
     usageCost: record.usageCost,
     gemmaDecision: record.gemmaDecision,
     gemmaIssueCodes: record.gemmaIssueCodes ? [...record.gemmaIssueCodes] : undefined,
-    comparison: record.comparison,
-    falseNegativeCandidate: record.falseNegativeCandidate,
+    gemmaComparableIssueCodes: record.gemmaComparableIssueCodes ? [...record.gemmaComparableIssueCodes] : undefined,
+    gemmaIssueAnomalies: record.gemmaIssueAnomalies ? [...record.gemmaIssueAnomalies] : undefined,
 });
 
 export const getJevShadowRecords = (): JevShadowRecord[] => recentRecords.map(cloneRecord);
@@ -102,30 +93,34 @@ export const startJevShadowEvaluation = ({
     const startedAt = now();
     let gemmaDecision: JevShadowRecord['gemmaDecision'];
     let gemmaIssueCodes: StrictReviewIssueCode[] | undefined;
+    let gemmaComparableIssueCodes: StrictReviewIssueCode[] | undefined;
+    let gemmaIssueAnomalies: StrictReviewIssueCode[] | undefined;
     let storedRecord: JevShadowRecord | undefined;
     const setGemmaDecision = (
         decision: NonNullable<JevShadowRecord['gemmaDecision']>,
         issueCodes?: readonly StrictReviewIssueCode[],
     ) => {
         gemmaDecision = decision;
-        gemmaIssueCodes = decision === 'unavailable'
+        const issueMetadata = decision === 'unavailable'
             ? undefined
-            : decision === 'keep'
-                ? []
-                : (() => {
-                    const sanitized = sanitizeStrictReviewIssueCodes(issueCodes);
-                    return sanitized.length ? sanitized : ['other'];
-                })();
+            : classifyGemmaIssueCodes(mode, decision === 'keep' ? [] : (() => {
+                const sanitized = sanitizeStrictReviewIssueCodes(issueCodes);
+                return sanitized.length ? sanitized : ['other'];
+            })());
+        gemmaIssueCodes = issueMetadata?.gemmaIssueCodes;
+        gemmaComparableIssueCodes = issueMetadata?.gemmaComparableIssueCodes;
+        gemmaIssueAnomalies = issueMetadata?.gemmaIssueAnomalies;
         if (storedRecord) {
             storedRecord.gemmaDecision = decision;
             storedRecord.gemmaIssueCodes = gemmaIssueCodes ? [...gemmaIssueCodes] : undefined;
-            refreshComparison(storedRecord);
+            storedRecord.gemmaComparableIssueCodes = gemmaComparableIssueCodes ? [...gemmaComparableIssueCodes] : undefined;
+            storedRecord.gemmaIssueAnomalies = gemmaIssueAnomalies ? [...gemmaIssueAnomalies] : undefined;
         }
     };
 
     void Promise.resolve(evaluate(state, signal)).then((result: JevShadowResult) => {
         const record: JevShadowRecord = {
-            taxonomyVersion: 'v2',
+            taxonomyVersion: 'v3',
             requestId,
             mode,
             ccMode,
@@ -133,6 +128,8 @@ export const startJevShadowEvaluation = ({
             latencyMs: Math.max(0, Math.round(now() - startedAt)),
             gemmaDecision,
             gemmaIssueCodes: gemmaIssueCodes ? [...gemmaIssueCodes] : undefined,
+            gemmaComparableIssueCodes: gemmaComparableIssueCodes ? [...gemmaComparableIssueCodes] : undefined,
+            gemmaIssueAnomalies: gemmaIssueAnomalies ? [...gemmaIssueAnomalies] : undefined,
         };
         if (result.status === 'unavailable') {
             const sanitized = normalizeJevShadowResult({
@@ -145,23 +142,18 @@ export const startJevShadowEvaluation = ({
                 record.networkCode = sanitized.networkCode;
             }
         }
-        if (result.status === 'ok' && result.route && result.signals) {
+        if (result.status === 'ok' && result.signals) {
             record.servedModel = result.model;
-            record.routeChoice = result.route.choice;
-            record.routeConfidence = result.route.confidence;
-            record.routeCleanProbability = result.route.probabilities.clean;
-            record.routeFullReviewProbability = result.route.probabilities.full_review;
             record.signals = { ...result.signals };
             record.usageInputTokens = result.usage?.inputTokens;
             record.usageOutputTokens = result.usage?.outputTokens;
             record.usageCost = result.usage?.cost;
         }
-        refreshComparison(record);
         storedRecord = record;
         store(record);
     }).catch(() => {
         const record: JevShadowRecord = {
-            taxonomyVersion: 'v2',
+            taxonomyVersion: 'v3',
             requestId,
             mode,
             ccMode,
@@ -169,8 +161,9 @@ export const startJevShadowEvaluation = ({
             latencyMs: Math.max(0, Math.round(now() - startedAt)),
             gemmaDecision,
             gemmaIssueCodes: gemmaIssueCodes ? [...gemmaIssueCodes] : undefined,
+            gemmaComparableIssueCodes: gemmaComparableIssueCodes ? [...gemmaComparableIssueCodes] : undefined,
+            gemmaIssueAnomalies: gemmaIssueAnomalies ? [...gemmaIssueAnomalies] : undefined,
         };
-        refreshComparison(record);
         storedRecord = record;
         store(record);
     });

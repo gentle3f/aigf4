@@ -5,14 +5,20 @@ import type { StrictReviewIssueCode } from '../../strictReview.js';
 export interface JevShadowDiagnosticsSummary {
     totalRecords: number;
     status: Record<'ok' | 'unavailable' | 'aborted', number>;
-    route: Record<'clean' | 'fullReview', number>;
     gemma: Record<'keep' | 'revise' | 'unavailable', number>;
     gemmaIssues: Record<StrictReviewIssueCode, number>;
-    comparison: Record<'agree' | 'disagree' | 'unknown', number>;
-    falseNegativeCandidates: number;
+    gemmaIssueAnomalies: Record<StrictReviewIssueCode, number>;
     performance: { averageLatencyMs: number; maxLatencyMs: number };
-    usage: { totalInputTokens: number; totalOutputTokens: number; totalCost: number };
+    usage: { totalInputTokens: number; totalOutputTokens: number; totalCost: number; averageInputTokens: number };
+    signalAverages: Record<keyof NonNullable<JevShadowRecord['signals']>, number>;
 }
+
+const JEV_SIGNAL_KEYS = [
+    'requestMismatch', 'identityConflict', 'speakerOwnershipViolation', 'continuityViolation',
+    'realityLayerViolation', 'wardrobeConflict', 'stateConflict', 'replayedBeat',
+    'personaVoiceViolation', 'thirdPartySpeechViolation', 'userAgencyViolation', 'incompleteEnding',
+    'groupNarrationViolation', 'otherDefect',
+] as const satisfies readonly (keyof NonNullable<JevShadowRecord['signals']>)[];
 
 const cloneRecord = (record: JevShadowRecord): JevShadowRecord => ({
     taxonomyVersion: record.taxonomyVersion,
@@ -24,34 +30,31 @@ const cloneRecord = (record: JevShadowRecord): JevShadowRecord => ({
     networkCode: record.networkCode,
     latencyMs: record.latencyMs,
     servedModel: record.servedModel,
-    routeChoice: record.routeChoice,
-    routeConfidence: record.routeConfidence,
-    routeCleanProbability: record.routeCleanProbability,
-    routeFullReviewProbability: record.routeFullReviewProbability,
     signals: record.signals ? { ...record.signals } : undefined,
     usageInputTokens: record.usageInputTokens,
     usageOutputTokens: record.usageOutputTokens,
     usageCost: record.usageCost,
     gemmaDecision: record.gemmaDecision,
     gemmaIssueCodes: record.gemmaIssueCodes ? sanitizeStrictReviewIssueCodes(record.gemmaIssueCodes) : undefined,
-    comparison: record.comparison,
-    falseNegativeCandidate: record.falseNegativeCandidate,
+    gemmaComparableIssueCodes: record.gemmaComparableIssueCodes ? sanitizeStrictReviewIssueCodes(record.gemmaComparableIssueCodes) : undefined,
+    gemmaIssueAnomalies: record.gemmaIssueAnomalies ? sanitizeStrictReviewIssueCodes(record.gemmaIssueAnomalies) : undefined,
 });
 
 export const summarizeJevShadowRecords = (records: readonly JevShadowRecord[]): JevShadowDiagnosticsSummary => {
     const summary: JevShadowDiagnosticsSummary = {
         totalRecords: records.length,
         status: { ok: 0, unavailable: 0, aborted: 0 },
-        route: { clean: 0, fullReview: 0 },
         gemma: { keep: 0, revise: 0, unavailable: 0 },
         gemmaIssues: Object.fromEntries(STRICT_REVIEW_ISSUE_CODES.map(code => [code, 0])) as Record<StrictReviewIssueCode, number>,
-        comparison: { agree: 0, disagree: 0, unknown: 0 },
-        falseNegativeCandidates: 0,
+        gemmaIssueAnomalies: Object.fromEntries(STRICT_REVIEW_ISSUE_CODES.map(code => [code, 0])) as Record<StrictReviewIssueCode, number>,
         performance: { averageLatencyMs: 0, maxLatencyMs: 0 },
-        usage: { totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0 },
+        usage: { totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0, averageInputTokens: 0 },
+        signalAverages: Object.fromEntries(JEV_SIGNAL_KEYS.map(key => [key, 0])) as JevShadowDiagnosticsSummary['signalAverages'],
     };
     let completedLatencyTotal = 0;
     let completedLatencyCount = 0;
+    let inputTokenCount = 0;
+    let signalCount = 0;
 
     for (const record of records) {
         summary.status[record.status] += 1;
@@ -60,17 +63,23 @@ export const summarizeJevShadowRecords = (records: readonly JevShadowRecord[]): 
             completedLatencyCount += 1;
             summary.performance.maxLatencyMs = Math.max(summary.performance.maxLatencyMs, record.latencyMs);
         }
-        if (record.routeChoice === 'clean') summary.route.clean += 1;
-        if (record.routeChoice === 'full_review') summary.route.fullReview += 1;
         if (record.gemmaDecision) summary.gemma[record.gemmaDecision] += 1;
         for (const issue of sanitizeStrictReviewIssueCodes(record.gemmaIssueCodes)) summary.gemmaIssues[issue] += 1;
-        summary.comparison[record.comparison || 'unknown'] += 1;
-        if (record.routeChoice === 'clean' && record.gemmaDecision === 'revise') summary.falseNegativeCandidates += 1;
+        for (const issue of sanitizeStrictReviewIssueCodes(record.gemmaIssueAnomalies)) summary.gemmaIssueAnomalies[issue] += 1;
         summary.usage.totalInputTokens += record.usageInputTokens || 0;
         summary.usage.totalOutputTokens += record.usageOutputTokens || 0;
         summary.usage.totalCost += record.usageCost || 0;
+        if (record.usageInputTokens !== undefined) inputTokenCount += 1;
+        if (record.signals) {
+            signalCount += 1;
+            for (const key of JEV_SIGNAL_KEYS) summary.signalAverages[key] += record.signals[key];
+        }
     }
     summary.performance.averageLatencyMs = completedLatencyCount ? Math.round(completedLatencyTotal / completedLatencyCount) : 0;
+    summary.usage.averageInputTokens = inputTokenCount ? Math.round(summary.usage.totalInputTokens / inputTokenCount) : 0;
+    if (signalCount) {
+        for (const key of JEV_SIGNAL_KEYS) summary.signalAverages[key] = Number((summary.signalAverages[key] / signalCount).toFixed(3));
+    }
     return summary;
 };
 

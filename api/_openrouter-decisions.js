@@ -24,66 +24,58 @@ const signalKeys = {
 };
 
 export const JEV_QUESTIONS = {
-  route: {
-    type: 'choice',
-    instructions: 'Assess an existing actual, concrete material defect in the candidate using only supplied evidence. Do not invent hidden facts, unstated rules, or possible risks. Uncertainty alone is not grounds for full_review; do not escalate several weak speculative concerns. Consensual adult intimacy, explicitness, emotional intensity, and fictional role-play are not defects by themselves. If evidence is insufficient, prefer clean.',
-    criteria: {
-      clean: 'No concrete material defect is supported; concerns are speculative, ambiguous, unsupported, or only prose preference/style.',
-      full_review: 'At least one concrete material defect is supported by supplied evidence and warrants correction under the existing strict-review criteria.',
-    },
-  },
-  request_mismatch: { type: 'noul', instructions: 'High only if candidate materially fails, ignores, or contradicts the newest request. Do not penalize minor emphasis differences. Require concrete supplied evidence.' },
+  request_mismatch: { type: 'noul', instructions: 'Use latestUserText and candidateText only. High only if a specific concrete defect materially fails, ignores, or contradicts the newest request. Minor emphasis differences, ambiguity, speculation, and missing evidence are low.' },
   identity_conflict: {
     type: 'noul',
-    instructions: 'High only for a concrete wrong or merged identity, wrong named person, or incompatible fixed role. Require concrete supplied evidence; missing evidence is low.',
+    instructions: 'Use participants, personaEvidence, and candidateText only. High only for a concrete wrong or merged identity, wrong named person, or incompatible fixed role. Missing evidence, ambiguity, and speculation are low.',
   },
   speaker_ownership_violation: {
     type: 'noul',
-    instructions: 'High only for concrete assignment of speech, action, thought, or first-person ownership to the wrong participant. Require concrete supplied evidence.',
+    instructions: 'Use participants, latestUserText, recentHistoryText, and candidateText only. High only for concrete assignment of speech, action, thought, or first-person ownership to the wrong participant. Missing evidence, ambiguity, and speculation are low.',
   },
   continuity_violation: {
     type: 'noul',
-    instructions: 'High only for a concrete contradiction with supplied recent completed history or scene continuity that is not better classified elsewhere. Do not infer missing history; unproven repetition is low.',
+    instructions: 'Use recentHistoryText, current scene facts, and candidateText only; ignore persona style. High only for a concrete contradiction that is not better classified elsewhere. If bounded recent history does not prove it, score low.',
   },
   reality_layer_violation: {
     type: 'noul',
-    instructions: 'High only for direct conflict with supplied physical, texting, or imagined mode. Require concrete supplied evidence.',
+    instructions: 'Use realityLayer, explicit scene facts, and candidateText only. High only for direct conflict with supplied physical, texting, or imagined mode. Missing evidence or speculation is low.',
   },
   wardrobe_conflict: {
     type: 'noul',
-    instructions: 'High only for direct contradiction of supplied authoritative wardrobe state. Missing or ambiguous wardrobe evidence is low.',
+    instructions: 'Use wardrobe and candidateText only. High only for direct contradiction of supplied wardrobe state. Do not infer clothing from personaEvidence. Missing or ambiguous wardrobe evidence is low.',
   },
   state_conflict: {
     type: 'noul',
-    instructions: 'High only for direct contradiction of supplied current location, presence, body position, or other explicit physical or scene state. Require concrete supplied evidence.',
+    instructions: 'Use explicit scene, presence, proposedScene facts, and candidateText only. High only for direct contradiction of location, presence, body position, or other current state. Missing evidence or speculation is low.',
   },
   replayed_beat: {
     type: 'noul',
-    instructions: 'High only when recentHistoryText proves an already-completed instruction, action, or beat is incorrectly replayed. If recent history does not prove repetition, score low.',
+    instructions: 'Use recentHistoryText and candidateText only. High only when bounded recent history proves an already-completed instruction, action, or beat is incorrectly replayed. If history does not prove repetition, score low.',
   },
   persona_voice_violation: {
     type: 'noul',
-    instructions: 'High only when authoritativeContext contains a clear personality, voice, or regional-language rule and candidate materially violates it. Stylistic preference alone is not a violation.',
+    instructions: 'Use personaEvidence and candidateText only. High only when personaEvidence contains a clear personality, voice, or regional-language rule and candidate materially violates it. If evidence is absent or insufficient, score low; stylistic preference alone is low.',
   },
   third_party_speech_violation: {
     type: 'noul',
-    instructions: 'High only when supplied authoritative context or newest request establishes a third party should participate, speak, or not be misattributed, and candidate concretely mishandles it.',
+    instructions: 'Use participants, latestUserText, recentHistoryText, and candidateText only. High only when supplied evidence establishes third-party participation, speech, or attribution and candidate concretely mishandles it. Missing evidence is low.',
   },
   user_agency_violation: {
     type: 'noul',
-    instructions: 'High only when candidate invents consequential user speech, action, choice, or commitment that the user did not make. Normal narration, reactions, sensations, or consensual role-play framing are not automatically agency violations.',
+    instructions: 'Use latestUserText and candidateText only. High only when candidate invents consequential user speech, action, choice, or commitment not made by the user. Normal narration, consensual adult intimacy, explicitness, emotional intensity, and fictional role-play are not defects by themselves.',
   },
   incomplete_ending: {
     type: 'noul',
-    instructions: 'High only when candidate is materially truncated, cut off, or incomplete. An intentional open-ended conversational ending is not itself a defect.',
+    instructions: 'Use candidateText structure only. High only when candidate is materially truncated, cut off, or incomplete. An intentional open-ended conversational ending is not a defect.',
   },
   group_narration_violation: {
     type: 'noul',
-    instructions: 'Use state.mode and state.ccMode explicitly. ONLY relevant when state.mode is group: high only if group narration violates the established external-third-person rule, including first-person narration for a character or user outside labelled character dialogue. First person inside labelled dialogue is allowed. For non-group mode score low.',
+    instructions: 'Use state.mode, state.ccMode, candidateText, and supplied group facts only. ONLY relevant when state.mode is group: high only if external third-person group narration is concretely violated, including first-person narration for a character or user outside labelled character dialogue. First person inside labelled dialogue is allowed. For single mode score near zero unless supplied state is internally inconsistent.',
   },
   other_defect: {
     type: 'noul',
-    instructions: 'High only for a concrete material defect supported by supplied evidence that fits no other category. Do not use this as a vague uncertainty bucket.',
+    instructions: 'High only for a concrete material defect supported by supplied evidence that fits no other category. Do not use this as a vague uncertainty, stylistic preference, or speculation bucket. Consensual adult intimacy, explicitness, and fictional role-play are not defects by themselves.',
   },
 };
 
@@ -128,7 +120,7 @@ export const isValidReviewState = state => isPlainObject(state)
   && hasOnlyKeys(state, new Set([
     'latestUserText', 'realityLayer', 'realityEpochId', 'sceneSummary', 'participants',
     'wardrobe', 'relevantMemories', 'candidateText', 'proposedScene', 'mode', 'ccMode',
-    'authoritativeContext', 'recentHistoryText',
+    'personaEvidence', 'recentHistoryText',
   ]))
   && ['single', 'group'].includes(state.mode)
   && typeof state.ccMode === 'boolean'
@@ -141,7 +133,7 @@ export const isValidReviewState = state => isPlainObject(state)
   && Array.isArray(state.relevantMemories) && state.relevantMemories.every(isMemory)
   && typeof state.candidateText === 'string'
   && (state.proposedScene === undefined || isProposedScene(state.proposedScene))
-  && isOptionalString(state.authoritativeContext)
+  && isOptionalString(state.personaEvidence)
   && isOptionalString(state.recentHistoryText);
 
 const unavailable = (reasonCode, details) => ({ status: 'unavailable', reasonCode, ...details });
@@ -214,15 +206,6 @@ const normalizeUsage = usage => {
 
 export const normalizeDecisionsResponse = body => {
   if (!isPlainObject(body) || typeof body.model !== 'string' || !isPlainObject(body.answers)) return null;
-  const route = body.answers.route;
-  if (!isPlainObject(route)
-    || route.type !== 'choice'
-    || !['clean', 'full_review'].includes(route.choice)
-    || !isPlainObject(route.probabilities)
-    || !isFiniteProbability(route.probabilities.clean)
-    || !isFiniteProbability(route.probabilities.full_review)
-    || !isFiniteProbability(route.confidence)) return null;
-
   const signals = {};
   for (const [clientKey, upstreamKey] of Object.entries(signalKeys)) {
     const answer = body.answers[upstreamKey];
@@ -233,14 +216,6 @@ export const normalizeDecisionsResponse = body => {
   const normalized = {
     status: 'ok',
     model: body.model,
-    route: {
-      choice: route.choice,
-      probabilities: {
-        clean: route.probabilities.clean,
-        full_review: route.probabilities.full_review,
-      },
-      confidence: route.confidence,
-    },
     signals,
   };
   const usage = normalizeUsage(body.usage);

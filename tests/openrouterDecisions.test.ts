@@ -27,7 +27,6 @@ const state = {
 const upstreamBody = () => ({
     model: JEV_MODEL,
     answers: {
-        route: { type: 'choice', choice: 'clean', probabilities: { clean: 0.9, full_review: 0.1 }, confidence: 0.9 },
         request_mismatch: { type: 'noul', noul: 0.01 },
         identity_conflict: { type: 'noul', noul: 0.01 },
         speaker_ownership_violation: { type: 'noul', noul: 0.02 },
@@ -153,16 +152,16 @@ test('server sends one fixed Decisions request with server-only auth and all fix
     assert.equal(body.model, JEV_MODEL);
     assert.deepEqual(body.state, state);
     assert.deepEqual(Object.keys(body.questions).sort(), Object.keys(JEV_QUESTIONS).sort());
-    assert.equal(body.questions.route.type, 'choice');
     assert.equal(Object.values(body.questions).filter((question: any) => question.type === 'noul').length, 14);
+    assert.equal('route' in body.questions, false);
     assert.equal(response.status, 'ok');
     assert.equal(response.model, JEV_MODEL);
     assert.equal(JSON.stringify(response).includes('server-secret'), false);
     assert.equal(JSON.stringify(response).includes(state.candidateText), false);
 });
 
-test('Jev V2 questions align to the closed Gemma taxonomy and require concrete evidence', () => {
-    const semanticQuestionKeys = Object.keys(JEV_QUESTIONS).filter(key => key !== 'route');
+test('Jev V3 questions align to the closed Gemma taxonomy and contain no route decision', () => {
+    const semanticQuestionKeys = Object.keys(JEV_QUESTIONS);
     const semanticCategories = semanticQuestionKeys.map(key => ({
         request_mismatch: 'request_mismatch', identity_conflict: 'identity', speaker_ownership_violation: 'speaker_ownership',
         continuity_violation: 'continuity', reality_layer_violation: 'reality_layer', wardrobe_conflict: 'wardrobe',
@@ -173,11 +172,7 @@ test('Jev V2 questions align to the closed Gemma taxonomy and require concrete e
     assert.deepEqual(semanticCategories, [...STRICT_REVIEW_ISSUE_CODES].sort());
     assert.equal('memory_conflict' in JEV_QUESTIONS, false);
     for (const key of ['group_narration_violation', 'persona_voice_violation', 'replayed_beat', 'request_mismatch', 'incomplete_ending']) assert.ok(key in JEV_QUESTIONS);
-    const routeText = `${JEV_QUESTIONS.route.instructions}\n${JEV_QUESTIONS.route.criteria.clean}`;
-    assert.match(routeText, /actual, concrete material defect/i);
-    assert.match(routeText, /speculative, ambiguous, unsupported/i);
-    assert.match(routeText, /If evidence is insufficient, prefer clean/i);
-    assert.match(routeText, /prose preference\/style/i);
+    assert.equal('route' in JEV_QUESTIONS, false);
     assert.match(JEV_QUESTIONS.group_narration_violation.instructions, /state\.mode is group/i);
     assert.match(JEV_QUESTIONS.group_narration_violation.instructions, /First person inside labelled dialogue is allowed/i);
 });
@@ -200,23 +195,24 @@ test('server rejects malformed state, oversize state, missing env, and non-allow
     assert.equal(calls, 0);
 });
 
-test('server accepts only the V2 ReviewState envelope fields and valid explicit mode metadata', async () => {
+test('server accepts only the V3 ReviewState envelope fields and valid explicit mode metadata', async () => {
     let calls = 0;
     const transportImpl = async () => { calls += 1; return success(upstreamBody()); };
-    const validV2 = {
+    const validV3 = {
         ...state,
         mode: 'group',
         ccMode: false,
-        authoritativeContext: 'bounded rules',
+        personaEvidence: 'bounded persona evidence',
         recentHistoryText: 'ASSISTANT:\ncompleted turn',
     };
-    assert.equal((await runOpenRouterDecision(validV2, { env: { OPENROUTER_API: 'secret' }, transportImpl })).status, 'ok');
+    assert.equal((await runOpenRouterDecision(validV3, { env: { OPENROUTER_API: 'secret' }, transportImpl })).status, 'ok');
     for (const invalid of [
-        { ...validV2, mode: 'assistant' },
-        { ...validV2, ccMode: 'false' },
-        { ...validV2, authoritativeContext: ['not text'] },
-        { ...validV2, recentHistoryText: { not: 'text' } },
-        { ...validV2, extraBrowserField: true },
+        { ...validV3, mode: 'assistant' },
+        { ...validV3, ccMode: 'false' },
+        { ...validV3, personaEvidence: ['not text'] },
+        { ...validV3, authoritativeContext: 'legacy context' },
+        { ...validV3, recentHistoryText: { not: 'text' } },
+        { ...validV3, extraBrowserField: true },
     ]) {
         assert.deepEqual(await runOpenRouterDecision(invalid, { env: { OPENROUTER_API: 'secret' }, transportImpl }), {
             status: 'unavailable', reasonCode: 'INVALID_STATE',

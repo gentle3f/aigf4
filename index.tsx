@@ -12122,7 +12122,6 @@ const startStrictReviewShadow = (
     latestUserMessage: string,
     candidateText: string,
     mode: 'single' | 'group',
-    authoritativePrompt: string,
     proposedScene?: RoomSceneState,
 ) => startJevShadowEvaluation({
     requestId: String(request.id),
@@ -12139,7 +12138,6 @@ const startStrictReviewShadow = (
         room: request.room,
         wardrobe: request.pendingWardrobeState || request.wardrobeState,
         proposedScene,
-        authoritativeContext: authoritativePrompt,
         recentHistoryText: buildJevRecentHistoryText(
             getStrictReviewHistory(request, latestUserMessage),
             latestUserMessage,
@@ -12180,7 +12178,7 @@ const strictReviewSingleReply = async (
         buildNpcContinuityRequirement(establishedNpcNames),
         buildNpcSpeechRequirement(addressedNpcNames),
     ].filter(Boolean).join('\n\n');
-    const shadow = startStrictReviewShadow(request, latestUserMessage, candidate, 'single', authoritativePrompt);
+    const shadow = startStrictReviewShadow(request, latestUserMessage, candidate, 'single');
     let decision;
     try {
         decision = await requestStrictReviewDecision(
@@ -12284,7 +12282,6 @@ const strictReviewGroupReply = async (
         latestUserMessage,
         serializedCandidate,
         'group',
-        authoritativePrompt,
         candidate.scene,
     );
     let decision;
@@ -17468,7 +17465,7 @@ const openJevShadowDiagnostics = () => {
 
     const subtitle = document.createElement('p');
     subtitle.className = 'jev-shadow-subtitle';
-    subtitle.textContent = 'Shadow only · Gemma remains authoritative';
+    subtitle.textContent = 'V3 signals-only calibration · Gemma remains authoritative';
     const controls = document.createElement('div');
     controls.className = 'jev-shadow-controls';
     const refresh = document.createElement('button');
@@ -17509,11 +17506,9 @@ const openJevShadowDiagnostics = () => {
         };
         addStat('Records', String(summary.totalRecords));
         addStat('OK / unavailable', `${summary.status.ok} / ${summary.status.unavailable}`);
-        addStat('Jev clean / full review', `${summary.route.clean} / ${summary.route.fullReview}`);
         addStat('Gemma keep / revise', `${summary.gemma.keep} / ${summary.gemma.revise}`);
-        addStat('Agree / disagree', `${summary.comparison.agree} / ${summary.comparison.disagree}`);
-        addStat('Jev clean / Gemma revise', String(summary.falseNegativeCandidates), 'Comparator disagreement only; not proven false negatives.');
         addStat('Avg Jev latency', `${summary.performance.averageLatencyMs} ms`);
+        addStat('Avg Jev input', String(summary.usage.averageInputTokens));
         addStat('Total Jev cost', `$${formatJevCost(summary.usage.totalCost)}`);
         content.append(stats);
 
@@ -17527,6 +17522,32 @@ const openJevShadowDiagnostics = () => {
             list.textContent = nonZeroGemmaIssues.map(([code, count]) => `${code} ${count}`).join(' · ');
             reasons.append(title, list);
             content.append(reasons);
+        }
+
+        const nonZeroAnomalies = Object.entries(summary.gemmaIssueAnomalies).filter(([, count]) => count > 0);
+        if (nonZeroAnomalies.length) {
+            const anomalies = document.createElement('div');
+            anomalies.className = 'jev-shadow-reasons';
+            const title = document.createElement('strong');
+            title.textContent = 'Gemma inapplicable labels';
+            const list = document.createElement('p');
+            list.textContent = nonZeroAnomalies.map(([code, count]) => `${code} ${count}`).join(' · ');
+            anomalies.append(title, list);
+            content.append(anomalies);
+        }
+
+        const signalAverages = Object.entries(summary.signalAverages)
+            .filter(([, value]) => value > 0)
+            .map(([signal, value]) => `${signal} ${formatJevNumber(value, 2)}`);
+        if (signalAverages.length) {
+            const averages = document.createElement('div');
+            averages.className = 'jev-shadow-reasons';
+            const title = document.createElement('strong');
+            title.textContent = 'V3 signal averages';
+            const list = document.createElement('p');
+            list.textContent = signalAverages.join(' · ');
+            averages.append(title, list);
+            content.append(averages);
         }
 
         if (!records.length) {
@@ -17543,7 +17564,7 @@ const openJevShadowDiagnostics = () => {
         table.className = 'jev-shadow-table';
         const head = document.createElement('thead');
         const headerRow = document.createElement('tr');
-        ['Request', 'Mode', 'Status', 'Jev / Gemma', 'Comparison', 'Latency', 'Tokens', 'Cost'].forEach(label => {
+        ['Request', 'Mode', 'Status', 'Gemma', 'Latency', 'Tokens', 'Cost'].forEach(label => {
             const cell = document.createElement('th');
             cell.textContent = label;
             headerRow.append(cell);
@@ -17560,8 +17581,7 @@ const openJevShadowDiagnostics = () => {
             addCell(record.requestId);
             addCell(`${record.mode} · Cc ${record.ccMode ? 'yes' : 'no'}`);
             addCell(record.reasonCode ? `${record.status} · ${record.reasonCode}${record.networkCode ? ` · ${record.networkCode}` : ''}` : record.status);
-            addCell(`${record.routeChoice || '—'} / ${record.gemmaDecision || '—'}${record.gemmaIssueCodes?.length ? ` · ${record.gemmaIssueCodes.join(', ')}` : ''}`);
-            addCell(`${record.comparison || 'unknown'}${record.falseNegativeCandidate ? ' · FN' : ''}`);
+            addCell(`${record.gemmaDecision || '—'}${record.gemmaIssueCodes?.length ? ` · ${record.gemmaIssueCodes.join(', ')}` : ''}${record.gemmaIssueAnomalies?.length ? ` · anomaly: ${record.gemmaIssueAnomalies.join(', ')}` : ''}`);
             addCell(`${record.latencyMs} ms`);
             addCell(`${formatJevNumber(record.usageInputTokens)} / ${formatJevNumber(record.usageOutputTokens)}`);
             addCell(`$${formatJevCost(record.usageCost)}`);
@@ -17570,12 +17590,10 @@ const openJevShadowDiagnostics = () => {
             const detailRow = document.createElement('tr');
             detailRow.className = 'jev-shadow-detail-row';
             const detail = document.createElement('td');
-            detail.colSpan = 8;
+            detail.colSpan = 7;
             const signals = record.signals;
             detail.textContent = [
                 `model: ${record.servedModel || '—'}`,
-                `probabilities clean/full: ${formatJevNumber(record.routeCleanProbability, 2)} / ${formatJevNumber(record.routeFullReviewProbability, 2)}`,
-                `confidence: ${formatJevNumber(record.routeConfidence, 2)}`,
                 `taxonomy: ${record.taxonomyVersion}`,
                 `signals request/identity/speaker/continuity/reality/wardrobe/state/replay/persona/third-party/agency/ending/group/other: ${signals ? [
                     signals.requestMismatch,

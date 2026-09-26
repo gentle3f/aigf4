@@ -2,11 +2,10 @@ import type { Persona, WardrobeState } from '../../managers.js';
 import type { ChatRoom, RoomSceneState } from '../../roomManager.js';
 import type { ReviewState } from '../contracts.js';
 
-export const MAX_JEV_AUTHORITATIVE_CONTEXT_CHARS = 12_000;
-export const MAX_JEV_RECENT_HISTORY_MESSAGES = 8;
-export const MAX_JEV_RECENT_HISTORY_CHARS = 8_000;
+export const MAX_JEV_PERSONA_EVIDENCE_CHARS = 4_000;
+export const MAX_JEV_RECENT_HISTORY_MESSAGES = 4;
+export const MAX_JEV_RECENT_HISTORY_CHARS = 4_000;
 export const MAX_JEV_REVIEW_STATE_CHARS = 48_000;
-const AUTHORITATIVE_CONTEXT_MARKER = '\n...[bounded authoritative context]...\n';
 
 export interface ReviewStateInput {
     mode: 'single' | 'group';
@@ -18,21 +17,31 @@ export interface ReviewStateInput {
     room?: Readonly<ChatRoom>;
     wardrobe: Readonly<WardrobeState>;
     proposedScene?: Readonly<RoomSceneState>;
-    authoritativeContext?: string;
     recentHistoryText?: string;
 }
 
-const boundAuthoritativeContext = (context: string, maxChars: number): string => {
-    if (context.length <= maxChars) return context;
-    if (maxChars <= AUTHORITATIVE_CONTEXT_MARKER.length) return context.slice(0, maxChars);
-    const remaining = maxChars - AUTHORITATIVE_CONTEXT_MARKER.length;
-    const headLength = Math.ceil(remaining / 2);
-    return `${context.slice(0, headLength)}${AUTHORITATIVE_CONTEXT_MARKER}${context.slice(-(remaining - headLength))}`;
+const buildPersonaBlock = (persona: Readonly<Persona>, maxChars: number): string => {
+    const name = `NAME:\n${persona.name}\n`;
+    const description = 'DESCRIPTION:\n';
+    const rules = '\nPERSONA RULES:\n';
+    const available = Math.max(0, maxChars - name.length - description.length - rules.length);
+    const descriptionBudget = Math.ceil(available / 2);
+    const promptBudget = available - descriptionBudget;
+    const personaDescription = typeof persona.description === 'string' ? persona.description : '';
+    const personaPrompt = typeof persona.prompt === 'string' ? persona.prompt : '';
+    return `${name}${description}${personaDescription.slice(0, descriptionBudget)}${rules}${personaPrompt.slice(0, promptBudget)}`;
 };
 
-export const boundJevAuthoritativeContext = (context: string): string => (
-    boundAuthoritativeContext(context, MAX_JEV_AUTHORITATIVE_CONTEXT_CHARS)
-);
+export const buildJevPersonaEvidence = (
+    persona: Readonly<Persona>,
+    room?: Readonly<ChatRoom>,
+): string | undefined => {
+    const personas = room ? room.members.map(member => member.persona) : [persona];
+    if (!personas.length) return undefined;
+    const separator = '\n\n';
+    const perPersonaBudget = Math.max(1, Math.floor((MAX_JEV_PERSONA_EVIDENCE_CHARS - separator.length * (personas.length - 1)) / personas.length));
+    return personas.map(member => buildPersonaBlock(member, perPersonaBudget)).join(separator);
+};
 
 export interface ReviewHistoryMessage {
     role: string;
@@ -73,7 +82,7 @@ export const buildJevRecentHistoryText = (
 
 const fitOptionalEvidence = <T extends object>(
     state: T,
-    field: 'authoritativeContext' | 'recentHistoryText',
+    field: 'personaEvidence' | 'recentHistoryText',
     value: string | undefined,
     truncate: (text: string, maxChars: number) => string,
 ): string | undefined => {
@@ -90,6 +99,7 @@ const fitOptionalEvidence = <T extends object>(
     return low ? truncate(value, low) : undefined;
 };
 
+const boundHead = (text: string, maxChars: number) => text.length <= maxChars ? text : text.slice(0, maxChars);
 const boundTail = (text: string, maxChars: number) => text.length <= maxChars ? text : text.slice(-maxChars);
 
 const copyWardrobe = (wardrobe: Readonly<WardrobeState>): WardrobeState => ({
@@ -126,23 +136,23 @@ export const buildReviewState = (input: ReviewStateInput): ReviewState => {
             }))
             : [{ id: input.personaKey, name: input.persona.name, present: true, role: 'active character' }],
         wardrobe: copyWardrobe(input.wardrobe),
-        // Shadow V1 deliberately does not trigger memory retrieval at review time.
+        // Shadow calibration deliberately does not trigger memory retrieval at review time.
         relevantMemories: [],
         candidateText: input.candidateText,
         proposedScene: input.proposedScene ? copyScene(input.proposedScene) : undefined,
     };
-    const authoritativeContext = fitOptionalEvidence(
+    const personaEvidence = fitOptionalEvidence(
         base,
-        'authoritativeContext',
-        input.authoritativeContext === undefined ? undefined : boundJevAuthoritativeContext(input.authoritativeContext),
-        boundAuthoritativeContext,
+        'personaEvidence',
+        buildJevPersonaEvidence(input.persona, input.room),
+        boundHead,
     );
-    const withAuthoritative = authoritativeContext ? { ...base, authoritativeContext } : base;
+    const withPersonaEvidence = personaEvidence ? { ...base, personaEvidence } : base;
     const recentHistoryText = fitOptionalEvidence(
-        withAuthoritative,
+        withPersonaEvidence,
         'recentHistoryText',
-        input.recentHistoryText,
+        input.recentHistoryText ? boundTail(input.recentHistoryText, MAX_JEV_RECENT_HISTORY_CHARS) : undefined,
         boundTail,
     );
-    return { ...withAuthoritative, ...(recentHistoryText ? { recentHistoryText } : {}) };
+    return { ...withPersonaEvidence, ...(recentHistoryText ? { recentHistoryText } : {}) };
 };

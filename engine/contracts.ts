@@ -80,7 +80,7 @@ export interface ReviewState {
     }>;
     candidateText: string;
     proposedScene?: RoomSceneState;
-    authoritativeContext?: string;
+    personaEvidence?: string;
     recentHistoryText?: string;
 }
 
