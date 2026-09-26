@@ -11,6 +11,11 @@ import {
 import {
     JEV_PRODUCTION_SHAPE_PARITY_CASES,
 } from '../tests/fixtures/jevProductionShapeParity.js';
+import {
+    FACTOR_ISOLATION_HELPERS,
+    JEV_FACTOR_ISOLATION_CASES,
+    type JevFactorIsolationCase,
+} from '../tests/fixtures/jevFactorIsolation.js';
 
 const signalKeyByCategory = {
     request_mismatch: 'requestMismatch', identity: 'identityConflict', speaker_ownership: 'speakerOwnershipViolation',
@@ -24,7 +29,7 @@ type SignalKey = typeof signalKeyByCategory[keyof typeof signalKeyByCategory];
 
 export interface SyntheticCalibrationResult {
     id: string;
-    suite: 'clean' | 'production-shape';
+    suite: 'clean' | 'production-shape' | 'factor-isolation';
     mode: 'single' | 'group';
     ccMode: boolean;
     category: keyof typeof signalKeyByCategory;
@@ -36,15 +41,20 @@ export interface SyntheticCalibrationResult {
     outputTokens?: number;
     cost?: number;
     reasonCode?: string;
+    factorFamily?: JevFactorIsolationCase['factorFamily'];
+    factor?: string;
+    variant?: JevFactorIsolationCase['variant'];
+    baselineId?: string;
 }
 
-type SyntheticSuiteName = 'clean' | 'parity' | 'all';
-type AnySyntheticCase = JevSyntheticCalibrationCase | typeof JEV_PRODUCTION_SHAPE_PARITY_CASES[number];
+type SyntheticSuiteName = 'clean' | 'parity' | 'isolation' | 'all';
+type AnySyntheticCase = JevSyntheticCalibrationCase | typeof JEV_PRODUCTION_SHAPE_PARITY_CASES[number] | JevFactorIsolationCase;
 
 const getSuiteCases = (suite: SyntheticSuiteName): readonly AnySyntheticCase[] => {
     if (suite === 'clean') return JEV_SYNTHETIC_CALIBRATION_CASES;
     if (suite === 'parity') return JEV_PRODUCTION_SHAPE_PARITY_CASES;
-    return [...JEV_SYNTHETIC_CALIBRATION_CASES, ...JEV_PRODUCTION_SHAPE_PARITY_CASES];
+    if (suite === 'isolation') return JEV_FACTOR_ISOLATION_CASES;
+    return [...JEV_SYNTHETIC_CALIBRATION_CASES, ...JEV_PRODUCTION_SHAPE_PARITY_CASES, ...JEV_FACTOR_ISOLATION_CASES];
 };
 
 const validateCorpus = (cases: readonly AnySyntheticCase[], requireEveryCategory: boolean): string[] => {
@@ -90,6 +100,29 @@ export const validateProductionShapeParityCorpus = (cases: readonly typeof JEV_P
     if (cases.length < 20) errors.push('production-shape corpus contains fewer than 20 cases');
     return errors;
 };
+export const validateFactorIsolationCorpus = (cases: readonly JevFactorIsolationCase[]): string[] => {
+    const errors = validateCorpus(cases, false);
+    if (cases.length < 35 || cases.length > 50) errors.push('factor-isolation corpus must contain 35 to 50 cases');
+    const familyMinimums: Record<JevFactorIsolationCase['factorFamily'], number> = {
+        group_narration: 8, persona_voice: 10, replayed_beat: 10, continuity: 8, wardrobe: 0,
+    };
+    for (const [family, minimum] of Object.entries(familyMinimums)) {
+        const variants = cases.filter(item => item.factorFamily === family && item.variant === 'variant');
+        if (variants.length < minimum) errors.push(`${family} requires at least ${minimum} controlled variants`);
+    }
+    const byId = new Map(cases.map(item => [item.id, item]));
+    for (const item of cases) {
+        if (item.suite !== 'factor-isolation') errors.push(`invalid suite: ${item.id}`);
+        if (!item.factorFamily || !item.factor || !item.variant || !item.shapeNotes) errors.push(`missing factor metadata: ${item.id}`);
+        if (item.mode !== item.state.mode || item.ccMode !== item.state.ccMode) errors.push(`mode metadata mismatch: ${item.id}`);
+        if (item.variant === 'variant') {
+            const baseline = item.baselineId ? byId.get(item.baselineId) : undefined;
+            if (!baseline) errors.push(`missing baseline: ${item.id}`);
+            else if (baseline.factorFamily !== item.factorFamily || baseline.category !== item.category || baseline.expected !== item.expected || baseline.semanticCandidate !== item.semanticCandidate) errors.push(`baseline integrity mismatch: ${item.id}`);
+        }
+    }
+    return errors;
+};
 
 const mean = (values: readonly number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined;
 const min = (values: readonly number[]) => values.length ? Math.min(...values) : undefined;
@@ -129,13 +162,20 @@ export const aggregateSyntheticCalibration = (results: readonly SyntheticCalibra
     const groupBy = <T extends string>(key: (result: SyntheticCalibrationResult) => T) => Object.fromEntries(
         [...new Set(results.map(key))].map(value => [value, results.filter(result => key(result) === value).length]),
     );
+    const fixtureById = new Map(fixtures.map(item => [item.id, item]));
+    const factorDeltas = results.flatMap(result => {
+        if (!result.baselineId || result.signal === undefined) return [];
+        const baseline = results.find(item => item.id === result.baselineId);
+        if (!baseline || baseline.signal === undefined) return [];
+        return [{ id: result.id, factorFamily: result.factorFamily, factor: result.factor, variant: result.variant, baselineId: result.baselineId, expected: result.expected, mode: result.mode, ccMode: result.ccMode, baselineSignal: baseline.signal, variantSignal: result.signal, delta: result.signal - baseline.signal }];
+    });
     return { categories, directionalPairs: { compared: pairRows.length, positiveGreaterThanNegative: pairSuccesses, nonDirectionalPairIds: pairRows.filter(entries => {
         const positive = entries.find(entry => entry.expected === 'positive');
         const negative = entries.find(entry => entry.expected === 'negative');
         return !positive || !negative || positive.signal === undefined || negative.signal === undefined || positive.signal <= negative.signal;
-    }).map(entries => fixtures.find(item => item.id === entries[0]?.id)?.pairId) }, groups: {
+    }).map(entries => fixtureById.get(entries[0]?.id || '')?.pairId) }, groups: {
         suite: groupBy(result => result.suite), mode: groupBy(result => result.mode), ccMode: groupBy(result => String(result.ccMode)),
-    } };
+    }, factorDeltas };
 };
 
 const readLocalOpenRouterApi = async (): Promise<string | undefined> => {
@@ -166,9 +206,9 @@ export const runSyntheticCalibration = async (live: boolean, suite: SyntheticSui
         const latencyMs = Math.round(performance.now() - startedAt);
         if (response?.status === 'ok') {
             const signal = response.signals[signalKeyByCategory[fixture.category] as SignalKey];
-            results.push({ id: fixture.id, suite: fixture.suite || 'clean', mode: fixture.state.mode, ccMode: fixture.state.ccMode, category: fixture.category, expected: fixture.expected, signal, model: response.model, latencyMs, inputTokens: response.usage?.inputTokens, outputTokens: response.usage?.outputTokens, cost: response.usage?.cost });
+            results.push({ id: fixture.id, suite: fixture.suite || 'clean', mode: fixture.state.mode, ccMode: fixture.state.ccMode, category: fixture.category, expected: fixture.expected, signal, model: response.model, latencyMs, inputTokens: response.usage?.inputTokens, outputTokens: response.usage?.outputTokens, cost: response.usage?.cost, ...('factorFamily' in fixture ? { factorFamily: fixture.factorFamily, factor: fixture.factor, variant: fixture.variant, baselineId: fixture.baselineId } : {}) });
         } else if (response) {
-            results.push({ id: fixture.id, suite: fixture.suite || 'clean', mode: fixture.state.mode, ccMode: fixture.state.ccMode, category: fixture.category, expected: fixture.expected, latencyMs, reasonCode: response.reasonCode });
+            results.push({ id: fixture.id, suite: fixture.suite || 'clean', mode: fixture.state.mode, ccMode: fixture.state.ccMode, category: fixture.category, expected: fixture.expected, latencyMs, reasonCode: response.reasonCode, ...('factorFamily' in fixture ? { factorFamily: fixture.factorFamily, factor: fixture.factor, variant: fixture.variant, baselineId: fixture.baselineId } : {}) });
         }
     }
     return results;
@@ -188,20 +228,25 @@ const main = async () => {
     const args = process.argv.slice(2);
     const live = args.includes('--live');
     const suiteValue = args.includes('--suite') ? args[args.indexOf('--suite') + 1] : 'clean';
-    if (suiteValue !== 'clean' && suiteValue !== 'parity' && suiteValue !== 'all') throw new Error('--suite must be clean, parity, or all.');
+    if (suiteValue !== 'clean' && suiteValue !== 'parity' && suiteValue !== 'isolation' && suiteValue !== 'all') throw new Error('--suite must be clean, parity, isolation, or all.');
     const suite = suiteValue as SyntheticSuiteName;
     const jsonOutputPath = parseJsonOutputPath(args);
     if (args.includes('--json-out') && !jsonOutputPath) throw new Error('--json-out requires a destination path.');
     const cleanErrors = validateSyntheticCalibrationCorpus(JEV_SYNTHETIC_CALIBRATION_CASES);
     const parityErrors = validateProductionShapeParityCorpus(JEV_PRODUCTION_SHAPE_PARITY_CASES);
-    const errors = [...cleanErrors, ...parityErrors];
+    const isolationErrors = validateFactorIsolationCorpus(JEV_FACTOR_ISOLATION_CASES);
+    const errors = [...cleanErrors, ...parityErrors, ...isolationErrors];
     if (errors.length) throw new Error(`Synthetic fixture validation failed: ${errors.join('; ')}`);
     const selectedCases = getSuiteCases(suite);
     const normalParityCases = JEV_PRODUCTION_SHAPE_PARITY_CASES.filter(item => item.state.mode === 'single' && !item.state.ccMode).length;
     const ccParityCases = JEV_PRODUCTION_SHAPE_PARITY_CASES.filter(item => item.state.ccMode).length;
     const groupParityCases = JEV_PRODUCTION_SHAPE_PARITY_CASES.filter(item => item.state.mode === 'group').length;
-    console.log(`Jev synthetic calibration (${suite}): ${selectedCases.length} fictional cases. clean cases: ${JEV_SYNTHETIC_CALIBRATION_CASES.length}; parity cases: ${JEV_PRODUCTION_SHAPE_PARITY_CASES.length}; parity normal non-Cc: ${normalParityCases}; parity Cc: ${ccParityCases}; parity group: ${groupParityCases}.`);
-    console.log('Production helpers reused: buildReviewState, buildJevPersonaEvidence, buildJevRecentHistoryText, serializeGroupGenerationForReview. Network calls: 0 unless --live is explicitly supplied.');
+    const isolationFamilyCounts = Object.fromEntries([...new Set(JEV_FACTOR_ISOLATION_CASES.map(item => item.factorFamily))].map(family => [family, JEV_FACTOR_ISOLATION_CASES.filter(item => item.factorFamily === family).length]));
+    const isolationModeCounts = Object.fromEntries(['single', 'group'].map(mode => [mode, JEV_FACTOR_ISOLATION_CASES.filter(item => item.mode === mode).length]));
+    const isolationCcCounts = Object.fromEntries(['false', 'true'].map(ccMode => [ccMode, JEV_FACTOR_ISOLATION_CASES.filter(item => String(item.ccMode) === ccMode).length]));
+    console.log(`Jev synthetic calibration (${suite}): ${selectedCases.length} fictional cases. clean cases: ${JEV_SYNTHETIC_CALIBRATION_CASES.length}; parity cases: ${JEV_PRODUCTION_SHAPE_PARITY_CASES.length}; isolation cases: ${JEV_FACTOR_ISOLATION_CASES.length}; parity normal non-Cc: ${normalParityCases}; parity Cc: ${ccParityCases}; parity group: ${groupParityCases}.`);
+    console.log(`Production helpers reused: ${FACTOR_ISOLATION_HELPERS.join(', ')}. Network calls: 0 unless --live is explicitly supplied.`);
+    if (suite === 'isolation' || suite === 'all') console.log(`Isolation metadata: families ${JSON.stringify(isolationFamilyCounts)}; modes ${JSON.stringify(isolationModeCounts)}; ccMode ${JSON.stringify(isolationCcCounts)}; factors ${JEV_FACTOR_ISOLATION_CASES.map(item => item.factor).join(', ')}.`);
     if (!live) {
         if (jsonOutputPath) throw new Error('--json-out requires --live; no file was written.');
         console.log('Offline validation complete. No OpenRouter request was made. Use --live to run the explicit synthetic calibration.');
@@ -210,7 +255,7 @@ const main = async () => {
     const results = await runSyntheticCalibration(true, suite);
     const summary = printSummary(results, selectedCases);
     if (jsonOutputPath) {
-        const safeResults = results.map(({ id, suite, mode, ccMode, category, expected, signal, model, latencyMs, inputTokens, outputTokens, cost, reasonCode }) => ({ id, suite, mode, ccMode, category, expected, signal, model, latencyMs, inputTokens, outputTokens, cost, reasonCode }));
+        const safeResults = results.map(({ id, suite, mode, ccMode, category, expected, signal, model, latencyMs, inputTokens, outputTokens, cost, reasonCode, factorFamily, factor, variant, baselineId }) => ({ id, suite, mode, ccMode, category, expected, factorFamily, factor, variant, baselineId, signal, model, latencyMs, inputTokens, outputTokens, cost, reasonCode }));
         await (await import('node:fs/promises')).writeFile(resolve(jsonOutputPath), JSON.stringify({ results: safeResults, summary }, null, 2));
         console.log(`Wrote safe synthetic results to ${resolve(jsonOutputPath)}.`);
     }
