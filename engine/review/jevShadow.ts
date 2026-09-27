@@ -3,6 +3,12 @@ import { sanitizeStrictReviewIssueCodes } from '../../strictReview.js';
 import type { StrictReviewIssueCode } from '../../strictReview.js';
 import { evaluateJevShadow, evaluateJevWardrobeShadowTrial, normalizeJevShadowResult } from './jevDecisionProvider.js';
 import type { JevShadowResult } from './jevDecisionProvider.js';
+import {
+    clearPersistedJevShadowRecords,
+    loadPersistedJevShadowRecords,
+    MAX_PERSISTED_JEV_SHADOW_RECORDS,
+    persistJevShadowRecords,
+} from './jevShadowStorage.js';
 
 export interface JevWardrobeShadowTrialRecord {
     profile: 'wardrobe-v4';
@@ -42,8 +48,21 @@ export interface JevShadowTracker {
     recordGemmaDecision(decision: 'keep' | 'revise' | 'unavailable', issueCodes?: readonly StrictReviewIssueCode[]): void;
 }
 
-const MAX_JEV_SHADOW_RECORDS = 50;
 const recentRecords: JevShadowRecord[] = [];
+let persistenceHydrated = false;
+
+const hydratePersistedRecords = () => {
+    if (persistenceHydrated) return;
+    persistenceHydrated = true;
+    recentRecords.push(...loadPersistedJevShadowRecords());
+    if (recentRecords.length > MAX_PERSISTED_JEV_SHADOW_RECORDS) {
+        recentRecords.splice(0, recentRecords.length - MAX_PERSISTED_JEV_SHADOW_RECORDS);
+    }
+};
+
+const persistRecentRecords = () => {
+    persistJevShadowRecords(recentRecords);
+};
 
 const classifyGemmaIssueCodes = (mode: JevShadowRecord['mode'], issueCodes: readonly StrictReviewIssueCode[] | undefined) => {
     const gemmaIssueCodes = sanitizeStrictReviewIssueCodes(issueCodes);
@@ -55,8 +74,12 @@ const classifyGemmaIssueCodes = (mode: JevShadowRecord['mode'], issueCodes: read
 };
 
 const store = (record: JevShadowRecord) => {
+    hydratePersistedRecords();
     recentRecords.push(record);
-    if (recentRecords.length > MAX_JEV_SHADOW_RECORDS) recentRecords.splice(0, recentRecords.length - MAX_JEV_SHADOW_RECORDS);
+    if (recentRecords.length > MAX_PERSISTED_JEV_SHADOW_RECORDS) {
+        recentRecords.splice(0, recentRecords.length - MAX_PERSISTED_JEV_SHADOW_RECORDS);
+    }
+    persistRecentRecords();
 };
 
 const cloneWardrobeTrial = (trial: JevWardrobeShadowTrialRecord | undefined): JevWardrobeShadowTrialRecord | undefined => trial ? ({
@@ -94,12 +117,23 @@ const cloneRecord = (record: JevShadowRecord): JevShadowRecord => ({
     gemmaIssueAnomalies: record.gemmaIssueAnomalies ? [...record.gemmaIssueAnomalies] : undefined,
 });
 
-export const getJevShadowRecords = (): JevShadowRecord[] => recentRecords.map(cloneRecord);
+export const getJevShadowRecords = (): JevShadowRecord[] => {
+    hydratePersistedRecords();
+    return recentRecords.map(cloneRecord);
+};
 
-export const clearJevShadowRecords = () => { recentRecords.splice(0, recentRecords.length); };
+export const clearJevShadowRecords = () => {
+    persistenceHydrated = true;
+    recentRecords.splice(0, recentRecords.length);
+    clearPersistedJevShadowRecords();
+};
 
 export const getJevShadowRecordsForTest = getJevShadowRecords;
 export const clearJevShadowRecordsForTest = clearJevShadowRecords;
+export const resetJevShadowPersistenceForTest = () => {
+    recentRecords.splice(0, recentRecords.length);
+    persistenceHydrated = false;
+};
 
 export const startJevShadowEvaluation = ({
     requestId,
@@ -153,7 +187,10 @@ export const startJevShadowEvaluation = ({
             trial.usageCost = result.usage?.cost;
         }
         wardrobeTrial = trial;
-        if (storedRecord) storedRecord.wardrobeTrial = cloneWardrobeTrial(trial);
+        if (storedRecord) {
+            storedRecord.wardrobeTrial = cloneWardrobeTrial(trial);
+            persistRecentRecords();
+        }
     };
 
     const setGemmaDecision = (
@@ -175,6 +212,7 @@ export const startJevShadowEvaluation = ({
             storedRecord.gemmaIssueCodes = gemmaIssueCodes ? [...gemmaIssueCodes] : undefined;
             storedRecord.gemmaComparableIssueCodes = gemmaComparableIssueCodes ? [...gemmaComparableIssueCodes] : undefined;
             storedRecord.gemmaIssueAnomalies = gemmaIssueAnomalies ? [...gemmaIssueAnomalies] : undefined;
+            persistRecentRecords();
         }
     };
 

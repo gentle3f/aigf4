@@ -62,9 +62,9 @@ test('pending or failed shadow never blocks Gemma and collector remains bounded'
     assert.deepEqual(getJevShadowRecordsForTest(), []);
     resolveJev?.(ok()); await flush();
     assert.equal(getJevShadowRecordsForTest()[0]?.gemmaDecision, 'keep');
-    for (let index = 0; index < 51; index += 1) startJevShadowEvaluation({ requestId: `bounded-${index}`, mode: 'single', ccMode: false, state, signal: new AbortController().signal, evaluate: async () => ok(), evaluateWardrobeTrial: async () => wardrobeTrialOk() });
+    for (let index = 0; index < 201; index += 1) startJevShadowEvaluation({ requestId: `bounded-${index}`, mode: 'single', ccMode: false, state, signal: new AbortController().signal, evaluate: async () => ok(), evaluateWardrobeTrial: async () => wardrobeTrialOk() });
     await flush();
-    assert.equal(getJevShadowRecordsForTest().length, 50);
+    assert.equal(getJevShadowRecordsForTest().length, 200);
 });
 
 test('wardrobe wording trial failure is observational and never blocks the production shadow or Gemma metadata', async () => {

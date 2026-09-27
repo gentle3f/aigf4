@@ -17547,7 +17547,7 @@ const openJevShadowDiagnostics = () => {
 
     const subtitle = document.createElement('p');
     subtitle.className = 'jev-shadow-subtitle';
-    subtitle.textContent = 'V3 signals + wardrobe wording A/B shadow · Gemma remains authoritative';
+    subtitle.textContent = 'V3 signals + wardrobe wording A/B shadow · safe metadata kept locally across reloads · Gemma remains authoritative';
     const controls = document.createElement('div');
     controls.className = 'jev-shadow-controls';
     const refresh = document.createElement('button');
@@ -17662,7 +17662,7 @@ const openJevShadowDiagnostics = () => {
         if (!records.length) {
             const empty = document.createElement('p');
             empty.className = 'jev-shadow-empty';
-            empty.textContent = 'No Jev shadow observations in this page session yet. Records are intentionally in-memory only and reset when page reloads.';
+            empty.textContent = 'No Jev shadow observations yet. Safe metadata is kept locally across reloads until you clear it.';
             content.append(empty);
             return;
         }
