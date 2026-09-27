@@ -17441,7 +17441,7 @@ const openJevShadowDiagnostics = () => {
 
     const subtitle = document.createElement('p');
     subtitle.className = 'jev-shadow-subtitle';
-    subtitle.textContent = 'V3 signals-only calibration · Gemma remains authoritative';
+    subtitle.textContent = 'V3 signals + wardrobe wording A/B shadow · Gemma remains authoritative';
     const controls = document.createElement('div');
     controls.className = 'jev-shadow-controls';
     const refresh = document.createElement('button');
@@ -17486,7 +17486,34 @@ const openJevShadowDiagnostics = () => {
         addStat('Avg Jev latency', `${summary.performance.averageLatencyMs} ms`);
         addStat('Avg Jev input', String(summary.usage.averageInputTokens));
         addStat('Total Jev cost', `$${formatJevCost(summary.usage.totalCost)}`);
+        addStat(
+            'Wardrobe A/B paired',
+            String(summary.wardrobeTrial.pairedCount),
+            `prod ${formatJevNumber(summary.wardrobeTrial.productionAverage, 2)} → trial ${formatJevNumber(summary.wardrobeTrial.trialAverage, 2)} · Δ ${formatJevNumber(summary.wardrobeTrial.averageDelta, 2)}`,
+        );
+        addStat(
+            'Wardrobe trial latency',
+            `${summary.wardrobeTrial.averageLatencyMs} ms`,
+            `trial cost $${formatJevCost(summary.wardrobeTrial.totalCost)}`,
+        );
         content.append(stats);
+
+        if (summary.wardrobeTrial.pairedCount) {
+            const comparison = document.createElement('div');
+            comparison.className = 'jev-shadow-reasons';
+            const title = document.createElement('strong');
+            title.textContent = 'Wardrobe wording shadow';
+            const list = document.createElement('p');
+            const withIssue = summary.wardrobeTrial.withGemmaWardrobeIssue;
+            const withoutIssue = summary.wardrobeTrial.withoutGemmaWardrobeIssue;
+            list.textContent = [
+                `paired ${summary.wardrobeTrial.pairedCount}`,
+                `Gemma wardrobe issue n=${withIssue.count}: ${formatJevNumber(withIssue.productionAverage, 2)} → ${formatJevNumber(withIssue.trialAverage, 2)}`,
+                `no Gemma wardrobe issue n=${withoutIssue.count}: ${formatJevNumber(withoutIssue.productionAverage, 2)} → ${formatJevNumber(withoutIssue.trialAverage, 2)}`,
+            ].join(' · ');
+            comparison.append(title, list);
+            content.append(comparison);
+        }
 
         const nonZeroGemmaIssues = Object.entries(summary.gemmaIssues).filter(([, count]) => count > 0);
         if (nonZeroGemmaIssues.length) {
@@ -17568,9 +17595,17 @@ const openJevShadowDiagnostics = () => {
             const detail = document.createElement('td');
             detail.colSpan = 7;
             const signals = record.signals;
+            const trial = record.wardrobeTrial;
+            const wardrobeDelta = signals && trial?.wardrobeConflict !== undefined
+                ? trial.wardrobeConflict - signals.wardrobeConflict
+                : undefined;
             detail.textContent = [
                 `model: ${record.servedModel || '—'}`,
                 `taxonomy: ${record.taxonomyVersion}`,
+                `wardrobe A/B prod/trial/delta: ${signals && trial?.wardrobeConflict !== undefined
+                    ? `${formatJevNumber(signals.wardrobeConflict, 2)} / ${formatJevNumber(trial.wardrobeConflict, 2)} / ${formatJevNumber(wardrobeDelta, 2)}`
+                    : '—'}`,
+                `wardrobe trial: ${trial ? `${trial.profile} · ${trial.status} · ${trial.latencyMs} ms · model ${trial.servedModel || '—'} · $${formatJevCost(trial.usageCost)}` : 'pending'}`,
                 `signals request/identity/speaker/continuity/reality/wardrobe/state/replay/persona/third-party/agency/ending/group/other: ${signals ? [
                     signals.requestMismatch,
                     signals.identityConflict,

@@ -79,6 +79,18 @@ export const JEV_QUESTIONS = {
   },
 };
 
+/**
+ * Production shadow trial: exactly one proposition differs from JEV_QUESTIONS.
+ * This set is observational only; it has no routing authority and never replaces Gemma.
+ */
+export const JEV_WARDROBE_SHADOW_QUESTIONS = {
+  ...JEV_QUESTIONS,
+  wardrobe_conflict: {
+    type: 'noul',
+    instructions: 'Does candidateText explicitly contradict supplied established clothing? If relevant clothing is unestablished, or it merely mentions new clothing, answer NO.',
+  },
+};
+
 const isPlainObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const hasOnlyKeys = (value, allowed) => Object.keys(value).every(key => allowed.has(key));
 const isFiniteProbability = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
@@ -295,6 +307,7 @@ export const runOpenRouterDecision = async (state, {
   timeoutMs = JEV_SHADOW_TIMEOUT_MS,
   calibrationQuestions,
   allowCalibrationQuestions = false,
+  useWardrobeShadowQuestions = false,
 } = {}) => {
   if (!isValidReviewState(state)) return unavailable('INVALID_STATE');
   let serializedState;
@@ -310,8 +323,13 @@ export const runOpenRouterDecision = async (state, {
   const apiKey = env.OPENROUTER_API || env.OPENROUTER_API_KEY;
   if (!apiKey) return unavailable('MISSING_CREDENTIALS');
 
-  // Only the explicit local calibration harness may opt into an alternate frozen set.
-  const questions = allowCalibrationQuestions && calibrationQuestions ? calibrationQuestions : JEV_QUESTIONS;
+  // The public production endpoint stays frozen. A dedicated authenticated shadow endpoint may
+  // opt into the fixed wardrobe-only trial set. Arbitrary browser-supplied questions remain impossible.
+  const questions = useWardrobeShadowQuestions
+    ? JEV_WARDROBE_SHADOW_QUESTIONS
+    : allowCalibrationQuestions && calibrationQuestions
+      ? calibrationQuestions
+      : JEV_QUESTIONS;
   const requestBody = JSON.stringify({ model: JEV_MODEL, state, questions });
   try {
     const upstream = await transportImpl({ apiKey, requestBody, timeoutMs });

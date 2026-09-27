@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
-import handler from '../api/openrouter-decisions.js';
+import handler, { parseDecisionRequest } from '../api/openrouter-decisions.js';
 import {
     JEV_MODEL,
     JEV_QUESTIONS,
+    JEV_WARDROBE_SHADOW_QUESTIONS,
     MAX_DECISIONS_RESPONSE_BYTES,
     OPENROUTER_DECISIONS_URL,
     classifyUpstreamHttpFailure,
@@ -171,6 +172,30 @@ test('alternate questions require the explicit calibration-only option while the
     await runOpenRouterDecision(state, { env: { OPENROUTER_API: 'server-secret' }, transportImpl, calibrationQuestions: JEV_EXPERIMENTAL_QUESTIONS_V4, allowCalibrationQuestions: true });
     assert.deepEqual((bodies[0] as { questions: unknown }).questions, JEV_QUESTIONS);
     assert.deepEqual((bodies[1] as { questions: unknown }).questions, JEV_EXPERIMENTAL_QUESTIONS_V4);
+});
+
+test('wardrobe production shadow set changes exactly one frozen proposition and matches the calibrated V4 wording', async () => {
+    const changed = Object.keys(JEV_QUESTIONS).filter(key => (
+        JEV_QUESTIONS[key as keyof typeof JEV_QUESTIONS].instructions
+        !== JEV_WARDROBE_SHADOW_QUESTIONS[key as keyof typeof JEV_WARDROBE_SHADOW_QUESTIONS].instructions
+    ));
+    assert.deepEqual(changed, ['wardrobe_conflict']);
+    assert.equal(
+        JEV_WARDROBE_SHADOW_QUESTIONS.wardrobe_conflict.instructions,
+        JEV_EXPERIMENTAL_QUESTIONS_V4.wardrobe_conflict.instructions,
+    );
+
+    let body: any;
+    const response = await runOpenRouterDecision(state, {
+        env: { OPENROUTER_API: 'server-secret' },
+        useWardrobeShadowQuestions: true,
+        transportImpl: async ({ requestBody }) => {
+            body = JSON.parse(requestBody);
+            return success(upstreamBody());
+        },
+    });
+    assert.equal(response.status, 'ok');
+    assert.deepEqual(body.questions, JEV_WARDROBE_SHADOW_QUESTIONS);
 });
 
 test('Jev V3 questions are fourteen short proposition-only NOULs with no route decision', () => {
@@ -361,7 +386,7 @@ test('unauthenticated endpoint caller receives 401 without an upstream request',
     assert.deepEqual(response.body, { error: 'Unauthorized' });
 });
 
-test('authenticated endpoint accepts only the state envelope', async () => {
+test('authenticated endpoint rejects arbitrary browser model and question controls', async () => {
     const secret = 'test-session-secret';
     const payload = Buffer.from(JSON.stringify({ exp: Date.now() + 60_000 }), 'utf8').toString('base64url');
     const signature = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
@@ -381,4 +406,15 @@ test('authenticated endpoint accepts only the state envelope', async () => {
         if (originalSecret === undefined) delete process.env.APP_SESSION_SECRET;
         else process.env.APP_SESSION_SECRET = originalSecret;
     }
+});
+
+test('request parser allows only the production envelope or the fixed wardrobe shadow profile', () => {
+    assert.deepEqual(parseDecisionRequest({ state }), { state, profile: 'production' });
+    assert.deepEqual(parseDecisionRequest({ state, profile: 'wardrobe-v4' }), { state, profile: 'wardrobe-v4' });
+    for (const invalid of [
+        { state, profile: 'group-v4' },
+        { state, profile: 'wardrobe-v4', model: 'attacker-model' },
+        { state, questions: JEV_EXPERIMENTAL_QUESTIONS_V4 },
+        { profile: 'wardrobe-v4' },
+    ]) assert.equal(parseDecisionRequest(invalid), null);
 });

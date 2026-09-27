@@ -1,8 +1,21 @@
 import type { ReviewState } from '../contracts.js';
 import { sanitizeStrictReviewIssueCodes } from '../../strictReview.js';
 import type { StrictReviewIssueCode } from '../../strictReview.js';
-import { evaluateJevShadow, normalizeJevShadowResult } from './jevDecisionProvider.js';
+import { evaluateJevShadow, evaluateJevWardrobeShadowTrial, normalizeJevShadowResult } from './jevDecisionProvider.js';
 import type { JevShadowResult } from './jevDecisionProvider.js';
+
+export interface JevWardrobeShadowTrialRecord {
+    profile: 'wardrobe-v4';
+    status: 'ok' | 'unavailable' | 'aborted';
+    reasonCode?: JevShadowResult['reasonCode'];
+    networkCode?: JevShadowResult['networkCode'];
+    latencyMs: number;
+    servedModel?: string;
+    wardrobeConflict?: number;
+    usageInputTokens?: number;
+    usageOutputTokens?: number;
+    usageCost?: number;
+}
 
 export interface JevShadowRecord {
     taxonomyVersion: 'v3';
@@ -18,6 +31,7 @@ export interface JevShadowRecord {
     usageInputTokens?: number;
     usageOutputTokens?: number;
     usageCost?: number;
+    wardrobeTrial?: JevWardrobeShadowTrialRecord;
     gemmaDecision?: 'keep' | 'revise' | 'unavailable';
     gemmaIssueCodes?: StrictReviewIssueCode[];
     gemmaComparableIssueCodes?: StrictReviewIssueCode[];
@@ -45,6 +59,19 @@ const store = (record: JevShadowRecord) => {
     if (recentRecords.length > MAX_JEV_SHADOW_RECORDS) recentRecords.splice(0, recentRecords.length - MAX_JEV_SHADOW_RECORDS);
 };
 
+const cloneWardrobeTrial = (trial: JevWardrobeShadowTrialRecord | undefined): JevWardrobeShadowTrialRecord | undefined => trial ? ({
+    profile: trial.profile,
+    status: trial.status,
+    reasonCode: trial.reasonCode,
+    networkCode: trial.networkCode,
+    latencyMs: trial.latencyMs,
+    servedModel: trial.servedModel,
+    wardrobeConflict: trial.wardrobeConflict,
+    usageInputTokens: trial.usageInputTokens,
+    usageOutputTokens: trial.usageOutputTokens,
+    usageCost: trial.usageCost,
+}) : undefined;
+
 // This explicit whitelist is the public diagnostics boundary. Never add review text or state here.
 const cloneRecord = (record: JevShadowRecord): JevShadowRecord => ({
     taxonomyVersion: record.taxonomyVersion,
@@ -60,6 +87,7 @@ const cloneRecord = (record: JevShadowRecord): JevShadowRecord => ({
     usageInputTokens: record.usageInputTokens,
     usageOutputTokens: record.usageOutputTokens,
     usageCost: record.usageCost,
+    wardrobeTrial: cloneWardrobeTrial(record.wardrobeTrial),
     gemmaDecision: record.gemmaDecision,
     gemmaIssueCodes: record.gemmaIssueCodes ? [...record.gemmaIssueCodes] : undefined,
     gemmaComparableIssueCodes: record.gemmaComparableIssueCodes ? [...record.gemmaComparableIssueCodes] : undefined,
@@ -80,6 +108,7 @@ export const startJevShadowEvaluation = ({
     state,
     signal,
     evaluate = evaluateJevShadow,
+    evaluateWardrobeTrial = evaluateJevWardrobeShadowTrial,
     now = () => performance.now(),
 }: {
     requestId: string;
@@ -88,6 +117,7 @@ export const startJevShadowEvaluation = ({
     state: Readonly<ReviewState>;
     signal: AbortSignal;
     evaluate?: typeof evaluateJevShadow;
+    evaluateWardrobeTrial?: typeof evaluateJevWardrobeShadowTrial;
     now?: () => number;
 }): JevShadowTracker => {
     const startedAt = now();
@@ -96,6 +126,36 @@ export const startJevShadowEvaluation = ({
     let gemmaComparableIssueCodes: StrictReviewIssueCode[] | undefined;
     let gemmaIssueAnomalies: StrictReviewIssueCode[] | undefined;
     let storedRecord: JevShadowRecord | undefined;
+    let wardrobeTrial: JevWardrobeShadowTrialRecord | undefined;
+
+    const setWardrobeTrial = (result: JevShadowResult) => {
+        const trial: JevWardrobeShadowTrialRecord = {
+            profile: 'wardrobe-v4',
+            status: result.status,
+            latencyMs: Math.max(0, Math.round(now() - startedAt)),
+        };
+        if (result.status === 'unavailable') {
+            const sanitized = normalizeJevShadowResult({
+                status: 'unavailable',
+                reasonCode: result.reasonCode,
+                networkCode: result.networkCode,
+            });
+            if (sanitized?.status === 'unavailable') {
+                trial.reasonCode = sanitized.reasonCode;
+                trial.networkCode = sanitized.networkCode;
+            }
+        }
+        if (result.status === 'ok' && result.signals) {
+            trial.servedModel = result.model;
+            trial.wardrobeConflict = result.signals.wardrobeConflict;
+            trial.usageInputTokens = result.usage?.inputTokens;
+            trial.usageOutputTokens = result.usage?.outputTokens;
+            trial.usageCost = result.usage?.cost;
+        }
+        wardrobeTrial = trial;
+        if (storedRecord) storedRecord.wardrobeTrial = cloneWardrobeTrial(trial);
+    };
+
     const setGemmaDecision = (
         decision: NonNullable<JevShadowRecord['gemmaDecision']>,
         issueCodes?: readonly StrictReviewIssueCode[],
@@ -118,6 +178,12 @@ export const startJevShadowEvaluation = ({
         }
     };
 
+    // Run the wardrobe-only wording trial beside the frozen production shadow. It is
+    // observational metadata only and never participates in Gemma or response routing.
+    void Promise.resolve(evaluateWardrobeTrial(state, signal))
+        .then((result: JevShadowResult) => setWardrobeTrial(result))
+        .catch(() => setWardrobeTrial({ status: 'unavailable' }));
+
     void Promise.resolve(evaluate(state, signal)).then((result: JevShadowResult) => {
         const record: JevShadowRecord = {
             taxonomyVersion: 'v3',
@@ -126,6 +192,7 @@ export const startJevShadowEvaluation = ({
             ccMode,
             status: result.status,
             latencyMs: Math.max(0, Math.round(now() - startedAt)),
+            wardrobeTrial: cloneWardrobeTrial(wardrobeTrial),
             gemmaDecision,
             gemmaIssueCodes: gemmaIssueCodes ? [...gemmaIssueCodes] : undefined,
             gemmaComparableIssueCodes: gemmaComparableIssueCodes ? [...gemmaComparableIssueCodes] : undefined,
@@ -159,6 +226,7 @@ export const startJevShadowEvaluation = ({
             ccMode,
             status: 'unavailable',
             latencyMs: Math.max(0, Math.round(now() - startedAt)),
+            wardrobeTrial: cloneWardrobeTrial(wardrobeTrial),
             gemmaDecision,
             gemmaIssueCodes: gemmaIssueCodes ? [...gemmaIssueCodes] : undefined,
             gemmaComparableIssueCodes: gemmaComparableIssueCodes ? [...gemmaComparableIssueCodes] : undefined,

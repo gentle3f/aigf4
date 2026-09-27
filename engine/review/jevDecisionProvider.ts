@@ -156,17 +156,18 @@ export const normalizeJevShadowResult = (value: unknown): JevShadowResult | null
 
 const unavailable = (reasonCode: JevUnavailableReason): JevShadowResult => ({ status: 'unavailable', reasonCode });
 
-export const evaluateJevShadow = async (
+const evaluateJevEndpoint = async (
     state: Readonly<ReviewState>,
     signal?: AbortSignal,
     fetchImpl: JevFetch = fetch,
+    profile?: 'wardrobe-v4',
 ): Promise<JevShadowResult> => {
     try {
         const response = await fetchImpl('/api/openrouter-decisions', {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ state }),
+            body: JSON.stringify(profile ? { state, profile } : { state }),
             signal,
         });
         if (!response.ok) return unavailable(response.status === 401 ? 'UNAUTHENTICATED' : 'UPSTREAM_FAILURE');
@@ -183,6 +184,18 @@ export const evaluateJevShadow = async (
         return unavailable('NETWORK_FAILURE');
     }
 };
+
+export const evaluateJevShadow = async (
+    state: Readonly<ReviewState>,
+    signal?: AbortSignal,
+    fetchImpl: JevFetch = fetch,
+): Promise<JevShadowResult> => evaluateJevEndpoint(state, signal, fetchImpl);
+
+export const evaluateJevWardrobeShadowTrial = async (
+    state: Readonly<ReviewState>,
+    signal?: AbortSignal,
+    fetchImpl: JevFetch = fetch,
+): Promise<JevShadowResult> => evaluateJevEndpoint(state, signal, fetchImpl, 'wardrobe-v4');
 
 export const jevDecisionProvider: DecisionProvider = {
     async evaluate(state, signal): Promise<DecisionAssessment> {
