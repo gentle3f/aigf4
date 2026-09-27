@@ -62,6 +62,30 @@ test('wardrobe and group families carry deterministic semantic characterization 
     assert.ok(group.filter(item => item.guardrailFamily === 'mixed').every(item => item.semantics.labelledFirstPerson && item.semantics.unlabelledFirstPerson));
 });
 
+test('wardrobe wrong-person and clothing-change fixtures prove their content-level semantics', () => {
+    const byId = new Map(JEV_CANDIDATE_GUARDRAIL_SOURCES.map(source => [source.id, source]));
+    const wrongPersonSingle = byId.get('guardrail-wardrobe-wrong-person-single')!;
+    const wrongPersonGroup = byId.get('guardrail-wardrobe-wrong-person-group')!;
+    const changeGroup = byId.get('guardrail-wardrobe-change-group')!;
+    const dressConflict = byId.get('guardrail-wardrobe-conflict-dress')!;
+
+    for (const source of [wrongPersonSingle, wrongPersonGroup]) {
+        assert.equal(source.state.wardrobe?.characters.aster, 'green coat');
+        assert.equal(source.state.wardrobe?.characters.beryl, 'red coat');
+        assert.match(source.state.candidateText, /Aster smooths her red coat/i);
+        assert.doesNotMatch(source.state.candidateText, /assigned to Beryl|Beryl's red coat/i);
+    }
+    assert.match(wrongPersonGroup.state.candidateText, /<chat>/);
+    assert.equal(changeGroup.expected, 'negative');
+    assert.equal(changeGroup.state.wardrobe?.characters.aster, 'black dress');
+    assert.match(changeGroup.state.candidateText, /black dress/i);
+    assert.match(changeGroup.state.recentHistoryText || '', /changed from her blue dress into a black dress/i);
+    assert.equal(dressConflict.expected, 'positive');
+    assert.equal(dressConflict.state.wardrobe?.characters.aster, 'blue dress');
+    assert.match(dressConflict.state.candidateText, /wearing a black dress/i);
+    assert.doesNotMatch(dressConflict.state.recentHistoryText || '', /blue dress.*black dress|black dress.*blue dress/i);
+});
+
 test('candidate aggregate retains source pairing, family metadata, and category separation inputs', () => {
     const positive = JEV_CANDIDATE_GUARDRAIL_CASES.find(item => item.category === 'wardrobe' && item.expected === 'positive')!;
     const negative = JEV_CANDIDATE_GUARDRAIL_CASES.find(item => item.category === 'wardrobe' && item.expected === 'negative')!;
