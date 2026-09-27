@@ -293,6 +293,8 @@ export const runOpenRouterDecision = async (state, {
   transportImpl = requestOpenRouterViaHttps,
   env = process.env,
   timeoutMs = JEV_SHADOW_TIMEOUT_MS,
+  calibrationQuestions,
+  allowCalibrationQuestions = false,
 } = {}) => {
   if (!isValidReviewState(state)) return unavailable('INVALID_STATE');
   let serializedState;
@@ -308,7 +310,9 @@ export const runOpenRouterDecision = async (state, {
   const apiKey = env.OPENROUTER_API || env.OPENROUTER_API_KEY;
   if (!apiKey) return unavailable('MISSING_CREDENTIALS');
 
-  const requestBody = JSON.stringify({ model: JEV_MODEL, state, questions: JEV_QUESTIONS });
+  // Only the explicit local calibration harness may opt into an alternate frozen set.
+  const questions = allowCalibrationQuestions && calibrationQuestions ? calibrationQuestions : JEV_QUESTIONS;
+  const requestBody = JSON.stringify({ model: JEV_MODEL, state, questions });
   try {
     const upstream = await transportImpl({ apiKey, requestBody, timeoutMs });
     if (upstream.statusCode < 200 || upstream.statusCode >= 300) return unavailable(classifyUpstreamHttpFailure(upstream.statusCode));

@@ -13,6 +13,7 @@ import {
     requestOpenRouterViaHttps,
     runOpenRouterDecision,
 } from '../api/_openrouter-decisions.js';
+import { JEV_EXPERIMENTAL_QUESTIONS_V4 } from './fixtures/jevExperimentalQuestions.js';
 import { STRICT_REVIEW_ISSUE_CODES } from '../strictReview.js';
 
 const state = {
@@ -158,6 +159,18 @@ test('server sends one fixed Decisions request with server-only auth and all fix
     assert.equal(response.model, JEV_MODEL);
     assert.equal(JSON.stringify(response).includes('server-secret'), false);
     assert.equal(JSON.stringify(response).includes(state.candidateText), false);
+});
+
+test('alternate questions require the explicit calibration-only option while the default stays frozen', async () => {
+    const bodies: unknown[] = [];
+    const transportImpl = async ({ requestBody }: { requestBody: string }) => {
+        bodies.push(JSON.parse(requestBody));
+        return success(upstreamBody());
+    };
+    await runOpenRouterDecision(state, { env: { OPENROUTER_API: 'server-secret' }, transportImpl, calibrationQuestions: JEV_EXPERIMENTAL_QUESTIONS_V4 });
+    await runOpenRouterDecision(state, { env: { OPENROUTER_API: 'server-secret' }, transportImpl, calibrationQuestions: JEV_EXPERIMENTAL_QUESTIONS_V4, allowCalibrationQuestions: true });
+    assert.deepEqual((bodies[0] as { questions: unknown }).questions, JEV_QUESTIONS);
+    assert.deepEqual((bodies[1] as { questions: unknown }).questions, JEV_EXPERIMENTAL_QUESTIONS_V4);
 });
 
 test('Jev V3 questions are fourteen short proposition-only NOULs with no route decision', () => {
@@ -361,7 +374,7 @@ test('authenticated endpoint accepts only the state envelope', async () => {
         json(body: unknown) { response.body = body; return this; },
     };
     try {
-        await handler({ method: 'POST', headers: { cookie: `aigf4_gate=${payload}.${signature}` }, body: { state, model: 'attacker-model' } }, res);
+        await handler({ method: 'POST', headers: { cookie: `aigf4_gate=${payload}.${signature}` }, body: { state, model: 'attacker-model', calibrationQuestions: JEV_EXPERIMENTAL_QUESTIONS_V4 } }, res);
         assert.equal(response.statusCode, 200);
         assert.deepEqual(response.body, { status: 'unavailable', reasonCode: 'INVALID_REQUEST' });
     } finally {
