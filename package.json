@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "tsx --test tests/**/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "jev:calibrate": "tsx scripts/jevSyntheticCalibration.ts"
+    "jev:calibrate": "tsx scripts/jevSyntheticCalibration.ts",
+    "jev:shadow-report": "tsx scripts/jevWardrobeShadowReport.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
