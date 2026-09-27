@@ -29,6 +29,11 @@ import {
     JEV_SEMANTIC_AB_SOURCE_IDS,
     type JevSemanticAbCase,
 } from '../tests/fixtures/jevSemanticAb.js';
+import { buildSingleQuestionExperimentalSet } from '../tests/fixtures/jevSingleQuestionHybrid.js';
+import {
+    JEV_SINGLE_PROPOSITION_AB_CASES,
+    type JevSinglePropositionAbCase,
+} from '../tests/fixtures/jevSinglePropositionAb.js';
 
 const signalKeyByCategory = {
     request_mismatch: 'requestMismatch', identity: 'identityConflict', speaker_ownership: 'speakerOwnershipViolation',
@@ -42,7 +47,7 @@ type SignalKey = typeof signalKeyByCategory[keyof typeof signalKeyByCategory];
 
 export interface SyntheticCalibrationResult {
     id: string;
-    suite: 'clean' | 'production-shape' | 'factor-isolation' | 'repeatability' | 'semantic-ab';
+    suite: 'clean' | 'production-shape' | 'factor-isolation' | 'repeatability' | 'semantic-ab' | 'single-proposition-ab';
     mode: 'single' | 'group';
     ccMode: boolean;
     category: keyof typeof signalKeyByCategory;
@@ -60,11 +65,11 @@ export interface SyntheticCalibrationResult {
     baselineId?: string;
     sourceCaseId?: string;
     repeatIndex?: number;
-    questionSet?: JevSemanticAbCase['questionSet'];
+    questionSet?: JevSemanticAbCase['questionSet'] | JevSinglePropositionAbCase['questionSet'];
 }
 
-type SyntheticSuiteName = 'clean' | 'parity' | 'isolation' | 'repeatability' | 'semantic-ab' | 'all';
-type AnySyntheticCase = JevSyntheticCalibrationCase | typeof JEV_PRODUCTION_SHAPE_PARITY_CASES[number] | JevFactorIsolationCase | JevRepeatabilityCase | JevSemanticAbCase;
+type SyntheticSuiteName = 'clean' | 'parity' | 'isolation' | 'repeatability' | 'semantic-ab' | 'single-proposition-ab' | 'all';
+type AnySyntheticCase = JevSyntheticCalibrationCase | typeof JEV_PRODUCTION_SHAPE_PARITY_CASES[number] | JevFactorIsolationCase | JevRepeatabilityCase | JevSemanticAbCase | JevSinglePropositionAbCase;
 
 const getSuiteCases = (suite: SyntheticSuiteName): readonly AnySyntheticCase[] => {
     if (suite === 'clean') return JEV_SYNTHETIC_CALIBRATION_CASES;
@@ -72,7 +77,8 @@ const getSuiteCases = (suite: SyntheticSuiteName): readonly AnySyntheticCase[] =
     if (suite === 'isolation') return JEV_FACTOR_ISOLATION_CASES;
     if (suite === 'repeatability') return JEV_REPEATABILITY_CASES;
     if (suite === 'semantic-ab') return JEV_SEMANTIC_AB_CASES;
-    return [...JEV_SYNTHETIC_CALIBRATION_CASES, ...JEV_PRODUCTION_SHAPE_PARITY_CASES, ...JEV_FACTOR_ISOLATION_CASES, ...JEV_REPEATABILITY_CASES, ...JEV_SEMANTIC_AB_CASES];
+    if (suite === 'single-proposition-ab') return JEV_SINGLE_PROPOSITION_AB_CASES;
+    return [...JEV_SYNTHETIC_CALIBRATION_CASES, ...JEV_PRODUCTION_SHAPE_PARITY_CASES, ...JEV_FACTOR_ISOLATION_CASES, ...JEV_REPEATABILITY_CASES, ...JEV_SEMANTIC_AB_CASES, ...JEV_SINGLE_PROPOSITION_AB_CASES];
 };
 
 const validateCorpus = (cases: readonly AnySyntheticCase[], requireEveryCategory: boolean): string[] => {
@@ -197,6 +203,29 @@ export const validateSemanticAbCorpus = (cases: readonly JevSemanticAbCase[]): s
     return errors;
 };
 
+export const validateSinglePropositionAbCorpus = (cases: readonly JevSinglePropositionAbCase[]): string[] => {
+    const errors: string[] = [];
+    const sourceById = new Map(JEV_SEMANTIC_AB_CASES.map(item => [item.sourceCaseId, item]));
+    if (cases.length !== JEV_SEMANTIC_AB_SOURCE_IDS.length * 2) errors.push('single-proposition A/B corpus has incorrect case count');
+    const ids = new Set<string>();
+    for (const item of cases) {
+        const source = sourceById.get(item.sourceCaseId);
+        if (ids.has(item.id)) errors.push(`duplicate single-proposition A/B id: ${item.id}`);
+        ids.add(item.id);
+        if (!source) errors.push(`missing single-proposition A/B source: ${item.id}`);
+        else if (item.state !== source.state || JSON.stringify(item.state) !== JSON.stringify(source.state) || item.category !== source.category || item.expected !== source.expected || item.mode !== source.mode || item.ccMode !== source.ccMode) errors.push(`single-proposition A/B source mismatch: ${item.id}`);
+    }
+    for (const sourceCaseId of JEV_SEMANTIC_AB_SOURCE_IDS) {
+        const entries = cases.filter(item => item.sourceCaseId === sourceCaseId);
+        if (entries.length !== 2 || !entries.some(item => item.questionSet === 'production') || !entries.some(item => item.questionSet === 'category-v4')) errors.push(`invalid single-proposition A/B pairing: ${sourceCaseId}`);
+    }
+    for (let pass = 0; pass < 2; pass += 1) {
+        const block = cases.slice(pass * JEV_SEMANTIC_AB_SOURCE_IDS.length, (pass + 1) * JEV_SEMANTIC_AB_SOURCE_IDS.length);
+        if (block.some((item, index) => item.sourceCaseId !== JEV_SEMANTIC_AB_SOURCE_IDS[index] || item.questionSet === cases[(1 - pass) * JEV_SEMANTIC_AB_SOURCE_IDS.length + index]?.questionSet)) errors.push(`single-proposition A/B interleaving mismatch: pass ${pass + 1}`);
+    }
+    return errors;
+};
+
 const mean = (values: readonly number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined;
 const min = (values: readonly number[]) => values.length ? Math.min(...values) : undefined;
 const max = (values: readonly number[]) => values.length ? Math.max(...values) : undefined;
@@ -272,27 +301,35 @@ export const aggregateSyntheticCalibration = (results: readonly SyntheticCalibra
         return [category, { sourceCaseCount: sourceStats.length, averageWithinCaseRange: mean(ranges), maximumWithinCaseRange: max(ranges), averagePopulationStandardDeviation: mean(deviations), maximumPopulationStandardDeviation: max(deviations) }];
     }));
     const repeatabilityByIndex = Object.fromEntries([...new Set(repeatabilityRows.map(result => result.repeatIndex))].map(repeatIndex => [repeatIndex!, mean(repeatabilityRows.filter(result => result.repeatIndex === repeatIndex).map(result => result.signal!))]));
-    const semanticRows = results.filter(result => result.suite === 'semantic-ab');
-    const semanticBySource = Object.fromEntries([...new Set(semanticRows.map(result => result.sourceCaseId).filter(Boolean) as string[])].map(sourceCaseId => {
-        const rows = semanticRows.filter(result => result.sourceCaseId === sourceCaseId);
-        const production = rows.find(result => result.questionSet === 'production');
-        const experimental = rows.find(result => result.questionSet === 'experimental');
-        return [sourceCaseId, { category: production?.category || experimental?.category, expected: production?.expected || experimental?.expected, productionSignal: production?.signal, experimentalSignal: experimental?.signal, delta: production?.signal === undefined || experimental?.signal === undefined ? undefined : experimental.signal - production.signal }];
-    }));
-    const semanticByCategoryExpected = Object.fromEntries([...new Set(semanticRows.map(result => `${result.category}:${result.expected}`))].map(key => {
-        const [category, expected] = key.split(':') as [keyof typeof signalKeyByCategory, JevSyntheticExpected];
-        const rows = semanticRows.filter(result => result.category === category && result.expected === expected);
-        const production = rows.filter(result => result.questionSet === 'production' && result.signal !== undefined).map(result => result.signal!);
-        const experimental = rows.filter(result => result.questionSet === 'experimental' && result.signal !== undefined).map(result => result.signal!);
-        return [key, { productionCount: production.length, experimentalCount: experimental.length, productionMean: mean(production), experimentalMean: mean(experimental), productionMinimum: min(production), experimentalMinimum: min(experimental), productionMaximum: max(production), experimentalMaximum: max(experimental), meanDelta: mean(experimental) === undefined || mean(production) === undefined ? undefined : mean(experimental)! - mean(production)! }];
-    }));
+    const aggregateQuestionSetAb = (rows: readonly SyntheticCalibrationResult[], alternativeQuestionSet: 'experimental' | 'category-v4') => {
+        const bySource = Object.fromEntries([...new Set(rows.map(result => result.sourceCaseId).filter(Boolean) as string[])].map(sourceCaseId => {
+            const pair = rows.filter(result => result.sourceCaseId === sourceCaseId);
+            const production = pair.find(result => result.questionSet === 'production');
+            const alternative = pair.find(result => result.questionSet === alternativeQuestionSet);
+            return [sourceCaseId, { category: production?.category || alternative?.category, expected: production?.expected || alternative?.expected, productionSignal: production?.signal, alternativeSignal: alternative?.signal, delta: production?.signal === undefined || alternative?.signal === undefined ? undefined : alternative.signal - production.signal }];
+        }));
+        const byCategory = Object.fromEntries([...new Set(rows.map(result => result.category))].map(category => {
+            const metrics = (expected: JevSyntheticExpected) => {
+                const categoryRows = rows.filter(result => result.category === category && result.expected === expected);
+                const production = categoryRows.filter(result => result.questionSet === 'production' && result.signal !== undefined).map(result => result.signal!);
+                const alternative = categoryRows.filter(result => result.questionSet === alternativeQuestionSet && result.signal !== undefined).map(result => result.signal!);
+                return { count: categoryRows.length / 2, productionMean: mean(production), alternativeMean: mean(alternative), productionMinimum: min(production), alternativeMinimum: min(alternative), productionMaximum: max(production), alternativeMaximum: max(alternative), meanDelta: mean(alternative) === undefined || mean(production) === undefined ? undefined : mean(alternative)! - mean(production)! };
+            };
+            const positive = metrics('positive');
+            const negative = metrics('negative');
+            return [category, { positive, negative, productionSeparation: positive.productionMean === undefined || negative.productionMean === undefined ? undefined : positive.productionMean - negative.productionMean, alternativeSeparation: positive.alternativeMean === undefined || negative.alternativeMean === undefined ? undefined : positive.alternativeMean - negative.alternativeMean }];
+        }));
+        return { bySource, byCategory };
+    };
+    const semanticAb = aggregateQuestionSetAb(results.filter(result => result.suite === 'semantic-ab'), 'experimental');
+    const singlePropositionAb = aggregateQuestionSetAb(results.filter(result => result.suite === 'single-proposition-ab'), 'category-v4');
     return { categories, directionalPairs: { compared: pairRows.length, positiveGreaterThanNegative: pairSuccesses, nonDirectionalPairIds: pairRows.filter(entries => {
         const positive = entries.find(entry => entry.expected === 'positive');
         const negative = entries.find(entry => entry.expected === 'negative');
         return !positive || !negative || positive.signal === undefined || negative.signal === undefined || positive.signal <= negative.signal;
     }).map(entries => fixtureById.get(entries[0]?.id || '')?.pairId) }, groups: {
         suite: groupBy(result => result.suite), mode: groupBy(result => result.mode), ccMode: groupBy(result => String(result.ccMode)),
-    }, controlledFactorDeltas, compositeControls, repeatability: { bySource: repeatabilityBySource, byCategory: repeatabilityByCategory, byRepeatIndex: repeatabilityByIndex }, semanticAb: { bySource: semanticBySource, byCategoryExpected: semanticByCategoryExpected } };
+    }, controlledFactorDeltas, compositeControls, repeatability: { bySource: repeatabilityBySource, byCategory: repeatabilityByCategory, byRepeatIndex: repeatabilityByIndex }, semanticAb, singlePropositionAb };
 };
 
 const readLocalOpenRouterApi = async (): Promise<string | undefined> => {
@@ -322,7 +359,9 @@ export const runSyntheticCalibration = async (live: boolean, suite: SyntheticSui
                 env: { OPENROUTER_API: apiKey },
                 ...(fixture.suite === 'semantic-ab' && fixture.questionSet === 'experimental'
                     ? { calibrationQuestions: JEV_EXPERIMENTAL_QUESTIONS_V4, allowCalibrationQuestions: true }
-                    : {}),
+                    : fixture.suite === 'single-proposition-ab' && fixture.questionSet === 'category-v4'
+                        ? { calibrationQuestions: buildSingleQuestionExperimentalSet(fixture.category), allowCalibrationQuestions: true }
+                        : {}),
             })
             : undefined;
         const latencyMs = Math.round(performance.now() - startedAt);
@@ -350,7 +389,7 @@ const main = async () => {
     const args = process.argv.slice(2);
     const live = args.includes('--live');
     const suiteValue = args.includes('--suite') ? args[args.indexOf('--suite') + 1] : 'clean';
-    if (suiteValue !== 'clean' && suiteValue !== 'parity' && suiteValue !== 'isolation' && suiteValue !== 'repeatability' && suiteValue !== 'semantic-ab' && suiteValue !== 'all') throw new Error('--suite must be clean, parity, isolation, repeatability, semantic-ab, or all.');
+    if (suiteValue !== 'clean' && suiteValue !== 'parity' && suiteValue !== 'isolation' && suiteValue !== 'repeatability' && suiteValue !== 'semantic-ab' && suiteValue !== 'single-proposition-ab' && suiteValue !== 'all') throw new Error('--suite must be clean, parity, isolation, repeatability, semantic-ab, single-proposition-ab, or all.');
     const suite = suiteValue as SyntheticSuiteName;
     const jsonOutputPath = parseJsonOutputPath(args);
     if (args.includes('--json-out') && !jsonOutputPath) throw new Error('--json-out requires a destination path.');
@@ -359,7 +398,8 @@ const main = async () => {
     const isolationErrors = validateFactorIsolationCorpus(JEV_FACTOR_ISOLATION_CASES);
     const repeatabilityErrors = validateRepeatabilityCorpus(JEV_REPEATABILITY_CASES);
     const semanticAbErrors = validateSemanticAbCorpus(JEV_SEMANTIC_AB_CASES);
-    const errors = [...cleanErrors, ...parityErrors, ...isolationErrors, ...repeatabilityErrors, ...semanticAbErrors];
+    const singlePropositionAbErrors = validateSinglePropositionAbCorpus(JEV_SINGLE_PROPOSITION_AB_CASES);
+    const errors = [...cleanErrors, ...parityErrors, ...isolationErrors, ...repeatabilityErrors, ...semanticAbErrors, ...singlePropositionAbErrors];
     if (errors.length) throw new Error(`Synthetic fixture validation failed: ${errors.join('; ')}`);
     const selectedCases = getSuiteCases(suite);
     const normalParityCases = JEV_PRODUCTION_SHAPE_PARITY_CASES.filter(item => item.state.mode === 'single' && !item.state.ccMode).length;
@@ -368,7 +408,7 @@ const main = async () => {
     const isolationFamilyCounts = Object.fromEntries([...new Set(JEV_FACTOR_ISOLATION_CASES.map(item => item.factorFamily))].map(family => [family, JEV_FACTOR_ISOLATION_CASES.filter(item => item.factorFamily === family).length]));
     const isolationModeCounts = Object.fromEntries(['single', 'group'].map(mode => [mode, JEV_FACTOR_ISOLATION_CASES.filter(item => item.mode === mode).length]));
     const isolationCcCounts = Object.fromEntries(['false', 'true'].map(ccMode => [ccMode, JEV_FACTOR_ISOLATION_CASES.filter(item => String(item.ccMode) === ccMode).length]));
-    console.log(`Jev synthetic calibration (${suite}): ${selectedCases.length} fictional cases. clean cases: ${JEV_SYNTHETIC_CALIBRATION_CASES.length}; parity cases: ${JEV_PRODUCTION_SHAPE_PARITY_CASES.length}; isolation cases: ${JEV_FACTOR_ISOLATION_CASES.length}; repeatability cases: ${JEV_REPEATABILITY_CASES.length}; semantic A/B cases: ${JEV_SEMANTIC_AB_CASES.length}; parity normal non-Cc: ${normalParityCases}; parity Cc: ${ccParityCases}; parity group: ${groupParityCases}.`);
+    console.log(`Jev synthetic calibration (${suite}): ${selectedCases.length} fictional cases. clean cases: ${JEV_SYNTHETIC_CALIBRATION_CASES.length}; parity cases: ${JEV_PRODUCTION_SHAPE_PARITY_CASES.length}; isolation cases: ${JEV_FACTOR_ISOLATION_CASES.length}; repeatability cases: ${JEV_REPEATABILITY_CASES.length}; semantic A/B cases: ${JEV_SEMANTIC_AB_CASES.length}; single-proposition A/B cases: ${JEV_SINGLE_PROPOSITION_AB_CASES.length}; parity normal non-Cc: ${normalParityCases}; parity Cc: ${ccParityCases}; parity group: ${groupParityCases}.`);
     console.log(`Production helpers reused: ${FACTOR_ISOLATION_HELPERS.join(', ')}. Network calls: 0 unless --live is explicitly supplied.`);
     if (suite === 'isolation' || suite === 'all') {
         const controlled = JEV_FACTOR_ISOLATION_CASES.filter(item => item.variant === 'variant').length;
@@ -385,6 +425,12 @@ const main = async () => {
         const negative = JEV_SEMANTIC_AB_CASES.filter(item => item.questionSet === 'production' && item.expected === 'negative').length;
         console.log(`Semantic A/B metadata: source cases ${JEV_SEMANTIC_AB_SOURCE_IDS.length}; future requests ${JEV_SEMANTIC_AB_CASES.length}; production questions ${Object.keys((await import('../api/_openrouter-decisions.js')).JEV_QUESTIONS).length}; experimental questions ${Object.keys(JEV_EXPERIMENTAL_QUESTIONS_V4).length}; categories ${JSON.stringify(categoryCounts)}; expected positive ${positive}; expected negative ${negative}; exact frozen-state reuse ${JEV_SEMANTIC_AB_CASES.length}; balanced complementary interleaving confirmed; network calls = 0 unless --live is explicitly supplied.`);
     }
+    if (suite === 'single-proposition-ab' || suite === 'all') {
+        const categoryCounts = Object.fromEntries([...new Set(JEV_SINGLE_PROPOSITION_AB_CASES.map(item => item.category))].map(category => [category, JEV_SINGLE_PROPOSITION_AB_CASES.filter(item => item.category === category).length / 2]));
+        const positive = JEV_SINGLE_PROPOSITION_AB_CASES.filter(item => item.questionSet === 'production' && item.expected === 'positive').length;
+        const negative = JEV_SINGLE_PROPOSITION_AB_CASES.filter(item => item.questionSet === 'production' && item.expected === 'negative').length;
+        console.log(`Single-proposition A/B metadata: source cases ${JEV_SEMANTIC_AB_SOURCE_IDS.length}; production requests ${positive + negative}; category-v4 requests ${positive + negative}; future requests ${JEV_SINGLE_PROPOSITION_AB_CASES.length}; categories ${JSON.stringify(categoryCounts)}; expected positive ${positive}; expected negative ${negative}; exact frozen-state reuse ${JEV_SINGLE_PROPOSITION_AB_CASES.length}; exactly one question differs per hybrid; balanced complementary interleaving confirmed; network calls = 0 unless --live is explicitly supplied.`);
+    }
     if (!live) {
         if (jsonOutputPath) throw new Error('--json-out requires --live; no file was written.');
         console.log('Offline validation complete. No OpenRouter request was made. Use --live to run the explicit synthetic calibration.');
@@ -393,7 +439,7 @@ const main = async () => {
     const results = await runSyntheticCalibration(true, suite);
     const summary = printSummary(results, selectedCases);
     if (jsonOutputPath) {
-        const safeResults = suite === 'semantic-ab'
+        const safeResults = suite === 'semantic-ab' || suite === 'single-proposition-ab'
             ? results.map(({ id, sourceCaseId, category, expected, questionSet, signal, model, latencyMs, inputTokens, outputTokens, cost, reasonCode }) => ({ id, sourceCaseId, category, expected, questionSet, signal, model, latencyMs, inputTokens, outputTokens, cost, reasonCode }))
             : results.map(({ id, suite, mode, ccMode, category, expected, signal, model, latencyMs, inputTokens, outputTokens, cost, reasonCode, factorFamily, factor, variant, baselineId, sourceCaseId, repeatIndex }) => ({ id, suite, sourceCaseId, repeatIndex, mode, ccMode, category, expected, factorFamily, factor, variant, baselineId, signal, model, latencyMs, inputTokens, outputTokens, cost, reasonCode }));
         await (await import('node:fs/promises')).writeFile(resolve(jsonOutputPath), JSON.stringify({ results: safeResults, summary }, null, 2));
