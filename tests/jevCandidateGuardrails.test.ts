@@ -72,8 +72,10 @@ test('wardrobe wrong-person and clothing-change fixtures prove their content-lev
     for (const source of [wrongPersonSingle, wrongPersonGroup]) {
         assert.equal(source.state.wardrobe?.characters.aster, 'green coat');
         assert.equal(source.state.wardrobe?.characters.beryl, 'red coat');
-        assert.match(source.state.candidateText, /Aster smooths her red coat/i);
-        assert.doesNotMatch(source.state.candidateText, /assigned to Beryl|Beryl's red coat/i);
+        assert.match(source.state.candidateText, /Aster's coat is red/i);
+        assert.match(source.state.candidateText, /Beryl's coat is green/i);
+        assert.equal(source.expected, 'positive');
+        assert.equal(source.guardrailFamily, 'wrong-person');
     }
     assert.match(wrongPersonGroup.state.candidateText, /<chat>/);
     assert.equal(changeGroup.expected, 'negative');
