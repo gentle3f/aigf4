@@ -34,6 +34,17 @@ import {
     JEV_SINGLE_PROPOSITION_AB_CASES,
     type JevSinglePropositionAbCase,
 } from '../tests/fixtures/jevSinglePropositionAb.js';
+import {
+    JEV_CANDIDATE_GUARDRAIL_CASES,
+    type JevCandidateGuardrailAbCase,
+} from '../tests/fixtures/jevCandidateGuardrailAb.js';
+import {
+    JEV_CANDIDATE_GUARDRAIL_SOURCES,
+    JEV_CANDIDATE_GUARDRAIL_SENTINELS,
+    type JevCandidateGuardrailSource,
+} from '../tests/fixtures/jevCandidateGuardrails.js';
+import { JEV_QUESTIONS } from '../api/_openrouter-decisions.js';
+import { JEV_QUESTION_KEY_BY_CATEGORY } from '../tests/fixtures/jevSingleQuestionHybrid.js';
 
 const signalKeyByCategory = {
     request_mismatch: 'requestMismatch', identity: 'identityConflict', speaker_ownership: 'speakerOwnershipViolation',
@@ -47,7 +58,7 @@ type SignalKey = typeof signalKeyByCategory[keyof typeof signalKeyByCategory];
 
 export interface SyntheticCalibrationResult {
     id: string;
-    suite: 'clean' | 'production-shape' | 'factor-isolation' | 'repeatability' | 'semantic-ab' | 'single-proposition-ab';
+    suite: 'clean' | 'production-shape' | 'factor-isolation' | 'repeatability' | 'semantic-ab' | 'single-proposition-ab' | 'candidate-guardrail';
     mode: 'single' | 'group';
     ccMode: boolean;
     category: keyof typeof signalKeyByCategory;
@@ -65,11 +76,12 @@ export interface SyntheticCalibrationResult {
     baselineId?: string;
     sourceCaseId?: string;
     repeatIndex?: number;
-    questionSet?: JevSemanticAbCase['questionSet'] | JevSinglePropositionAbCase['questionSet'];
+    questionSet?: JevSemanticAbCase['questionSet'] | JevSinglePropositionAbCase['questionSet'] | JevCandidateGuardrailAbCase['questionSet'];
+    guardrailFamily?: JevCandidateGuardrailAbCase['guardrailFamily'];
 }
 
-type SyntheticSuiteName = 'clean' | 'parity' | 'isolation' | 'repeatability' | 'semantic-ab' | 'single-proposition-ab' | 'all';
-type AnySyntheticCase = JevSyntheticCalibrationCase | typeof JEV_PRODUCTION_SHAPE_PARITY_CASES[number] | JevFactorIsolationCase | JevRepeatabilityCase | JevSemanticAbCase | JevSinglePropositionAbCase;
+type SyntheticSuiteName = 'clean' | 'parity' | 'isolation' | 'repeatability' | 'semantic-ab' | 'single-proposition-ab' | 'candidate-guardrail' | 'all';
+type AnySyntheticCase = JevSyntheticCalibrationCase | typeof JEV_PRODUCTION_SHAPE_PARITY_CASES[number] | JevFactorIsolationCase | JevRepeatabilityCase | JevSemanticAbCase | JevSinglePropositionAbCase | JevCandidateGuardrailAbCase;
 
 const getSuiteCases = (suite: SyntheticSuiteName): readonly AnySyntheticCase[] => {
     if (suite === 'clean') return JEV_SYNTHETIC_CALIBRATION_CASES;
@@ -78,7 +90,8 @@ const getSuiteCases = (suite: SyntheticSuiteName): readonly AnySyntheticCase[] =
     if (suite === 'repeatability') return JEV_REPEATABILITY_CASES;
     if (suite === 'semantic-ab') return JEV_SEMANTIC_AB_CASES;
     if (suite === 'single-proposition-ab') return JEV_SINGLE_PROPOSITION_AB_CASES;
-    return [...JEV_SYNTHETIC_CALIBRATION_CASES, ...JEV_PRODUCTION_SHAPE_PARITY_CASES, ...JEV_FACTOR_ISOLATION_CASES, ...JEV_REPEATABILITY_CASES, ...JEV_SEMANTIC_AB_CASES, ...JEV_SINGLE_PROPOSITION_AB_CASES];
+    if (suite === 'candidate-guardrail') return JEV_CANDIDATE_GUARDRAIL_CASES;
+    return [...JEV_SYNTHETIC_CALIBRATION_CASES, ...JEV_PRODUCTION_SHAPE_PARITY_CASES, ...JEV_FACTOR_ISOLATION_CASES, ...JEV_REPEATABILITY_CASES, ...JEV_SEMANTIC_AB_CASES, ...JEV_SINGLE_PROPOSITION_AB_CASES, ...JEV_CANDIDATE_GUARDRAIL_CASES];
 };
 
 const validateCorpus = (cases: readonly AnySyntheticCase[], requireEveryCategory: boolean): string[] => {
@@ -226,6 +239,50 @@ export const validateSinglePropositionAbCorpus = (cases: readonly JevSinglePropo
     return errors;
 };
 
+export const validateCandidateGuardrailCorpus = (cases: readonly JevCandidateGuardrailAbCase[]): string[] => {
+    const errors: string[] = [];
+    const sources = new Map(JEV_CANDIDATE_GUARDRAIL_SOURCES.map(source => [source.id, source]));
+    if (JEV_CANDIDATE_GUARDRAIL_SOURCES.length < 36 || JEV_CANDIDATE_GUARDRAIL_SOURCES.length > 44) errors.push('candidate guardrail source count must be 36 to 44');
+    if (cases.length !== JEV_CANDIDATE_GUARDRAIL_SOURCES.length * 2) errors.push('candidate guardrail request count mismatch');
+    const ids = new Set<string>();
+    for (const item of cases) {
+        const source = sources.get(item.sourceCaseId);
+        if (ids.has(item.id)) errors.push(`duplicate candidate guardrail id: ${item.id}`);
+        ids.add(item.id);
+        if (!source) errors.push(`missing candidate guardrail source: ${item.id}`);
+        else if (item.category !== source.category || item.expected !== source.expected || item.guardrailFamily !== source.guardrailFamily || item.state !== source.state || JSON.stringify(item.state) !== JSON.stringify(source.state) || item.mode !== source.state.mode || item.ccMode !== source.state.ccMode) errors.push(`candidate guardrail source mismatch: ${item.id}`);
+        if (item.category !== 'wardrobe' && item.category !== 'group_narration') errors.push(`invalid candidate guardrail category: ${item.id}`);
+    }
+    for (const source of JEV_CANDIDATE_GUARDRAIL_SOURCES) {
+        const pair = cases.filter(item => item.sourceCaseId === source.id);
+        if (pair.length !== 2 || !pair.some(item => item.questionSet === 'production') || !pair.some(item => item.questionSet === 'category-v4') || pair[0]?.state !== pair[1]?.state || JSON.stringify(pair[0]?.state) !== JSON.stringify(pair[1]?.state)) errors.push(`invalid candidate guardrail pair: ${source.id}`);
+        if (source.category === 'wardrobe') {
+            if (source.expected === 'positive' && !source.semantics.establishedContradiction) errors.push(`wardrobe positive lacks contradiction metadata: ${source.id}`);
+            if (source.guardrailFamily === 'exact-match' && !source.semantics.establishedMatch) errors.push(`wardrobe match lacks metadata: ${source.id}`);
+            if ((source.guardrailFamily === 'unestablished' || source.guardrailFamily === 'ambiguous-reference') && !source.semantics.lacksTargetClothingEvidence) errors.push(`wardrobe unestablished case lacks metadata: ${source.id}`);
+            if (source.guardrailFamily === 'additive-accessory' && !source.semantics.additiveOnly) errors.push(`wardrobe additive case lacks metadata: ${source.id}`);
+            if (source.guardrailFamily === 'clothing-change' && !source.semantics.explicitPriorChange) errors.push(`wardrobe change lacks metadata: ${source.id}`);
+            if (source.guardrailFamily === 'wrong-person' && !source.semantics.wrongPersonMismatch) errors.push(`wrong-person case lacks metadata: ${source.id}`);
+        } else {
+            if (source.expected === 'positive' && !source.semantics.unlabelledFirstPerson) errors.push(`group positive lacks unlabelled narration metadata: ${source.id}`);
+            if (source.guardrailFamily === 'mixed' && !(source.semantics.unlabelledFirstPerson && source.semantics.labelledFirstPerson)) errors.push(`mixed group case lacks metadata: ${source.id}`);
+            if ((source.guardrailFamily === 'labelled-dialogue' || source.guardrailFamily === 'labelled-action' || source.guardrailFamily === 'quoted-first-person') && !source.semantics.labelledFirstPerson) errors.push(`labelled group case lacks attribution metadata: ${source.id}`);
+            if ((source.guardrailFamily === 'third-person' || source.guardrailFamily === 'serializer-envelope-negative') && !source.semantics.noUnlabelledFirstPerson && !source.semantics.labelledFirstPerson) errors.push(`group negative lacks attribution metadata: ${source.id}`);
+            if (source.guardrailFamily.includes('envelope') && !source.semantics.serializerEnvelope) errors.push(`envelope case lacks serializer metadata: ${source.id}`);
+        }
+    }
+    for (let pass = 0; pass < 2; pass += 1) {
+        const block = cases.slice(pass * JEV_CANDIDATE_GUARDRAIL_SOURCES.length, (pass + 1) * JEV_CANDIDATE_GUARDRAIL_SOURCES.length);
+        if (block.some((item, index) => item.sourceCaseId !== JEV_CANDIDATE_GUARDRAIL_SOURCES[index]?.id || item.questionSet === cases[(1 - pass) * JEV_CANDIDATE_GUARDRAIL_SOURCES.length + index]?.questionSet)) errors.push(`candidate guardrail interleaving mismatch: pass ${pass + 1}`);
+    }
+    for (const category of ['wardrobe', 'group_narration'] as const) {
+        const hybrid = buildSingleQuestionExperimentalSet(category);
+        const changed = Object.keys(JEV_QUESTIONS).filter(key => hybrid[key]?.instructions !== JEV_QUESTIONS[key]?.instructions);
+        if (changed.length !== 1 || changed[0] !== JEV_QUESTION_KEY_BY_CATEGORY[category]) errors.push(`candidate guardrail hybrid mismatch: ${category}`);
+    }
+    return errors;
+};
+
 const mean = (values: readonly number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined;
 const min = (values: readonly number[]) => values.length ? Math.min(...values) : undefined;
 const max = (values: readonly number[]) => values.length ? Math.max(...values) : undefined;
@@ -323,13 +380,14 @@ export const aggregateSyntheticCalibration = (results: readonly SyntheticCalibra
     };
     const semanticAb = aggregateQuestionSetAb(results.filter(result => result.suite === 'semantic-ab'), 'experimental');
     const singlePropositionAb = aggregateQuestionSetAb(results.filter(result => result.suite === 'single-proposition-ab'), 'category-v4');
+    const candidateGuardrail = aggregateQuestionSetAb(results.filter(result => result.suite === 'candidate-guardrail'), 'category-v4');
     return { categories, directionalPairs: { compared: pairRows.length, positiveGreaterThanNegative: pairSuccesses, nonDirectionalPairIds: pairRows.filter(entries => {
         const positive = entries.find(entry => entry.expected === 'positive');
         const negative = entries.find(entry => entry.expected === 'negative');
         return !positive || !negative || positive.signal === undefined || negative.signal === undefined || positive.signal <= negative.signal;
     }).map(entries => fixtureById.get(entries[0]?.id || '')?.pairId) }, groups: {
         suite: groupBy(result => result.suite), mode: groupBy(result => result.mode), ccMode: groupBy(result => String(result.ccMode)),
-    }, controlledFactorDeltas, compositeControls, repeatability: { bySource: repeatabilityBySource, byCategory: repeatabilityByCategory, byRepeatIndex: repeatabilityByIndex }, semanticAb, singlePropositionAb };
+    }, controlledFactorDeltas, compositeControls, repeatability: { bySource: repeatabilityBySource, byCategory: repeatabilityByCategory, byRepeatIndex: repeatabilityByIndex }, semanticAb, singlePropositionAb, candidateGuardrail };
 };
 
 const readLocalOpenRouterApi = async (): Promise<string | undefined> => {
@@ -359,7 +417,7 @@ export const runSyntheticCalibration = async (live: boolean, suite: SyntheticSui
                 env: { OPENROUTER_API: apiKey },
                 ...(fixture.suite === 'semantic-ab' && fixture.questionSet === 'experimental'
                     ? { calibrationQuestions: JEV_EXPERIMENTAL_QUESTIONS_V4, allowCalibrationQuestions: true }
-                    : fixture.suite === 'single-proposition-ab' && fixture.questionSet === 'category-v4'
+                    : (fixture.suite === 'single-proposition-ab' || fixture.suite === 'candidate-guardrail') && fixture.questionSet === 'category-v4'
                         ? { calibrationQuestions: buildSingleQuestionExperimentalSet(fixture.category), allowCalibrationQuestions: true }
                         : {}),
             })
@@ -367,9 +425,9 @@ export const runSyntheticCalibration = async (live: boolean, suite: SyntheticSui
         const latencyMs = Math.round(performance.now() - startedAt);
         if (response?.status === 'ok') {
             const signal = response.signals[signalKeyByCategory[fixture.category] as SignalKey];
-            results.push({ id: fixture.id, suite: fixture.suite || 'clean', mode: fixture.state.mode, ccMode: fixture.state.ccMode, category: fixture.category, expected: fixture.expected, signal, model: response.model, latencyMs, inputTokens: response.usage?.inputTokens, outputTokens: response.usage?.outputTokens, cost: response.usage?.cost, ...('factorFamily' in fixture ? { factorFamily: fixture.factorFamily, factor: fixture.factor, variant: fixture.variant, baselineId: fixture.baselineId } : {}), ...('sourceCaseId' in fixture ? { sourceCaseId: fixture.sourceCaseId, repeatIndex: fixture.repeatIndex } : {}), ...('questionSet' in fixture ? { questionSet: fixture.questionSet } : {}) });
+            results.push({ id: fixture.id, suite: fixture.suite || 'clean', mode: fixture.state.mode, ccMode: fixture.state.ccMode, category: fixture.category, expected: fixture.expected, signal, model: response.model, latencyMs, inputTokens: response.usage?.inputTokens, outputTokens: response.usage?.outputTokens, cost: response.usage?.cost, ...('factorFamily' in fixture ? { factorFamily: fixture.factorFamily, factor: fixture.factor, variant: fixture.variant, baselineId: fixture.baselineId } : {}), ...('sourceCaseId' in fixture ? { sourceCaseId: fixture.sourceCaseId, repeatIndex: fixture.repeatIndex } : {}), ...('questionSet' in fixture ? { questionSet: fixture.questionSet } : {}), ...('guardrailFamily' in fixture ? { guardrailFamily: fixture.guardrailFamily } : {}) });
         } else if (response) {
-            results.push({ id: fixture.id, suite: fixture.suite || 'clean', mode: fixture.state.mode, ccMode: fixture.state.ccMode, category: fixture.category, expected: fixture.expected, latencyMs, reasonCode: response.reasonCode, ...('factorFamily' in fixture ? { factorFamily: fixture.factorFamily, factor: fixture.factor, variant: fixture.variant, baselineId: fixture.baselineId } : {}), ...('sourceCaseId' in fixture ? { sourceCaseId: fixture.sourceCaseId, repeatIndex: fixture.repeatIndex } : {}), ...('questionSet' in fixture ? { questionSet: fixture.questionSet } : {}) });
+            results.push({ id: fixture.id, suite: fixture.suite || 'clean', mode: fixture.state.mode, ccMode: fixture.state.ccMode, category: fixture.category, expected: fixture.expected, latencyMs, reasonCode: response.reasonCode, ...('factorFamily' in fixture ? { factorFamily: fixture.factorFamily, factor: fixture.factor, variant: fixture.variant, baselineId: fixture.baselineId } : {}), ...('sourceCaseId' in fixture ? { sourceCaseId: fixture.sourceCaseId, repeatIndex: fixture.repeatIndex } : {}), ...('questionSet' in fixture ? { questionSet: fixture.questionSet } : {}), ...('guardrailFamily' in fixture ? { guardrailFamily: fixture.guardrailFamily } : {}) });
         }
     }
     return results;
@@ -389,7 +447,7 @@ const main = async () => {
     const args = process.argv.slice(2);
     const live = args.includes('--live');
     const suiteValue = args.includes('--suite') ? args[args.indexOf('--suite') + 1] : 'clean';
-    if (suiteValue !== 'clean' && suiteValue !== 'parity' && suiteValue !== 'isolation' && suiteValue !== 'repeatability' && suiteValue !== 'semantic-ab' && suiteValue !== 'single-proposition-ab' && suiteValue !== 'all') throw new Error('--suite must be clean, parity, isolation, repeatability, semantic-ab, single-proposition-ab, or all.');
+    if (suiteValue !== 'clean' && suiteValue !== 'parity' && suiteValue !== 'isolation' && suiteValue !== 'repeatability' && suiteValue !== 'semantic-ab' && suiteValue !== 'single-proposition-ab' && suiteValue !== 'candidate-guardrail' && suiteValue !== 'all') throw new Error('--suite must be clean, parity, isolation, repeatability, semantic-ab, single-proposition-ab, candidate-guardrail, or all.');
     const suite = suiteValue as SyntheticSuiteName;
     const jsonOutputPath = parseJsonOutputPath(args);
     if (args.includes('--json-out') && !jsonOutputPath) throw new Error('--json-out requires a destination path.');
@@ -399,7 +457,8 @@ const main = async () => {
     const repeatabilityErrors = validateRepeatabilityCorpus(JEV_REPEATABILITY_CASES);
     const semanticAbErrors = validateSemanticAbCorpus(JEV_SEMANTIC_AB_CASES);
     const singlePropositionAbErrors = validateSinglePropositionAbCorpus(JEV_SINGLE_PROPOSITION_AB_CASES);
-    const errors = [...cleanErrors, ...parityErrors, ...isolationErrors, ...repeatabilityErrors, ...semanticAbErrors, ...singlePropositionAbErrors];
+    const candidateGuardrailErrors = validateCandidateGuardrailCorpus(JEV_CANDIDATE_GUARDRAIL_CASES);
+    const errors = [...cleanErrors, ...parityErrors, ...isolationErrors, ...repeatabilityErrors, ...semanticAbErrors, ...singlePropositionAbErrors, ...candidateGuardrailErrors];
     if (errors.length) throw new Error(`Synthetic fixture validation failed: ${errors.join('; ')}`);
     const selectedCases = getSuiteCases(suite);
     const normalParityCases = JEV_PRODUCTION_SHAPE_PARITY_CASES.filter(item => item.state.mode === 'single' && !item.state.ccMode).length;
@@ -408,7 +467,7 @@ const main = async () => {
     const isolationFamilyCounts = Object.fromEntries([...new Set(JEV_FACTOR_ISOLATION_CASES.map(item => item.factorFamily))].map(family => [family, JEV_FACTOR_ISOLATION_CASES.filter(item => item.factorFamily === family).length]));
     const isolationModeCounts = Object.fromEntries(['single', 'group'].map(mode => [mode, JEV_FACTOR_ISOLATION_CASES.filter(item => item.mode === mode).length]));
     const isolationCcCounts = Object.fromEntries(['false', 'true'].map(ccMode => [ccMode, JEV_FACTOR_ISOLATION_CASES.filter(item => String(item.ccMode) === ccMode).length]));
-    console.log(`Jev synthetic calibration (${suite}): ${selectedCases.length} fictional cases. clean cases: ${JEV_SYNTHETIC_CALIBRATION_CASES.length}; parity cases: ${JEV_PRODUCTION_SHAPE_PARITY_CASES.length}; isolation cases: ${JEV_FACTOR_ISOLATION_CASES.length}; repeatability cases: ${JEV_REPEATABILITY_CASES.length}; semantic A/B cases: ${JEV_SEMANTIC_AB_CASES.length}; single-proposition A/B cases: ${JEV_SINGLE_PROPOSITION_AB_CASES.length}; parity normal non-Cc: ${normalParityCases}; parity Cc: ${ccParityCases}; parity group: ${groupParityCases}.`);
+    console.log(`Jev synthetic calibration (${suite}): ${selectedCases.length} fictional cases. clean cases: ${JEV_SYNTHETIC_CALIBRATION_CASES.length}; parity cases: ${JEV_PRODUCTION_SHAPE_PARITY_CASES.length}; isolation cases: ${JEV_FACTOR_ISOLATION_CASES.length}; repeatability cases: ${JEV_REPEATABILITY_CASES.length}; semantic A/B cases: ${JEV_SEMANTIC_AB_CASES.length}; single-proposition A/B cases: ${JEV_SINGLE_PROPOSITION_AB_CASES.length}; candidate-guardrail A/B cases: ${JEV_CANDIDATE_GUARDRAIL_CASES.length}; parity normal non-Cc: ${normalParityCases}; parity Cc: ${ccParityCases}; parity group: ${groupParityCases}.`);
     console.log(`Production helpers reused: ${FACTOR_ISOLATION_HELPERS.join(', ')}. Network calls: 0 unless --live is explicitly supplied.`);
     if (suite === 'isolation' || suite === 'all') {
         const controlled = JEV_FACTOR_ISOLATION_CASES.filter(item => item.variant === 'variant').length;
@@ -431,6 +490,15 @@ const main = async () => {
         const negative = JEV_SINGLE_PROPOSITION_AB_CASES.filter(item => item.questionSet === 'production' && item.expected === 'negative').length;
         console.log(`Single-proposition A/B metadata: source cases ${JEV_SEMANTIC_AB_SOURCE_IDS.length}; production requests ${positive + negative}; category-v4 requests ${positive + negative}; future requests ${JEV_SINGLE_PROPOSITION_AB_CASES.length}; categories ${JSON.stringify(categoryCounts)}; expected positive ${positive}; expected negative ${negative}; exact frozen-state reuse ${JEV_SINGLE_PROPOSITION_AB_CASES.length}; exactly one question differs per hybrid; balanced complementary interleaving confirmed; network calls = 0 unless --live is explicitly supplied.`);
     }
+    if (suite === 'candidate-guardrail' || suite === 'all') {
+        const sourceCount = JEV_CANDIDATE_GUARDRAIL_SOURCES.length;
+        const wardrobeCount = JEV_CANDIDATE_GUARDRAIL_SOURCES.filter(item => item.category === 'wardrobe').length;
+        const groupCount = JEV_CANDIDATE_GUARDRAIL_SOURCES.filter(item => item.category === 'group_narration').length;
+        const positive = JEV_CANDIDATE_GUARDRAIL_SOURCES.filter(item => item.expected === 'positive').length;
+        const negative = JEV_CANDIDATE_GUARDRAIL_SOURCES.filter(item => item.expected === 'negative').length;
+        const familyCounts = Object.fromEntries([...new Set(JEV_CANDIDATE_GUARDRAIL_SOURCES.map(item => item.guardrailFamily))].map(family => [family, JEV_CANDIDATE_GUARDRAIL_SOURCES.filter(item => item.guardrailFamily === family).length]));
+        console.log(`Candidate guardrail metadata: source cases ${sourceCount}; future requests ${JEV_CANDIDATE_GUARDRAIL_CASES.length}; wardrobe ${wardrobeCount}; group_narration ${groupCount}; expected positive ${positive}; expected negative ${negative}; families ${JSON.stringify(familyCounts)}; exact state reuse ${JEV_CANDIDATE_GUARDRAIL_CASES.length}; exactly one question differs per hybrid; balanced complementary interleaving confirmed; sentinels ${JSON.stringify(JEV_CANDIDATE_GUARDRAIL_SENTINELS)}; network calls = 0 unless --live is explicitly supplied.`);
+    }
     if (!live) {
         if (jsonOutputPath) throw new Error('--json-out requires --live; no file was written.');
         console.log('Offline validation complete. No OpenRouter request was made. Use --live to run the explicit synthetic calibration.');
@@ -439,7 +507,9 @@ const main = async () => {
     const results = await runSyntheticCalibration(true, suite);
     const summary = printSummary(results, selectedCases);
     if (jsonOutputPath) {
-        const safeResults = suite === 'semantic-ab' || suite === 'single-proposition-ab'
+        const safeResults = suite === 'candidate-guardrail'
+            ? results.map(({ id, sourceCaseId, category, expected, guardrailFamily, questionSet, signal, model, latencyMs, inputTokens, outputTokens, cost, reasonCode }) => ({ id, sourceCaseId, category, expected, guardrailFamily, questionSet, signal, model, latencyMs, inputTokens, outputTokens, cost, reasonCode }))
+            : suite === 'semantic-ab' || suite === 'single-proposition-ab'
             ? results.map(({ id, sourceCaseId, category, expected, questionSet, signal, model, latencyMs, inputTokens, outputTokens, cost, reasonCode }) => ({ id, sourceCaseId, category, expected, questionSet, signal, model, latencyMs, inputTokens, outputTokens, cost, reasonCode }))
             : results.map(({ id, suite, mode, ccMode, category, expected, signal, model, latencyMs, inputTokens, outputTokens, cost, reasonCode, factorFamily, factor, variant, baselineId, sourceCaseId, repeatIndex }) => ({ id, suite, sourceCaseId, repeatIndex, mode, ccMode, category, expected, factorFamily, factor, variant, baselineId, signal, model, latencyMs, inputTokens, outputTokens, cost, reasonCode }));
         await (await import('node:fs/promises')).writeFile(resolve(jsonOutputPath), JSON.stringify({ results: safeResults, summary }, null, 2));
