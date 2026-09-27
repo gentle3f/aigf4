@@ -208,6 +208,12 @@ import {
     shouldRenderCompletedReplyInConversation,
 } from "./chatRequestNavigation.js";
 import {
+    CHAT_HISTORY_PRELOAD_SCROLL_PX,
+    getHiddenChatHistoryCount,
+    getInitialChatHistoryStartIndex,
+    getPreviousChatHistoryStartIndex,
+} from "./chatHistoryWindow.js";
+import {
     advanceRelationshipState,
     buildFallbackSurpriseEventMemberRoles,
     buildFallbackSurpriseShowMemberRoles,
@@ -863,6 +869,13 @@ let currentPersonaKeyForUpload: string | null = null;
 let avatarUploadRoomTarget: { roomId: string; memberId: string } | null = null;
 let avatarSourceTarget: { personaKey: string } | { roomId: string; memberId: string } | null = null;
 let expandedLegacyHistoryConversationKey: string | null = null;
+let renderedChatHistoryConversationKey: string | null = null;
+let renderedChatHistory: ChatMessage[] = [];
+let renderedChatHistoryStartIndex = 0;
+let renderedChatHistoryAnchor: HTMLElement | null = null;
+let renderedChatHistoryLoadOlderButton: HTMLButtonElement | null = null;
+let isPrependingChatHistory = false;
+let isChatHistoryAutoPreloadEnabled = false;
 let currentPersonaKeyForPromptEdit: string | null = null;
 let generatedPersonaData: any = null;
 let attachedGift: { file: File, dataUrl: string } | null = null;
@@ -6964,6 +6977,112 @@ const appendLinkedLegacyHistory = (room: ChatRoom) => {
     appendHistoryDivider('新群組由這裡開始');
 };
 
+const appendStoredHistoryMessage = (
+    message: ChatMessage,
+    target: HTMLElement | DocumentFragment = chatContainer,
+) => {
+    const sender = message.role === 'user' ? 'user' : message.role === 'model' ? 'bot' : 'system';
+    const content = message.role === 'system' && message.content.text?.trim() === SCENE_END_MARKER
+        ? { ...message.content, text: SCENE_START_LABEL }
+        : message.content;
+    return appendMessage(content, sender, message, 'none', target);
+};
+
+const resetRenderedChatHistoryWindow = () => {
+    renderedChatHistoryConversationKey = null;
+    renderedChatHistory = [];
+    renderedChatHistoryStartIndex = 0;
+    renderedChatHistoryAnchor = null;
+    renderedChatHistoryLoadOlderButton = null;
+    isPrependingChatHistory = false;
+    isChatHistoryAutoPreloadEnabled = false;
+};
+
+const updateRenderedChatHistoryLoadOlderButton = () => {
+    if (!renderedChatHistoryLoadOlderButton) return;
+    const hiddenCount = getHiddenChatHistoryCount(renderedChatHistoryStartIndex);
+    renderedChatHistoryLoadOlderButton.hidden = hiddenCount === 0;
+    renderedChatHistoryLoadOlderButton.textContent = hiddenCount > 0
+        ? `載入較早訊息（尚有 ${hiddenCount.toLocaleString('zh-HK')} 則）`
+        : '';
+};
+
+const prependOlderChatHistory = (batchSize?: number) => {
+    if (
+        isPrependingChatHistory
+        || !renderedChatHistoryAnchor
+        || !renderedChatHistoryConversationKey
+        || renderedChatHistoryConversationKey !== currentConversationKey
+        || renderedChatHistoryStartIndex <= 0
+    ) return;
+
+    isPrependingChatHistory = true;
+    try {
+        const previousScrollHeight = chatContainer.scrollHeight;
+        const previousScrollTop = chatContainer.scrollTop;
+        const nextStartIndex = getPreviousChatHistoryStartIndex(
+            renderedChatHistoryStartIndex,
+            batchSize,
+        );
+        const fragment = document.createDocumentFragment();
+        renderedChatHistory
+            .slice(nextStartIndex, renderedChatHistoryStartIndex)
+            .forEach(message => appendStoredHistoryMessage(message, fragment));
+
+        chatContainer.insertBefore(fragment, renderedChatHistoryAnchor.nextSibling);
+        renderedChatHistoryStartIndex = nextStartIndex;
+        updateRenderedChatHistoryLoadOlderButton();
+
+        const addedHeight = Math.max(0, chatContainer.scrollHeight - previousScrollHeight);
+        chatContainer.scrollTop = previousScrollTop + addedHeight;
+    } finally {
+        isPrependingChatHistory = false;
+    }
+};
+
+const renderChatHistoryWindow = (key: string, history: ChatMessage[]) => {
+    renderedChatHistoryConversationKey = key;
+    renderedChatHistory = history;
+    renderedChatHistoryStartIndex = getInitialChatHistoryStartIndex(history.length);
+    isPrependingChatHistory = false;
+    isChatHistoryAutoPreloadEnabled = false;
+
+    const loadOlderButton = document.createElement('button');
+    loadOlderButton.type = 'button';
+    loadOlderButton.className = 'chat-history-load-older';
+    loadOlderButton.addEventListener('click', () => prependOlderChatHistory());
+    chatContainer.appendChild(loadOlderButton);
+    renderedChatHistoryLoadOlderButton = loadOlderButton;
+
+    const anchor = document.createElement('div');
+    anchor.className = 'chat-history-window-anchor';
+    anchor.setAttribute('aria-hidden', 'true');
+    chatContainer.appendChild(anchor);
+    renderedChatHistoryAnchor = anchor;
+
+    const fragment = document.createDocumentFragment();
+    history
+        .slice(renderedChatHistoryStartIndex)
+        .forEach(message => appendStoredHistoryMessage(message, fragment));
+    chatContainer.appendChild(fragment);
+    updateRenderedChatHistoryLoadOlderButton();
+    window.requestAnimationFrame(() => {
+        if (renderedChatHistoryConversationKey === key) {
+            isChatHistoryAutoPreloadEnabled = true;
+        }
+    });
+};
+
+chatContainer.addEventListener('scroll', () => {
+    if (
+        isChatHistoryAutoPreloadEnabled
+        && chatContainer.scrollTop <= CHAT_HISTORY_PRELOAD_SCROLL_PX
+        && renderedChatHistoryStartIndex > 0
+    ) {
+        prependOlderChatHistory();
+    }
+}, { passive: true });
+
 const startLegacyChat = (key: string, restoredHistory: any[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
     const selectedPersona = memoryManager.getPersona(key);
     if (!selectedPersona || (key !== VENICE_ASSISTANT_PERSONA_KEY && selectedPersona.gender !== 'female')) {
@@ -6984,6 +7103,7 @@ const startLegacyChat = (key: string, restoredHistory: any[] | null = null, hist
     renderChatHeaderAvatar();
 
     chatContainer.innerHTML = '';
+    resetRenderedChatHistoryWindow();
     let chatHistory = restoredHistory || memoryManager.getChatHistory(key);
 
     if (restoredHistory) {
@@ -6994,22 +7114,7 @@ const startLegacyChat = (key: string, restoredHistory: any[] | null = null, hist
     }
     chatHistory = recoverInterruptedPhotoProposals(key, chatHistory);
 
-    chatHistory.forEach(message => {
-        if (message.role === 'user') {
-            appendMessage(message.content, 'user', message, 'none');
-        } else if (message.role === 'model') {
-            appendMessage(message.content, 'bot', message, 'none');
-        } else if (message.role === 'system') {
-            appendMessage(
-                message.content.text?.trim() === SCENE_END_MARKER
-                    ? { ...message.content, text: SCENE_START_LABEL }
-                    : message.content,
-                'system',
-                message,
-                'none',
-            );
-        }
-    });
+    renderChatHistoryWindow(key, chatHistory);
 
     personaSelectionView.classList.add('hidden');
     imageStudioView.classList.add('hidden');
@@ -7102,6 +7207,7 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
     renderChatHeaderAvatar();
 
     chatContainer.innerHTML = '';
+    resetRenderedChatHistoryWindow();
     let chatHistory = restoredHistory || memoryManager.getChatHistory(key);
     if (restoredHistory) {
         if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, key)) {
@@ -7121,13 +7227,7 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
     }
     chatHistory = recoverInterruptedPhotoProposals(key, chatHistory);
     if (room) appendLinkedLegacyHistory(room);
-    chatHistory.forEach(message => {
-        const sender = message.role === 'user' ? 'user' : message.role === 'model' ? 'bot' : 'system';
-        const content = message.role === 'system' && message.content.text?.trim() === SCENE_END_MARKER
-            ? { ...message.content, text: SCENE_START_LABEL }
-            : message.content;
-        appendMessage(content, sender, message, 'none');
-    });
+    renderChatHistoryWindow(key, chatHistory);
 
     appShell.classList.add('chat-open');
     personaSelectionView.classList.remove('hidden');
@@ -8789,6 +8889,9 @@ const runChatSearch = () => {
     clearChatSearchMatches();
     const query = chatSearchInput.value.trim().toLocaleLowerCase();
     if (!query) return;
+    if (renderedChatHistoryStartIndex > 0) {
+        prependOlderChatHistory(renderedChatHistoryStartIndex);
+    }
     chatSearchMatches = Array.from(chatContainer.children)
         .filter((element): element is HTMLElement => element instanceof HTMLElement)
         .filter(element => element.textContent?.toLocaleLowerCase().includes(query));
@@ -9084,6 +9187,7 @@ const appendMessage = (
     sender: 'user' | 'bot' | 'system' | 'god-mode',
     messageMeta?: Pick<ChatMessage, 'speakerId' | 'createdAt' | 'id'>,
     scrollMode: MessageScrollMode = 'auto',
+    target: HTMLElement | DocumentFragment = chatContainer,
 ): HTMLElement => {
     const isSystemMessage = sender === 'system';
     const groupDisplaySegments = sender === 'bot' && currentRoom
@@ -9291,9 +9395,11 @@ const appendMessage = (
     }
 
     if (content.legacy) messageWrapper.classList.add('legacy-chat-message');
-    chatContainer.appendChild(messageWrapper);
+    target.appendChild(messageWrapper);
 
-    scheduleMessageScroll(messageWrapper, sender, scrollMode);
+    if (target === chatContainer) {
+        scheduleMessageScroll(messageWrapper, sender, scrollMode);
+    }
 
     return messageWrapper;
 };
