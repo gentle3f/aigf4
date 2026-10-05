@@ -223,7 +223,24 @@ export const collectEstablishedNpcNames = (
     return ordered.slice(-limit);
 };
 
-const hasNpcPromotionIntent = (text: string) => [
+export const mergeEstablishedNpcNamesForTurn = (
+    establishedNpcNames: string[],
+    latestUserMessage: string,
+    personaName: string,
+    limit = 6,
+) => {
+    const ordered = [...establishedNpcNames.slice(-limit)];
+    const remember = (name: string) => {
+        const normalized = name.toLocaleLowerCase();
+        const previous = ordered.findIndex(item => item.toLocaleLowerCase() === normalized);
+        if (previous >= 0) ordered.splice(previous, 1);
+        ordered.push(name);
+    };
+    extractDirectNpcNames(latestUserMessage, personaName).forEach(remember);
+    return ordered.slice(-limit);
+};
+
+export const hasNpcPromotionIntent = (text: string) => [
     /(?:把|將|讓|叫|邀請|拉|加).{1,36}(?:加入|加進|加到|拉進|拉到|邀請進|邀請到|進入).{0,18}(?:這個|呢個|我們的|我哋個)?(?:聊天室|群組|對話|chat|group)/iu,
     /(?:把|將|讓|叫|邀請|拉|加).{1,36}(?:加入|加進|加到|拉進|拉到|邀請進|邀請到|進入)(?:來|嚟|吧|啦|喇|先)?[。！？!?\s]*$/iu,
     /(?:邀請|加|拉).{1,36}(?:到|入|進)\s*(?:這個|呢個|我們的|我哋個)?(?:聊天室|群組|對話|chat|group)/iu,

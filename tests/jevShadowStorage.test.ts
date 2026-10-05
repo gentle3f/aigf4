@@ -34,11 +34,29 @@ const signals = {
     otherDefect: 0.14,
 };
 
+const gateSemanticSignals = {
+    requestMismatch: signals.requestMismatch,
+    identityConflict: signals.identityConflict,
+    speakerOwnershipViolation: signals.speakerOwnershipViolation,
+    continuityViolation: signals.continuityViolation,
+    realityLayerViolation: signals.realityLayerViolation,
+    wardrobeConflict: signals.wardrobeConflict,
+    stateConflict: signals.stateConflict,
+    replayedBeat: signals.replayedBeat,
+    personaVoiceViolation: signals.personaVoiceViolation,
+    thirdPartySpeechViolation: signals.thirdPartySpeechViolation,
+    userAgencyViolation: signals.userAgencyViolation,
+    incompleteEnding: signals.incompleteEnding,
+    otherDefect: signals.otherDefect,
+};
+
 const makeRecord = (requestId: string): JevShadowRecord => ({
     taxonomyVersion: 'v3',
+    calibrationCohort: 'group-deterministic-v1',
     requestId,
     mode: 'group',
     ccMode: false,
+    deterministicGroupNarrationViolation: false,
     status: 'ok',
     latencyMs: 123,
     servedModel: 'typesafe/jev-1.13-20260917',
@@ -56,9 +74,56 @@ const makeRecord = (requestId: string): JevShadowRecord => ({
         usageOutputTokens: 10,
         usageCost: 0.00009,
     },
+    groupGateTrial: {
+        profile: 'group-gate-v2',
+        status: 'ok',
+        latencyMs: 88,
+        servedModel: 'typesafe/jev-1.13-20260917',
+        requiresRevision: 0.72,
+        semanticSignals: { ...gateSemanticSignals },
+        usageInputTokens: 92,
+        usageOutputTokens: 9,
+        usageCost: 0.00008,
+    },
     gemmaDecision: 'revise',
     gemmaIssueCodes: ['wardrobe'],
     gemmaComparableIssueCodes: ['wardrobe'],
+    gemmaIssueAnomalies: [],
+});
+
+const makeGateOnlyRecord = (requestId: string): JevShadowRecord => ({
+    taxonomyVersion: 'v3',
+    calibrationCohort: 'group-deterministic-v1',
+    requestId,
+    mode: 'group',
+    ccMode: false,
+    deterministicGroupNarrationViolation: false,
+    status: 'ok',
+    latencyMs: 88,
+    wardrobeTrial: {
+        profile: 'wardrobe-v4',
+        status: 'ok',
+        latencyMs: 95,
+        servedModel: 'typesafe/jev-1.13-20260917',
+        wardrobeConflict: 0.02,
+        usageInputTokens: 90,
+        usageOutputTokens: 10,
+        usageCost: 0.00009,
+    },
+    groupGateTrial: {
+        profile: 'group-gate-v2',
+        status: 'ok',
+        latencyMs: 88,
+        servedModel: 'typesafe/jev-1.13-20260917',
+        requiresRevision: 0.72,
+        semanticSignals: { ...gateSemanticSignals },
+        usageInputTokens: 92,
+        usageOutputTokens: 9,
+        usageCost: 0.00008,
+    },
+    gemmaDecision: 'keep',
+    gemmaIssueCodes: [],
+    gemmaComparableIssueCodes: [],
     gemmaIssueAnomalies: [],
 });
 
@@ -87,19 +152,35 @@ test('Jev shadow persistence survives reload semantics using metadata only', asy
                 ...makeRecord('req-1').wardrobeTrial!,
                 rawState: 'PRIVATE_STATE',
             },
+            groupGateTrial: {
+                ...makeRecord('req-1').groupGateTrial!,
+                rawState: 'PRIVATE_GATE_STATE',
+            },
         } as JevShadowRecord;
 
         persistJevShadowRecords([unsafe]);
         const raw = storage.getItem(JEV_SHADOW_STORAGE_KEY)!;
         for (const forbidden of [
             'PRIVATE_CANDIDATE', 'PRIVATE_HISTORY', 'PRIVATE_PERSONA', 'PRIVATE_PROMPT',
-            'PRIVATE_KEY', 'PRIVATE_STATE', 'candidateText', 'recentHistoryText', 'personaEvidence',
+            'PRIVATE_KEY', 'PRIVATE_STATE', 'PRIVATE_GATE_STATE', 'candidateText', 'recentHistoryText', 'personaEvidence',
             'rawPrompt', 'authorization', 'rawState',
         ]) assert.equal(raw.includes(forbidden), false);
 
         const loaded = loadPersistedJevShadowRecords();
         assert.equal(loaded.length, 1);
         assert.deepEqual(loaded[0], makeRecord('req-1'));
+    });
+});
+
+test('gate-only Group records survive persistence without a duplicate top-level V3 result', async () => {
+    await withStorage(() => {
+        const gateOnly = makeGateOnlyRecord('gate-only');
+        persistJevShadowRecords([gateOnly]);
+        const loaded = loadPersistedJevShadowRecords();
+        assert.deepEqual(loaded, [gateOnly]);
+        assert.equal(loaded[0]?.signals, undefined);
+        assert.equal(loaded[0]?.servedModel, undefined);
+        assert.equal(loaded[0]?.groupGateTrial?.semanticSignals?.identityConflict, signals.identityConflict);
     });
 });
 
@@ -129,6 +210,37 @@ test('Jev shadow persistence rejects corrupt/private-shaped records and clear re
         clearPersistedJevShadowRecords();
         assert.equal(storage.getItem(JEV_SHADOW_STORAGE_KEY), null);
     });
+});
+
+test('Group gate persistence accepts only the fixed profile and safe probability metadata', () => {
+    const wrongProfile = sanitizePersistedJevShadowRecord({
+        ...makeRecord('wrong-profile'),
+        groupGateTrial: { ...makeRecord('wrong-profile').groupGateTrial!, profile: 'group-gate-v1' },
+    });
+    assert.ok(wrongProfile);
+    assert.equal(wrongProfile.groupGateTrial, undefined);
+
+    const invalidProbability = sanitizePersistedJevShadowRecord({
+        ...makeRecord('bad-probability'),
+        groupGateTrial: { ...makeRecord('bad-probability').groupGateTrial!, requiresRevision: 2 },
+    });
+    assert.ok(invalidProbability);
+    assert.equal(invalidProbability.groupGateTrial, undefined);
+
+    const invalidSemanticSignals = sanitizePersistedJevShadowRecord({
+        ...makeRecord('bad-semantic'),
+        groupGateTrial: {
+            ...makeRecord('bad-semantic').groupGateTrial!,
+            semanticSignals: { ...gateSemanticSignals, injectedText: 'PRIVATE' },
+        },
+    });
+    assert.ok(invalidSemanticSignals);
+    assert.equal(invalidSemanticSignals.groupGateTrial, undefined);
+
+    const valid = sanitizePersistedJevShadowRecord(makeRecord('valid-gate'));
+    assert.equal(valid?.groupGateTrial?.profile, 'group-gate-v2');
+    assert.equal(valid?.groupGateTrial?.requiresRevision, 0.72);
+    assert.deepEqual(valid?.groupGateTrial?.semanticSignals, gateSemanticSignals);
 });
 
 test('single persisted record sanitizer never accepts unknown free-text fields', () => {

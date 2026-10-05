@@ -1722,6 +1722,99 @@ body.app-body {
     color: #c62828;
 }
 
+.memory-v5-diagnostics {
+    margin: 0 0 10px;
+    border: 1px solid rgba(34, 64, 72, 0.16);
+    border-radius: 9px;
+    padding: 10px 12px;
+    color: var(--wa-muted);
+    background: #f8fafb;
+    font-size: 0.74rem;
+    line-height: 1.5;
+}
+
+.memory-v5-diagnostics > summary {
+    cursor: pointer;
+    color: var(--wa-green-deep);
+    font-size: 0.78rem;
+    font-weight: 750;
+}
+
+.memory-v5-diagnostic-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.memory-v5-diagnostic-metrics span,
+.memory-v5-diagnostic-section {
+    border-radius: 7px;
+    padding: 8px 9px;
+    background: white;
+}
+
+.memory-v5-diagnostic-section {
+    margin-top: 8px;
+}
+
+.memory-v5-diagnostic-section strong {
+    color: #33474d;
+}
+
+.memory-v5-diagnostic-section ul,
+.memory-v5-diagnostic-section ol {
+    display: grid;
+    gap: 4px;
+    margin: 6px 0 0;
+    padding-left: 20px;
+    overflow-wrap: anywhere;
+}
+
+.memory-v5-recall-tester {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 7px;
+    margin-top: 10px;
+}
+
+.memory-v5-recall-tester input {
+    min-width: 0;
+    border: 1px solid #d8e3e7;
+    border-radius: 7px;
+    padding: 9px 10px;
+    color: var(--wa-ink);
+    background: white;
+    outline: 0;
+}
+
+.memory-v5-recall-tester input:focus {
+    border-color: var(--wa-green);
+    box-shadow: 0 0 0 3px rgba(0, 168, 132, 0.1);
+}
+
+.memory-v5-recall-tester button {
+    border-radius: 7px;
+    padding: 8px 11px;
+    color: white;
+    background: var(--wa-green);
+    font-size: 0.74rem;
+    font-weight: 750;
+}
+
+.memory-v5-recall-results {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: 6px;
+}
+
+.memory-v5-recall-mode {
+    margin: 2px 0 0;
+    color: var(--wa-green-deep);
+    font-weight: 700;
+}
+
+
 .memory-card {
     margin-bottom: 10px;
     border-radius: 8px;

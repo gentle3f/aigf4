@@ -1,9 +1,11 @@
 import { ChatContextBridge, ChatMessage, MemoryManager, Persona, PublicIdentity, TimelineBranchInfo, WardrobeState } from './managers.js';
-import { AUTO_MEMORY_SUMMARY_VERSION } from './autoMemory.js';
-import { loadPersonaAvatars, savePersonaAvatar } from './avatarStore.js';
+import { AUTO_MEMORY_SUMMARY_VERSION } from './autoMemoryPolicy.js';
+import { deletePersonaAvatar, getPersonaAvatarAsset, loadPersonaAvatars, savePersonaAvatar, savePersonaAvatarBlob } from './avatarStore.js';
 import { notifyLocalCloudChange } from './cloudSyncEvents.js';
 import { decodeRoomStorage, encodeRoomStorage } from './roomStorage.js';
+import { readRoomRecovery, saveRoomRecovery } from './roomRecoveryStore.js';
 import { emptyWardrobeState, normalizeWardrobeState } from './wardrobe.js';
+import { buildMemorySearchTags, mergeMemorySearchTags } from './memoryIndex.js';
 
 const ROOM_STORAGE_KEY = 'aigf4RoomsV2';
 const DELETED_ROOM_IDS_STORAGE_KEY = 'aigf4DeletedRoomIdsV1';
@@ -48,6 +50,7 @@ export interface RoomMemoryEntry {
     unresolved?: boolean;
     sourceMessageIds?: string[];
     sourceMessageIndexes?: number[];
+    searchTags?: string[];
     createdAt: number;
     pinned: boolean;
     roleplayOnly?: boolean;
@@ -102,6 +105,11 @@ export interface ChatRoom {
 export interface RoomExportData {
     version: 2;
     rooms: ChatRoom[];
+}
+
+export interface RoomImportSnapshot {
+    data: RoomExportData;
+    deletedRoomIds: string[];
 }
 
 export const roomAvatarStorageKey = (roomId: string, memberId: string) => (
@@ -388,6 +396,7 @@ const normalizeRoomMemoryEntry = (
         visibility,
         sceneId: entry.sceneId?.trim() || undefined,
         sourceMessageIds: Array.from(new Set((entry.sourceMessageIds || []).filter(Boolean))),
+        searchTags: buildMemorySearchTags(entry.title, entry.summary, entry.kind, entry.searchTags || []),
         unresolved: Boolean(entry.unresolved),
     };
 };
@@ -476,6 +485,12 @@ const mergeRoomMemory = (target: RoomMemoryEntry, incoming: RoomMemoryEntry, mem
         ...(target.sourceMessageIds || []),
         ...(incoming.sourceMessageIds || []),
     ]));
+    target.searchTags = mergeMemorySearchTags(
+        target.searchTags,
+        incoming.searchTags,
+        buildMemorySearchTags(target.title, target.summary, target.kind),
+        buildMemorySearchTags(incoming.title, incoming.summary, incoming.kind),
+    );
     target.subjectIds = Array.from(new Set([
         ...(target.subjectIds || target.participants),
         ...(incoming.subjectIds || incoming.participants),
@@ -537,10 +552,44 @@ const formatMemoryMarkdown = (member: RoomMember, room: ChatRoom, type: 'soul' |
 export class RoomManager {
     private rooms: Record<string, ChatRoom> = {};
     private deletedRoomIds = new Set<string>();
+    private deferredPersistPending = false;
+    private deferredPersistTimer: ReturnType<typeof setTimeout> | null = null;
+    private deferredPersistFrame: number | null = null;
+    private deferredRecoveryPending = false;
+    private roomRecoveryBaseline: string | null = null;
 
     constructor() {
+        try {
+            this.roomRecoveryBaseline = localStorage.getItem(ROOM_STORAGE_KEY);
+        } catch {
+            this.roomRecoveryBaseline = null;
+        }
         this.loadDeletedRoomIds();
         this.load();
+    }
+
+    private collectOwnedRoomAvatarKeys(rooms: Iterable<ChatRoom>) {
+        const keys = new Set<string>();
+        for (const room of rooms) {
+            const prefix = `room-avatar:${room.id}:`;
+            room.members.forEach(member => {
+                const key = member.avatarAssetKey || privateAvatarKeyFromUrl(member.persona.avatarUrl);
+                if (key?.startsWith(prefix)) keys.add(key);
+            });
+        }
+        return keys;
+    }
+
+    private async cleanupUnusedRoomAvatarKeys(candidates: Iterable<string>) {
+        const active = this.collectOwnedRoomAvatarKeys(Object.values(this.rooms));
+        await Promise.all(Array.from(new Set(candidates)).map(async key => {
+            if (active.has(key)) return;
+            try {
+                await deletePersonaAvatar(key);
+            } catch (error) {
+                console.warn(`Failed to remove unused room avatar asset ${key}:`, error);
+            }
+        }));
     }
 
     private loadDeletedRoomIds() {
@@ -575,7 +624,104 @@ export class RoomManager {
         }
     }
 
-    private persist() {
+    async restoreRoomRecovery() {
+        try {
+            const saved = await readRoomRecovery();
+            if (!saved) return false;
+
+            if (this.roomRecoveryBaseline !== saved.baseline) {
+                await saveRoomRecovery(null);
+                return false;
+            }
+
+            const parsed = decodeRoomStorage<RoomExportData | ChatRoom[]>(saved.data);
+            const rooms = Array.isArray(parsed) ? parsed : parsed.rooms;
+            if (!Array.isArray(rooms)) {
+                await saveRoomRecovery(null);
+                return false;
+            }
+
+            this.rooms = Object.fromEntries(
+                rooms
+                    .filter(room => room?.id)
+                    .map(room => [room.id, normalizeRoomData(room)]),
+            );
+            this.deferredRecoveryPending = true;
+            try {
+                this.persist();
+            } catch (error) {
+                this.deferredPersistPending = true;
+                console.warn('Recovered room state remains on backup storage:', error);
+                if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('wetapp-storage-failed'));
+                }
+            }
+            return true;
+        } catch (error) {
+            console.warn('Room recovery unavailable:', error);
+            return false;
+        }
+    }
+
+    private cancelDeferredPersistSchedule() {
+        if (this.deferredPersistTimer !== null) {
+            clearTimeout(this.deferredPersistTimer);
+            this.deferredPersistTimer = null;
+        }
+        if (
+            this.deferredPersistFrame !== null
+            && typeof window !== 'undefined'
+            && typeof window.cancelAnimationFrame === 'function'
+        ) {
+            window.cancelAnimationFrame(this.deferredPersistFrame);
+            this.deferredPersistFrame = null;
+        }
+    }
+
+    private clearDeferredPersistState() {
+        this.deferredPersistPending = false;
+        this.cancelDeferredPersistSchedule();
+    }
+
+    private scheduleDeferredPersist() {
+        this.deferredPersistPending = true;
+        if (this.deferredPersistTimer !== null || this.deferredPersistFrame !== null) return;
+        if (
+            typeof window !== 'undefined'
+            && typeof window.requestAnimationFrame === 'function'
+        ) {
+            this.deferredPersistFrame = window.requestAnimationFrame(() => {
+                this.deferredPersistFrame = window.requestAnimationFrame(() => {
+                    this.deferredPersistFrame = null;
+                    this.flushDeferredPersistence();
+                });
+            });
+            return;
+        }
+        this.deferredPersistTimer = setTimeout(() => {
+            this.deferredPersistTimer = null;
+            this.flushDeferredPersistence();
+        }, 0);
+    }
+
+    flushDeferredPersistence() {
+        if (!this.deferredPersistPending) return true;
+        this.cancelDeferredPersistSchedule();
+        try {
+            this.persist();
+            return true;
+        } catch (error) {
+            this.deferredPersistPending = true;
+            console.error('Failed to persist deferred room state:', error);
+            this.saveDeferredRoomRecovery();
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('wetapp-storage-failed'));
+            }
+            return false;
+        }
+    }
+
+    private encodePersistableRooms() {
         const data = this.exportData();
         data.rooms.forEach(room => room.members.forEach(member => {
             const assetKey = member.avatarAssetKey || privateAvatarKeyFromUrl(member.persona.avatarUrl);
@@ -586,24 +732,120 @@ export class RoomManager {
                 member.persona.avatarUrl = `${PRIVATE_AVATAR_MARKER_PREFIX}${assetKey}`;
             }
         }));
-        localStorage.setItem(ROOM_STORAGE_KEY, encodeRoomStorage(data));
+        return encodeRoomStorage(data);
+    }
+
+    private saveDeferredRoomRecovery() {
+        let baseline: string | null = null;
+        let data: string;
+        try {
+            baseline = localStorage.getItem(ROOM_STORAGE_KEY);
+            data = this.encodePersistableRooms();
+        } catch (error) {
+            console.error('Failed to prepare deferred room recovery:', error);
+            return;
+        }
+        this.deferredRecoveryPending = true;
+        void saveRoomRecovery({ baseline, data })
+            .then(() => {
+                if (this.deferredRecoveryPending && typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('wetapp-room-storage-recovered'));
+                }
+            })
+            .catch(error => console.error('Failed to save deferred room recovery:', error));
+    }
+
+    private writeRoomStorage() {
+        localStorage.setItem(ROOM_STORAGE_KEY, this.encodePersistableRooms());
+    }
+
+    private completeSuccessfulRoomPersistence() {
+        this.clearDeferredPersistState();
+        if (this.deferredRecoveryPending) {
+            this.deferredRecoveryPending = false;
+            void saveRoomRecovery(null).catch(error => {
+                this.deferredRecoveryPending = true;
+                console.warn('Failed to clear deferred room recovery:', error);
+            });
+        }
         notifyLocalCloudChange('rooms');
+    }
+
+    private persist() {
+        this.writeRoomStorage();
+        this.completeSuccessfulRoomPersistence();
+    }
+
+    private persistRoomAndDeletedIdsAtomically() {
+        const previousRoomStorage = localStorage.getItem(ROOM_STORAGE_KEY);
+        let roomWriteCompleted = false;
+        try {
+            this.writeRoomStorage();
+            roomWriteCompleted = true;
+            this.persistDeletedRoomIds();
+            this.completeSuccessfulRoomPersistence();
+        } catch (error) {
+            if (roomWriteCompleted) {
+                try {
+                    if (previousRoomStorage === null) {
+                        localStorage.removeItem(ROOM_STORAGE_KEY);
+                    } else {
+                        localStorage.setItem(ROOM_STORAGE_KEY, previousRoomStorage);
+                    }
+                } catch (rollbackError) {
+                    console.error('Failed to roll back partial room persistence:', rollbackError);
+                    if (typeof window !== 'undefined') {
+                        window.dispatchEvent(new CustomEvent('wetapp-storage-failed'));
+                    }
+                }
+            }
+            throw error;
+        }
     }
 
     exportData(): RoomExportData {
         return { version: 2, rooms: cloneRoom(Object.values(this.rooms)) };
     }
 
-    importData(data: unknown, replaceExisting = false) {
+    createImportSnapshot(): RoomImportSnapshot {
+        return {
+            data: this.exportData(),
+            deletedRoomIds: Array.from(this.deletedRoomIds),
+        };
+    }
+
+    restoreImportSnapshot(snapshot: RoomImportSnapshot) {
+        this.rooms = Object.fromEntries(
+            snapshot.data.rooms
+                .filter(room => room?.id)
+                .map(room => [room.id, normalizeRoomData(room)]),
+        );
+        this.deletedRoomIds = new Set(snapshot.deletedRoomIds);
+        this.persistRoomAndDeletedIdsAtomically();
+    }
+
+    async cleanupUnusedImportSnapshotAvatars(snapshot: RoomImportSnapshot) {
+        await this.cleanupUnusedRoomAvatarKeys(
+            this.collectOwnedRoomAvatarKeys(snapshot.data.rooms),
+        );
+    }
+
+    importData(
+        data: unknown,
+        replaceExisting = false,
+        preserveDeletedRoomIds = false,
+        deferAvatarCleanup = false,
+    ) {
         if (!data || typeof data !== 'object') return;
         const roomData = data as Partial<RoomExportData>;
         if (!Array.isArray(roomData.rooms)) return;
         const previousRooms = cloneRoom(this.rooms);
         const previousDeletedRoomIds = new Set(this.deletedRoomIds);
+        const previousAvatarKeys = this.collectOwnedRoomAvatarKeys(Object.values(previousRooms));
         try {
             if (replaceExisting) {
                 this.rooms = {};
-                this.deletedRoomIds.clear();
+                if (!preserveDeletedRoomIds) this.deletedRoomIds.clear();
             }
             roomData.rooms.forEach(room => {
                 if (room?.id) {
@@ -611,8 +853,8 @@ export class RoomManager {
                     this.deletedRoomIds.delete(room.id);
                 }
             });
-            this.persist();
-            this.persistDeletedRoomIds();
+            this.persistRoomAndDeletedIdsAtomically();
+            if (!deferAvatarCleanup) this.cleanupUnusedRoomAvatarKeys(previousAvatarKeys);
         } catch (error) {
             this.rooms = previousRooms;
             this.deletedRoomIds = previousDeletedRoomIds;
@@ -628,15 +870,22 @@ export class RoomManager {
         return this.rooms[id];
     }
 
+    getDeletedRoomIds() {
+        return new Set(this.deletedRoomIds);
+    }
+
     saveRoom(room: ChatRoom) {
         const previous = this.rooms[room.id] ? cloneRoom(this.rooms[room.id]) : undefined;
+        const previousAvatarKeys = previous
+            ? this.collectOwnedRoomAvatarKeys([previous])
+            : new Set<string>();
         const wasDeleted = this.deletedRoomIds.has(room.id);
         const saved = normalizeRoomData({ ...cloneRoom(room), updatedAt: Date.now() });
         this.rooms[room.id] = saved;
         this.deletedRoomIds.delete(room.id);
         try {
-            this.persist();
-            this.persistDeletedRoomIds();
+            this.persistRoomAndDeletedIdsAtomically();
+            this.cleanupUnusedRoomAvatarKeys(previousAvatarKeys);
             return this.rooms[room.id];
         } catch (error) {
             if (previous) this.rooms[room.id] = previous;
@@ -649,12 +898,13 @@ export class RoomManager {
     deleteRoom(id: string) {
         if (!this.rooms[id]) return false;
         const previous = cloneRoom(this.rooms[id]);
+        const previousAvatarKeys = this.collectOwnedRoomAvatarKeys([previous]);
         const wasDeleted = this.deletedRoomIds.has(id);
         delete this.rooms[id];
         this.deletedRoomIds.add(id);
         try {
-            this.persist();
-            this.persistDeletedRoomIds();
+            this.persistRoomAndDeletedIdsAtomically();
+            this.cleanupUnusedRoomAvatarKeys(previousAvatarKeys);
             return true;
         } catch (error) {
             this.rooms[id] = previous;
@@ -666,6 +916,7 @@ export class RoomManager {
     updateRoom(id: string, updater: (room: ChatRoom) => void) {
         const previous = this.rooms[id];
         if (!previous) return null;
+        const previousAvatarKeys = this.collectOwnedRoomAvatarKeys([previous]);
         const updated = cloneRoom(previous);
         const previousRealityLayer = updated.scene.realityLayer;
         updater(updated);
@@ -676,11 +927,27 @@ export class RoomManager {
         this.rooms[id] = normalizeRoomData(updated);
         try {
             this.persist();
+            this.cleanupUnusedRoomAvatarKeys(previousAvatarKeys);
             return this.rooms[id];
         } catch (error) {
             this.rooms[id] = previous;
             throw error;
         }
+    }
+
+    updateRoomSceneDeferred(id: string, scene: RoomSceneState) {
+        const previous = this.rooms[id];
+        if (!previous) return null;
+        const updated = cloneRoom(previous);
+        const previousRealityLayer = updated.scene.realityLayer;
+        updated.scene = cloneRoom(scene);
+        if (updated.scene.realityLayer !== previousRealityLayer) {
+            updated.scene.realityEpochId = createRealityEpochId();
+        }
+        updated.updatedAt = Date.now();
+        this.rooms[id] = normalizeRoomData(updated);
+        this.scheduleDeferredPersist();
+        return this.rooms[id];
     }
 
     getMember(roomId: string, memberId: string) {
@@ -758,11 +1025,32 @@ export class RoomManager {
 
         if (avatarUrl?.startsWith('data:image/')) {
             const assetKey = roomAvatarStorageKey(roomId, memberId);
+            const previousAsset = await getPersonaAvatarAsset(assetKey);
             await savePersonaAvatar(assetKey, avatarUrl);
-            return this.updateMember(roomId, memberId, {
-                avatarAssetKey: assetKey,
-                persona: { avatarUrl },
-            });
+            try {
+                return this.updateMember(roomId, memberId, {
+                    avatarAssetKey: assetKey,
+                    persona: { avatarUrl },
+                });
+            } catch (error) {
+                try {
+                    if (previousAsset) {
+                        await savePersonaAvatarBlob(
+                            assetKey,
+                            previousAsset.blob,
+                            previousAsset.updatedAt,
+                        );
+                    } else {
+                        await deletePersonaAvatar(assetKey);
+                    }
+                } catch (rollbackError) {
+                    console.error('Failed to roll back room avatar asset:', rollbackError);
+                    if (typeof window !== 'undefined') {
+                        window.dispatchEvent(new CustomEvent('wetapp-storage-failed'));
+                    }
+                }
+                throw error;
+            }
         }
 
         return this.updateMember(roomId, memberId, {
@@ -1042,12 +1330,19 @@ export class RoomManager {
                 entry.importance = Math.max(1, Math.min(5, Math.round(updates.importance)));
             }
             if (typeof updates.unresolved === 'boolean') entry.unresolved = updates.unresolved;
+            entry.searchTags = buildMemorySearchTags(entry.title, entry.summary, entry.kind);
             if (type === 'memory') {
                 const canonical = room.sharedMemories.find(item => item.id === memoryId);
                 const perspective = canonical?.perspectives?.find(item => item.memberId === memberId);
                 if (canonical) {
                     canonical.title = entry.title;
                     if (canonical.visibility === 'shared') canonical.summary = entry.summary;
+                    canonical.searchTags = buildMemorySearchTags(
+                        canonical.title,
+                        canonical.summary,
+                        canonical.kind,
+                        entry.searchTags || canonical.searchTags || [],
+                    );
                 }
                 if (perspective) {
                     perspective.summary = entry.summary;
@@ -1094,25 +1389,46 @@ export class RoomManager {
         });
     }
 
-    removeMemoriesBySourceMessageIds(roomId: string, sourceMessageIds: string[], userMessageCount: number) {
-        if (sourceMessageIds.length === 0) return 0;
+    removeMemoriesBySourceMessageIds(
+        roomId: string,
+        sourceMessageIds: string[],
+        userMessageCount: number,
+        sceneBeforeTurn?: RoomSceneState,
+    ) {
+        const previous = this.rooms[roomId];
+        if (!previous) return 0;
+        const updated = cloneRoom(previous);
+        const removedIds = new Set(sourceMessageIds);
         let removed = 0;
-        this.updateRoom(roomId, room => {
-            const removedIds = new Set(sourceMessageIds);
-            const shouldRemove = (entry: RoomMemoryEntry) => (
-                (entry.sourceMessageIds || []).some(id => removedIds.has(id))
-            );
-            const before = room.sharedMemories.length;
-            room.sharedMemories = room.sharedMemories.filter(entry => !shouldRemove(entry));
-            removed = before - room.sharedMemories.length;
-            room.members.forEach(member => {
-                member.memories = member.memories.filter(entry => !shouldRemove(entry));
-            });
-            room.lastSummarizedUserMessageCount = Math.min(
-                Number(room.lastSummarizedUserMessageCount || 0),
-                Math.max(0, userMessageCount),
-            );
+
+        const filterEntries = <T extends { sourceMessageIds?: string[] }>(entries: T[]) => {
+            const next = entries.filter(entry => (
+                !(entry.sourceMessageIds || []).some(id => removedIds.has(id))
+            ));
+            removed += entries.length - next.length;
+            return next;
+        };
+
+        updated.sharedSoul = filterEntries(updated.sharedSoul);
+        updated.sharedMemories = filterEntries(updated.sharedMemories);
+        updated.members.forEach(member => {
+            member.soul = filterEntries(member.soul);
+            member.memories = filterEntries(member.memories);
+            member.persona.soul = filterEntries(member.persona.soul || []);
+            member.persona.memories = filterEntries(member.persona.memories || []);
         });
+
+        updated.lastSummarizedUserMessageCount = Math.min(
+            Number(updated.lastSummarizedUserMessageCount || 0),
+            Math.max(0, userMessageCount),
+        );
+        if (sceneBeforeTurn) {
+            // Recall restores the exact pre-turn scene, including its reality epoch.
+            updated.scene = cloneRoom(sceneBeforeTurn);
+        }
+        updated.updatedAt = Date.now();
+        this.rooms[roomId] = normalizeRoomData(updated);
+        this.scheduleDeferredPersist();
         return removed;
     }
 

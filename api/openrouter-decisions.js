@@ -8,8 +8,8 @@ export const parseDecisionRequest = body => {
   if (
     keys.length === 2
     && Object.hasOwn(body, 'profile')
-    && body.profile === 'wardrobe-v4'
-  ) return { state: body.state, profile: 'wardrobe-v4' };
+    && (body.profile === 'wardrobe-v4' || body.profile === 'group-gate-v2')
+  ) return { state: body.state, profile: body.profile };
   return null;
 };
 
@@ -25,6 +25,10 @@ export default async function handler(req, res) {
   if (!parsed) return res.status(200).json({ status: 'unavailable', reasonCode: 'INVALID_REQUEST' });
   return res.status(200).json(await runOpenRouterDecision(
     parsed.state,
-    parsed.profile === 'wardrobe-v4' ? { useWardrobeShadowQuestions: true } : undefined,
+    parsed.profile === 'wardrobe-v4'
+      ? { useWardrobeShadowQuestions: true }
+      : parsed.profile === 'group-gate-v2'
+        ? { useGroupGateShadowQuestions: true }
+        : undefined,
   ));
 }

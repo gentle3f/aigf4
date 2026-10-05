@@ -160,7 +160,7 @@ const evaluateJevEndpoint = async (
     state: Readonly<ReviewState>,
     signal?: AbortSignal,
     fetchImpl: JevFetch = fetch,
-    profile?: 'wardrobe-v4',
+    profile?: 'wardrobe-v4' | 'group-gate-v2',
 ): Promise<JevShadowResult> => {
     try {
         const response = await fetchImpl('/api/openrouter-decisions', {
@@ -196,6 +196,12 @@ export const evaluateJevWardrobeShadowTrial = async (
     signal?: AbortSignal,
     fetchImpl: JevFetch = fetch,
 ): Promise<JevShadowResult> => evaluateJevEndpoint(state, signal, fetchImpl, 'wardrobe-v4');
+
+export const evaluateJevGroupGateShadowTrial = async (
+    state: Readonly<ReviewState>,
+    signal?: AbortSignal,
+    fetchImpl: JevFetch = fetch,
+): Promise<JevShadowResult> => evaluateJevEndpoint(state, signal, fetchImpl, 'group-gate-v2');
 
 export const jevDecisionProvider: DecisionProvider = {
     async evaluate(state, signal): Promise<DecisionAssessment> {

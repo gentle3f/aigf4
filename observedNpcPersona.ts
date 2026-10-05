@@ -3,6 +3,7 @@ import type {
     PersonaMemoryEntry,
     PublicIdentity,
 } from './managers.js';
+import type { VeniceMessage } from './venice.js';
 
 export interface ObservedNpcPersonaDraft {
     description: string;
@@ -172,4 +173,119 @@ export const parseObservedNpcPersonaDraft = (
     } catch {
         return null;
     }
+};
+
+
+export interface ObservedNpcAnalysisModelRequest {
+    model: string;
+    messages: VeniceMessage[];
+    responseFormat: unknown;
+    temperature: number;
+    topP: number;
+    repetitionPenalty: number;
+}
+
+export interface ObservedNpcAnalysisDependencies {
+    models: string[];
+    runModel: (request: ObservedNpcAnalysisModelRequest, timeoutMs: number) => Promise<string>;
+}
+
+export const analyzeObservedNpcPersonaDraft = async ({
+    proposal,
+    mainPersonaName,
+    identity,
+    evidence,
+}: {
+    proposal: NpcPromotionProposal;
+    mainPersonaName: string;
+    identity?: PublicIdentity;
+    evidence: string;
+}, dependencies: ObservedNpcAnalysisDependencies): Promise<ObservedNpcPersonaDraft> => {
+    const fallback = buildFallbackObservedNpcPersonaDraft({
+        proposal,
+        mainPersonaName,
+        identity,
+        evidence,
+    });
+    if (proposal.detectionSource !== 'observed' || evidence.length < 20) return fallback;
+
+    for (const model of dependencies.models) {
+        try {
+            const resultText = await dependencies.runModel({
+                model,
+                messages: [
+                    {
+                        role: 'system',
+                        content: [
+                            `Analyze the recurring adult character "${proposal.name}" from a private fictional romance conversation.`,
+                            `The original main character is "${mainPersonaName}" and the user is a separate person. Never merge either of them into ${proposal.name}.`,
+                            identity ? `Confirmed public identity: ${identity.canonicalName}. ${identity.summary}` : '',
+                            'Infer only patterns supported by the transcript: personality, initiative, resistance, humour, emotional rhythm, regional language, relationship position, established knowledge and recurring behaviour.',
+                            'Create a vivid independent persona that can keep developing naturally and respond to user direction without becoming generic, instantly obedient or trapped replaying the sampled lines.',
+                            'soul entries hold durable identity, voice, relationship anchors, values and boundaries. memory entries hold concrete events, promises, preferences and emotional moments already experienced.',
+                            'Do not copy long dialogue verbatim. Write concise Traditional Chinese, while preserving Hong Kong Cantonese, Taiwan Mandarin or another established regional voice accurately when evidence supports it.',
+                            'Return only one valid JSON object that matches the requested response schema.',
+                        ].filter(Boolean).join('\n'),
+                    },
+                    {
+                        role: 'user',
+                        content: `Observed conversation evidence for ${proposal.name}:\n\n${evidence}`,
+                    },
+                ],
+                responseFormat: {
+                    type: 'json_schema',
+                    json_schema: {
+                        name: 'observed_npc_persona',
+                        strict: true,
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            required: ['description', 'persona_prompt', 'greeting', 'soul', 'memories'],
+                            properties: {
+                                description: { type: 'string' },
+                                persona_prompt: { type: 'string' },
+                                greeting: { type: 'string' },
+                                soul: {
+                                    type: 'array', minItems: 2, maxItems: 6,
+                                    items: {
+                                        type: 'object', additionalProperties: false,
+                                        required: ['kind', 'title', 'summary'],
+                                        properties: {
+                                            kind: { type: 'string', enum: ['core', 'relationship', 'vulnerability', 'promise', 'preference', 'boundary'] },
+                                            title: { type: 'string' }, summary: { type: 'string' },
+                                        },
+                                    },
+                                },
+                                memories: {
+                                    type: 'array', minItems: 1, maxItems: 8,
+                                    items: {
+                                        type: 'object', additionalProperties: false,
+                                        required: ['kind', 'title', 'summary'],
+                                        properties: {
+                                            kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
+                                            title: { type: 'string' }, summary: { type: 'string' },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                temperature: 0.25,
+                topP: 0.85,
+                repetitionPenalty: 1.04,
+            }, 20_000);
+            const parsed = parseObservedNpcPersonaDraft(resultText, fallback);
+            if (parsed) return parsed;
+        } catch (error) {
+            console.warn('[aigf4 observed NPC analysis retry]', {
+                name: proposal.name,
+                model,
+                reason: error instanceof Error ? error.message : String(error),
+            });
+        }
+    }
+
+    console.warn('[aigf4 observed NPC analysis fallback]', { name: proposal.name });
+    return fallback;
 };

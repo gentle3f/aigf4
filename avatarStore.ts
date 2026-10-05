@@ -111,6 +111,10 @@ export const loadPersonaAvatars = async () => {
     return Object.fromEntries(entries) as Record<string, string>;
 };
 
+export const getPersonaAvatarAsset = async (personaKey: string) => (
+    runRequest<StoredPersonaAvatar | undefined>('readonly', store => store.get(personaKey))
+);
+
 export const listPersonaAvatarAssets = async () => (
     runRequest<StoredPersonaAvatar[]>('readonly', store => store.getAll())
 );

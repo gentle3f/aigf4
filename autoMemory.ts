@@ -1,5 +1,11 @@
-export const AUTO_MEMORY_SUMMARY_VERSION = 3;
-export const AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES = 8;
+import type { VeniceJsonSchemaResponseFormat, VeniceMessage } from './venice.js';
+
+export {
+    AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES,
+    AUTO_MEMORY_MIN_IMPORTANCE,
+    AUTO_MEMORY_SUMMARY_VERSION,
+    AUTO_MEMORY_TURN_INTERVAL,
+} from './autoMemoryPolicy.js';
 
 export type AutoMemoryKind =
     | 'relationship'
@@ -19,6 +25,7 @@ export interface PersonaAutoMemoryDraft {
     importance?: number;
     sceneId?: string;
     sourceMessageIds?: string[];
+    searchTags?: string[];
     unresolved?: boolean;
 }
 
@@ -170,6 +177,9 @@ const parseBaseMemory = (value: unknown): PersonaAutoMemoryDraft | null => {
     const sceneValue = candidate.scene_id ?? candidate.sceneId;
     const sceneId = typeof sceneValue === 'string' ? sceneValue.trim() : '';
     const sourceMessageIds = readStringArray(candidate.source_message_ids ?? candidate.sourceMessageIds);
+    const searchTags = readStringArray(candidate.search_tags ?? candidate.searchTags)
+        .map(tag => tag.slice(0, 80))
+        .slice(0, 12);
     const unresolved = typeof candidate.unresolved === 'boolean' ? candidate.unresolved : undefined;
     return {
         kind,
@@ -178,6 +188,7 @@ const parseBaseMemory = (value: unknown): PersonaAutoMemoryDraft | null => {
         ...(importance ? { importance } : {}),
         ...(sceneId ? { sceneId } : {}),
         ...(sourceMessageIds.length ? { sourceMessageIds } : {}),
+        ...(searchTags.length ? { searchTags } : {}),
         ...(typeof unresolved === 'boolean' ? { unresolved } : {}),
     };
 };
@@ -292,3 +303,164 @@ export const parseRoomAutoMemoryResponse = (
     });
     return rawMemories.length > 0 && memories.length === 0 ? null : memories;
 };
+
+export const ROOM_MEMORY_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
+    type: 'json_schema',
+    json_schema: {
+        name: 'room_memory_update_v3',
+        strict: true,
+        schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['memories'],
+            properties: {
+                memories: {
+                    type: 'array',
+                    maxItems: 12,
+                    items: {
+                        type: 'object',
+                        additionalProperties: false,
+                        required: [
+                            'kind',
+                            'title',
+                            'shared_summary',
+                            'subject_ids',
+                            'importance',
+                            'visibility',
+                            'unresolved',
+                            'scene_id',
+                            'source_message_ids',
+                            'search_tags',
+                            'perspectives',
+                        ],
+                        properties: {
+                            kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
+                            title: { type: 'string' },
+                            shared_summary: { type: 'string' },
+                            subject_ids: { type: 'array', minItems: 1, items: { type: 'string' } },
+                            importance: { type: 'integer', minimum: 1, maximum: 5 },
+                            visibility: { type: 'string', enum: ['restricted', 'shared'] },
+                            unresolved: { type: 'boolean' },
+                            scene_id: { type: 'string' },
+                            source_message_ids: { type: 'array', minItems: 1, items: { type: 'string' } },
+                            search_tags: { type: 'array', minItems: 2, maxItems: 10, items: { type: 'string' } },
+                            perspectives: {
+                                type: 'array',
+                                minItems: 1,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    required: ['member_id', 'salience', 'knowledge', 'memory'],
+                                    properties: {
+                                        member_id: { type: 'string' },
+                                        salience: { type: 'integer', minimum: 1, maximum: 5 },
+                                        knowledge: { type: 'string', enum: ['experienced', 'witnessed', 'told'] },
+                                        memory: { type: 'string' },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+};
+
+export const PERSONA_MEMORY_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
+    type: 'json_schema',
+    json_schema: {
+        name: 'persona_memory_update_v3',
+        strict: true,
+        schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['memories'],
+            properties: {
+                memories: {
+                    type: 'array',
+                    maxItems: 12,
+                    items: {
+                        type: 'object',
+                        additionalProperties: false,
+                        required: [
+                            'kind',
+                            'title',
+                            'summary',
+                            'importance',
+                            'unresolved',
+                            'scene_id',
+                            'source_message_ids',
+                            'search_tags',
+                        ],
+                        properties: {
+                            kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
+                            title: { type: 'string' },
+                            summary: { type: 'string' },
+                            importance: { type: 'integer', minimum: 1, maximum: 5 },
+                            unresolved: { type: 'boolean' },
+                            scene_id: { type: 'string' },
+                            source_message_ids: { type: 'array', minItems: 1, items: { type: 'string' } },
+                            search_tags: { type: 'array', minItems: 2, maxItems: 10, items: { type: 'string' } },
+                        },
+                    },
+                },
+            },
+        },
+    },
+};
+
+export const buildRoomAutoMemoryMessages = (
+    memberLedger: string,
+    existing: string,
+    evidenceTranscript: string,
+): VeniceMessage[] => [
+    {
+        role: 'system',
+        content: [
+            'You are a meticulous human-memory archivist for a continuous private group conversation.',
+            'Return one JSON object matching the schema. Return an empty memories array when nothing is durable.',
+            `Valid immutable member ledger: ${memberLedger}. Use only these member IDs.`,
+            'Read the evidence as separate human minds, not as one shared narrator. A fact important to Rose can be a lasting Rose memory without becoming Jennie\'s memory.',
+            'For each event, subject_ids identifies the fixed member(s) whose personal relationship storyline is affected. For a user disclosure, select its character recipient(s), since USER is not a member ID. perspectives lists only members who would genuinely retain it long-term.',
+            'Mere presence is not enough for durable memory. Use experienced for a direct participant, witnessed for a meaningful observer, and told only when the transcript explicitly tells that member.',
+            'Write each perspective from that member\'s knowledge and emotional significance. Do not give a member facts learned only in another member\'s private interaction.',
+            'Prioritise user vulnerability, support needs, boundaries, promises, relationship changes, meaningful firsts, lasting preferences, unresolved tension and emotionally important romantic or adult milestones.',
+            'When the user reveals vulnerability, preserve what they disclosed, what response helped or hurt, and why it matters, without diagnosing them.',
+            'Preserve the relational meaning of intimate memories accurately; omit repetitive anatomy and moment-by-moment choreography unless a specific boundary or preference depends on it.',
+            'Importance: 5 identity-level or explicitly permanent; 4 vulnerability, major promise/boundary/relationship milestone; 3 useful continuity; 1-2 usually omit.',
+            'Use the smallest exact source_message_ids that prove each memory. Never invent an ID. scene_id must be one shown in the evidence.',
+            'search_tags: add 2-10 concise retrieval aliases covering the most useful names, places, objects, topics, promises/preferences/boundaries and common Chinese/English wording. Avoid generic tags like memory, event, user or conversation.',
+            'Set unresolved true only when a promise, conflict, plan, question or emotional need still needs follow-up.',
+            'visibility is shared only when every fixed room member genuinely knows it; otherwise restricted.',
+            'Write concise but complete Traditional Chinese. Do not merge unrelated events merely to save space.',
+            existing ? `Existing memory.md entries; avoid duplicates and add only missing information:\n${existing}` : '',
+        ].filter(Boolean).join('\n'),
+    },
+    { role: 'user', content: `Evidence transcript:\n\n${evidenceTranscript}` },
+];
+
+export const buildPersonaAutoMemoryMessages = (
+    personaName: string,
+    existing: string,
+    evidenceTranscript: string,
+): VeniceMessage[] => [
+    {
+        role: 'system',
+        content: [
+            `You are ${personaName}'s meticulous long-term human-memory archivist for a continuous private romance conversation.`,
+            'Return one JSON object matching the schema. Return an empty memories array when nothing is durable.',
+            `Store only what ${personaName} personally experienced, witnessed, or was explicitly told. Never import another character's private knowledge.`,
+            'Prioritise user vulnerability, support needs, boundaries, promises, relationship changes, meaningful firsts, lasting preferences, unresolved tension and emotionally important romantic or adult milestones.',
+            'When the user reveals vulnerability, preserve what they disclosed, the response they needed, what helped or hurt, and why it matters, without diagnosis or generic therapy language.',
+            'Preserve intimate memories by their emotional, relational, preference and boundary significance. Avoid repetitive anatomy and transient choreography unless a lasting boundary or preference depends on it.',
+            'Importance: 5 identity-level or explicitly permanent; 4 vulnerability, major promise/boundary/relationship milestone; 3 useful continuity; 1-2 usually omit.',
+            'Use the smallest exact source_message_ids that prove each memory. Never invent an ID. scene_id must be one shown in the evidence.',
+            'search_tags: add 2-10 concise retrieval aliases covering the most useful names, places, objects, topics, promises/preferences/boundaries and common Chinese/English wording. Avoid generic tags like memory, event, user or conversation.',
+            'Set unresolved true only when a promise, conflict, plan, question or emotional need still needs follow-up.',
+            'Write concise but complete Traditional Chinese. Keep separate events separate and skip routine small talk.',
+            existing ? `Existing memory.md entries; avoid duplicates and add only missing information:\n${existing}` : '',
+        ].filter(Boolean).join('\n'),
+    },
+    { role: 'user', content: `Evidence transcript:\n\n${evidenceTranscript}` },
+];

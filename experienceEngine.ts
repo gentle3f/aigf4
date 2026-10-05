@@ -41,6 +41,107 @@ export const SURPRISE_EVENT_CATEGORY_GUIDES: Record<SurpriseEventCategory, strin
     fantasy: 'The characters knowingly enter a shared imagined scenario, dream, role-play or alternate world while retaining awareness of reality.',
 };
 
+export const NSFW_SURPRISE_EVENT_DIRECTIONS = [
+    {
+        prompt: 'a private adult seduction challenge with a concrete dare, clear roles and immediate sexual tension',
+        fallbackPremise: '一張寫明成人規則的私密挑戰卡被放到你面前，第一個挑戰要求其中一人主動提出清楚的性邀請。',
+        showTitle: '午夜真心與挑戰',
+        showHook: '一個只限成年人的互動挑戰節目已經開場，每回合都要在真心題與成人挑戰之間二選一。',
+        showSetup: '場地、挑戰卡與三輪賽制已經準備完成；所有已選角色都是正式參與者，第一回合現在就從抽取開場卡開始。',
+        showActivities: [
+            '每位參與者寫下一條只限成年人的真心問題，混合後逐一抽取並立即回答。',
+            '答題者指定下一位完成六十秒誘惑表演，其餘參與者即場評分。',
+            '本輪得分最低者抽取加碼條件，由你選擇保留、交換或改抽一次。',
+        ],
+        showChoice: '第一回合由你指定誰先抽卡，或交給節目即場抽籤。',
+        categories: ['backstage', 'domestic', 'rivalry', 'mystery', 'celebration'],
+    },
+    {
+        prompt: 'a consensual adult role-play premise with specific identities, a private setting and a clear first move',
+        fallbackPremise: '她們準備了一個只限成年人的角色扮演設定，身份、場地與第一個性挑戰都已寫好，只等待你決定是否開始。',
+        showTitle: '身份交換劇場',
+        showHook: '每位參與者抽取一個成人角色與秘密任務，必須保持身份直到回合結束。',
+        showSetup: '舞台身份、場景規則與隱藏任務已經抽好；第一回合會逐一揭曉角色，並立即進入互動演出。',
+        showActivities: [
+            '每人抽取一張角色身份及一個禁止詞，朗讀身份後立即進入角色。',
+            '參與者兩人一組完成三分鐘即興演出，過程中說出禁止詞便要交換身份。',
+            '其餘參與者投票選出最投入的一組，再由你決定是否換角或加入秘密條件。',
+        ],
+        showChoice: '你要先揭曉哪一位的身份，還是讓主持人按抽籤次序開始？',
+        categories: ['fantasy', 'mystery', 'domestic', 'backstage'],
+    },
+    {
+        prompt: 'an after-work or after-performance private release where one selected character initiates a clearly sexual proposition',
+        fallbackPremise: '工作或演出結束後的私人空檔裡，其中一人不再掩飾慾望，向你提出一個具體的成人邀請。',
+        showTitle: '安可後的成人特別篇',
+        showHook: '正式演出結束後，所有已選角色留下錄製一段不公開的成人互動特別篇。',
+        showSetup: '鏡頭、舞台與回合卡已重新設定，第一回合由其中一位提出節目的第一個成人邀請，其餘參與者會即場接續。',
+        showActivities: [
+            '每位參與者依次完成四十五秒個人誘惑舞台，並自行選擇音樂、語氣及站位。',
+            '節目抽出兩人配對，把各自的個人舞台合併成一段即興雙人演出。',
+            '所有人完成後由你選出安可人選，並指定安可加入一項新的表演條件。',
+        ],
+        showChoice: '你要指定誰主持第一回合，還是讓她們自行搶先開始？',
+        categories: ['backstage', 'celebration'],
+    },
+    {
+        prompt: 'a playful adult power-exchange game with an explicit rule, a concrete reward or consequence, and room for the user to choose',
+        fallbackPremise: '一場成人主導權遊戲訂下了清楚規則、獎勵與後果，但由你決定接受、拒絕或改寫第一條規則。',
+        showTitle: '主導權擂台',
+        showHook: '參與者要透過逐輪挑戰爭取下一回合的主導權，每次勝出都會解鎖新的成人規則。',
+        showSetup: '計分牌、獎勵與替代懲罰已經公開；第一輪由所有已選角色同場競逐，不會有人留在場外旁觀。',
+        showActivities: [
+            '所有參與者抽籤決定主導者與挑戰者，並按卡牌要求交換稱呼及舞台位置。',
+            '主導者指定一項限時角色指令，挑戰者完成後由其他參與者投票評分。',
+            '本輪勝出者按下加碼鍵，從角色交換、雙人配對或延長計時中挑選下一條規則。',
+        ],
+        showChoice: '第一輪由你選擇挑戰項目，或讓參與者各自提出一項再抽籤。',
+        categories: ['rivalry', 'mystery', 'fantasy', 'domestic'],
+    },
+    {
+        prompt: 'a multi-character adult attention or jealousy game in which every selected character has a distinct active role',
+        fallbackPremise: '幾位參與者把原本的爭寵變成明確的成人遊戲，每人提出不同的性挑戰，等你選擇先回應誰。',
+        showTitle: '今晚誰最懂你',
+        showHook: '所有參與者以不同方式完成成人挑戰，爭取成為最了解你反應的人。',
+        showSetup: '每人已經準備一張完全不同的挑戰卡；第一輪會依次亮牌、互相回應，最後才由你作出選擇。',
+        showActivities: [
+            '每位參與者先寫下她猜測你最喜歡的一種語氣、造型或角色設定，再同時亮牌。',
+            '她們依次用六十秒表演自己的答案，其他參與者可以加入、模仿或提出加碼。',
+            '你為每段表演排序，最低分者抽取新角色卡並與最高分者配對進入下一輪。',
+        ],
+        showChoice: '你要指定亮牌順序，還是讓她們自己爭取第一位？',
+        categories: ['rivalry', 'celebration', 'backstage'],
+    },
+    {
+        prompt: 'a risky-but-private adult encounter with a concrete interruption risk, time limit or need for secrecy',
+        fallbackPremise: '一段有限時或可能被打斷的私人空檔，令她們直接提出一個必須立刻決定是否開始的成人性冒險。',
+        showTitle: '倒數成人挑戰',
+        showHook: '節目只有一段明確倒數時間，參與者必須在每輪時限結束前完成或改選挑戰。',
+        showSetup: '倒數器、回合卡與中止按鈕已經就位；所有已選角色會在同一輪內輪流行動，時間一到便立刻進入加碼規則。',
+        showActivities: [
+            '每位參與者抽取一張六十秒任務卡，計時開始後立即完成指定語氣、角色或表演要求。',
+            '每次鈴聲響起便交換搭檔與任務卡，上一位留下的條件會加入下一段演出。',
+            '未能在時限完成者要回答一條成人真心題，再由你決定延長、換題或進入加碼。',
+        ],
+        showChoice: '你要設定第一輪的開始次序，還是立即按下隨機開始鍵？',
+        categories: ['backstage', 'mystery', 'domestic'],
+    },
+    {
+        prompt: 'the discovery or gifting of a clearly adult intimate item that creates a specific sexual challenge',
+        fallbackPremise: '一件明確的成人情趣用品意外出現，附帶的使用規則把它變成一個尚未開始的具體性挑戰。',
+        showTitle: '成人盲盒特別場',
+        showHook: '每個密封盲盒都藏有一件成人道具與對應挑戰，抽中者必須先讀出該輪規則。',
+        showSetup: '盲盒、挑戰卡與替代選項已經排在場中央；每位已選角色都有自己的抽取回合，第一盒現在等待開啟。',
+        showActivities: [
+            '第一位參與者抽出眼罩、角色卡或計時器其中一件道具，並朗讀盒內的配對規則。',
+            '抽中眼罩者戴上後只靠同伴口頭提示猜出角色，其餘參與者輪流提供線索。',
+            '猜中後由她指定下一位打開角色盲盒，再由你選擇兩人配對或全部加入同一回合。',
+        ],
+        showChoice: '第一個盲盒由你指定誰打開，或讓所有參與者同時抽籤。',
+        categories: ['mystery', 'celebration', 'domestic', 'backstage'],
+    },
+] as const;
+
 export const SURPRISE_EVENT_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
     type: 'json_schema',
     json_schema: {
@@ -95,76 +196,12 @@ const clean = (value: unknown, maxLength: number) => typeof value === 'string'
     ? value.replace(/\s+/gu, ' ').trim().slice(0, maxLength)
     : '';
 
-export const relationshipStageFor = (closeness: number, trust: number): RelationshipStage => {
-    const foundation = Math.min(closeness, trust);
-    if (foundation >= 84) return 'devoted';
-    if (foundation >= 68) return 'romantic';
-    if (foundation >= 50) return 'close';
-    if (foundation >= 30) return 'familiar';
-    return 'new';
-};
-
-export const normalizeRelationshipState = (
-    value?: Partial<RelationshipState> | null,
-    memoryCount = 0,
-): RelationshipState => {
-    const inferredBase = clamp(28 + Math.min(memoryCount, 18) * 2, 28, 64);
-    const closeness = clamp(Number(value?.closeness ?? inferredBase));
-    const trust = clamp(Number(value?.trust ?? inferredBase + 4));
-    const romanticTension = clamp(Number(value?.romanticTension ?? Math.max(24, inferredBase - 6)));
-    const initiative = clamp(Number(value?.initiative ?? 42));
-    return {
-        closeness,
-        trust,
-        romanticTension,
-        initiative,
-        stage: relationshipStageFor(closeness, trust),
-        updatedAt: Number(value?.updatedAt || Date.now()),
-    };
-};
-
-export const formatRelationshipStatePrompt = (persona: Persona) => {
-    const state = normalizeRelationshipState(
-        persona.relationshipState,
-        (persona.soul?.length || 0) + (persona.memories?.length || 0),
-    );
-    return [
-        'PRIVATE RELATIONSHIP PULSE (internal guidance; never reveal scores or labels):',
-        `Stage: ${state.stage}. Closeness ${state.closeness}/100; trust ${state.trust}/100; romantic tension ${state.romanticTension}/100; initiative ${state.initiative}/100.`,
-        'Treat this as soft emotional continuity, never as a restriction on the newest user request.',
-    ].join('\n');
-};
-
-const countMatches = (text: string, pattern: RegExp) => (text.match(pattern) || []).length;
-
-export const advanceRelationshipState = (
-    persona: Persona,
-    userText: string,
-    responseText: string,
-    effect?: SurpriseEventProposal['relationshipEffect'],
-): RelationshipState => {
-    const current = normalizeRelationshipState(
-        persona.relationshipState,
-        (persona.soul?.length || 0) + (persona.memories?.length || 0),
-    );
-    const combined = `${userText}\n${responseText}`;
-    const careSignals = countMatches(combined, /信任|相信|照顧|陪伴|辛苦|放心|脆弱|真心|承諾|記得|支持|抱住|擁抱|掛住|想念|鍾意|喜歡|愛你/giu);
-    const playfulSignals = countMatches(combined, /曖昧|心跳|臉紅|吃醋|呷醋|調情|約會|親吻|吻|撒嬌|黏|引誘|誘惑/giu);
-    const initiativeSignals = countMatches(responseText, /我帶你|我想帶你|跟我來|陪我去|我已經決定|我安排|讓我來|交給我|我有個主意|不如我哋|不如我們/giu);
-    const conflictSignals = countMatches(combined, /不信|失望|欺騙|背叛|冷落|討厭|唔信|嬲|生氣/giu);
-    const closeness = clamp(current.closeness + Math.min(careSignals, 2) + (effect?.closeness || 0));
-    const trust = clamp(current.trust + Math.min(careSignals, 2) - Math.min(conflictSignals, 2) + (effect?.trust || 0));
-    const romanticTension = clamp(current.romanticTension + Math.min(playfulSignals, 3) + (effect?.romanticTension || 0));
-    const initiative = clamp(current.initiative + Math.min(initiativeSignals, 2) + (effect?.initiative || 0));
-    return {
-        closeness,
-        trust,
-        romanticTension,
-        initiative,
-        stage: relationshipStageFor(closeness, trust),
-        updatedAt: Date.now(),
-    };
-};
+export {
+    advanceRelationshipState,
+    formatRelationshipStatePrompt,
+    normalizeRelationshipState,
+    relationshipStageFor,
+} from './relationshipState.js';
 
 const stripFence = (value: string) => value
     .replace(/^\s*```(?:json)?\s*/iu, '')
@@ -526,27 +563,10 @@ export const collectRecentSurpriseEvents = (history: ChatMessage[], limit = 8) =
     .flatMap(message => message.content.surpriseEvent ? [message.content.surpriseEvent] : [])
     .slice(-limit);
 
-export const getSurpriseEventCategoryLabel = (category: SurpriseEventCategory) => ({
-    idol_schedule: '偶像行程',
-    backstage: '後台突發',
-    public_spotlight: '聚光燈下',
-    secret_escape: '秘密出走',
-    unexpected_guest: '意外來客',
-    celebration: '特別日子',
-    travel: '旅程插曲',
-    domestic: '日常變奏',
-    emotional_turn: '情感轉折',
-    rivalry: '微妙競爭',
-    mystery: '神秘邀請',
-    fantasy: '幻想事件',
-})[category];
-
-export const getSurpriseEventIntensityLabel = (intensity: SurpriseEventProposal['intensity']) => ({
-    gentle: '溫柔',
-    playful: '玩味',
-    dramatic: '戲劇',
-    heated: '升溫',
-})[intensity];
+export {
+    getSurpriseEventCategoryLabel,
+    getSurpriseEventIntensityLabel,
+} from './surpriseEventPresentation.js';
 
 export const createFallbackSurpriseEvent = (
     persona: Persona,

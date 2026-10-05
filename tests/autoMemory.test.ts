@@ -2,9 +2,38 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     buildMemoryTurnBatches,
+    buildPersonaAutoMemoryMessages,
+    buildRoomAutoMemoryMessages,
     parsePersonaAutoMemoryResponse,
     parseRoomAutoMemoryResponse,
+    PERSONA_MEMORY_RESPONSE_FORMAT,
+    ROOM_MEMORY_RESPONSE_FORMAT,
 } from '../autoMemory.js';
+
+test('cold auto-memory builders preserve schemas and evidence-bearing prompts', () => {
+    assert.equal(ROOM_MEMORY_RESPONSE_FORMAT.json_schema.name, 'room_memory_update_v3');
+    assert.equal(PERSONA_MEMORY_RESPONSE_FORMAT.json_schema.name, 'persona_memory_update_v3');
+
+    const roomMessages = buildRoomAutoMemoryMessages(
+        'member-a=Aster, member-b=Beryl',
+        '- [promise] 早餐: 明早一起吃早餐',
+        '[MESSAGE_ID=m1][SCENE_ID=s1][USER]\n我明早想一齊食早餐。',
+    );
+    assert.equal(roomMessages.length, 2);
+    assert.match(String(roomMessages[0]?.content), /member-a=Aster, member-b=Beryl/);
+    assert.match(String(roomMessages[0]?.content), /Existing memory\.md entries/);
+    assert.match(String(roomMessages[1]?.content), /MESSAGE_ID=m1/);
+
+    const personaMessages = buildPersonaAutoMemoryMessages(
+        'Aster',
+        '- [preference] 咖啡: 使用者鍾意黑咖啡',
+        '[MESSAGE_ID=p1][SCENE_ID=main][USER]\n我飲黑咖啡。',
+    );
+    assert.equal(personaMessages.length, 2);
+    assert.match(String(personaMessages[0]?.content), /Aster's meticulous long-term human-memory archivist/);
+    assert.match(String(personaMessages[0]?.content), /Existing memory\.md entries/);
+    assert.match(String(personaMessages[1]?.content), /MESSAGE_ID=p1/);
+});
 
 test('rejects the singular memory envelope returned by an incompatible model', () => {
     assert.equal(
@@ -112,4 +141,33 @@ test('memory batching overlaps automatic checkpoints and can rescan the full his
     const full = buildMemoryTurnBatches(history, 40, 'full');
     assert.equal(full[0].fromUserMessageCount, 1);
     assert.equal(full.at(-1)?.throughUserMessageCount, 40);
+});
+
+
+test('memory V5 preserves search tags from auto-memory extraction', () => {
+    assert.deepEqual(
+        parsePersonaAutoMemoryResponse(JSON.stringify({
+            memories: [{
+                kind: 'promise',
+                title: '沖繩日出',
+                summary: '答應下次一起看日出。',
+                search_tags: ['沖繩', 'Okinawa', '日出'],
+            }],
+        })),
+        [{
+            kind: 'promise',
+            title: '沖繩日出',
+            summary: '答應下次一起看日出。',
+            searchTags: ['沖繩', 'Okinawa', '日出'],
+        }],
+    );
+
+    const personaSystem = String(buildPersonaAutoMemoryMessages(
+        'Aster',
+        '',
+        '[MESSAGE_ID=p1][SCENE_ID=main][USER]\n下次去沖繩睇日出。',
+    )[0]?.content);
+    assert.match(personaSystem, /search_tags/);
+    assert.match(JSON.stringify(PERSONA_MEMORY_RESPONSE_FORMAT), /search_tags/);
+    assert.match(JSON.stringify(ROOM_MEMORY_RESPONSE_FORMAT), /search_tags/);
 });

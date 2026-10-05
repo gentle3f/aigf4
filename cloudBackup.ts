@@ -1,4 +1,10 @@
-import type { FileManager } from './fileManager.js';
+import type { BackupMediaSummary } from './fileManager.js';
+import {
+    cloudBackupStateStorageKey,
+    persistCloudBackupState,
+    readCloudBackupState,
+} from './cloudBackupState.js';
+import type { PersistedCloudBackupState } from './cloudBackupState.js';
 
 const BACKUP_MAGIC = 'WETAPP-CLOUD-BACKUP-V1\n';
 const BACKUP_FORMAT_VERSION = 1;
@@ -6,7 +12,6 @@ const PBKDF2_ITERATIONS = 350_000;
 const ENCRYPTION_CHUNK_SIZE = 8 * 1024 * 1024;
 const AES_GCM_TAG_SIZE = 16;
 const HEADER_PREVIEW_SIZE = 64 * 1024;
-const CLOUD_STATE_STORAGE_KEY = 'wetappCloudBackupStateV1';
 const CLOUD_KEY_DATABASE = 'wetapp-cloud-backup-key';
 const CLOUD_KEY_STORE = 'keys';
 const CLOUD_KEY_RECORD_ID = 'active';
@@ -35,18 +40,7 @@ export interface CloudBackupListItem {
     uploadedAt: string;
 }
 
-export interface CloudBackupState {
-    enabled: boolean;
-    deviceId: string;
-    vaultId?: string;
-    lastBackupAt?: number;
-    lastBackupSize?: number;
-    lastBackupPathname?: string;
-    lastBackupPhotoCount?: number;
-    lastBackupMigratedPhotoCount?: number;
-    lastFingerprint?: string;
-    lastError?: string;
-}
+export type CloudBackupState = PersistedCloudBackupState;
 
 export type CloudBackupStage = 'idle' | 'packing' | 'encrypting' | 'uploading' | 'restoring' | 'success' | 'error';
 
@@ -320,41 +314,9 @@ const deleteLocalKey = async () => {
     await runKeyRequest('readwrite', store => store.delete(CLOUD_KEY_RECORD_ID));
 };
 
-const createDeviceId = () => (
-    crypto.randomUUID?.() || `device-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
-).toLocaleLowerCase();
-
-const readState = (): CloudBackupState => {
-    try {
-        const parsed = JSON.parse(localStorage.getItem(CLOUD_STATE_STORAGE_KEY) || '{}') as Partial<CloudBackupState>;
-        return {
-            enabled: parsed.enabled === true,
-            deviceId: typeof parsed.deviceId === 'string' && parsed.deviceId
-                ? parsed.deviceId
-                : createDeviceId(),
-            vaultId: typeof parsed.vaultId === 'string' && /^[a-zA-Z0-9_-]{43}$/u.test(parsed.vaultId)
-                ? parsed.vaultId
-                : undefined,
-            lastBackupAt: parsed.lastBackupAt,
-            lastBackupSize: parsed.lastBackupSize,
-            lastBackupPathname: parsed.lastBackupPathname,
-            lastBackupPhotoCount: parsed.lastBackupPhotoCount,
-            lastBackupMigratedPhotoCount: parsed.lastBackupMigratedPhotoCount,
-            lastFingerprint: parsed.lastFingerprint,
-            lastError: parsed.lastError,
-        };
-    } catch {
-        return { enabled: false, deviceId: createDeviceId() };
-    }
-};
-
-const persistState = (state: CloudBackupState) => {
-    localStorage.setItem(CLOUD_STATE_STORAGE_KEY, JSON.stringify(state));
-};
-
 export const fingerprintLocalState = async () => {
     const keys = Object.keys(localStorage)
-        .filter(key => key !== CLOUD_STATE_STORAGE_KEY)
+        .filter(key => key !== cloudBackupStateStorageKey)
         .sort();
     const serialized = [
         `backup-content-version:${BACKUP_CONTENT_VERSION}`,
@@ -375,25 +337,35 @@ const fetchJson = async <T>(url: string, init?: RequestInit) => {
     return data as T;
 };
 
+export interface CloudBackupArchiveProvider {
+    createAllDataArchive: () => Promise<Blob>;
+    getLastBackupMediaSummary: () => BackupMediaSummary | null;
+    restoreAllDataArchive: (
+        blob: Blob,
+        askForConfirmation?: boolean,
+        replaceExisting?: boolean,
+    ) => Promise<boolean>;
+}
+
 export class CloudBackupManager {
-    private fileManager: FileManager;
+    private archiveProvider: CloudBackupArchiveProvider;
     private onProgress: (progress: CloudBackupProgress) => void;
     private onStateChange: (state: CloudBackupState) => void;
-    private state = readState();
+    private state = readCloudBackupState();
     private timer: number | null = null;
     private activeOperation: Promise<void> | null = null;
 
     constructor(
-        fileManager: FileManager,
+        archiveProvider: CloudBackupArchiveProvider,
         callbacks: {
             onProgress?: (progress: CloudBackupProgress) => void;
             onStateChange?: (state: CloudBackupState) => void;
         } = {},
     ) {
-        this.fileManager = fileManager;
+        this.archiveProvider = archiveProvider;
         this.onProgress = callbacks.onProgress || (() => undefined);
         this.onStateChange = callbacks.onStateChange || (() => undefined);
-        persistState(this.state);
+        persistCloudBackupState(this.state);
     }
 
     getState() {
@@ -402,7 +374,7 @@ export class CloudBackupManager {
 
     private updateState(update: Partial<CloudBackupState>) {
         this.state = { ...this.state, ...update };
-        persistState(this.state);
+        persistCloudBackupState(this.state);
         this.onStateChange(this.getState());
     }
 
@@ -456,8 +428,8 @@ export class CloudBackupManager {
 
         try {
             this.progress('packing', '正在整理完整資料…');
-            const archive = await this.fileManager.createAllDataArchive();
-            const mediaSummary = this.fileManager.getLastBackupMediaSummary();
+            const archive = await this.archiveProvider.createAllDataArchive();
+            const mediaSummary = this.archiveProvider.getLastBackupMediaSummary();
             this.progress('encrypting', '正在本機加密…', 0);
             const encrypted = await encryptCloudBackup(
                 archive,
@@ -549,7 +521,7 @@ export class CloudBackupManager {
                 percent => this.progress('restoring', '正在解密及驗證…', 10 + Math.round(percent * 0.6)),
             );
             this.progress('restoring', '正在替換這部裝置的本機副本…', 75);
-            await this.fileManager.restoreAllDataArchive(archive, false, true);
+            await this.archiveProvider.restoreAllDataArchive(archive, false, true);
             await saveLocalKey(localKey!.key, localKey!.salt, vaultId, localKey!.iterations);
             const fingerprint = await fingerprintLocalState();
             this.updateState({

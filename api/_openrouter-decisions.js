@@ -91,6 +91,14 @@ export const JEV_WARDROBE_SHADOW_QUESTIONS = {
   },
 };
 
+export const JEV_GROUP_GATE_SHADOW_QUESTIONS = {
+  ...JEV_QUESTIONS,
+  group_narration_violation: {
+    type: 'noul',
+    instructions: 'Excluding the separately checked first-person Group narration rule, is revision REQUIRED because candidateText has a specific violation established by the supplied evidence: it directly fails the latest request, misassigns identity or ownership, contradicts an explicit continuity/reality/wardrobe/state fact, repeats a clearly completed beat, violates an explicit persona or language rule, mishandles required third-party participation, invents consequential user agency, is materially unfinished, or has another concrete supported defect? Answer YES only for a specific supported violation. If the candidate can be KEPT without correcting a concrete defect—including when evidence is missing, ambiguous, merely stylistic, harmlessly additive, or an action is not proven completed—answer NO.',
+  },
+};
+
 const isPlainObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const hasOnlyKeys = (value, allowed) => Object.keys(value).every(key => allowed.has(key));
 const isFiniteProbability = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
@@ -308,6 +316,7 @@ export const runOpenRouterDecision = async (state, {
   calibrationQuestions,
   allowCalibrationQuestions = false,
   useWardrobeShadowQuestions = false,
+  useGroupGateShadowQuestions = false,
 } = {}) => {
   if (!isValidReviewState(state)) return unavailable('INVALID_STATE');
   let serializedState;
@@ -325,11 +334,13 @@ export const runOpenRouterDecision = async (state, {
 
   // The public production endpoint stays frozen. A dedicated authenticated shadow endpoint may
   // opt into the fixed wardrobe-only trial set. Arbitrary browser-supplied questions remain impossible.
-  const questions = useWardrobeShadowQuestions
-    ? JEV_WARDROBE_SHADOW_QUESTIONS
-    : allowCalibrationQuestions && calibrationQuestions
-      ? calibrationQuestions
-      : JEV_QUESTIONS;
+  const questions = useGroupGateShadowQuestions
+    ? JEV_GROUP_GATE_SHADOW_QUESTIONS
+    : useWardrobeShadowQuestions
+      ? JEV_WARDROBE_SHADOW_QUESTIONS
+      : allowCalibrationQuestions && calibrationQuestions
+        ? calibrationQuestions
+        : JEV_QUESTIONS;
   const requestBody = JSON.stringify({ model: JEV_MODEL, state, questions });
   try {
     const upstream = await transportImpl({ apiKey, requestBody, timeoutMs });

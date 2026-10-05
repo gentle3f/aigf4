@@ -29,11 +29,15 @@ test('older history prepends in bounded batches without losing the full-history 
 
 test('production chat entry renders only the bounded window and search can explicitly expand older history', () => {
     const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
+    const searchSource = readFileSync(new URL('../features/chatSearchUi.ts', import.meta.url), 'utf8');
     const standardChat = source.slice(source.indexOf('const startChat ='), source.indexOf('const showSelectionView ='));
-    const search = source.slice(source.indexOf('const runChatSearch ='), source.indexOf('const openChatSearch ='));
     assert.match(standardChat, /renderChatHistoryWindow\(key, chatHistory\)/u);
     assert.doesNotMatch(standardChat, /chatHistory\.forEach\(/u);
     assert.match(source, /history\s*\.slice\(renderedChatHistoryStartIndex\)/u);
     assert.match(source, /chatContainer\.addEventListener\('scroll',[\s\S]*prependOlderChatHistory\(\)/u);
-    assert.match(search, /prependOlderChatHistory\(renderedChatHistoryStartIndex\)/u);
+    assert.match(source, /getHiddenHistoryCount: \(\) => renderedChatHistoryStartIndex/u);
+    assert.match(source, /expandOlderHistory: count => prependOlderChatHistory\(count\)/u);
+    assert.match(standardChat, /setInstantScrollTop\(chatContainer, chatContainer\.scrollHeight\)/u);
+    assert.match(searchSource, /const hiddenHistoryCount = getDeps\(\)\.getHiddenHistoryCount\(\);/u);
+    assert.match(searchSource, /if \(hiddenHistoryCount > 0\) getDeps\(\)\.expandOlderHistory\(hiddenHistoryCount\);/u);
 });

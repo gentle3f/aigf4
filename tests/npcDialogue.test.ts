@@ -4,9 +4,11 @@ import {
     collectObservedNpcCandidates,
     collectEstablishedNpcNames,
     extractDirectNpcNames,
+    hasNpcPromotionIntent,
     inferIntroducedNpcNames,
     inferNpcPromotionNames,
     inferNpcSpeakersForTurn,
+    mergeEstablishedNpcNamesForTurn,
     replyHasNpcSpeech,
     replyHasNonPersonNpcLabel,
     replyHasUnconfirmedAddressLabel,
@@ -28,6 +30,14 @@ test('keeps labelled NPCs from recent one-to-one history', () => {
 
 test('accepts labelled third-party speech without requiring fancy quotes', () => {
     assert.equal(replyHasNpcSpeech('Peter: 好耐冇見，最近點呀？\n時光：「我都想知。」', ['Peter']), true);
+});
+
+test('cheap promotion intent gate rejects ordinary chat while preserving explicit and pronoun invites', () => {
+    assert.equal(hasNpcPromotionIntent('今次只係效能測試，請自然回覆我一句。'), false);
+    assert.equal(hasNpcPromotionIntent('我們見到 Peter，一齊去打招呼'), false);
+    assert.equal(hasNpcPromotionIntent('把 Jennie 加入這個聊天室'), true);
+    assert.equal(hasNpcPromotionIntent('把她加入群組啦'), true);
+    assert.equal(hasNpcPromotionIntent('invite her into this chat'), true);
 });
 
 test('only promotes an NPC when the user explicitly asks to add them to the chat', () => {
@@ -143,4 +153,27 @@ test('does not count repeated labels in one reply or non-person labels as observ
         collectObservedNpcCandidates(history, 'IU', 2).map(candidate => [candidate.name, candidate.modelTurnCount]),
         [['Jennie', 2]],
     );
+});
+
+test('cached established NPC names merge the newest turn exactly like a full history rescan', () => {
+    const history = [
+        { role: 'user' as const, content: { text: '呢位係我朋友 Irene' } },
+        { role: 'model' as const, content: { text: 'Irene：「你好呀。」\nIU：「坐啦。」' } },
+        { role: 'user' as const, content: { text: '我朋友 Peter 都喺附近' } },
+        { role: 'model' as const, content: { text: 'Peter：「我啱啱到。」' } },
+    ];
+    const cached = collectEstablishedNpcNames(history, 'IU');
+    const latestMessages = [
+        '今日想靜靜傾下',
+        'Irene，你想飲咩？',
+        '呢位係我朋友 Rosé',
+        'Peter 你可唔可以答我？',
+    ];
+
+    latestMessages.forEach(latest => {
+        assert.deepEqual(
+            mergeEstablishedNpcNamesForTurn(cached, latest, 'IU'),
+            collectEstablishedNpcNames(history, 'IU', latest),
+        );
+    });
 });

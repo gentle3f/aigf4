@@ -88,10 +88,10 @@ export const VENICE_IMAGE_API_BASE =
   import.meta.env.VITE_VENICE_IMAGE_API_BASE || '/api/venice-images';
 export const VENICE_IMAGE_MODELS_API_BASE =
   import.meta.env.VITE_VENICE_IMAGE_MODELS_API_BASE || '/api/venice-image-models';
-export const VENICE_IMAGE_GENERATE_MODEL =
-  import.meta.env.VITE_VENICE_IMAGE_GENERATE_MODEL || 'qwen-image-3';
-export const VENICE_IMAGE_EDIT_MODEL =
-  import.meta.env.VITE_VENICE_IMAGE_EDIT_MODEL || 'qwen-image-3-edit';
+export {
+  VENICE_IMAGE_EDIT_MODEL,
+  VENICE_IMAGE_GENERATE_MODEL,
+} from './veniceImagePolicy.js';
 
 const DIRECT_VENICE_BASE = 'https://api.venice.ai/api/v1';
 const VENICE_API_KEY = import.meta.env.DEV
@@ -114,6 +114,27 @@ const ensureDirectApiKey = () => {
   }
 };
 
+const RETRYABLE_IMAGE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const RETRYABLE_IMAGE_MESSAGE_PATTERN = /(?:demand|too many requests|rate[ -]?limit|overload|busy|capacity|temporar|try again|unavailable|service unavailable)/iu;
+
+export class VeniceImageRequestError extends Error {
+  readonly status: number;
+  readonly retryable: boolean;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'VeniceImageRequestError';
+    this.status = status;
+    this.retryable = RETRYABLE_IMAGE_STATUSES.has(status)
+      || RETRYABLE_IMAGE_MESSAGE_PATTERN.test(message);
+  }
+}
+
+export const isRetryableVeniceImageError = (error: unknown) => {
+  if (error instanceof VeniceImageRequestError) return error.retryable;
+  return error instanceof Error && RETRYABLE_IMAGE_MESSAGE_PATTERN.test(error.message);
+};
+
 const parseErrorResponse = async (response: Response): Promise<never> => {
   if (response.status === 401) {
     throw new Error(VENICE_AUTH_REQUIRED_ERROR);
@@ -122,16 +143,22 @@ const parseErrorResponse = async (response: Response): Promise<never> => {
   const text = await response.text();
   if (text) {
     try {
-      const parsed = JSON.parse(text) as { error?: string };
-      if (parsed.error) throw new Error(parsed.error);
-    } catch (error) {
-      if (error instanceof Error && error.message !== 'Unexpected end of JSON input') {
-        throw error;
+      const parsed = JSON.parse(text) as { error?: unknown; message?: unknown; detail?: unknown };
+      const message = [parsed.error, parsed.message, parsed.detail]
+        .find(value => typeof value === 'string' && value.trim());
+      if (typeof message === 'string') {
+        throw new VeniceImageRequestError(message, response.status);
       }
-      throw new Error(text);
+    } catch (error) {
+      if (error instanceof VeniceImageRequestError) throw error;
+      if (!(error instanceof SyntaxError)) throw error;
+      throw new VeniceImageRequestError(text, response.status);
     }
   }
-  throw new Error(`${response.status} ${response.statusText}`);
+  throw new VeniceImageRequestError(
+    `${response.status} ${response.statusText}`,
+    response.status,
+  );
 };
 
 const base64ToBlob = (value: string, type = 'image/webp') => {
@@ -241,16 +268,28 @@ export async function requestVeniceImage(options: VeniceImageRequest): Promise<V
   if (!response.ok) await parseErrorResponse(response);
 
   if (options.mode === 'edit') {
-    return { blobs: [await response.blob()] };
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType && !contentType.startsWith('image/')) {
+      throw new Error('Venice image edit returned a non-image response.');
+    }
+    const blob = await response.blob();
+    if (blob.size < 512) {
+      throw new Error('Venice image edit returned an empty or incomplete image.');
+    }
+    return { blobs: [blob] };
   }
 
   const result = await response.json() as VeniceGenerateResponse;
   if (!result.images?.length) {
     throw new Error(result.error || 'Venice did not return an image.');
   }
+  const blobs = result.images.map(image => base64ToBlob(image));
+  if (blobs.some(blob => blob.size < 512)) {
+    throw new Error('Venice image generation returned an empty or incomplete image.');
+  }
 
   return {
-    blobs: result.images.map(image => base64ToBlob(image)),
+    blobs,
     requestId: result.id,
     totalMs: result.timing?.total,
   };

@@ -7,7 +7,6 @@ import {
     ChatSegment,
     Content,
     DIARY_CHECKPOINT,
-    Interest,
     MemoryManager,
     Persona,
     PersonaMemoryEntry,
@@ -18,25 +17,17 @@ import {
     WardrobeState,
     cleanAiResponse,
 } from "./managers.js";
-import { FileManager } from "./fileManager.js";
-import {
-    CloudBackupListItem,
-    CloudBackupManager,
-    CloudBackupProgress,
-} from "./cloudBackup.js";
-import {
-    SupabaseCloudSyncManager,
-    SupabaseCloudSyncState,
-} from './supabaseCloudSync.js';
+import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
+import { initializeCloudBackupState } from './cloudBackupState.js';
+import { setPersistedAppSetting } from './appSettings.js';
+import type { SupabaseCloudSyncState } from './supabaseCloudSync.js';
 import { coreInstruction, VENICE_ASSISTANT_PERSONA_KEY } from "./personas.tsx";
 import {
     cleanVeniceAssistantReply,
     cleanVeniceChatReply,
-    extractPersonaUpdatePayload,
     generateVeniceText,
     getVeniceMessageAggregate,
     isInvalidVeniceChatReply,
-    listVeniceTextModels,
     RequestState,
     VENICE_API_BASE,
     VENICE_ASSISTANT_MODEL,
@@ -47,43 +38,19 @@ import {
     VENICE_CHAT_QUALITY_FALLBACK_MODEL,
     VENICE_GOD_FALLBACK_MODEL,
     VENICE_GOD_MODEL,
-    VENICE_VIDEO_PROMPT_MODEL,
     VeniceMessage,
     VeniceMessageContentPart,
-    VeniceModelSummary,
 } from "./venice.js";
-import {
-    listVeniceImageModels,
-    requestVeniceImage,
-    VENICE_IMAGE_EDIT_MODEL,
-    VENICE_IMAGE_GENERATE_MODEL,
+import type {
     VeniceImageMode,
     VeniceImageModelSummary,
 } from "./veniceImage.js";
 import {
-    completeVeniceVideo,
-    listVeniceVideoModels,
-    queueVeniceVideo,
-    quoteVeniceVideo,
-    retrieveVeniceVideo,
-    VENICE_VIDEO_IMAGE_MODEL,
-    VENICE_VIDEO_TEXT_MODEL,
-    VeniceVideoMode,
-    VeniceVideoModelSummary,
-} from "./veniceVideo.js";
-import { createRandomAdultFemalePersona } from "./randomPersona.js";
-import {
-    deleteCharacterPhotoAsset,
-    getCharacterPhotoBlob,
-    listCharacterPhotoAssets,
-    saveCharacterPhotoAsset,
-} from "./photoStore.js";
-import {
-    loadPublicIdentityMedia,
-    PublicIdentityCandidate,
-    PublicIdentityMedia,
-    searchPublicIdentities,
-} from "./publicIdentity.js";
+    VENICE_IMAGE_EDIT_MODEL,
+    VENICE_IMAGE_GENERATE_MODEL,
+} from "./veniceImagePolicy.js";
+import { readPersistedVideoJob as readPersistedVideoJobFromStorage } from "./videoStudioPersistence.js";
+import type { PublicIdentityResolution } from "./features/publicIdentitySearch.js";
 import {
     ChatRoom,
     RoomManager,
@@ -97,27 +64,34 @@ import {
 } from "./roomManager.js";
 import {
     AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES,
+    AUTO_MEMORY_MIN_IMPORTANCE,
     AUTO_MEMORY_SUMMARY_VERSION,
-    buildMemoryTurnBatches,
-    MemoryBatchMode,
-    parsePersonaAutoMemoryResponse,
-    parseRoomAutoMemoryResponse,
-} from "./autoMemory.js";
+    AUTO_MEMORY_TURN_INTERVAL,
+} from "./autoMemoryPolicy.js";
+import type { MemoryBatchMode } from "./autoMemory.js";
 import {
     ArchivedRecallTurn,
     formatMemoryPromptMetadata,
-    getRoomMemoryKnowerIds,
+    getMemoryRecallLimit,
     selectRelevantMemories,
     selectRelevantArchivedTurns,
 } from './memoryRetrieval.js';
 import {
-    deleteChatAttachment,
-    getChatAttachmentBlob,
-    saveChatAttachment,
-} from "./chatMediaStore.js";
+    autoMemoryMatchesManualDecision,
+    detectExplicitMemoryIntent,
+    getManualMemoryControlledSourceIds,
+    getManualMemoryLongTermExclusionSummaries,
+    inferExplicitMemoryKind,
+    stripExplicitMemoryDirective,
+} from './memoryPolicy.js';
 import {
-    buildGroupSystemPromptWithAccounting,
-    buildGroupSystemPrompt,
+    addSessionMemory,
+    clearSessionMemories,
+    formatSessionMemoryPrompt,
+    getSessionMemories,
+    removeSessionMemoriesBySourceMessageIds,
+} from './sessionMemory.js';
+import {
     contentToGroupHistoryText,
     getGroupDisplaySegments,
     groupNarrationUsesFirstPerson,
@@ -126,6 +100,7 @@ import {
     resolveRoomMemberPersona,
     selectLegacyGroupHistory,
     selectGroupHistorySinceCurrentRealityLayer,
+    stripGroupTransportResidue,
     trimTrailingUnansweredUserMessages,
 } from "./groupChat.js";
 import {
@@ -133,31 +108,24 @@ import {
     collectEstablishedNpcNames,
     collectObservedNpcCandidates,
     extractDirectNpcNames,
+    hasNpcPromotionIntent,
     inferNpcPromotionNames,
     inferNpcSpeakersForTurn,
+    mergeEstablishedNpcNamesForTurn,
     isUnconfirmedAddressPrefixName,
     replyHasNpcSpeech,
     replyHasNonPersonNpcLabel,
     replyHasUnconfirmedAddressLabel,
 } from "./npcDialogue.js";
+import type { ObservedNpcPersonaDraft } from "./observedNpcPersona.js";
 import {
-    buildFallbackObservedNpcPersonaDraft,
-    ObservedNpcPersonaDraft,
-    parseObservedNpcPersonaDraft,
-} from "./observedNpcPersona.js";
-import {
-    cleanGeneratedPhotoPrompt,
-    FAVORITE_PHOTO_PROMPT_MAX_LENGTH,
-    normalizeFavoritePhotoPrompt,
     selectPhotoPromptVersion,
 } from "./photoPromptPreference.js";
 import {
     buildCharacterModelRoute,
-    buildSurpriseEventModelRoute,
     buildStrictReviewModelRoute,
     CHAT_MODEL_SETTINGS_STORAGE_KEY,
     getGenerationAttemptCount,
-    normalizeChatModelSettings,
     parseChatModelSettings,
 } from "./chatModelSettings.js";
 import type { ChatModelSettings } from "./chatModelSettings.js";
@@ -174,15 +142,7 @@ import type { ReviewPipelineAttemptContext } from "./engine/review/reviewPipelin
 import { runPreparedStrictReviewAttempt } from "./engine/review/reviewAttemptCoordinator.js";
 import { buildJevRecentHistoryText, buildReviewState } from "./engine/review/reviewState.js";
 import { serializeGroupGenerationForReview } from "./engine/review/groupCandidateSerialization.js";
-import {
-    clearJevShadowRecords,
-    getJevShadowRecords,
-    startJevShadowEvaluation,
-} from "./engine/review/jevShadow.js";
-import {
-    createJevShadowDiagnosticsExport,
-    summarizeJevShadowRecords,
-} from "./engine/review/jevShadowDiagnostics.js";
+import { startJevShadowEvaluation } from "./engine/review/jevShadow.js";
 import { runGroupTurnAdapter } from "./engine/groupTurnAdapter.js";
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import {
@@ -215,31 +175,17 @@ import {
 } from "./chatHistoryWindow.js";
 import {
     advanceRelationshipState,
-    buildFallbackSurpriseEventMemberRoles,
-    buildFallbackSurpriseShowMemberRoles,
-    collectRecentSurpriseEvents,
-    createFallbackSurpriseEvent,
     formatRelationshipStatePrompt,
+} from "./relationshipState.js";
+import {
     getSurpriseEventCategoryLabel,
     getSurpriseEventIntensityLabel,
-    parseSurpriseEventProposal,
-    surpriseEventMatchesCategory,
-    surpriseEventMatchesContentMode,
-    surpriseEventHasSpecificActivities,
-    surpriseEventHasPlayableStructure,
-    surpriseEventReadsLikeInteractiveShow,
-    surpriseEventsAreTooSimilar,
-    SURPRISE_EVENT_CATEGORY_GUIDES,
-    SURPRISE_EVENT_RESPONSE_FORMAT,
-} from "./experienceEngine.js";
+} from "./surpriseEventPresentation.js";
 import {
-    buildContextBridge,
     contextBridgeDisplayText,
     contextBridgeToSystemPrompt,
     ensureLatestSceneTransitionBridge,
     findLatestPrivateReturnHandoff,
-    roomMemberToPersona,
-    selectLatestSceneHistory,
 } from "./conversationTransfer.js";
 import {
     emptyWardrobeState,
@@ -249,13 +195,7 @@ import {
     normalizeWardrobeState,
 } from "./wardrobe.js";
 import type { WardrobeParticipant } from "./wardrobe.js";
-import {
-    editChatPreferences,
-    experienceDialog,
-    experienceButton,
-    parseExperienceSuggestions,
-    preferencePrompt,
-} from './chatExperience.js';
+import { preferencePrompt } from './chatExperience.js';
 import { calculateMessageStartScrollTop, setInstantScrollTop } from './chatScroll.js';
 import {
     classifyCharacterSystemPrompt,
@@ -274,7 +214,26 @@ import {
 } from './chatPerformance.js';
 
 
-declare var JSZip: any;
+
+let groupChatPromptModuleLoad: Promise<typeof import('./groupChatPrompt.js')> | null = null;
+
+const loadGroupChatPromptModule = () => {
+    groupChatPromptModuleLoad ??= import('./groupChatPrompt.js');
+    return groupChatPromptModuleLoad;
+};
+
+let photoStoreModuleLoad: Promise<typeof import('./photoStore.js')> | null = null;
+let chatMediaStoreModuleLoad: Promise<typeof import('./chatMediaStore.js')> | null = null;
+
+const loadPhotoStoreModule = () => {
+    photoStoreModuleLoad ??= import('./photoStore.js');
+    return photoStoreModuleLoad;
+};
+
+const loadChatMediaStoreModule = () => {
+    chatMediaStoreModuleLoad ??= import('./chatMediaStore.js');
+    return chatMediaStoreModuleLoad;
+};
 
 const Type = {
     OBJECT: 'object',
@@ -290,8 +249,6 @@ const DEFAULT_CHAT_MODEL_SETTINGS: ChatModelSettings = {
     ccPrimary: VENICE_CC_MODEL,
 };
 
-// Disabled legacy helpers still reference `ai`; keep a harmless placeholder.
-const ai: any = null;
 // --- DOM Elements ---
 const personaSelectionView = document.getElementById('persona-selection-view')!;
 const chatView = document.getElementById('chat-view')!;
@@ -306,60 +263,6 @@ const homeChatModelSettingsBtn = document.getElementById('home-chat-model-settin
 const homeLiveCloudBtn = document.getElementById('home-live-cloud') as HTMLButtonElement;
 const homeCloudBackupBtn = document.getElementById('home-cloud-backup') as HTMLButtonElement;
 const homeExportAll = document.getElementById('home-export-all') as HTMLButtonElement;
-const cloudBackupModal = document.getElementById('cloud-backup-modal')!;
-const closeCloudBackupBtn = document.getElementById('close-cloud-backup') as HTMLButtonElement;
-const cloudBackupStatusIcon = document.getElementById('cloud-backup-status-icon')!;
-const cloudBackupStatusTitle = document.getElementById('cloud-backup-status-title')!;
-const cloudBackupStatusDetail = document.getElementById('cloud-backup-status-detail')!;
-const cloudBackupProgress = document.getElementById('cloud-backup-progress')!;
-const cloudBackupProgressText = document.getElementById('cloud-backup-progress-text')!;
-const cloudBackupProgressPercent = document.getElementById('cloud-backup-progress-percent')!;
-const cloudBackupProgressBar = document.getElementById('cloud-backup-progress-bar') as HTMLElement;
-const scanLocalPhotoVaultBtn = document.getElementById('scan-local-photo-vault') as HTMLButtonElement;
-const localPhotoVaultResult = document.getElementById('local-photo-vault-result')!;
-const cloudBackupSetup = document.getElementById('cloud-backup-setup')!;
-const cloudBackupPassword = document.getElementById('cloud-backup-password') as HTMLInputElement;
-const cloudBackupPasswordConfirm = document.getElementById('cloud-backup-password-confirm') as HTMLInputElement;
-const cloudBackupSetupError = document.getElementById('cloud-backup-setup-error')!;
-const enableCloudBackupBtn = document.getElementById('enable-cloud-backup') as HTMLButtonElement;
-const cloudBackupRecovery = document.getElementById('cloud-backup-recovery')!;
-const cloudRestorePassword = document.getElementById('cloud-restore-password') as HTMLInputElement;
-const cloudRestoreError = document.getElementById('cloud-restore-error')!;
-const restoreCloudWithPasswordBtn = document.getElementById('restore-cloud-with-password') as HTMLButtonElement;
-const cloudBackupControls = document.getElementById('cloud-backup-controls')!;
-const cloudBackupAutoToggle = document.getElementById('cloud-backup-auto-toggle') as HTMLInputElement;
-const cloudBackupNowBtn = document.getElementById('cloud-backup-now') as HTMLButtonElement;
-const cloudRestoreLatestBtn = document.getElementById('cloud-restore-latest') as HTMLButtonElement;
-const cloudBackupVersionsSection = document.getElementById('cloud-backup-versions-section')!;
-const cloudBackupVersionList = document.getElementById('cloud-backup-version-list')!;
-const refreshCloudBackupsBtn = document.getElementById('refresh-cloud-backups') as HTMLButtonElement;
-const cloudBackupDanger = document.getElementById('cloud-backup-danger')!;
-const deleteCloudBackupsBtn = document.getElementById('delete-cloud-backups') as HTMLButtonElement;
-const supabaseCloudModal = document.getElementById('supabase-cloud-modal')!;
-const closeSupabaseCloudBtn = document.getElementById('close-supabase-cloud') as HTMLButtonElement;
-const supabaseCloudStatusIcon = document.getElementById('supabase-cloud-status-icon')!;
-const supabaseCloudStatusTitle = document.getElementById('supabase-cloud-status-title')!;
-const supabaseCloudStatusDetail = document.getElementById('supabase-cloud-status-detail')!;
-const supabaseCloudProgress = document.getElementById('supabase-cloud-progress')!;
-const supabaseCloudProgressText = document.getElementById('supabase-cloud-progress-text')!;
-const supabaseCloudProgressPercent = document.getElementById('supabase-cloud-progress-percent')!;
-const supabaseCloudProgressBar = document.getElementById('supabase-cloud-progress-bar') as HTMLElement;
-const supabaseCloudLogin = document.getElementById('supabase-cloud-login')!;
-const supabaseCloudLoginForm = document.getElementById('supabase-cloud-login-form') as HTMLFormElement;
-const supabaseCloudEmail = document.getElementById('supabase-cloud-email') as HTMLInputElement;
-const supabaseCloudPassword = document.getElementById('supabase-cloud-password') as HTMLInputElement;
-const supabaseCloudError = document.getElementById('supabase-cloud-error')!;
-const supabaseCloudPasswordLogin = document.getElementById('supabase-cloud-password-login') as HTMLButtonElement;
-const supabaseCloudSendLink = document.getElementById('supabase-cloud-send-link') as HTMLButtonElement;
-const supabaseCloudControls = document.getElementById('supabase-cloud-controls')!;
-const supabaseCloudAccount = document.getElementById('supabase-cloud-account')!;
-const supabaseCloudSyncNow = document.getElementById('supabase-cloud-sync-now') as HTMLButtonElement;
-const supabaseCloudReload = document.getElementById('supabase-cloud-reload') as HTMLButtonElement;
-const supabaseCloudNewPassword = document.getElementById('supabase-cloud-new-password') as HTMLInputElement;
-const supabaseCloudNewPasswordConfirm = document.getElementById('supabase-cloud-new-password-confirm') as HTMLInputElement;
-const supabaseCloudControlsError = document.getElementById('supabase-cloud-controls-error')!;
-const supabaseCloudSetPassword = document.getElementById('supabase-cloud-set-password') as HTMLButtonElement;
-const supabaseCloudSignOut = document.getElementById('supabase-cloud-sign-out') as HTMLButtonElement;
 const newChatFab = document.getElementById('new-chat-fab') as HTMLButtonElement;
 const newChatMenu = document.getElementById('new-chat-menu')!;
 const createGroupRoomBtn = document.getElementById('create-group-room-btn') as HTMLButtonElement;
@@ -373,23 +276,14 @@ const loadingIndicator = document.getElementById('loading-indicator')!;
 const loadingText = document.getElementById('loading-text') as HTMLSpanElement;
 const chatStatus = document.getElementById('chat-status')!;
 const errorMessage = document.getElementById('error-message')!;
-const avatarUploadInput = document.getElementById('avatar-upload-input') as HTMLInputElement;
 const downloadChatBtn = document.getElementById('download-chat-btn') as HTMLButtonElement;
 const downloadAllChatsBtn = document.getElementById('download-all-chats-btn') as HTMLButtonElement;
 const downloadImagesBtn = document.getElementById('download-images-btn') as HTMLButtonElement;
 const uploadZipBtn = document.getElementById('upload-zip-btn')!;
 const zipUploadInput = document.getElementById('zip-upload-input') as HTMLInputElement;
-const giftButton = document.getElementById('gift-button') as HTMLButtonElement;
-const giftUploadInput = document.getElementById('gift-upload-input') as HTMLInputElement;
-const giftPreviewContainer = document.getElementById('gift-preview-container')!;
-const giftPreviewImage = document.getElementById('gift-preview-image') as HTMLImageElement;
-const removeGiftBtn = document.getElementById('remove-gift-btn')!;
 const randomRecruitBtn = document.getElementById('random-recruit-btn') as HTMLButtonElement;
-const randomRecruitStatus = document.getElementById('random-recruit-status')!;
 const createPersonaBtn = document.getElementById('create-persona-btn')!;
 const clearChatBtn = document.getElementById('clear-chat-btn') as HTMLButtonElement;
-const suggestionButton = document.getElementById('suggestion-button') as HTMLButtonElement;
-const suggestionContainer = document.getElementById('suggestion-container')!;
 const newSceneBtn = document.getElementById('new-scene-btn') as HTMLButtonElement;
 const takePhotoBtn = document.getElementById('take-photo-btn') as HTMLButtonElement;
 const surpriseEventBtn = document.getElementById('surprise-event-btn') as HTMLButtonElement;
@@ -406,12 +300,6 @@ const dmRoomMemberBtn = document.getElementById('dm-room-member-btn') as HTMLBut
 const inviteCharacterBtn = document.getElementById('invite-character-btn') as HTMLButtonElement;
 const leaveRoomMemberBtn = document.getElementById('leave-room-member-btn') as HTMLButtonElement;
 const chatSearchBtn = document.getElementById('chat-search-btn') as HTMLButtonElement;
-const chatSearchBar = document.getElementById('chat-search-bar')!;
-const chatSearchInput = document.getElementById('chat-search-input') as HTMLInputElement;
-const chatSearchCount = document.getElementById('chat-search-count')!;
-const chatSearchClose = document.getElementById('chat-search-close') as HTMLButtonElement;
-const chatSearchPrev = document.getElementById('chat-search-prev') as HTMLButtonElement;
-const chatSearchNext = document.getElementById('chat-search-next') as HTMLButtonElement;
 const appShell = document.getElementById('app-shell')!;
 const authGate = document.getElementById('auth-gate')!;
 const authForm = document.getElementById('auth-form') as HTMLFormElement;
@@ -423,113 +311,16 @@ const authSubmitLoading = document.getElementById('auth-submit-loading')!;
 const chatAttachmentInput = document.getElementById('chat-attachment-input') as HTMLInputElement;
 const chatAttachmentPreview = document.getElementById('chat-attachment-preview')!;
 const composerCameraButton = document.getElementById('composer-camera-button') as HTMLButtonElement;
-const assistantModelBar = document.getElementById('assistant-model-bar')!;
-const assistantModelSelect = document.getElementById('assistant-model-select') as HTMLSelectElement;
-const assistantModelMeta = document.getElementById('assistant-model-meta')!;
-const refreshAssistantModelsBtn = document.getElementById('refresh-assistant-models') as HTMLButtonElement;
 const imageStudioEntry = document.getElementById('image-studio-entry') as HTMLButtonElement;
-const imageStudioView = document.getElementById('image-studio-view')!;
-const imageStudioBack = document.getElementById('image-studio-back') as HTMLButtonElement;
-const imageModeGenerateBtn = document.getElementById('image-mode-generate') as HTMLButtonElement;
-const imageModeEditBtn = document.getElementById('image-mode-edit') as HTMLButtonElement;
-const imageModelSelect = document.getElementById('image-model-select') as HTMLSelectElement;
-const imageModelMeta = document.getElementById('image-model-meta')!;
-const refreshImageModelsBtn = document.getElementById('refresh-image-models') as HTMLButtonElement;
-const imageSourceSection = document.getElementById('image-source-section')!;
-const imageSourceInput = document.getElementById('image-source-input') as HTMLInputElement;
-const imageSourceDropzone = document.getElementById('image-source-dropzone') as HTMLButtonElement;
-const imageSourceEmpty = document.getElementById('image-source-empty')!;
-const imageSourcePreviewWrap = document.getElementById('image-source-preview-wrap')!;
-const imageSourcePreview = document.getElementById('image-source-preview') as HTMLImageElement;
-const imageSourceMeta = document.getElementById('image-source-meta')!;
-const imagePrompt = document.getElementById('image-prompt') as HTMLTextAreaElement;
-const imagePromptCount = document.getElementById('image-prompt-count')!;
-const imageNegativeSection = document.getElementById('image-negative-section')!;
-const imageNegativePrompt = document.getElementById('image-negative-prompt') as HTMLTextAreaElement;
-const imageAspectRatio = document.getElementById('image-aspect-ratio') as HTMLSelectElement;
-const imageResolutionWrap = document.getElementById('image-resolution-wrap')!;
-const imageResolution = document.getElementById('image-resolution') as HTMLSelectElement;
-const imageVariantWrap = document.getElementById('image-variant-wrap')!;
-const imageVariants = document.getElementById('image-variants') as HTMLSelectElement;
-const imageSeedWrap = document.getElementById('image-seed-wrap')!;
 const imageSeed = document.getElementById('image-seed') as HTMLInputElement;
 const imageSeedLock = document.getElementById('image-seed-lock') as HTMLInputElement;
-const imageSeedRandom = document.getElementById('image-seed-random') as HTMLButtonElement;
-const imageAdultConfirm = document.getElementById('image-adult-confirm') as HTMLInputElement;
-const imageStudioError = document.getElementById('image-studio-error')!;
-const imageGenerateButton = document.getElementById('image-generate-button') as HTMLButtonElement;
-const imageGenerateLabel = document.getElementById('image-generate-label')!;
-const imageGenerateSpinner = document.getElementById('image-generate-spinner')!;
-const imageStudioStatus = document.getElementById('image-studio-status')!;
-const imageCostEstimate = document.getElementById('image-cost-estimate')!;
-const imageStudioEmpty = document.getElementById('image-studio-empty')!;
-const imageStudioResults = document.getElementById('image-studio-results')!;
-const clearImageResultsBtn = document.getElementById('clear-image-results') as HTMLButtonElement;
 const videoStudioEntry = document.getElementById('video-studio-entry') as HTMLButtonElement;
-const videoStudioView = document.getElementById('video-studio-view')!;
-const videoStudioBack = document.getElementById('video-studio-back') as HTMLButtonElement;
-const videoModeImageBtn = document.getElementById('video-mode-image') as HTMLButtonElement;
-const videoModeTextBtn = document.getElementById('video-mode-text') as HTMLButtonElement;
-const videoModelSelect = document.getElementById('video-model-select') as HTMLSelectElement;
-const videoModelMeta = document.getElementById('video-model-meta')!;
-const refreshVideoModelsBtn = document.getElementById('refresh-video-models') as HTMLButtonElement;
-const videoSourceSection = document.getElementById('video-source-section')!;
-const videoSourceInput = document.getElementById('video-source-input') as HTMLInputElement;
-const videoSourceDropzone = document.getElementById('video-source-dropzone') as HTMLButtonElement;
-const videoSourceEmpty = document.getElementById('video-source-empty')!;
-const videoSourcePreviewWrap = document.getElementById('video-source-preview-wrap')!;
-const videoSourcePreview = document.getElementById('video-source-preview') as HTMLImageElement;
-const videoSourceMeta = document.getElementById('video-source-meta')!;
-const videoSourceRemove = document.getElementById('video-source-remove') as HTMLButtonElement;
-const videoPrompt = document.getElementById('video-prompt') as HTMLTextAreaElement;
-const videoPromptCount = document.getElementById('video-prompt-count')!;
-const videoPromptHint = document.getElementById('video-prompt-hint')!;
-const videoPromptFeedback = document.getElementById('video-prompt-feedback')!;
-const videoPromptOptimizeButton = document.getElementById('video-prompt-optimize') as HTMLButtonElement;
-const videoPromptOptimizeLabel = document.getElementById('video-prompt-optimize-label')!;
-const videoPromptOptimizeSpinner = document.getElementById('video-prompt-optimize-spinner')!;
-const videoNegativePrompt = document.getElementById('video-negative-prompt') as HTMLTextAreaElement;
-const videoDuration = document.getElementById('video-duration') as HTMLSelectElement;
-const videoResolutionWrap = document.getElementById('video-resolution-wrap')!;
-const videoResolution = document.getElementById('video-resolution') as HTMLSelectElement;
-const videoAspectRatioWrap = document.getElementById('video-aspect-ratio-wrap')!;
-const videoAspectRatio = document.getElementById('video-aspect-ratio') as HTMLSelectElement;
-const videoAudioWrap = document.getElementById('video-audio-wrap')!;
-const videoAudio = document.getElementById('video-audio') as HTMLInputElement;
-const videoAdultConfirm = document.getElementById('video-adult-confirm') as HTMLInputElement;
-const videoStudioError = document.getElementById('video-studio-error')!;
-const videoGenerateButton = document.getElementById('video-generate-button') as HTMLButtonElement;
-const videoGenerateLabel = document.getElementById('video-generate-label')!;
-const videoGenerateSpinner = document.getElementById('video-generate-spinner')!;
-const videoCancelButton = document.getElementById('video-cancel-button') as HTMLButtonElement;
-const videoStudioStatus = document.getElementById('video-studio-status')!;
-const videoCostEstimate = document.getElementById('video-cost-estimate')!;
-const videoStudioEmpty = document.getElementById('video-studio-empty')!;
-const videoStudioResults = document.getElementById('video-studio-results')!;
-const clearVideoResultsBtn = document.getElementById('clear-video-results') as HTMLButtonElement;
-const videoProgressSteps = Array.from(document.querySelectorAll<HTMLElement>('[data-video-stage]'));
-
 // More Options Menu
 const moreOptionsBtn = document.getElementById('more-options-btn')!;
 const moreOptionsMenu = document.getElementById('more-options-menu')!;
 const personaSettingsBtn = document.getElementById('persona-settings-btn')!;
 const changeAvatarBtn = document.getElementById('change-avatar-btn') as HTMLButtonElement;
 const ccModelSettingsBtn = document.getElementById('cc-model-settings-btn') as HTMLButtonElement;
-const chatModelSettingsModal = document.getElementById('chat-model-settings-modal')!;
-const closeChatModelSettingsBtn = document.getElementById('close-chat-model-settings') as HTMLButtonElement;
-const chatModelSettingsTitle = document.getElementById('chat-model-settings-title')!;
-const globalChatModelFields = document.getElementById('global-chat-model-fields')!;
-const ccChatModelFields = document.getElementById('cc-chat-model-fields')!;
-const chatPrimaryModelSelect = document.getElementById('chat-primary-model-select') as HTMLSelectElement;
-const chatQualityModelSelect = document.getElementById('chat-quality-model-select') as HTMLSelectElement;
-const chatEmergencyModelSelect = document.getElementById('chat-emergency-model-select') as HTMLSelectElement;
-const ccPrimaryModelSelect = document.getElementById('cc-primary-model-select') as HTMLSelectElement;
-const globalModelRoutePreview = document.getElementById('global-model-route-preview')!;
-const ccModelRoutePreview = document.getElementById('cc-model-route-preview')!;
-const chatModelListStatus = document.getElementById('chat-model-list-status')!;
-const refreshChatModelsBtn = document.getElementById('refresh-chat-models') as HTMLButtonElement;
-const resetChatModelSettingsBtn = document.getElementById('reset-chat-model-settings') as HTMLButtonElement;
-const saveChatModelSettingsBtn = document.getElementById('save-chat-model-settings') as HTMLButtonElement;
 
 // Save Before Exit Modal
 const saveExitModal = document.getElementById('save-exit-modal')!;
@@ -537,312 +328,177 @@ const saveAndExitBtn = document.getElementById('save-and-exit-btn')!;
 const exitWithoutSavingBtn = document.getElementById('exit-without-saving-btn')!;
 const cancelExitBtn = document.getElementById('cancel-exit-btn')!;
 
-// Persona Creator Elements
-const personaCreatorModal = document.getElementById('persona-creator-modal')!;
-const closeCreatorModal = document.getElementById('close-creator-modal')!;
-const randomizePersonaBtn = document.getElementById('randomize-persona-btn') as HTMLButtonElement;
-const diceIcon = document.getElementById('dice-icon')!;
-const diceLoadingIcon = document.getElementById('dice-loading-icon')!;
-const creatorStep1 = document.getElementById('creator-step-1')!;
-const creatorStep2 = document.getElementById('creator-step-2')!;
-const personaNameInput = document.getElementById('persona-name') as HTMLInputElement;
-const fictionalPersonaCheckbox = document.getElementById('fictional-persona-checkbox') as HTMLInputElement;
-const clubSelectionContainer = document.getElementById('club-selection-container')!;
-const personaClubSelect = document.getElementById('persona-club') as HTMLSelectElement;
-const customClubContainer = document.getElementById('custom-club-container')!;
-const personaCustomClubInput = document.getElementById('persona-custom-club') as HTMLInputElement;
-const generatePersonaBtn = document.getElementById('generate-persona') as HTMLButtonElement;
-const cancelCreatorBtn = document.getElementById('cancel-creator')!;
-const backToStep1Btn = document.getElementById('back-to-step1')!;
-const savePersonaBtn = document.getElementById('save-persona')!;
-const generatedPersonaPreview = document.getElementById('generated-persona-preview')!;
-
-// Avatar Prompt Editor Elements
-const editAvatarPromptModal = document.getElementById('edit-avatar-prompt-modal')!;
-const closePromptModal = document.getElementById('close-prompt-modal')!;
-const avatarPromptEditor = document.getElementById('avatar-prompt-editor') as HTMLTextAreaElement;
-const cancelPromptEdit = document.getElementById('cancel-prompt-edit')!;
-const savePromptEdit = document.getElementById('save-prompt-edit') as HTMLButtonElement;
-
 // Photo Prompt Modal Elements
-const photoPromptModal = document.getElementById('photo-prompt-modal')!;
-// FIX: Renamed variable to avoid duplicate identifier conflict with the `closePhotoPromptModal` function.
-const closePhotoPromptModalBtn = document.getElementById('close-photo-prompt-modal')!;
-const photoPromptInput = document.getElementById('photo-prompt-input') as HTMLTextAreaElement;
-const photoRoomMemberControls = document.getElementById('photo-room-member-controls')!;
-const photoSenderSelect = document.getElementById('photo-sender-select') as HTMLSelectElement;
-const photoSubjectsContainer = document.getElementById('photo-subjects-container')!;
-const cancelPhotoGeneration = document.getElementById('cancel-photo-generation')!;
-const generatePhotoBtn = document.getElementById('generate-photo-btn') as HTMLButtonElement;
-const generatePhotoText = document.getElementById('generate-photo-text')!;
-const generatePhotoLoading = document.getElementById('generate-photo-loading')!;
 
-
-// Dating Module Elements
-const dateBtn = document.getElementById('date-btn')!;
-
-// AI Date Proposal Modal Elements
-const dateProposalModal = document.getElementById('date-proposal-modal')!;
-const dateProposalAvatar = document.getElementById('date-proposal-avatar')!;
-const dateProposalName = document.getElementById('date-proposal-name')!;
-const dateProposalText = document.getElementById('date-proposal-text')!;
-const dateProposalLocation = document.getElementById('date-proposal-location')!;
-const dateProposalDuration = document.getElementById('date-proposal-duration')!;
-const declineDateBtn = document.getElementById('decline-date-btn')!;
-const acceptDateBtn = document.getElementById('accept-date-btn')!;
 
 // Interests Module Elements
-const interestsBtn = document.getElementById('interests-btn')!;
-const interestsModal = document.getElementById('interests-modal')!;
-// FIX: Renamed variable to avoid duplicate identifier conflict with the `closeInterestsModal` function.
-const closeInterestsModalBtn = document.getElementById('close-interests-modal')!;
-const interestsModalTitle = document.getElementById('interests-modal-title')!;
-const interestsGridContainer = document.getElementById('interests-grid-container')!;
 
 // Album Module Elements
 const albumBtn = document.getElementById('album-btn')!;
 const attachFileMenuBtn = document.getElementById('attach-file-menu-btn') as HTMLButtonElement;
-const albumModal = document.getElementById('album-modal')!;
-// FIX: Renamed variable to avoid duplicate identifier conflict with the `closeAlbumModal` function.
-const closeAlbumModalBtn = document.getElementById('close-album-modal')!;
-const albumModalTitle = document.getElementById('album-modal-title')!;
-const albumGridContainer = document.getElementById('album-grid-container')!;
-const albumActions = document.getElementById('album-actions')!;
-const albumSelectAll = document.getElementById('album-select-all') as HTMLInputElement;
-const albumMainButtons = document.getElementById('album-main-buttons')!;
-const albumDownloadBtn = document.getElementById('album-download-btn') as HTMLButtonElement;
-const albumDeleteBtn = document.getElementById('album-delete-btn') as HTMLButtonElement;
-const deleteConfirmationSection = document.getElementById('delete-confirmation-section')!;
-const confirmDeleteBtn = document.getElementById('confirm-delete-btn') as HTMLButtonElement;
-const cancelDeleteBtn = document.getElementById('cancel-delete-btn') as HTMLButtonElement;
-const photoViewerModal = document.getElementById('photo-viewer-modal')!;
-const photoViewerShell = photoViewerModal.querySelector('.photo-viewer-shell')!;
-const closePhotoViewer = document.getElementById('close-photo-viewer') as HTMLButtonElement;
-const togglePhotoViewerEditor = document.getElementById('toggle-photo-viewer-editor') as HTMLButtonElement;
-const photoViewerToggleLabel = document.getElementById('photo-viewer-toggle-label')!;
-const openPhotoFullscreen = document.getElementById('open-photo-fullscreen') as HTMLButtonElement;
-const photoViewerImage = document.getElementById('photo-viewer-image') as HTMLImageElement;
-const photoViewerMode = document.getElementById('photo-viewer-mode')!;
-const photoViewerTitle = document.getElementById('photo-viewer-title')!;
-const photoViewerMeta = document.getElementById('photo-viewer-meta')!;
-const photoViewerPrompt = document.getElementById('photo-viewer-prompt') as HTMLTextAreaElement;
-const photoViewerPromptCount = document.getElementById('photo-viewer-prompt-count')!;
-const photoViewerModel = document.getElementById('photo-viewer-model') as HTMLSelectElement;
-const photoViewerModelMeta = document.getElementById('photo-viewer-model-meta')!;
-const photoViewerAspectRatio = document.getElementById('photo-viewer-aspect-ratio') as HTMLSelectElement;
-const photoViewerResolutionWrap = document.getElementById('photo-viewer-resolution-wrap')!;
-const photoViewerResolution = document.getElementById('photo-viewer-resolution') as HTMLSelectElement;
-const photoViewerSeedWrap = document.getElementById('photo-viewer-seed-wrap')!;
-const photoViewerSeed = document.getElementById('photo-viewer-seed') as HTMLInputElement;
-const photoViewerSeedLock = document.getElementById('photo-viewer-seed-lock') as HTMLInputElement;
-const photoViewerStatus = document.getElementById('photo-viewer-status')!;
-const photoViewerRegenerate = document.getElementById('photo-viewer-regenerate') as HTMLButtonElement;
-const photoViewerRegenerateLabel = document.getElementById('photo-viewer-regenerate-label')!;
-const photoViewerRegenerateSpinner = document.getElementById('photo-viewer-regenerate-spinner')!;
-const photoFullscreenModal = document.getElementById('photo-fullscreen-modal')!;
-const closePhotoFullscreen = document.getElementById('close-photo-fullscreen') as HTMLButtonElement;
-const photoFullscreenImage = document.getElementById('photo-fullscreen-image') as HTMLImageElement;
-const photoFullscreenStage = document.getElementById('photo-fullscreen-stage')!;
-const photoFullscreenZoomLevel = document.getElementById('photo-fullscreen-zoom-level')!;
-const photoFullscreenZoomOut = document.getElementById('photo-fullscreen-zoom-out') as HTMLButtonElement;
-const photoFullscreenZoomIn = document.getElementById('photo-fullscreen-zoom-in') as HTMLButtonElement;
-const photoFullscreenReset = document.getElementById('photo-fullscreen-reset') as HTMLButtonElement;
 
 // Memory Modal Elements
 const memoryBtn = document.getElementById('memory-btn')!;
-const memoryModal = document.getElementById('memory-modal')!;
-const closeMemoryModal = document.getElementById('close-memory-modal')!;
-const memoryEditor = document.getElementById('memory-editor') as HTMLTextAreaElement;
-const cancelMemoryEdit = document.getElementById('cancel-memory-edit')!;
-const saveMemoryEdit = document.getElementById('save-memory-edit')!;
-const personaSettingsModal = document.getElementById('persona-settings-modal')!;
-const closePersonaSettingsModal = document.getElementById('close-persona-settings-modal')!;
-const cancelPersonaSettingsBtn = document.getElementById('cancel-persona-settings')!;
-const savePersonaSettingsBtn = document.getElementById('save-persona-settings') as HTMLButtonElement;
-const personaSettingsSubtitle = document.getElementById('persona-settings-subtitle')!;
-const personaDescriptionEditor = document.getElementById('persona-description-editor') as HTMLInputElement;
-const personaPromptEditor = document.getElementById('persona-prompt-editor') as HTMLTextAreaElement;
-const personaGreetingEditor = document.getElementById('persona-greeting-editor') as HTMLTextAreaElement;
-const personaFavoritePhotoPromptField = document.getElementById('persona-favorite-photo-prompt-field')!;
-const personaFavoritePhotoPrompt = document.getElementById('persona-favorite-photo-prompt') as HTMLTextAreaElement;
-const personaSettingsAvatarPreview = document.getElementById('persona-settings-avatar-preview')!;
-const personaSettingsAvatarBtn = document.getElementById('persona-settings-avatar-btn') as HTMLButtonElement;
-const personaPublicIdentityCheckbox = document.getElementById('persona-public-identity-checkbox') as HTMLInputElement;
-const personaPublicIdentityPanel = document.getElementById('persona-public-identity-panel')!;
-const personaPublicIdentityStatus = document.getElementById('persona-public-identity-status')!;
-const personaPublicIdentitySummary = document.getElementById('persona-public-identity-summary') as HTMLTextAreaElement;
-const personaPublicIdentityVisual = document.getElementById('persona-public-identity-visual') as HTMLTextAreaElement;
-const personaPublicIdentitySource = document.getElementById('persona-public-identity-source') as HTMLAnchorElement;
-const recheckPublicIdentityBtn = document.getElementById('recheck-public-identity-btn') as HTMLButtonElement;
 const publicFigureCreateBtn = document.getElementById('public-figure-create-btn') as HTMLButtonElement;
 const mimicImportBtn = document.getElementById('mimic-import-btn') as HTMLButtonElement;
-const mimicImportModal = document.getElementById('mimic-import-modal')!;
-const mimicModalTitle = document.getElementById('mimic-modal-title')!;
-const mimicModalDescription = document.getElementById('mimic-modal-description')!;
-const closeMimicImportModal = document.getElementById('close-mimic-import-modal')!;
-const cancelMimicImportBtn = document.getElementById('cancel-mimic-import')!;
-const runMimicAnalysisBtn = document.getElementById('run-mimic-analysis') as HTMLButtonElement;
-const saveMimicPersonaBtn = document.getElementById('save-mimic-persona') as HTMLButtonElement;
-const mimicTranscriptInput = document.getElementById('mimic-transcript-input') as HTMLInputElement;
-const mimicAvatarInput = document.getElementById('mimic-avatar-input') as HTMLInputElement;
-const pickMimicTranscriptBtn = document.getElementById('pick-mimic-transcript-btn') as HTMLButtonElement;
-const pickMimicAvatarBtn = document.getElementById('pick-mimic-avatar-btn') as HTMLButtonElement;
-const mimicAvatarPreview = document.getElementById('mimic-avatar-preview')!;
-const mimicAvatarStatus = document.getElementById('mimic-avatar-status')!;
-const mimicModeTranscriptBtn = document.getElementById('mimic-mode-transcript-btn') as HTMLButtonElement;
-const mimicModePublicBtn = document.getElementById('mimic-mode-public-btn') as HTMLButtonElement;
-const mimicModeManualBtn = document.getElementById('mimic-mode-manual-btn') as HTMLButtonElement;
-const mimicRandomCompleteBtn = document.getElementById('mimic-random-complete-btn') as HTMLButtonElement;
-const mimicNameInput = document.getElementById('mimic-name-input') as HTMLInputElement;
-const mimicPublicIdentityCheckbox = document.getElementById('mimic-public-identity-checkbox') as HTMLInputElement;
-const mimicPublicIdentityHint = document.getElementById('mimic-public-identity-hint')!;
-const mimicTranscriptSection = document.getElementById('mimic-transcript-section')!;
-const mimicPublicSection = document.getElementById('mimic-public-section')!;
-const mimicPublicSourceSummary = document.getElementById('mimic-public-source-summary')!;
-const mimicManualSection = document.getElementById('mimic-manual-section')!;
-const mimicManualRandomBtn = document.getElementById('mimic-manual-random-btn') as HTMLButtonElement;
-const mimicOccupationInput = document.getElementById('mimic-occupation-input') as HTMLInputElement;
-const mimicPersonalityInput = document.getElementById('mimic-personality-input') as HTMLTextAreaElement;
-const mimicBackgroundInput = document.getElementById('mimic-background-input') as HTMLTextAreaElement;
-const mimicNotesLabel = document.getElementById('mimic-notes-label')!;
-const mimicNotesInput = document.getElementById('mimic-notes-input') as HTMLTextAreaElement;
-const mimicTranscriptStatus = document.getElementById('mimic-transcript-status')!;
-const mimicTranscriptMeta = document.getElementById('mimic-transcript-meta')!;
-const mimicAnalysisStatus = document.getElementById('mimic-analysis-status')!;
-const mimicResultPanel = document.getElementById('mimic-result-panel')!;
-const mimicResultEmpty = document.getElementById('mimic-result-empty')!;
-const mimicAnalysisMeta = document.getElementById('mimic-analysis-meta')!;
-const mimicAnalysisPersonality = document.getElementById('mimic-analysis-personality')!;
-const mimicAnalysisUsualSelf = document.getElementById('mimic-analysis-usual-self')!;
-const mimicAnalysisWithUserSelf = document.getElementById('mimic-analysis-with-user-self')!;
-const mimicAnalysisRomanceStyle = document.getElementById('mimic-analysis-romance-style')!;
-const mimicAnalysisBehavior = mimicAnalysisUsualSelf;
-const mimicAnalysisTone = document.getElementById('mimic-analysis-tone')!;
-const mimicAnalysisRegionality = document.getElementById('mimic-analysis-regionality')!;
-const mimicAnalysisCommandResponse = document.getElementById('mimic-analysis-command-response')!;
-const mimicDescriptionEditor = document.getElementById('mimic-description-editor') as HTMLInputElement;
-const mimicPromptEditor = document.getElementById('mimic-prompt-editor') as HTMLTextAreaElement;
-const mimicGreetingEditor = document.getElementById('mimic-greeting-editor') as HTMLTextAreaElement;
-const mimicMemoryEditor = document.getElementById('mimic-memory-editor') as HTMLTextAreaElement;
-const publicIdentityModal = document.getElementById('public-identity-modal')!;
-const closePublicIdentityModalBtn = document.getElementById('close-public-identity-modal') as HTMLButtonElement;
-const publicIdentityQuery = document.getElementById('public-identity-query') as HTMLInputElement;
-const searchPublicIdentityBtn = document.getElementById('search-public-identity-btn') as HTMLButtonElement;
-const publicIdentityStatus = document.getElementById('public-identity-status')!;
-const publicIdentityCandidatesContainer = document.getElementById('public-identity-candidates')!;
-const publicIdentityMediaSection = document.getElementById('public-identity-media-section')!;
-const publicIdentityMediaContainer = document.getElementById('public-identity-media')!;
-const cancelPublicIdentityBtn = document.getElementById('cancel-public-identity') as HTMLButtonElement;
-const confirmPublicIdentityBtn = document.getElementById('confirm-public-identity') as HTMLButtonElement;
-const avatarSourceModal = document.getElementById('avatar-source-modal')!;
-const avatarSourceTitle = document.getElementById('avatar-source-title')!;
-const avatarSourceMembers = document.getElementById('avatar-source-members')!;
-const avatarSourceOptions = document.getElementById('avatar-source-options')!;
-const closeAvatarSourceModalBtn = document.getElementById('close-avatar-source-modal') as HTMLButtonElement;
-const avatarSourceLocalBtn = document.getElementById('avatar-source-local') as HTMLButtonElement;
-const avatarSourceSearchBtn = document.getElementById('avatar-source-search') as HTMLButtonElement;
 const roomInfoModal = document.getElementById('room-info-modal')!;
-const closeRoomInfoBtn = document.getElementById('close-room-info') as HTMLButtonElement;
-const roomInfoTitle = document.getElementById('room-info-title')!;
-const roomInfoSummary = document.getElementById('room-info-summary')!;
-const roomMemberList = document.getElementById('room-member-list')!;
-const roomSceneEditor = document.getElementById('room-scene-editor')!;
-const roomPhotoPromptEditor = document.getElementById('room-photo-prompt-editor')!;
 const addRoomMemberBtn = document.getElementById('add-room-member-btn') as HTMLButtonElement;
 const openRoomMemoryBtn = document.getElementById('open-room-memory-btn') as HTMLButtonElement;
 const exportRoomBtn = document.getElementById('export-room-btn') as HTMLButtonElement;
-const roomMemoryModal = document.getElementById('room-memory-modal')!;
-const closeRoomMemoryBtn = document.getElementById('close-room-memory') as HTMLButtonElement;
-const roomMemoryTitle = document.getElementById('room-memory-title')!;
-const memoryMemberTabs = document.getElementById('memory-member-tabs')!;
-const memorySoulTab = document.getElementById('memory-soul-tab') as HTMLButtonElement;
-const memoryEventTab = document.getElementById('memory-event-tab') as HTMLButtonElement;
-const roomMemoryList = document.getElementById('room-memory-list')!;
-const createGroupModal = document.getElementById('create-group-modal')!;
-const closeCreateGroupBtn = document.getElementById('close-create-group') as HTMLButtonElement;
-const createGroupName = document.getElementById('create-group-name') as HTMLInputElement;
-const createGroupMemberList = document.getElementById('create-group-member-list')!;
-const confirmCreateGroupBtn = document.getElementById('confirm-create-group') as HTMLButtonElement;
-const participantActionModal = document.getElementById('participant-action-modal')!;
-const closeParticipantActionBtn = document.getElementById('close-participant-action') as HTMLButtonElement;
-const participantActionTitle = document.getElementById('participant-action-title')!;
-const participantActionSummary = document.getElementById('participant-action-summary')!;
-const participantActionList = document.getElementById('participant-action-list')!;
-
 
 // --- Managers ---
-let diaryModule: any;
 
 const memoryManager = new MemoryManager();
 const roomManager = new RoomManager();
 roomManager.ensureIuGroupRoom(memoryManager);
 
-const fileManager = new FileManager(memoryManager, {
-    downloadAllChatsBtn,
-    downloadImagesBtn,
-    beforeAllDataRestore: () => {
-        if (activeChatRequest) cancelActiveChatRequest();
-    },
-    onSingleChatRestored: (key, history) => {
-        startChat(key, history);
-    },
-    onAllDataRestored: summary => {
-        roomManager.ensureIuGroupRoom(memoryManager);
-        renderPersonaList();
-        const conflictNote = summary.renamedConflicts
-            ? `\n${summary.renamedConflicts} 項同鍵但不同的資料已另存為「匯入備份」，沒有覆蓋原本內容。`
-            : '';
-        const duplicateNote = summary.skippedDuplicates
-            ? `\n${summary.skippedDuplicates} 項重複資料已略過，避免產生副本。`
-            : '';
-        alert(`安全匯入完成，共加入 ${summary.importedMessages.toLocaleString('zh-HK')} 則訊息。${conflictNote}${duplicateNote}`);
-        showSelectionView();
+let fileManager: import('./fileManager.js').FileManager | null = null;
+let fileManagerLoad: Promise<import('./fileManager.js').FileManager> | null = null;
+
+const loadFileManager = async () => {
+    if (fileManager) return fileManager;
+    if (!fileManagerLoad) {
+        fileManagerLoad = import('./fileManager.js')
+            .then(({ FileManager }) => {
+                const manager = new FileManager(memoryManager, {
+                    downloadAllChatsBtn,
+                    downloadImagesBtn,
+                    beforeAllDataRestore: () => {
+                        if (activeChatRequest) cancelActiveChatRequest();
+                    },
+                    onSingleChatRestored: (key, history) => {
+                        startChat(key, history);
+                    },
+                    onAllDataRestored: summary => {
+                        roomManager.ensureIuGroupRoom(memoryManager);
+                        renderPersonaList();
+                        const conflictNote = summary.renamedConflicts
+                            ? `\n${summary.renamedConflicts} 項同鍵但不同的資料已另存為「匯入備份」，沒有覆蓋原本內容。`
+                            : '';
+                        const duplicateNote = summary.skippedDuplicates
+                            ? `\n${summary.skippedDuplicates} 項重複資料已略過，避免產生副本。`
+                            : '';
+                        alert(`安全匯入完成，共加入 ${summary.importedMessages.toLocaleString('zh-HK')} 則訊息。${conflictNote}${duplicateNote}`);
+                        showSelectionView();
+                    },
+                }, roomManager);
+                fileManager = manager;
+                return manager;
+            })
+            .catch(error => {
+                fileManagerLoad = null;
+                throw error;
+            });
     }
-}, roomManager);
-
-let cloudBackupList: CloudBackupListItem[] = [];
-let cloudBackupHasLocalKey = false;
-let cloudBackupBusy = false;
-let cloudBackupLastProgress: CloudBackupProgress = {
-    stage: 'idle',
-    message: '尚未開始雲端備份。',
+    return fileManagerLoad;
 };
-const cloudBackupManager = new CloudBackupManager(fileManager, {
-    onProgress: progress => renderCloudBackupProgress(progress),
-    onStateChange: () => {
-        if (!cloudBackupModal.classList.contains('hidden')) void refreshCloudBackupView(false);
-    },
-});
 
-const supabaseCloudSyncManager = new SupabaseCloudSyncManager(memoryManager, roomManager, {
-    onStateChange: state => renderSupabaseCloudState(state),
-    onRemoteApplied: () => {
-        roomManager.ensureIuGroupRoom(memoryManager);
-        renderPersonaList();
-        if (currentConversationKey) {
-            const draft = messageInput.value;
-            startChat(currentConversationKey, null, 'skip');
-            messageInput.value = draft;
-            resetMessageInput();
-            updateSendButtonState();
-        }
-    },
-});
+type CloudBackupUiHandle = {
+    open: () => void;
+    renderProgress: (progress: CloudBackupProgress) => void;
+    refreshIfOpen: (fetchRemote?: boolean) => Promise<void>;
+};
+let cloudBackupUi: CloudBackupUiHandle | null = null;
+let cloudBackupUiLoad: Promise<CloudBackupUiHandle> | null = null;
 
-const readPreferredVideoModel = (storageKey: string, preferredModel: string, legacyDefault: string) => {
-    const stored = localStorage.getItem(storageKey);
-    if (!stored || stored === legacyDefault) {
-        localStorage.setItem(storageKey, preferredModel);
-        return preferredModel;
+const cloudBackupStartupState = initializeCloudBackupState();
+let cloudBackupManager: CloudBackupManager | null = null;
+let cloudBackupManagerLoad: Promise<CloudBackupManager> | null = null;
+
+const loadCloudBackupManager = async () => {
+    if (cloudBackupManager) return cloudBackupManager;
+    if (!cloudBackupManagerLoad) {
+        cloudBackupManagerLoad = import('./cloudBackup.js')
+            .then(({ CloudBackupManager }) => {
+                const manager = new CloudBackupManager({
+                    createAllDataArchive: async () => (await loadFileManager()).createAllDataArchive(),
+                    getLastBackupMediaSummary: () => fileManager?.getLastBackupMediaSummary() || null,
+                    restoreAllDataArchive: async (blob, askForConfirmation, replaceExisting) => (
+                        await (await loadFileManager()).restoreAllDataArchive(blob, askForConfirmation, replaceExisting)
+                    ),
+                }, {
+                    onProgress: progress => cloudBackupUi?.renderProgress(progress),
+                    onStateChange: () => { void cloudBackupUi?.refreshIfOpen(false); },
+                });
+                manager.startAutoBackup();
+                cloudBackupManager = manager;
+                return manager;
+            })
+            .catch(error => {
+                cloudBackupManagerLoad = null;
+                throw error;
+            });
     }
-    return stored;
+    return cloudBackupManagerLoad;
 };
+
+type LiveCloudUiHandle = {
+    open: () => void;
+    renderState: (state: SupabaseCloudSyncState) => void;
+};
+let liveCloudUi: LiveCloudUiHandle | null = null;
+let liveCloudUiLoad: Promise<LiveCloudUiHandle> | null = null;
+
+let supabaseCloudSyncManager: import('./supabaseCloudSync.js').SupabaseCloudSyncManager | null = null;
+let supabaseCloudSyncManagerLoad: Promise<import('./supabaseCloudSync.js').SupabaseCloudSyncManager> | null = null;
+
+const loadSupabaseCloudSyncManager = async () => {
+    if (supabaseCloudSyncManager) return supabaseCloudSyncManager;
+    if (!supabaseCloudSyncManagerLoad) {
+        supabaseCloudSyncManagerLoad = import('./supabaseCloudSync.js')
+            .then(({ SupabaseCloudSyncManager }) => {
+                const manager = new SupabaseCloudSyncManager(memoryManager, roomManager, {
+                    onStateChange: state => liveCloudUi?.renderState(state),
+                    onRemoteApplied: () => {
+                        roomManager.ensureIuGroupRoom(memoryManager);
+                        renderPersonaList();
+                        if (currentConversationKey) {
+                            const draft = messageInput.value;
+                            startChat(currentConversationKey, null, 'skip');
+                            messageInput.value = draft;
+                            resetMessageInput();
+                            updateSendButtonState();
+                        }
+                    },
+                });
+                supabaseCloudSyncManager = manager;
+                return manager;
+            })
+            .catch(error => {
+                supabaseCloudSyncManagerLoad = null;
+                throw error;
+            });
+    }
+    return supabaseCloudSyncManagerLoad;
+};
+
+const startSupabaseCloudSync = async () => {
+    const manager = await loadSupabaseCloudSyncManager();
+    await manager.start();
+};
+
+let veniceImageModuleLoad: Promise<typeof import('./veniceImage.js')> | null = null;
+
+const loadVeniceImageModule = () => {
+    veniceImageModuleLoad ??= import('./veniceImage.js');
+    return veniceImageModuleLoad;
+};
+
+const listVeniceImageModels = async (mode?: VeniceImageMode) => (
+    await loadVeniceImageModule()
+).listVeniceImageModels(mode);
+
+const requestVeniceImage = async (
+    request: import('./veniceImage.js').VeniceImageRequest,
+) => (
+    await loadVeniceImageModule()
+).requestVeniceImage(request);
 
 const readPreferredImageGenerateModel = () => {
     const storageKey = 'veniceImageGenerateModel';
     const stored = localStorage.getItem(storageKey);
     if (!stored || stored === 'lustify-v8') {
-        localStorage.setItem(storageKey, VENICE_IMAGE_GENERATE_MODEL);
+        setPersistedAppSetting(storageKey, VENICE_IMAGE_GENERATE_MODEL);
         return VENICE_IMAGE_GENERATE_MODEL;
     }
     return stored;
@@ -852,7 +508,7 @@ const readPreferredImageEditModel = () => {
     const storageKey = 'veniceImageEditModel';
     const stored = localStorage.getItem(storageKey);
     if (!stored || stored === 'qwen-edit-uncensored') {
-        localStorage.setItem(storageKey, VENICE_IMAGE_EDIT_MODEL);
+        setPersistedAppSetting(storageKey, VENICE_IMAGE_EDIT_MODEL);
         return VENICE_IMAGE_EDIT_MODEL;
     }
     return stored;
@@ -865,9 +521,6 @@ let currentPersonaKey: string | null = null;
 let currentConversationKey: string | null = null;
 let currentRoom: ChatRoom | null = null;
 let activeRoomMemberId: string | null = null;
-let currentPersonaKeyForUpload: string | null = null;
-let avatarUploadRoomTarget: { roomId: string; memberId: string } | null = null;
-let avatarSourceTarget: { personaKey: string } | { roomId: string; memberId: string } | null = null;
 let expandedLegacyHistoryConversationKey: string | null = null;
 let renderedChatHistoryConversationKey: string | null = null;
 let renderedChatHistory: ChatMessage[] = [];
@@ -876,58 +529,17 @@ let renderedChatHistoryAnchor: HTMLElement | null = null;
 let renderedChatHistoryLoadOlderButton: HTMLButtonElement | null = null;
 let isPrependingChatHistory = false;
 let isChatHistoryAutoPreloadEnabled = false;
-let currentPersonaKeyForPromptEdit: string | null = null;
-let generatedPersonaData: any = null;
-let attachedGift: { file: File, dataUrl: string } | null = null;
-let isDeletingPersona = false;
-let currentProposal: { location: string, duration: number } | null = null;
-let datingModule: any;
-let albumPhotos: {
-    imageUrl?: string;
-    imageAssetId?: string;
-    caption: string;
-    prompt: string;
-    historyIndex: number | null;
-    createdAt: number;
-    recoveredFromStore?: boolean;
-    content: Content;
-}[] = [];
-let albumAttachments: ChatAttachment[] = [];
-let selectedPhotoIndices: Set<number> = new Set();
 let isGodModeActive = false;
 let godModeHistory: ChatMessage[] = [];
 let chatRuntimeState: RequestState = 'idle';
 let isUnlocked = !VENICE_API_BASE.startsWith('/');
-let mimicTranscriptFile: File | null = null;
-let mimicAvatarDataUrl: string | null = null;
-let mimicDraftPersona: MimicPersonaDraft | null = null;
-let isMimicAnalysisRunning = false;
-let mimicBuildMode: MimicBuildMode = 'transcript';
-let mimicPublicIdentityResolution: PublicIdentityResolution | null = null;
-let mimicPublicIdentityQuery = '';
-let publicIdentityCandidates: PublicIdentityCandidate[] = [];
-let selectedPublicIdentityCandidate: PublicIdentityCandidate | null = null;
-let publicIdentityMedia: PublicIdentityMedia[] = [];
-let selectedPublicIdentityMedia: PublicIdentityMedia | null = null;
-let publicIdentityLookupController: AbortController | null = null;
-let publicIdentityResolver: ((value: PublicIdentityResolution | null) => void) | null = null;
-let isPublicIdentityBusy = false;
-let personaSettingsResolvedIdentity: PublicIdentity | null = null;
-let personaSettingsResolvedAvatarUrl: string | null = null;
 let activeChatRequest: ActiveChatRequest | null = null;
 let nextChatRequestId = 1;
-let assistantModels: VeniceModelSummary[] = [];
-let assistantModelsPromise: Promise<void> | null = null;
 let selectedAssistantModel = localStorage.getItem('veniceAssistantModel') || VENICE_ASSISTANT_MODEL;
 let chatModelSettings = parseChatModelSettings(
     localStorage.getItem(CHAT_MODEL_SETTINGS_STORAGE_KEY),
     DEFAULT_CHAT_MODEL_SETTINGS,
 );
-let chatModelSettingsDraft: ChatModelSettings = { ...chatModelSettings };
-let chatModelSettingsScope: 'global' | 'cc' = 'global';
-let assistantModelListUsesFallback = false;
-let assistantModelListUpdatedAt: number | null = null;
-let imageStudioMode: VeniceImageMode = 'generate';
 let imageModels: Record<VeniceImageMode, VeniceImageModelSummary[]> = {
     generate: [],
     edit: [],
@@ -940,81 +552,20 @@ let selectedImageModels: Record<VeniceImageMode, string> = {
     generate: readPreferredImageGenerateModel(),
     edit: readPreferredImageEditModel(),
 };
-let imageSource: ImageStudioSource | null = null;
-let imageResults: ImageStudioResult[] = [];
-let imageRequestController: AbortController | null = null;
-let isImageRequestRunning = false;
-let activePhotoViewerContext: PhotoViewerContext | null = null;
-let isPhotoViewerRegenerating = false;
-let photoViewerRequestController: AbortController | null = null;
-let isPhotoViewerEditorCollapsed = false;
-let photoFullscreenScale = 1;
-let photoFullscreenPan = { x: 0, y: 0 };
-let photoFullscreenDrag: { pointerId: number; x: number; y: number; panX: number; panY: number } | null = null;
-let photoFullscreenPinch: { distance: number; scale: number } | null = null;
-const photoFullscreenPointers = new Map<number, { x: number; y: number }>();
 let characterPhotoRequestController: AbortController | null = null;
 let activeCharacterPhotoProposalId: string | null = null;
 let switchingCharacterPhotoProposalId: string | null = null;
 let pendingChatAttachments: Array<{ attachment: ChatAttachment; file: File; previewUrl?: string }> = [];
 const chatAttachmentObjectUrls = new Map<string, string>();
 let openMessageActionMenu: HTMLElement | null = null;
-let selectedMemoryMemberId: string | null = null;
-let selectedMemoryType: 'soul' | 'memory' = 'soul';
-let personaSettingsRoomTarget: { roomId: string; memberId: string } | null = null;
-let groupModalTargetRoomId: string | null = null;
-let pendingPhotoSenderMemberId: string | null = null;
-let pendingPhotoSubjectMemberIds: string[] = [];
+let personaSettingsUi: import('./features/personaSettingsUi.js').PersonaSettingsUiHandle | null = null;
 const characterPhotoObjectUrls = new Map<string, string>();
-let videoStudioMode: VeniceVideoMode = 'image-to-video';
-let videoModels: Record<VeniceVideoMode, VeniceVideoModelSummary[]> = {
-    'image-to-video': [],
-    'text-to-video': [],
-};
-let videoModelPromises: Record<VeniceVideoMode, Promise<void> | null> = {
-    'image-to-video': null,
-    'text-to-video': null,
-};
-let selectedVideoModels: Record<VeniceVideoMode, string> = {
-    'image-to-video': readPreferredVideoModel(
-        'veniceVideoImageModel',
-        VENICE_VIDEO_IMAGE_MODEL,
-        'wan-2-7-image-to-video',
-    ),
-    'text-to-video': readPreferredVideoModel(
-        'veniceVideoTextModel',
-        VENICE_VIDEO_TEXT_MODEL,
-        'wan-2-7-text-to-video',
-    ),
-};
-let videoSource: VideoStudioSource | null = null;
-let videoResults: VideoStudioResult[] = [];
-let videoRequestController: AbortController | null = null;
-let videoQuoteController: AbortController | null = null;
-let videoQuoteTimer: number | null = null;
-let videoQuoteVersion = 0;
-let videoQuoteUsd: number | null = null;
-let videoPromptOptimizerController: AbortController | null = null;
-let isVideoPromptOptimizing = false;
-let lastVideoPromptOptimization: { settingsKey: string; output: string } | null = null;
-let isVideoRequestRunning = false;
-let pendingVideoJob: PersistedVideoJob | null = null;
-let videoLastProgressIndex = -1;
-let isRandomRecruiting = false;
 let surpriseEventReplacingProposalId: string | null = null;
 const roomSummaryInFlight = new Set<string>();
 const personaSummaryInFlight = new Set<string>();
-let manualMemoryUpdateNotice: {
-    conversationKey: string;
-    tone: 'running' | 'success' | 'error';
-    text: string;
-} | null = null;
-let chatSearchMatches: HTMLElement[] = [];
-let chatSearchMatchIndex = -1;
 
 const USES_VENICE_PROXY_AUTH = VENICE_API_BASE.startsWith('/');
 
-const DISABLED_FEATURE_MESSAGE = '此功能在目前版本暫時停用。';
 const GOD_MODE_ENTER_COMMAND = 'GOD MODE';
 const GOD_MODE_EXIT_COMMAND = 'BYE GOD MODE';
 const CHAT_HISTORY_MESSAGE_LIMIT = 48;
@@ -1024,114 +575,12 @@ const GROUP_CHAT_HISTORY_CHAR_BUDGET = 40000;
 const ASSISTANT_HISTORY_MESSAGE_LIMIT = 60;
 const ASSISTANT_HISTORY_CHAR_BUDGET = 36000;
 const GOD_MODE_HISTORY_LIMIT = 10;
-const ROOM_MEMORY_SUMMARY_TURN_INTERVAL = 12;
+const ROOM_MEMORY_SUMMARY_TURN_INTERVAL = AUTO_MEMORY_TURN_INTERVAL;
 const AUTO_MEMORY_RECENT_MESSAGE_LIMIT = 32;
 const AUTO_MEMORY_MODEL_TIMEOUT_MS = 50_000;
-const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 2_500_000;
-const MAX_CHAT_IMAGE_EDGE = 1600;
 const CHAT_MAX_AUTO_CONTINUES = 2;
 const CHAT_MODEL_ATTEMPT_TIMEOUT_MS = 45_000;
 const SURPRISE_EVENT_ATTEMPT_TIMEOUT_MS = 45_000;
-const NSFW_SURPRISE_EVENT_DIRECTIONS = [
-    {
-        prompt: 'a private adult seduction challenge with a concrete dare, clear roles and immediate sexual tension',
-        fallbackPremise: '一張寫明成人規則的私密挑戰卡被放到你面前，第一個挑戰要求其中一人主動提出清楚的性邀請。',
-        showTitle: '午夜真心與挑戰',
-        showHook: '一個只限成年人的互動挑戰節目已經開場，每回合都要在真心題與成人挑戰之間二選一。',
-        showSetup: '場地、挑戰卡與三輪賽制已經準備完成；所有已選角色都是正式參與者，第一回合現在就從抽取開場卡開始。',
-        showActivities: [
-            '每位參與者寫下一條只限成年人的真心問題，混合後逐一抽取並立即回答。',
-            '答題者指定下一位完成六十秒誘惑表演，其餘參與者即場評分。',
-            '本輪得分最低者抽取加碼條件，由你選擇保留、交換或改抽一次。',
-        ],
-        showChoice: '第一回合由你指定誰先抽卡，或交給節目即場抽籤。',
-        categories: ['backstage', 'domestic', 'rivalry', 'mystery', 'celebration'],
-    },
-    {
-        prompt: 'a consensual adult role-play premise with specific identities, a private setting and a clear first move',
-        fallbackPremise: '她們準備了一個只限成年人的角色扮演設定，身份、場地與第一個性挑戰都已寫好，只等待你決定是否開始。',
-        showTitle: '身份交換劇場',
-        showHook: '每位參與者抽取一個成人角色與秘密任務，必須保持身份直到回合結束。',
-        showSetup: '舞台身份、場景規則與隱藏任務已經抽好；第一回合會逐一揭曉角色，並立即進入互動演出。',
-        showActivities: [
-            '每人抽取一張角色身份及一個禁止詞，朗讀身份後立即進入角色。',
-            '參與者兩人一組完成三分鐘即興演出，過程中說出禁止詞便要交換身份。',
-            '其餘參與者投票選出最投入的一組，再由你決定是否換角或加入秘密條件。',
-        ],
-        showChoice: '你要先揭曉哪一位的身份，還是讓主持人按抽籤次序開始？',
-        categories: ['fantasy', 'mystery', 'domestic', 'backstage'],
-    },
-    {
-        prompt: 'an after-work or after-performance private release where one selected character initiates a clearly sexual proposition',
-        fallbackPremise: '工作或演出結束後的私人空檔裡，其中一人不再掩飾慾望，向你提出一個具體的成人邀請。',
-        showTitle: '安可後的成人特別篇',
-        showHook: '正式演出結束後，所有已選角色留下錄製一段不公開的成人互動特別篇。',
-        showSetup: '鏡頭、舞台與回合卡已重新設定，第一回合由其中一位提出節目的第一個成人邀請，其餘參與者會即場接續。',
-        showActivities: [
-            '每位參與者依次完成四十五秒個人誘惑舞台，並自行選擇音樂、語氣及站位。',
-            '節目抽出兩人配對，把各自的個人舞台合併成一段即興雙人演出。',
-            '所有人完成後由你選出安可人選，並指定安可加入一項新的表演條件。',
-        ],
-        showChoice: '你要指定誰主持第一回合，還是讓她們自行搶先開始？',
-        categories: ['backstage', 'celebration'],
-    },
-    {
-        prompt: 'a playful adult power-exchange game with an explicit rule, a concrete reward or consequence, and room for the user to choose',
-        fallbackPremise: '一場成人主導權遊戲訂下了清楚規則、獎勵與後果，但由你決定接受、拒絕或改寫第一條規則。',
-        showTitle: '主導權擂台',
-        showHook: '參與者要透過逐輪挑戰爭取下一回合的主導權，每次勝出都會解鎖新的成人規則。',
-        showSetup: '計分牌、獎勵與替代懲罰已經公開；第一輪由所有已選角色同場競逐，不會有人留在場外旁觀。',
-        showActivities: [
-            '所有參與者抽籤決定主導者與挑戰者，並按卡牌要求交換稱呼及舞台位置。',
-            '主導者指定一項限時角色指令，挑戰者完成後由其他參與者投票評分。',
-            '本輪勝出者按下加碼鍵，從角色交換、雙人配對或延長計時中挑選下一條規則。',
-        ],
-        showChoice: '第一輪由你選擇挑戰項目，或讓參與者各自提出一項再抽籤。',
-        categories: ['rivalry', 'mystery', 'fantasy', 'domestic'],
-    },
-    {
-        prompt: 'a multi-character adult attention or jealousy game in which every selected character has a distinct active role',
-        fallbackPremise: '幾位參與者把原本的爭寵變成明確的成人遊戲，每人提出不同的性挑戰，等你選擇先回應誰。',
-        showTitle: '今晚誰最懂你',
-        showHook: '所有參與者以不同方式完成成人挑戰，爭取成為最了解你反應的人。',
-        showSetup: '每人已經準備一張完全不同的挑戰卡；第一輪會依次亮牌、互相回應，最後才由你作出選擇。',
-        showActivities: [
-            '每位參與者先寫下她猜測你最喜歡的一種語氣、造型或角色設定，再同時亮牌。',
-            '她們依次用六十秒表演自己的答案，其他參與者可以加入、模仿或提出加碼。',
-            '你為每段表演排序，最低分者抽取新角色卡並與最高分者配對進入下一輪。',
-        ],
-        showChoice: '你要指定亮牌順序，還是讓她們自己爭取第一位？',
-        categories: ['rivalry', 'celebration', 'backstage'],
-    },
-    {
-        prompt: 'a risky-but-private adult encounter with a concrete interruption risk, time limit or need for secrecy',
-        fallbackPremise: '一段有限時或可能被打斷的私人空檔，令她們直接提出一個必須立刻決定是否開始的成人性冒險。',
-        showTitle: '倒數成人挑戰',
-        showHook: '節目只有一段明確倒數時間，參與者必須在每輪時限結束前完成或改選挑戰。',
-        showSetup: '倒數器、回合卡與中止按鈕已經就位；所有已選角色會在同一輪內輪流行動，時間一到便立刻進入加碼規則。',
-        showActivities: [
-            '每位參與者抽取一張六十秒任務卡，計時開始後立即完成指定語氣、角色或表演要求。',
-            '每次鈴聲響起便交換搭檔與任務卡，上一位留下的條件會加入下一段演出。',
-            '未能在時限完成者要回答一條成人真心題，再由你決定延長、換題或進入加碼。',
-        ],
-        showChoice: '你要設定第一輪的開始次序，還是立即按下隨機開始鍵？',
-        categories: ['backstage', 'mystery', 'domestic'],
-    },
-    {
-        prompt: 'the discovery or gifting of a clearly adult intimate item that creates a specific sexual challenge',
-        fallbackPremise: '一件明確的成人情趣用品意外出現，附帶的使用規則把它變成一個尚未開始的具體性挑戰。',
-        showTitle: '成人盲盒特別場',
-        showHook: '每個密封盲盒都藏有一件成人道具與對應挑戰，抽中者必須先讀出該輪規則。',
-        showSetup: '盲盒、挑戰卡與替代選項已經排在場中央；每位已選角色都有自己的抽取回合，第一盒現在等待開啟。',
-        showActivities: [
-            '第一位參與者抽出眼罩、角色卡或計時器其中一件道具，並朗讀盒內的配對規則。',
-            '抽中眼罩者戴上後只靠同伴口頭提示猜出角色，其餘參與者輪流提供線索。',
-            '猜中後由她指定下一位打開角色盲盒，再由你選擇兩人配對或全部加入同一回合。',
-        ],
-        showChoice: '第一個盲盒由你指定誰打開，或讓所有參與者同時抽籤。',
-        categories: ['mystery', 'celebration', 'domestic', 'backstage'],
-    },
-] as const;
 const CHAT_MODEL_TIMEOUT_ERROR = 'CHAT_MODEL_TIMEOUT';
 const SCENE_END_MARKER = '[SCENE END]';
 const SCENE_START_LABEL = '--- 新場景開始 ---';
@@ -1142,24 +591,14 @@ const IMAGE_EDIT_MODEL_STORAGE_KEY = 'veniceImageEditModel';
 const IMAGE_ADULT_CONFIRM_STORAGE_KEY = 'veniceImageAdultConfirmed';
 const IMAGE_SEED_STORAGE_KEY = 'veniceImageSeed';
 const IMAGE_SEED_LOCK_STORAGE_KEY = 'veniceImageSeedLocked';
-const VIDEO_IMAGE_MODEL_STORAGE_KEY = 'veniceVideoImageModel';
-const VIDEO_TEXT_MODEL_STORAGE_KEY = 'veniceVideoTextModel';
-const VIDEO_ADULT_CONFIRM_STORAGE_KEY = 'veniceVideoAdultConfirmed';
-const VIDEO_PENDING_JOB_STORAGE_KEY = 'veniceVideoPendingJobV1';
-const RANDOM_PERSONA_VARIATION_HISTORY_KEY = 'aigf4RandomPersonaVariationsV2';
 const CHARACTER_PHOTO_PROMPT_MAX_LENGTH = 1500;
 const CHARACTER_PHOTO_EDITOR_MAX_LENGTH = 7500;
-const VIDEO_PROMPT_OPTIMIZER_TIMEOUT_MS = 45_000;
-const VIDEO_PROMPT_OPTIMIZER_ATTEMPT_TIMEOUT_MS = 15_000;
-const VIDEO_POLL_INTERVAL_MS = 5_000;
-const VIDEO_POLL_TIMEOUT_MS = 15 * 60_000;
 
 type AppHistoryState =
     | { view: 'home' }
     | { view: 'chat'; conversationKey: string; personaKey?: string }
     | { view: 'image' }
     | { view: 'video' };
-type MimicBuildMode = 'transcript' | 'public' | 'manual';
 type ChatMode = 'character' | 'assistant' | 'god' | 'photo' | 'event';
 type SurpriseEventDrawOptions = {
     contentMode: SurpriseEventContentMode;
@@ -1179,33 +618,11 @@ type ActiveChatRequest = {
     mode: ChatMode;
     characterPhotoRequest?: boolean;
     surpriseEvent?: SurpriseEventProposal;
+    establishedNpcNames: string[];
     wardrobeState: WardrobeState;
     pendingWardrobeState?: WardrobeState;
     controller: AbortController;
     startedAt: number;
-};
-type ImageStudioSource = {
-    blob: Blob;
-    base64: string;
-    previewUrl: string;
-    width: number;
-    height: number;
-    name: string;
-};
-type ImageStudioResult = {
-    id: string;
-    blob: Blob;
-    url: string;
-    prompt: string;
-    model: string;
-    modelId: string;
-    mode: VeniceImageMode;
-    aspectRatio: string;
-    resolution?: string;
-    negativePrompt?: string;
-    sourceImageBase64?: string;
-    seed?: number;
-    createdAt: Date;
 };
 type PhotoViewerContext = {
     source: 'chat' | 'album' | 'studio';
@@ -1224,2292 +641,150 @@ type PhotoViewerContext = {
     sourceImageBase64?: string;
     seed?: number;
 };
-type VideoStudioSource = {
-    blob: Blob;
-    dataUrl: string;
-    previewUrl: string;
-    width: number;
-    height: number;
-    name: string;
-};
-type VideoStudioResult = {
-    id: string;
-    url: string;
-    isObjectUrl: boolean;
-    prompt: string;
-    model: string;
-    modelId: string;
-    queueId: string;
-    createdAt: Date;
-    needsRemoteCleanup: boolean;
-};
-type PersistedVideoJob = {
-    version: 1;
-    model: string;
-    modelName: string;
-    queueId: string;
-    downloadUrl?: string;
-    prompt: string;
-    mode: VeniceVideoMode;
-    queuedAt: number;
-};
-type MimicAnalysisSummary = {
-    personality: string;
-    behavior: string;
-    usualSelf?: string;
-    withUserSelf?: string;
-    romanceStyle?: string;
-    tone: string;
-    regionality: string;
-    commandResponse: string;
-};
-
-type MimicPersonaDraft = {
-    description: string;
-    prompt: string;
-    greeting: string;
-    memory: string;
-    analysis: MimicAnalysisSummary;
-};
-
-type ManualPersonaSeed = {
-    name: string;
-    gender: 'female' | 'male';
-    occupation: string;
-    personality: string;
-    background: string;
-    notes: string;
-};
-
-type PublicPersonaSeed = {
-    displayName: string;
-    notes: string;
-    resolution: PublicIdentityResolution;
-};
-
-type PublicIdentityResolution = {
-    identity: PublicIdentity;
-    avatarUrl?: string;
-    candidate?: PublicIdentityCandidate;
-};
-
-type TranscriptReadResult = {
-    text: string;
-    sourceName: string;
-    parserLabel: string;
-    speakerTurns: number;
-    mergedLines: number;
-};
-
-type TranscriptFocusResult = {
-    text: string;
-    matchedTurns: number;
-    usedFocusedWindows: boolean;
-};
-
-type PreparedTranscriptChunks = {
-    chunks: string[];
-    sourceChunkCount: number;
-    sampled: boolean;
-    sampleChunkCount: number;
-};
-
 const HOME_HISTORY_STATE: AppHistoryState = { view: 'home' };
-const MIMIC_CHUNK_CHAR_LIMIT = 2600;
-const MIMIC_MAX_ANALYSIS_CHUNKS = 10;
-const MIMIC_SAMPLE_CHUNK_CHAR_LIMIT = 1800;
 
 
 // --- Functions ---
 
-const readRandomPersonaVariationHistory = () => {
-    try {
-        const parsed = JSON.parse(localStorage.getItem(RANDOM_PERSONA_VARIATION_HISTORY_KEY) || '[]') as unknown;
-        return Array.isArray(parsed)
-            ? parsed.filter((value): value is string => typeof value === 'string').slice(-80)
-            : [];
-    } catch {
-        return [];
-    }
+const createFreshRandomPersona = async () => {
+    const { createFreshRandomPersona: createPersonaSeed } = await import('./features/randomPersonaSeed.js');
+    return createPersonaSeed(Object.values(memoryManager.getAllPersonas()));
 };
 
-const createFreshRandomPersona = () => {
-    const existingPersonas = Object.values(memoryManager.getAllPersonas());
-    const persona = createRandomAdultFemalePersona({
-        existingNames: existingPersonas.map(item => item.name),
-        existingPersonaText: existingPersonas.map(item => (
-            [item.name, item.description, item.prompt, item.memory || ''].filter(Boolean).join('\n')
-        )),
-        avoidVariationKeys: readRandomPersonaVariationHistory(),
-    });
-    const nextHistory = [...readRandomPersonaVariationHistory(), persona.variationKey].slice(-80);
-    localStorage.setItem(RANDOM_PERSONA_VARIATION_HISTORY_KEY, JSON.stringify(nextHistory));
-    return persona;
+let randomRecruitUi: import('./features/randomRecruit.js').RandomRecruitHandle | null = null;
+let randomRecruitUiLoad: Promise<import('./features/randomRecruit.js').RandomRecruitHandle> | null = null;
+
+const loadRandomRecruitUi = async () => {
+    if (randomRecruitUi) return randomRecruitUi;
+    if (!randomRecruitUiLoad) {
+        randomRecruitUiLoad = import('./features/randomRecruit.js')
+            .then(({ createRandomRecruit }) => {
+                const ui = createRandomRecruit({
+                    createPersona: createFreshRandomPersona,
+                    persistPersona: persona => {
+                        const personaKey = memoryManager.saveCustomPersona({
+                            name: persona.name,
+                            emoji: persona.emoji,
+                            description: persona.description,
+                            prompt: persona.prompt,
+                            greeting: persona.greeting,
+                            avatarPrompt: persona.avatarPrompt,
+                            gender: 'female',
+                        });
+                        memoryManager.updatePersona(personaKey, { memory: persona.memory });
+                        return personaKey;
+                    },
+                    loadImageModels: () => loadImageModels('generate'),
+                    getImageModels: () => imageModels.generate,
+                    requestImage: requestVeniceImage,
+                    saveAvatar: (personaKey, avatarUrl) => memoryManager.setPersonaAvatar(personaKey, avatarUrl),
+                    refreshPersonaList: renderPersonaList,
+                    openPersonaChat: personaKey => startChat(personaKey, null, 'push'),
+                    handleAuthRequired: () => handleAuthRequired(),
+                });
+                randomRecruitUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                randomRecruitUiLoad = null;
+                throw error;
+            });
+    }
+    return randomRecruitUiLoad;
 };
 
 const randomlyRecruitNewPersona = async () => {
-    if (isRandomRecruiting) return;
-
-    isRandomRecruiting = true;
-    randomRecruitBtn.disabled = true;
-    randomRecruitBtn.textContent = '正在建立角色...';
-    randomRecruitStatus.textContent = '正在抽選香港成年女性身分、職業、關係與鮮明人格...';
-    randomRecruitStatus.classList.remove('hidden', 'text-red-300', 'text-emerald-300');
-    randomRecruitStatus.classList.add('text-teal-200');
-
-    let personaKey: string | null = null;
-    try {
-        const persona = createFreshRandomPersona();
-        personaKey = memoryManager.saveCustomPersona({
-            name: persona.name,
-            emoji: persona.emoji,
-            description: persona.description,
-            prompt: persona.prompt,
-            greeting: persona.greeting,
-            avatarPrompt: persona.avatarPrompt,
-            gender: 'female',
-        });
-        memoryManager.updatePersona(personaKey, { memory: persona.memory });
-        renderPersonaList();
-
-        randomRecruitBtn.textContent = '正在生成專屬頭像...';
-        randomRecruitStatus.textContent = `已建立 ${persona.name}（${persona.occupation}），正在由 Venice 生成香港風格專屬頭像...`;
-        await loadImageModels('generate');
-        const model = imageModels.generate.find(item => item.id === VENICE_IMAGE_GENERATE_MODEL)
-            || imageModels.generate.find(item => item.traits.includes('most_uncensored'))
-            || imageModels.generate[0];
-        if (!model) throw new Error('目前沒有可用的 Venice 圖片模型。');
-
-        const supportedRatios = model.constraints.aspectRatios || [];
-        const aspectRatio = supportedRatios.includes('1:1')
-            ? '1:1'
-            : supportedRatios[0];
-        const supportedResolutions = model.constraints.resolutions || [];
-        const resolution = supportedResolutions.includes('1K')
-            ? '1K'
-            : supportedResolutions[0];
-        const result = await requestVeniceImage({
-            mode: 'generate',
-            model: model.id,
-            prompt: persona.avatarPrompt,
-            negativePrompt: 'minor, child, teenager, schoolgirl, male, multiple people, duplicate face, text, watermark, blurry, low quality, deformed hands',
-            aspectRatio,
-            resolution,
-            width: supportedRatios.length === 0 ? 1024 : undefined,
-            height: supportedRatios.length === 0 ? 1024 : undefined,
-            variants: 1,
-            steps: model.constraints.steps?.default,
-            adultConfirmed: true,
-        });
-        if (!result.blobs[0]) throw new Error('Venice 沒有傳回頭像。');
-
-        const avatarUrl = await createOptimizedAvatarDataUrl(result.blobs[0]);
-        memoryManager.updatePersona(personaKey, { avatarUrl });
-        renderPersonaList();
-        randomRecruitStatus.textContent = `${persona.name} 已建立完成，專屬頭像也已儲存。`;
-        randomRecruitStatus.classList.remove('text-teal-200');
-        randomRecruitStatus.classList.add('text-emerald-300');
-        startChat(personaKey, null, 'push');
-    } catch (error) {
-        const message = error instanceof Error ? error.message : '隨機角色建立失敗。';
-        if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
-
-        randomRecruitStatus.textContent = personaKey
-            ? `角色已建立，但頭像生成失敗：${message}`
-            : `建立失敗：${message}`;
-        randomRecruitStatus.classList.remove('text-teal-200');
-        randomRecruitStatus.classList.add('text-red-300');
-        if (personaKey) {
-            renderPersonaList();
-            alert(`角色已保留，但隨機頭像生成失敗。你仍可在角色卡或聊天選單自行更換頭像。\n\n${message}`);
-            startChat(personaKey, null, 'push');
-        }
-    } finally {
-        isRandomRecruiting = false;
-        randomRecruitBtn.disabled = false;
-        randomRecruitBtn.textContent = '隨機生成角色';
-    }
-};
-
-const showPersonaCreator = () => {
-    showDisabledFeatureNotice('角色建立');
-};
-
-const hidePersonaCreator = () => {
-    personaCreatorModal.classList.add('hidden');
-};
-
-const randomizePersonaInputs = async () => {
-    showDisabledFeatureNotice('角色建立');
-};
-
-const generatePersonaFromAI = async () => {
-    showDisabledFeatureNotice('角色建立');
-};
-
-const saveCustomPersona = () => {
-    showDisabledFeatureNotice('角色建立');
+    const ui = await loadRandomRecruitUi();
+    await ui.run();
 };
 
 const escapeRegExp = (value: string) => {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 };
-
-const getSelectedMimicGender = (): 'female' => 'female';
-
-const applyMimicModeButtonState = (button: HTMLButtonElement, active: boolean) => {
-    button.classList.toggle('bg-sky-500', active);
-    button.classList.toggle('text-white', active);
-    button.classList.toggle('bg-gray-700', !active);
-    button.classList.toggle('text-gray-200', !active);
-    button.classList.toggle('hover:bg-gray-600', !active);
-};
-
-const updateMimicModeUI = () => {
-    const isTranscriptMode = mimicBuildMode === 'transcript';
-    const isPublicMode = mimicBuildMode === 'public';
-    const isManualMode = mimicBuildMode === 'manual';
-    mimicTranscriptSection.classList.toggle('hidden', !isTranscriptMode);
-    mimicPublicSection.classList.toggle('hidden', !isPublicMode);
-    mimicManualSection.classList.toggle('hidden', !isManualMode);
-    applyMimicModeButtonState(mimicModeTranscriptBtn, isTranscriptMode);
-    applyMimicModeButtonState(mimicModePublicBtn, isPublicMode);
-    applyMimicModeButtonState(mimicModeManualBtn, isManualMode);
-    mimicModalTitle.textContent = isPublicMode ? '搜尋公眾人物' : '新增角色';
-    mimicModalDescription.textContent = isPublicMode
-        ? '輸入名字、確認正確 Wikipedia 身份，再檢查 AI 根據公開資料整理的人格草稿。'
-        : '你可以從聊天紀錄分析、搜尋公眾人物，或手動指定完整設定，再生成可編輯的新角色。';
-    runMimicAnalysisBtn.textContent = isTranscriptMode
-        ? '開始分析'
-        : isPublicMode ? '搜尋並產生草稿' : '生成角色草稿';
-    mimicNotesLabel.textContent = isTranscriptMode
-        ? '補充要求（分析後再疊加）'
-        : isPublicMode ? '可選：你想調整的互動方向' : '補充要求 / 想要互動';
-    mimicNotesInput.placeholder = isTranscriptMode
-        ? '例如：保留她原本的害羞和台灣口氣，但更願意聽我的命令；不要把香港和台灣語感混在一起。'
-        : isPublicMode
-            ? '例如：保留她的公眾形象與原有節奏，但私下對我較放鬆；不要太快變成制式情話。'
-            : '例如：請保留她原本的公眾形象，但私下對我更偏心；慢熱、會嘴硬一下，不要太快變成制式情話。';
-    mimicResultEmpty.textContent = isPublicMode
-        ? '確認正確人物後，這裡會顯示 AI 依 Wikipedia 身份資料與公開形象推斷的人格、日常狀態、語氣及戀愛互動草稿。所有欄位都可在儲存前修改。'
-        : '這裡會先顯示 AI 抓到的原始人格、行為習慣、語氣節奏、地區語感和被要求時的反應，讓你先確認像不像本人，再往下微調成戀愛版角色。';
-
-    if (isPublicMode) {
-        mimicPublicIdentityCheckbox.checked = true;
-        mimicPublicIdentityCheckbox.disabled = true;
-        mimicPublicIdentityHint.textContent = '此模式會先讓你確認正確 Wikipedia 條目，再建立可編輯的人格草稿。';
-    } else {
-        mimicPublicIdentityCheckbox.disabled = false;
-    }
-
-    if (!isMimicAnalysisRunning) {
-        setMimicAnalysisStatus(
-            isTranscriptMode
-                ? '選好檔案後就可以開始分析。'
-                : isPublicMode
-                    ? '輸入公眾人物名字後，按「搜尋並產生草稿」。'
-                    : '填好名字後就能直接生成角色草稿；沒有靈感時可先按「隨機角色設定」。',
-        );
-    }
-};
-
-const setMimicBuildMode = (mode: MimicBuildMode) => {
-    mimicBuildMode = mode;
-    mimicDraftPersona = null;
-    if (mode !== 'public') {
-        mimicPublicIdentityResolution = null;
-        mimicPublicIdentityQuery = '';
-        mimicPublicSourceSummary.textContent = '尚未確認身份。按下「搜尋並產生草稿」後會開啟搜尋結果。';
-    }
-    resetMimicDraftEditors();
-    saveMimicPersonaBtn.disabled = true;
-    updateMimicModeUI();
-};
-
-const fillRandomManualFields = () => {
-    const persona = createFreshRandomPersona();
-    mimicPublicIdentityCheckbox.checked = false;
-    mimicNameInput.value = persona.name;
-    mimicOccupationInput.value = persona.occupation;
-    mimicPersonalityInput.value = persona.personality;
-    mimicBackgroundInput.value = persona.background;
-    mimicNotesInput.value = persona.notes;
-    setMimicAnalysisStatus(`已隨機填入「${persona.occupation}」設定；可以再修改，或直接生成角色草稿。`);
-};
-
-const buildManualFallbackAnalysis = (seed: ManualPersonaSeed): MimicAnalysisSummary => ({
-    personality: seed.personality || `${seed.name}有自己的節奏與個性，不會只是空白模板。`,
-    behavior: seed.background || `${seed.name}的日常身份是${seed.occupation || '未指定'}。`,
-    usualSelf: seed.background || seed.occupation || '未指定',
-    withUserSelf: seed.notes || '和使用者相處時要能慢慢變得更偏心、更親密。',
-    romanceStyle: '互動以戀愛導向為主，但仍要保留本人原本的人格和反應節奏。',
-    tone: seed.personality || '語氣依照手動設定生成。',
-    regionality: '若未特別指定地區語感，就保持自然的繁體中文。',
-    commandResponse: seed.notes || '會聽使用者的要求，但仍會先用自己的性格去回應。',
-});
-
-const getManualPersonaSeed = (): ManualPersonaSeed => ({
-    name: mimicNameInput.value.trim(),
-    gender: getSelectedMimicGender(),
-    occupation: mimicOccupationInput.value.trim(),
-    personality: mimicPersonalityInput.value.trim(),
-    background: mimicBackgroundInput.value.trim(),
-    notes: mimicNotesInput.value.trim(),
-});
-
-const renderMimicAvatarPreview = () => {
-    const avatarUrl = mimicAvatarDataUrl || mimicPublicIdentityResolution?.avatarUrl;
-    if (avatarUrl) {
-        mimicAvatarPreview.innerHTML = `<img src="${avatarUrl}" alt="角色頭像" class="h-full w-full object-cover">`;
-        mimicAvatarStatus.textContent = mimicAvatarDataUrl
-            ? '已選擇自訂頭像，儲存後會直接套用。'
-            : '已選擇 Wikipedia 代表圖片；也可以換成自己的頭像。';
-        return;
-    }
-
-    mimicAvatarPreview.textContent = '👤';
-    mimicAvatarStatus.textContent = '可選填，稍後也能再改。';
-};
-
-const setMimicAnalysisStatus = (text: string, tone: 'idle' | 'error' | 'success' = 'idle') => {
-    mimicAnalysisStatus.textContent = text;
-    mimicAnalysisStatus.classList.remove('text-gray-300', 'text-red-300', 'text-emerald-300', 'text-sky-300');
-
-    if (tone === 'error') {
-        mimicAnalysisStatus.classList.add('text-red-300');
-    } else if (tone === 'success') {
-        mimicAnalysisStatus.classList.add('text-emerald-300');
-    } else {
-        mimicAnalysisStatus.classList.add('text-sky-300');
-    }
-};
-
-const createEmptyMimicAnalysisSummary = (): MimicAnalysisSummary => ({
-    personality: '',
-    behavior: '',
-    tone: '',
-    regionality: '',
-    commandResponse: '',
-});
-
-const renderMimicAnalysisPreview = (
-    analysis: MimicAnalysisSummary | null,
-    metaText = '分析完成後，這裡會顯示匯入格式、聚焦方式與 AI 判斷依據。',
-) => {
-    const resolved = analysis || createEmptyMimicAnalysisSummary();
-    mimicAnalysisMeta.textContent = metaText;
-    mimicAnalysisPersonality.textContent = resolved.personality || '分析完成後會顯示。';
-    mimicAnalysisBehavior.textContent = resolved.behavior || '分析完成後會顯示。';
-    mimicAnalysisTone.textContent = resolved.tone || '分析完成後會顯示。';
-    mimicAnalysisRegionality.textContent = resolved.regionality || '分析完成後會顯示。';
-    mimicAnalysisCommandResponse.textContent = resolved.commandResponse || '分析完成後會顯示。';
-};
-
-const createEmptyMimicAnalysisSummaryV2 = (): MimicAnalysisSummary => ({
-    personality: '',
-    behavior: '',
-    usualSelf: '',
-    withUserSelf: '',
-    romanceStyle: '',
-    tone: '',
-    regionality: '',
-    commandResponse: '',
-});
-
-const renderMimicAnalysisPreviewV2 = (
-    analysis: MimicAnalysisSummary | null,
-    metaText = '分析完成後，這裡會顯示匯入格式、聚焦方式與 AI 判斷依據。',
-) => {
-    const resolved = analysis || createEmptyMimicAnalysisSummaryV2();
-    mimicAnalysisMeta.textContent = metaText;
-    mimicAnalysisPersonality.textContent = resolved.personality || '分析完成後會顯示。';
-    mimicAnalysisUsualSelf.textContent = resolved.usualSelf || resolved.behavior || '分析完成後會顯示。';
-    mimicAnalysisWithUserSelf.textContent = resolved.withUserSelf || '分析完成後會顯示。';
-    mimicAnalysisRomanceStyle.textContent = resolved.romanceStyle || '分析完成後會顯示。';
-    mimicAnalysisTone.textContent = resolved.tone || '分析完成後會顯示。';
-    mimicAnalysisRegionality.textContent = resolved.regionality || '分析完成後會顯示。';
-    mimicAnalysisCommandResponse.textContent = resolved.commandResponse || '分析完成後會顯示。';
-};
-
-const resetMimicDraftEditors = () => {
-    mimicDescriptionEditor.value = '';
-    mimicPromptEditor.value = '';
-    mimicGreetingEditor.value = '';
-    mimicMemoryEditor.value = '';
-    renderMimicAnalysisPreviewV2(null);
-    mimicResultPanel.classList.add('hidden');
-    mimicResultEmpty.classList.remove('hidden');
-};
-
-const resetMimicImportState = () => {
-    mimicTranscriptFile = null;
-    mimicAvatarDataUrl = null;
-    mimicDraftPersona = null;
-    isMimicAnalysisRunning = false;
-    mimicBuildMode = 'transcript';
-    mimicPublicIdentityResolution = null;
-    mimicPublicIdentityQuery = '';
-    mimicNameInput.value = '';
-    mimicPublicIdentityCheckbox.checked = false;
-    mimicPublicIdentityHint.textContent = '儲存新角色前會先搜尋並讓你確認身份，也可為虛構角色選擇代表圖片。';
-    mimicOccupationInput.value = '';
-    mimicPersonalityInput.value = '';
-    mimicBackgroundInput.value = '';
-    mimicNotesInput.value = '';
-    mimicTranscriptInput.value = '';
-    mimicAvatarInput.value = '';
-    mimicTranscriptStatus.textContent = '尚未選擇檔案。支援 `.txt`、`.md`、`.json`、`.log`、`.csv`、`.zip`。';
-    mimicTranscriptMeta.textContent = '長紀錄會先辨識聊天格式與說話者，再自動切段分析，最後合成成一個角色草稿。';
-    mimicPublicSourceSummary.textContent = '尚未確認身份。按下「搜尋並產生草稿」後會開啟搜尋結果。';
-    renderMimicAvatarPreview();
-    resetMimicDraftEditors();
-    updateMimicModeUI();
-    runMimicAnalysisBtn.disabled = false;
-    saveMimicPersonaBtn.disabled = true;
-};
-
-const openMimicImportModal = (mode: MimicBuildMode = 'transcript') => {
-    resetMimicImportState();
-    setMimicBuildMode(mode);
-    mimicImportModal.classList.remove('hidden');
-};
-
-const hideMimicImportModalView = () => {
-    mimicImportModal.classList.add('hidden');
-};
-
-const setMimicBusyState = (isBusy: boolean) => {
-    isMimicAnalysisRunning = isBusy;
-    runMimicAnalysisBtn.disabled = isBusy;
-    saveMimicPersonaBtn.disabled = isBusy || !mimicDraftPersona;
-    pickMimicTranscriptBtn.disabled = isBusy;
-    pickMimicAvatarBtn.disabled = isBusy;
-    mimicModeTranscriptBtn.disabled = isBusy;
-    mimicModePublicBtn.disabled = isBusy;
-    mimicModeManualBtn.disabled = isBusy;
-    mimicRandomCompleteBtn.disabled = isBusy;
-    mimicManualRandomBtn.disabled = isBusy;
-};
-
-const normalizeTranscriptSpeaker = (speaker: string) => {
-    return speaker
-        .replace(/^\[(.+)\]$/, '$1')
-        .replace(/\s+/g, ' ')
-        .trim();
-};
-
-const normalizeTranscriptMessage = (text: string) => {
-    return text
-        .replace(/\u200e|\u200f/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-};
-
-const looksLikeDateOrTimeToken = (value: string) => {
-    const trimmed = value.trim();
-    return (
-        /^\[?\d{1,4}[\/.\-]\d{1,2}[\/.\-]\d{1,4}/.test(trimmed) ||
-        /^\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?$/.test(trimmed) ||
-        /^\d{4}年\d{1,2}月\d{1,2}日/.test(trimmed)
-    );
-};
-
-const looksLikeSpeakerLabel = (value: string) => {
-    const trimmed = normalizeTranscriptSpeaker(value);
-    if (!trimmed || trimmed.length > 40) {
-        return false;
-    }
-
-    if (looksLikeDateOrTimeToken(trimmed)) {
-        return false;
-    }
-
-    if (/^[\d\s()[\]/.\-]+$/.test(trimmed)) {
-        return false;
-    }
-
-    return /[A-Za-z\u3400-\u9fff]/.test(trimmed);
-};
-
-const buildTranscriptReadResult = (
-    turns: Array<{ speaker: string; text: string }>,
-    parserLabel: string,
-    mergedLines: number,
-): TranscriptReadResult | null => {
-    const normalizedTurns = turns
-        .map(turn => ({
-            speaker: normalizeTranscriptSpeaker(turn.speaker),
-            text: normalizeTranscriptMessage(turn.text),
-        }))
-        .filter(turn => turn.speaker && turn.text);
-
-    if (normalizedTurns.length < 3) {
-        return null;
-    }
-
-    const uniqueSpeakers = new Set(normalizedTurns.map(turn => turn.speaker));
-    if (uniqueSpeakers.size < 2) {
-        return null;
-    }
-
-    return {
-        text: normalizedTurns.map(turn => `${turn.speaker}: ${turn.text}`).join('\n'),
-        sourceName: '',
-        parserLabel,
-        speakerTurns: normalizedTurns.length,
-        mergedLines,
-    };
-};
-
-const parseWhatsappLikeTranscript = (rawText: string): TranscriptReadResult | null => {
-    const lines = rawText.replace(/\r/g, '\n').split('\n');
-    const turns: Array<{ speaker: string; text: string }> = [];
-    let mergedLines = 0;
-    const patterns = [
-        /^\[?\d{1,4}[\/.\-]\d{1,2}[\/.\-]\d{1,4}(?:,\s*|\s+)\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?\]?\s*(?:-|–|—)?\s*([^:：\n]+?)\s*[:：]\s*(.+)$/,
-        /^\[?\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}(?:,\s*|\s+)\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?\]?\s*(?:-|–|—)?\s*([^:：\n]+?)\s*[:：]\s*(.+)$/,
-        /^\d{4}[\/.\-]\d{1,2}[\/.\-]\d{1,2}(?:\([^)]*\))?\s+\d{1,2}:\d{2}\s+([^:：\n]+?)\s*[:：]\s*(.+)$/,
-    ];
-
-    for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line) {
-            continue;
-        }
-
-        let matched = false;
-        for (const pattern of patterns) {
-            const match = line.match(pattern);
-            if (!match) {
-                continue;
-            }
-
-            turns.push({
-                speaker: match[1],
-                text: match[2],
-            });
-            matched = true;
-            break;
-        }
-
-        if (!matched && turns.length > 0) {
-            turns[turns.length - 1].text = `${turns[turns.length - 1].text} ${line}`;
-            mergedLines += 1;
-        }
-    }
-
-    return buildTranscriptReadResult(turns, 'WhatsApp / 時間戳對話', mergedLines);
-};
-
-const parseTabbedTranscript = (rawText: string): TranscriptReadResult | null => {
-    const lines = rawText.replace(/\r/g, '\n').split('\n');
-    const turns: Array<{ speaker: string; text: string }> = [];
-    let mergedLines = 0;
-
-    for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line) {
-            continue;
-        }
-
-        const columns = line.split('\t').map(part => part.trim()).filter(Boolean);
-        let speaker = '';
-        let text = '';
-
-        if (columns.length >= 4 && looksLikeDateOrTimeToken(columns[0])) {
-            speaker = columns[2];
-            text = columns.slice(3).join(' ');
-        } else if (columns.length >= 3 && looksLikeDateOrTimeToken(columns[0])) {
-            speaker = columns[1];
-            text = columns.slice(2).join(' ');
-        }
-
-        if (speaker && text && looksLikeSpeakerLabel(speaker)) {
-            turns.push({ speaker, text });
-            continue;
-        }
-
-        if (turns.length > 0) {
-            turns[turns.length - 1].text = `${turns[turns.length - 1].text} ${line}`;
-            mergedLines += 1;
-        }
-    }
-
-    return buildTranscriptReadResult(turns, 'Tab 匯出聊天紀錄', mergedLines);
-};
-
-const parseSimpleSpeakerTranscript = (rawText: string): TranscriptReadResult | null => {
-    const lines = rawText.replace(/\r/g, '\n').split('\n');
-    const turns: Array<{ speaker: string; text: string }> = [];
-    let mergedLines = 0;
-    const speakerPattern = /^([^:：\n]{1,40})\s*[:：]\s*(.+)$/;
-
-    for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line) {
-            continue;
-        }
-
-        const match = line.match(speakerPattern);
-        if (match && looksLikeSpeakerLabel(match[1])) {
-            turns.push({
-                speaker: match[1],
-                text: match[2],
-            });
-            continue;
-        }
-
-        if (turns.length > 0) {
-            turns[turns.length - 1].text = `${turns[turns.length - 1].text} ${line}`;
-            mergedLines += 1;
-        }
-    }
-
-    return buildTranscriptReadResult(turns, '一般說話者對話', mergedLines);
-};
-
-const parseTranscriptTextWithHeuristics = (rawText: string): TranscriptReadResult => {
-    const parserCandidates = [
-        parseWhatsappLikeTranscript(rawText),
-        parseTabbedTranscript(rawText),
-        parseSimpleSpeakerTranscript(rawText),
-    ].filter((candidate): candidate is TranscriptReadResult => Boolean(candidate));
-
-    const bestCandidate = parserCandidates.sort((left, right) => {
-        const leftScore = left.speakerTurns * 3 + left.mergedLines;
-        const rightScore = right.speakerTurns * 3 + right.mergedLines;
-        return rightScore - leftScore;
-    })[0];
-
-    if (bestCandidate) {
-        return bestCandidate;
-    }
-
-    return {
-        text: rawText,
-        sourceName: '',
-        parserLabel: '原始文字',
-        speakerTurns: rawText.split('\n').map(line => line.trim()).filter(Boolean).length,
-        mergedLines: 0,
-    };
-};
-
-const extractTextFromUnknownJsonValue = (value: unknown, depth = 0): string => {
-    if (depth > 5 || value == null) {
-        return '';
-    }
-
-    if (typeof value === 'string') {
-        return value.trim();
-    }
-
-    if (Array.isArray(value)) {
-        return value
-            .map(entry => extractTextFromUnknownJsonValue(entry, depth + 1))
-            .filter(Boolean)
-            .join(' ')
-            .trim();
-    }
-
-    if (typeof value === 'object') {
-        const record = value as Record<string, unknown>;
-        const keys = ['text', 'content', 'message', 'body', 'value', 'parts'];
-        for (const key of keys) {
-            const extracted = extractTextFromUnknownJsonValue(record[key], depth + 1);
-            if (extracted) {
-                return extracted;
-            }
-        }
-    }
-
-    return '';
-};
-
-const collectTranscriptLinesFromJson = (value: unknown, lines: string[] = [], depth = 0) => {
-    if (depth > 6 || value == null || lines.length > 4000) {
-        return lines;
-    }
-
-    if (typeof value === 'string') {
-        const text = value.trim();
-        if (text) {
-            lines.push(text);
-        }
-        return lines;
-    }
-
-    if (Array.isArray(value)) {
-        value.forEach(entry => collectTranscriptLinesFromJson(entry, lines, depth + 1));
-        return lines;
-    }
-
-    if (typeof value === 'object') {
-        const record = value as Record<string, unknown>;
-        const nestedCandidates = ['messages', 'conversation', 'chat', 'items', 'turns', 'entries', 'data'];
-        for (const key of nestedCandidates) {
-            if (key in record) {
-                collectTranscriptLinesFromJson(record[key], lines, depth + 1);
-            }
-        }
-
-        const speaker = extractTextFromUnknownJsonValue(
-            record.speaker ?? record.author ?? record.name ?? record.sender ?? record.role ?? record.from,
-            depth + 1,
-        );
-        const text = extractTextFromUnknownJsonValue(
-            record.text ?? record.content ?? record.message ?? record.body ?? record.value,
-            depth + 1,
-        );
-
-        if (text) {
-            lines.push(speaker ? `${speaker}: ${text}` : text);
-            return lines;
-        }
-
-        Object.values(record).forEach(entry => collectTranscriptLinesFromJson(entry, lines, depth + 1));
-    }
-
-    return lines;
-};
-
-const parseConversationTextFromJson = (rawText: string): TranscriptReadResult => {
-    const parsed = JSON.parse(rawText);
-    const lines = collectTranscriptLinesFromJson(parsed)
-        .map(line => line.replace(/\s+/g, ' ').trim())
-        .filter(Boolean);
-
-    return {
-        text: lines.join('\n'),
-        sourceName: '',
-        parserLabel: 'JSON 對話匯出',
-        speakerTurns: lines.length,
-        mergedLines: 0,
-    };
-};
-
-const extractTranscriptTextFromZipFile = async (file: File): Promise<TranscriptReadResult> => {
-    const zip = await JSZip.loadAsync(file);
-    const textFiles = (Object.values(zip.files) as any[])
-        .filter(entry => !entry.dir)
-        .filter(entry => /\.(txt|md|markdown|json|log|csv)$/i.test(entry.name));
-
-    if (textFiles.length === 0) {
-        throw new Error('ZIP 內找不到可讀取的聊天紀錄文字檔。');
-    }
-
-    const sorted = textFiles.sort((left, right) => {
-        const score = (name: string) => {
-            const lower = name.toLowerCase();
-            let total = 0;
-            if (/(conversation|chat|message|dialog|history)/.test(lower)) total += 4;
-            if (/\.json$/i.test(lower)) total += 2;
-            if (/\.txt$/i.test(lower)) total += 1;
-            return total;
-        };
-
-        return score(right.name) - score(left.name) || right.name.length - left.name.length;
-    });
-
-    const chosen = sorted[0];
-    const raw = await chosen.async('string');
-    let parsedResult: TranscriptReadResult;
-
-    if (/\.json$/i.test(chosen.name)) {
-        try {
-            parsedResult = parseConversationTextFromJson(raw);
-        } catch {
-            parsedResult = parseTranscriptTextWithHeuristics(raw);
-        }
-    } else {
-        parsedResult = parseTranscriptTextWithHeuristics(raw);
-    }
-
-    return {
-        ...parsedResult,
-        sourceName: chosen.name,
-    };
-};
-
-const readTranscriptTextFromFile = async (file: File): Promise<TranscriptReadResult> => {
-    if (/\.zip$/i.test(file.name)) {
-        return extractTranscriptTextFromZipFile(file);
-    }
-
-    const raw = await file.text();
-    const looksLikeJson = /\.json$/i.test(file.name) || /^[\s\r\n]*[\[{]/.test(raw);
-    if (looksLikeJson) {
-        try {
-            return {
-                ...parseConversationTextFromJson(raw),
-                sourceName: file.name,
-            };
-        } catch {
-            return {
-                ...parseTranscriptTextWithHeuristics(raw),
-                sourceName: file.name,
-            };
-        }
-    }
-
-    return {
-        ...parseTranscriptTextWithHeuristics(raw),
-        sourceName: file.name,
-    };
-};
-
-const normalizeTranscriptText = (text: string) => {
-    return text
-        .replace(/\r/g, '\n')
-        .replace(/\u0000/g, '')
-        .replace(/[ \t]+\n/g, '\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-};
-
-const focusTranscriptOnTargetSpeaker = (text: string, targetName: string) => {
-    const name = targetName.trim();
-    if (!name) {
-        return text;
-    }
-
-    const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
-    if (lines.length === 0) {
-        return text;
-    }
-
-    const speakerPattern = new RegExp(`^\\s*(?:\\[?${escapeRegExp(name)}\\]?|${escapeRegExp(name)})\\s*[:：-]`, 'i');
-    const hitIndexes = lines
-        .map((line, index) => (speakerPattern.test(line) ? index : -1))
-        .filter(index => index >= 0);
-
-    if (hitIndexes.length < 3) {
-        return text;
-    }
-
-    const windows: Array<{ start: number; end: number }> = [];
-    hitIndexes.forEach(index => {
-        const start = Math.max(0, index - 2);
-        const end = Math.min(lines.length - 1, index + 2);
-        const lastWindow = windows[windows.length - 1];
-
-        if (lastWindow && start <= lastWindow.end + 1) {
-            lastWindow.end = Math.max(lastWindow.end, end);
-            return;
-        }
-
-        windows.push({ start, end });
-    });
-
-    return windows
-        .map(window => lines.slice(window.start, window.end + 1).join('\n'))
-        .join('\n\n')
-        .trim();
-};
-
-const focusTranscriptOnTargetSpeakerV2 = (text: string, targetName: string): TranscriptFocusResult => {
-    const name = targetName.trim();
-    if (!name) {
-        return {
-            text,
-            matchedTurns: 0,
-            usedFocusedWindows: false,
-        };
-    }
-
-    const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
-    if (lines.length === 0) {
-        return {
-            text,
-            matchedTurns: 0,
-            usedFocusedWindows: false,
-        };
-    }
-
-    const speakerPattern = new RegExp(`^\\s*(?:\\[?${escapeRegExp(name)}\\]?|${escapeRegExp(name)})\\s*[:：-]`, 'i');
-    const hitIndexes = lines
-        .map((line, index) => (speakerPattern.test(line) ? index : -1))
-        .filter(index => index >= 0);
-
-    if (hitIndexes.length < 3) {
-        return {
-            text,
-            matchedTurns: hitIndexes.length,
-            usedFocusedWindows: false,
-        };
-    }
-
-    const windows: Array<{ start: number; end: number }> = [];
-    hitIndexes.forEach(index => {
-        const start = Math.max(0, index - 2);
-        const end = Math.min(lines.length - 1, index + 2);
-        const lastWindow = windows[windows.length - 1];
-
-        if (lastWindow && start <= lastWindow.end + 1) {
-            lastWindow.end = Math.max(lastWindow.end, end);
-            return;
-        }
-
-        windows.push({ start, end });
-    });
-
-    return {
-        text: windows
-            .map(window => lines.slice(window.start, window.end + 1).join('\n'))
-            .join('\n\n')
-            .trim(),
-        matchedTurns: hitIndexes.length,
-        usedFocusedWindows: true,
-    };
-};
-
-const splitTranscriptIntoChunks = (text: string, limit = MIMIC_CHUNK_CHAR_LIMIT) => {
-    const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
-    const chunks: string[] = [];
-    let currentChunk = '';
-
-    lines.forEach(line => {
-        const candidate = currentChunk ? `${currentChunk}\n${line}` : line;
-        if (candidate.length > limit && currentChunk) {
-            chunks.push(currentChunk);
-            currentChunk = line;
-            return;
-        }
-
-        currentChunk = candidate;
-    });
-
-    if (currentChunk.trim()) {
-        chunks.push(currentChunk.trim());
-    }
-
-    return chunks;
-};
-
-function selectEvenlySpacedItems<T>(items: T[], targetCount: number): T[] {
-    if (items.length <= targetCount) {
-        return items;
-    }
-
-    if (targetCount <= 1) {
-        return [items[0]];
-    }
-
-    const selected: T[] = [];
-    const seenIndexes = new Set<number>();
-
-    for (let index = 0; index < targetCount; index += 1) {
-        const ratio = index / (targetCount - 1);
-        const mappedIndex = Math.round(ratio * (items.length - 1));
-        if (seenIndexes.has(mappedIndex)) {
-            continue;
-        }
-
-        seenIndexes.add(mappedIndex);
-        selected.push(items[mappedIndex]);
-    }
-
-    return selected;
-}
-
-const prepareTranscriptChunksForAnalysis = (text: string): PreparedTranscriptChunks => {
-    const directChunks = splitTranscriptIntoChunks(text).filter(chunk => chunk.trim());
-    if (directChunks.length <= MIMIC_MAX_ANALYSIS_CHUNKS) {
-        return {
-            chunks: directChunks,
-            sourceChunkCount: directChunks.length,
-            sampled: false,
-            sampleChunkCount: directChunks.length,
-        };
-    }
-
-    const sampleChunks = splitTranscriptIntoChunks(text, MIMIC_SAMPLE_CHUNK_CHAR_LIMIT).filter(chunk => chunk.trim());
-    const selectedChunks = selectEvenlySpacedItems(sampleChunks, MIMIC_MAX_ANALYSIS_CHUNKS);
-
-    return {
-        chunks: selectedChunks,
-        sourceChunkCount: directChunks.length,
-        sampled: true,
-        sampleChunkCount: sampleChunks.length,
-    };
-};
-
-const extractTargetSpeakerUtterances = (text: string, targetName: string) => {
-    const name = targetName.trim();
-    if (!name) {
-        return [];
-    }
-
-    const speakerPattern = new RegExp(`^\\s*(?:\\[?${escapeRegExp(name)}\\]?|${escapeRegExp(name)})\\s*[:：-]\\s*(.+)$`, 'i');
-
-    return text
-        .split('\n')
-        .map(line => line.trim())
-        .map(line => line.match(speakerPattern)?.[1]?.trim() || '')
-        .map(line => line.replace(/\s+/g, ' ').trim())
-        .filter(Boolean)
-        .filter(line => !/^<媒體已略去>$/i.test(line))
-        .filter(line => !/^media omitted$/i.test(line))
-        .filter(line => !/^https?:\/\//i.test(line))
-        .filter(line => /[\p{L}\p{N}]/u.test(line));
-};
-
-const buildTranscriptVoiceReferenceSamples = (text: string, targetName: string, maxSamples = 8) => {
-    const utterances = extractTargetSpeakerUtterances(text, targetName);
-    const seen = new Set<string>();
-    const deduped = utterances.filter(line => {
-        const key = line
-            .toLowerCase()
-            .replace(/\s+/g, ' ')
-            .replace(/[「」『』"'`]/g, '')
-            .replace(/[😂🤣🥹🥺🙄🫣☺️✨🔥❤❤️💀]+/gu, '')
-            .trim();
-
-        if (!key || seen.has(key)) {
-            return false;
-        }
-
-        seen.add(key);
-        return true;
-    });
-
-    const scoreVoiceSample = (line: string) => {
-        const length = line.length;
-        let score = 0;
-
-        if (length >= 3 && length <= 36) {
-            score += 6;
-        } else if (length <= 60) {
-            score += 3;
-        } else if (length <= 90) {
-            score += 1;
-        } else {
-            score -= 4;
-        }
-
-        if (/[A-Za-z]/.test(line)) {
-            score += 2;
-        }
-
-        if (/[😂🤣🥹🥺🙄🫣☺️✨🔥❤❤️]/u.test(line)) {
-            score += 2;
-        }
-
-        if (/[?？!！]$/.test(line)) {
-            score += 1;
-        }
-
-        if (/^(?:ok|yes|no|haha|lol)$/i.test(line)) {
-            score -= 2;
-        }
-
-        if (/^[😂🤣]+$/u.test(line)) {
-            score -= 4;
-        }
-
-        if (/(buddy|facebook|group|what she said|bni|tryhard)/i.test(line)) {
-            score += 2;
-        }
-
-        return score;
-    };
-
-    const ranked = deduped
-        .filter(line => line.length >= 2 && line.length <= 120)
-        .map((line, index) => ({ line, index, score: scoreVoiceSample(line) }))
-        .sort((left, right) => right.score - left.score || left.index - right.index)
-        .slice(0, Math.max(maxSamples * 2, maxSamples));
-
-    const selected = ranked
-        .slice(0, maxSamples)
-        .sort((left, right) => left.index - right.index)
-        .map(item => item.line);
-
-    return selected.length > 0 ? selected : selectEvenlySpacedItems(deduped, maxSamples);
-};
-
-const buildVoiceReferencePromptBlock = (voiceSamples: string[]) => {
-    if (voiceSamples.length === 0) {
-        return '';
-    }
-
-    return [
-        'Voice fidelity rules:',
-        '- Prioritize the real rhythm, wording density, reaction style, and code-switch pattern from the transcript over any broad archetype label.',
-        '- Use these examples only as a style compass. Do not quote or recycle them mechanically unless the moment truly matches.',
-        '- If the real person only uses a little slang, teasing, or Cantonese flavor, keep it light instead of exaggerating it.',
-        'Transcript voice examples:',
-        ...voiceSamples.map(sample => `- ${sample}`),
-    ].join('\n');
-};
-
-const enrichMimicDraftWithVoiceReference = (draft: MimicPersonaDraft, voiceSamples: string[]): MimicPersonaDraft => {
-    const romanceDirectionBlock = [
-        'Romance direction rules:',
-        '- Keep the target person\'s authentic voice and personality, but treat the relationship with the user as private, biased, and capable of growing into clear romance.',
-        '- Even if the original transcript was platonic or ordinary, do not stay in purely normal chat mode for long. Let the interaction tilt toward intimacy, tension, indulgence, favoritism, or emotional closeness.',
-        '- If the user invites softness, affection, or flirtation, move with it while keeping the same recognizable personality.',
-    ].join('\n');
-    const promptBlock = buildVoiceReferencePromptBlock(voiceSamples);
-
-    const memoryParts = [
-        draft.memory.trim(),
-        '關係層：保留本人語感與個性，但互動要能自然往偏心、曖昧、親密和戀愛張力推進。',
-        voiceSamples.length > 0 ? `語氣參考：${voiceSamples.slice(0, 4).join('｜')}` : '',
-    ].filter(Boolean);
-
-    return {
-        ...draft,
-        prompt: [draft.prompt.trim(), romanceDirectionBlock, promptBlock].filter(Boolean).join('\n\n'),
-        memory: memoryParts.join('\n'),
-    };
-};
-
-const extractXmlTag = (text: string, tag: string) => {
-    const match = text.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i'));
-    return match?.[1]?.trim() || '';
-};
-
-const mergeAnalysisFragments = (fragments: string[]) => {
-    const unique = Array.from(
-        new Set(
-            fragments
-                .map(fragment => fragment.trim())
-                .filter(Boolean),
-        ),
-    );
-
-    return unique.slice(0, 3).join('\n');
-};
-
-const buildAnalysisSummaryFromChunkSummaries = (chunkSummaries: string[]): MimicAnalysisSummary => {
-    return {
-        personality: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'personality'))),
-        behavior: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'behavior'))),
-        usualSelf: mergeAnalysisFragments(
-            chunkSummaries.map(summary => extractXmlTag(summary, 'usual_self') || extractXmlTag(summary, 'behavior')),
-        ),
-        withUserSelf: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'with_user_self'))),
-        romanceStyle: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'romance_style'))),
-        tone: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'tone'))),
-        regionality: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'regionality'))),
-        commandResponse: mergeAnalysisFragments(chunkSummaries.map(summary => extractXmlTag(summary, 'command_response'))),
-    };
-};
-
-const fillMimicAnalysisSummaryGaps = (
-    analysis: MimicAnalysisSummary,
-    fallback: MimicAnalysisSummary,
-): MimicAnalysisSummary => {
-    return {
-        personality: analysis.personality || fallback.personality,
-        behavior: analysis.behavior || fallback.behavior,
-        usualSelf: analysis.usualSelf || analysis.behavior || fallback.usualSelf || fallback.behavior,
-        withUserSelf: analysis.withUserSelf || fallback.withUserSelf,
-        romanceStyle: analysis.romanceStyle || fallback.romanceStyle,
-        tone: analysis.tone || fallback.tone,
-        regionality: analysis.regionality || fallback.regionality,
-        commandResponse: analysis.commandResponse || fallback.commandResponse,
-    };
-};
-
-const parseMimicPersonaDraft = (text: string): MimicPersonaDraft | null => {
-    const description = extractXmlTag(text, 'description');
-    const prompt = extractXmlTag(text, 'prompt');
-    const greeting = extractXmlTag(text, 'greeting');
-    const memory = extractXmlTag(text, 'memory');
-
-    if (!description || !prompt || !greeting) {
-        return null;
-    }
-
-    return {
-        description,
-        prompt,
-        greeting,
-        memory,
-        analysis: createEmptyMimicAnalysisSummaryV2(),
-    };
-};
-
-const parseMimicPersonaDraftV2 = (
-    text: string,
-    fallbackAnalysis: MimicAnalysisSummary = createEmptyMimicAnalysisSummaryV2(),
-): MimicPersonaDraft | null => {
-    const parsed = parseMimicPersonaDraft(text);
-    if (!parsed) {
-        return null;
-    }
-
-    return {
-        ...parsed,
-        analysis: fillMimicAnalysisSummaryGaps(
-            {
-                personality: extractXmlTag(text, 'personality'),
-                behavior: extractXmlTag(text, 'behavior'),
-                usualSelf: extractXmlTag(text, 'usual_self'),
-                withUserSelf: extractXmlTag(text, 'with_user_self'),
-                romanceStyle: extractXmlTag(text, 'romance_style'),
-                tone: extractXmlTag(text, 'tone'),
-                regionality: extractXmlTag(text, 'regionality'),
-                commandResponse: extractXmlTag(text, 'command_response'),
-            },
-            fallbackAnalysis,
-        ),
-    };
-};
-
-const runMimicModelCall = async (
-    messages: VeniceMessage[],
-    maxCompletionTokens = 720,
-): Promise<string> => {
-    const models = Array.from(
-        new Set([VENICE_GOD_MODEL, VENICE_GOD_FALLBACK_MODEL, VENICE_CHAT_MODEL].filter(Boolean)),
-    );
-    let lastError: Error | null = null;
-
-    for (const model of models) {
-        try {
-            const result = await generateVeniceText({
-                model,
-                messages,
-                maxCompletionTokens,
-                temperature: 0.25,
-                topP: 0.9,
-                repetitionPenalty: 1.02,
-            });
-
-            const cleaned = result.text.trim();
-            if (cleaned) {
-                return cleaned;
-            }
-        } catch (error) {
-            lastError = error instanceof Error ? error : new Error(String(error));
-        }
-    }
-
-    throw lastError || new Error('無法完成分身分析。');
-};
-
 const getPublicIdentityKindLabel = (kind: PublicIdentity['kind']) => {
     if (kind === 'real_person') return '真人公眾人物';
     if (kind === 'fictional_character') return '虛構角色';
     return '知名身份';
 };
 
-const setPublicIdentityStatus = (text: string, tone: 'idle' | 'error' | 'success' = 'idle') => {
-    publicIdentityStatus.textContent = text;
-    publicIdentityStatus.classList.remove(
-        'border-cyan-500/20',
-        'bg-cyan-500/5',
-        'text-cyan-100',
-        'border-red-500/25',
-        'bg-red-500/10',
-        'text-red-200',
-        'border-emerald-500/25',
-        'bg-emerald-500/10',
-        'text-emerald-100',
-    );
-    if (tone === 'error') {
-        publicIdentityStatus.classList.add('border-red-500/25', 'bg-red-500/10', 'text-red-200');
-    } else if (tone === 'success') {
-        publicIdentityStatus.classList.add('border-emerald-500/25', 'bg-emerald-500/10', 'text-emerald-100');
-    } else {
-        publicIdentityStatus.classList.add('border-cyan-500/20', 'bg-cyan-500/5', 'text-cyan-100');
-    }
-};
-
-const setPublicIdentityBusy = (busy: boolean) => {
-    isPublicIdentityBusy = busy;
-    searchPublicIdentityBtn.disabled = busy;
-    publicIdentityQuery.disabled = busy;
-    confirmPublicIdentityBtn.disabled = busy || !selectedPublicIdentityCandidate;
-    publicIdentityCandidatesContainer.querySelectorAll('button').forEach(button => {
-        (button as HTMLButtonElement).disabled = busy;
-    });
-};
-
-const renderPublicIdentityCandidates = () => {
-    publicIdentityCandidatesContainer.innerHTML = '';
-    publicIdentityCandidates.forEach(candidate => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = `public-identity-candidate${selectedPublicIdentityCandidate?.id === candidate.id ? ' is-selected' : ''}`;
-        button.disabled = isPublicIdentityBusy;
-
-        if (candidate.thumbnailUrl) {
-            const image = document.createElement('img');
-            image.className = 'public-identity-candidate-image';
-            image.src = candidate.thumbnailUrl;
-            image.alt = `${candidate.title} 代表圖片`;
-            image.loading = 'lazy';
-            image.referrerPolicy = 'no-referrer';
-            button.appendChild(image);
-        } else {
-            const placeholder = document.createElement('span');
-            placeholder.className = 'public-identity-candidate-placeholder';
-            placeholder.textContent = candidate.title.slice(0, 1).toUpperCase() || '?';
-            button.appendChild(placeholder);
-        }
-
-        const copy = document.createElement('span');
-        copy.className = 'public-identity-candidate-copy';
-        const title = document.createElement('strong');
-        title.textContent = candidate.title;
-        const description = document.createElement('span');
-        description.textContent = candidate.description || `${candidate.language.toUpperCase()} Wikipedia`;
-        const extract = document.createElement('p');
-        extract.textContent = candidate.extract || '請開啟來源頁面查看更多資料。';
-        copy.append(title, description, extract);
-        button.appendChild(copy);
-        button.addEventListener('click', () => {
-            void selectPublicIdentityCandidate(candidate);
-        });
-        publicIdentityCandidatesContainer.appendChild(button);
-    });
-};
-
-const renderPublicIdentityMedia = () => {
-    publicIdentityMediaContainer.innerHTML = '';
-    if (publicIdentityMedia.length === 0) {
-        publicIdentityMediaSection.classList.add('hidden');
-        return;
-    }
-
-    publicIdentityMediaSection.classList.remove('hidden');
-    const keepButton = document.createElement('button');
-    keepButton.type = 'button';
-    keepButton.className = `public-identity-media-choice is-keep${selectedPublicIdentityMedia ? '' : ' is-selected'}`;
-    keepButton.innerHTML = '<span><strong class="block text-cyan-100">保留目前頭像</strong><span class="mt-2 block text-xs text-gray-400">只保存身份與圖片 Prompt</span></span>';
-    keepButton.addEventListener('click', () => {
-        selectedPublicIdentityMedia = null;
-        renderPublicIdentityMedia();
-    });
-    publicIdentityMediaContainer.appendChild(keepButton);
-
-    publicIdentityMedia.forEach(media => {
-        const wrapper = document.createElement('div');
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = `public-identity-media-choice w-full${selectedPublicIdentityMedia?.thumbnailUrl === media.thumbnailUrl ? ' is-selected' : ''}`;
-        const image = document.createElement('img');
-        image.src = media.thumbnailUrl;
-        image.alt = media.title;
-        image.loading = 'lazy';
-        image.referrerPolicy = 'no-referrer';
-        const copy = document.createElement('span');
-        copy.className = 'public-identity-media-choice-copy';
-        copy.textContent = media.title.replace(/^File:/u, '');
-        button.append(image, copy);
-        button.addEventListener('click', () => {
-            selectedPublicIdentityMedia = media;
-            renderPublicIdentityMedia();
-        });
-        const source = document.createElement('a');
-        source.className = 'mt-1 block truncate px-1 text-[0.65rem] text-cyan-300 underline underline-offset-2';
-        source.href = media.sourceUrl;
-        source.target = '_blank';
-        source.rel = 'noopener noreferrer';
-        source.textContent = `來源 · ${media.license}`;
-        wrapper.append(button, source);
-        publicIdentityMediaContainer.appendChild(wrapper);
-    });
-};
-
-const selectPublicIdentityCandidate = async (candidate: PublicIdentityCandidate) => {
-    publicIdentityLookupController?.abort();
-    selectedPublicIdentityCandidate = candidate;
-    selectedPublicIdentityMedia = null;
-    publicIdentityMedia = [];
-    renderPublicIdentityCandidates();
-    renderPublicIdentityMedia();
-    setPublicIdentityStatus(`已選擇「${candidate.title}」，正在尋找可用的代表圖片...`);
-    setPublicIdentityBusy(true);
-
-    const controller = new AbortController();
-    publicIdentityLookupController = controller;
-    try {
-        const loadedMedia = await loadPublicIdentityMedia(candidate, controller.signal);
-        const leadMedia: PublicIdentityMedia[] = candidate.thumbnailUrl ? [{
-            title: `${candidate.title}（Wikipedia 代表圖片）`,
-            thumbnailUrl: candidate.thumbnailUrl,
-            originalUrl: candidate.originalImageUrl || candidate.thumbnailUrl,
-            sourceUrl: candidate.pageUrl,
-            license: '請查看來源頁面',
-        }] : [];
-        const seen = new Set<string>();
-        publicIdentityMedia = [...leadMedia, ...loadedMedia].filter(media => {
-            const key = media.thumbnailUrl.replace(/\?.*$/u, '');
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        }).slice(0, 7);
-        renderPublicIdentityMedia();
-        setPublicIdentityStatus(
-            `你要建立的是「${candidate.title}」嗎？確認後會整理身份與圖片畫風。`,
-            'success',
-        );
-    } catch (error) {
-        if (isAbortError(error)) return;
-        const message = error instanceof Error ? error.message : '代表圖片讀取失敗。';
-        if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
-        setPublicIdentityStatus(`已選擇「${candidate.title}」。代表圖片暫時讀取不到，但仍可確認身份。`, 'success');
-    } finally {
-        if (publicIdentityLookupController === controller) publicIdentityLookupController = null;
-        setPublicIdentityBusy(false);
-        renderPublicIdentityCandidates();
-    }
-};
-
-const searchForPublicIdentity = async (rawQuery: string) => {
-    const query = rawQuery.trim();
-    if (!query) {
-        setPublicIdentityStatus('請輸入名字，或補充作品、職業、國家再搜尋。', 'error');
-        return;
-    }
-
-    publicIdentityLookupController?.abort();
-    publicIdentityCandidates = [];
-    selectedPublicIdentityCandidate = null;
-    selectedPublicIdentityMedia = null;
-    publicIdentityMedia = [];
-    publicIdentityCandidatesContainer.innerHTML = '';
-    renderPublicIdentityMedia();
-    setPublicIdentityStatus(`正在 Wikipedia 搜尋「${query}」...`);
-    setPublicIdentityBusy(true);
-
-    const controller = new AbortController();
-    publicIdentityLookupController = controller;
-    try {
-        publicIdentityCandidates = await searchPublicIdentities(query, controller.signal);
-        if (publicIdentityCandidates.length === 0) {
-            setPublicIdentityStatus('找不到合適條目。請加入作品名、團體、國家或職業再搜尋。', 'error');
-            return;
-        }
-        selectedPublicIdentityCandidate = publicIdentityCandidates[0];
-        renderPublicIdentityCandidates();
-    } catch (error) {
-        if (isAbortError(error)) return;
-        const message = error instanceof Error ? error.message : '公開資料搜尋失敗。';
-        if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
-        setPublicIdentityStatus(`搜尋失敗：${message}`, 'error');
-        return;
-    } finally {
-        if (publicIdentityLookupController === controller) publicIdentityLookupController = null;
-        setPublicIdentityBusy(false);
-    }
-
-    if (selectedPublicIdentityCandidate) {
-        await selectPublicIdentityCandidate(selectedPublicIdentityCandidate);
-    }
-};
-
-const buildConfirmedPublicIdentity = async (
-    candidate: PublicIdentityCandidate,
-): Promise<PublicIdentity> => {
-    const candidateText = `${candidate.description} ${candidate.extract}`;
-    const fallbackKind: PublicIdentity['kind'] = /(?:fictional|character|video game|manga|anime|novel|comic)/iu.test(candidateText)
-        ? 'fictional_character'
-        : /(?:born|person|singer|actor|actress|model|athlete|politician|artist|performer|musician)/iu.test(candidateText)
-            ? 'real_person'
-            : 'other';
-    const response = await runMimicModelCall(
-        [
-            {
-                role: 'system',
-                content: [
-                    'You convert one user-confirmed Wikipedia result into factual identity metadata for character consistency and text-to-image prompting.',
-                    'Use only the supplied public encyclopedia text. Do not invent private facts, facial measurements, scenes, poses, clothes, or relationships.',
-                    'For a real person, make the English visual prompt lead with the best-known public name, legal name if supplied, nationality, and public profession so an image model identifies the exact person rather than a generic demographic.',
-                    'For a fictional character, name the franchise and original medium. Describe the canonical design and broad original visual language without naming or imitating a living artist. Keep it illustrated/game-like when the source is not live action.',
-                    'Write summary_zh in concise Traditional Chinese. Return only these XML tags:',
-                    '<kind>real_person|fictional_character|other</kind>',
-                    '<canonical_name>best-known canonical name</canonical_name>',
-                    '<summary_zh>one or two factual Traditional Chinese sentences</summary_zh>',
-                    '<visual_prompt_en>identity-only English image prompt</visual_prompt_en>',
-                    '<style_prompt_en>fictional source-medium style guidance, or empty for a real person</style_prompt_en>',
-                ].join('\n'),
-            },
-            {
-                role: 'user',
-                content: [
-                    `Wikipedia title: ${candidate.title}`,
-                    `Wikipedia language: ${candidate.language}`,
-                    `Wikidata description: ${candidate.description || 'not supplied'}`,
-                    `Article introduction: ${candidate.extract || 'not supplied'}`,
-                    `Source: ${candidate.pageUrl}`,
-                ].join('\n'),
-            },
-        ],
-        700,
-    );
-
-    const rawKind = extractXmlTag(response, 'kind');
-    const kind: PublicIdentity['kind'] = rawKind === 'fictional_character' || rawKind === 'other' || rawKind === 'real_person'
-        ? rawKind
-        : fallbackKind;
-    const canonicalName = extractXmlTag(response, 'canonical_name') || candidate.title;
-    const summary = extractXmlTag(response, 'summary_zh')
-        || `${candidate.title}：${candidate.description || candidate.extract}`.slice(0, 900);
-    const visualPrompt = extractXmlTag(response, 'visual_prompt_en') || (
-        kind === 'fictional_character'
-            ? `${candidate.title}, the canonical fictional character described as ${candidate.description}. Preserve the recognizable franchise identity and canonical character design.`
-            : `${candidate.title}, ${candidate.description}, the recognizable real public figure; preserve her exact well-known identity rather than generating a generic lookalike.`
-    );
-    const stylePrompt = extractXmlTag(response, 'style_prompt_en');
-
-    return {
-        canonicalName: canonicalName.slice(0, 180),
-        kind,
-        summary: summary.slice(0, 1200),
-        visualPrompt: visualPrompt.slice(0, 1400),
-        stylePrompt: stylePrompt.slice(0, 800) || undefined,
-        sourceTitle: candidate.title,
-        sourceUrl: candidate.pageUrl,
-        sourceLanguage: candidate.language,
-        referenceImageUrl: selectedPublicIdentityMedia?.thumbnailUrl,
-        referenceImageSourceUrl: selectedPublicIdentityMedia?.sourceUrl,
-        verifiedAt: Date.now(),
-    };
-};
-
-const closePublicIdentityResolution = (result: PublicIdentityResolution | null = null) => {
-    publicIdentityLookupController?.abort();
-    publicIdentityLookupController = null;
-    publicIdentityModal.classList.add('hidden');
-    const resolver = publicIdentityResolver;
-    publicIdentityResolver = null;
-    resolver?.(result);
-};
-
-const requestPublicIdentityResolution = (
+const requestPublicIdentityResolution = async (
     initialQuery: string,
 ): Promise<PublicIdentityResolution | null> => {
-    if (publicIdentityResolver) {
-        publicIdentityResolver(null);
-        publicIdentityResolver = null;
-    }
-    publicIdentityCandidates = [];
-    selectedPublicIdentityCandidate = null;
-    publicIdentityMedia = [];
-    selectedPublicIdentityMedia = null;
-    publicIdentityCandidatesContainer.innerHTML = '';
-    publicIdentityMediaContainer.innerHTML = '';
-    publicIdentityMediaSection.classList.add('hidden');
-    publicIdentityQuery.value = initialQuery.trim();
-    publicIdentityModal.classList.remove('hidden');
-    setPublicIdentityStatus('正在搜尋公開資料...');
-    confirmPublicIdentityBtn.disabled = true;
-
-    const result = new Promise<PublicIdentityResolution | null>(resolve => {
-        publicIdentityResolver = resolve;
-    });
-    void searchForPublicIdentity(initialQuery);
-    return result;
-};
-
-const confirmSelectedPublicIdentity = async () => {
-    if (!selectedPublicIdentityCandidate || isPublicIdentityBusy) return;
-    const candidate = selectedPublicIdentityCandidate;
-    setPublicIdentityBusy(true);
-    setPublicIdentityStatus(`正在整理「${candidate.title}」的標準身份與圖片描述...`);
-    try {
-        const identity = await buildConfirmedPublicIdentity(candidate);
-        closePublicIdentityResolution({
-            identity,
-            avatarUrl: selectedPublicIdentityMedia?.thumbnailUrl,
-            candidate,
-        });
-    } catch (error) {
-        const message = error instanceof Error ? error.message : '身份資料整理失敗。';
-        if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
-        setPublicIdentityStatus(`整理失敗：${message}`, 'error');
-    } finally {
-        setPublicIdentityBusy(false);
-    }
-};
-
-const buildMimicChunkAnalysisPrompt = (targetName: string, extraNotes: string) => {
-    const sections = [
-        'You analyze conversation history to infer one real person\'s original personality before any customization.',
-        `Target person name: ${targetName || 'Unknown'}`,
-        extraNotes.trim() ? `User extra notes for later customization:\n${extraNotes.trim()}` : '',
-        [
-            'Critical rules:',
-            '- First identify the target person\'s ORIGINAL personality, usual behavior, tone, rhythm, and relationship style from the transcript itself.',
-            '- Do not overwrite the original personality with the user notes. The notes are only a later layer, not the core identity.',
-            '- This app is romance-oriented, so mention romantic compatibility cues when visible, but do not turn the person into a generic flirt if the transcript does not support that.',
-            '- Prioritize how the person actually talks over any dramatic label like tsundere, toxic, possessive, shy, or seductive.',
-            '- Do not over-amplify one visible trait. If the transcript only shows light teasing or mild sharpness, keep it light.',
-            '- Distinguish how they act in ordinary life versus how they act specifically with the user when there is trust, tension, attraction, or emotional closeness.',
-            '- Distinguish Taiwan, Hong Kong, and Mainland China carefully. Do not merge them.',
-            '- For Hong Kong speakers, preserve Hong Kong rhythm and occasional code-switching naturally. Do not force exaggerated slang or swearing into every reply.',
-            '- If the transcript suggests Taiwan, note Taiwanese wording or cultural cues.',
-            '- If it suggests Hong Kong, note Hong Kong or Cantonese-influenced cues.',
-            '- If it suggests Mainland China, note Mainland wording or cultural cues.',
-            '- If unclear, say the region is unclear instead of guessing.',
-        ].join('\n'),
-        [
-            'Output format:',
-            '<personality>2 to 4 concise sentences about original personality.</personality>',
-            '<behavior>2 to 4 concise sentences about usual behavior, reactions, and habits.</behavior>',
-            '<usual_self>2 to 4 concise sentences about how this person usually feels and behaves in everyday life.</usual_self>',
-            '<with_user_self>2 to 4 concise sentences about how this person softens, changes, or reacts specifically with the user when there is closeness or tension.</with_user_self>',
-            '<romance_style>2 to 4 concise sentences about this person\'s romance style, intimacy style, jealousy level, teasing level, and emotional pacing.</romance_style>',
-            '<tone>2 to 4 concise sentences about wording, rhythm, emotional temperature, and flirt style.</tone>',
-            '<regionality>State the likely region or that it is unclear, and explain the language cues briefly.</regionality>',
-            '<command_response>Describe how this person usually reacts when asked or pushed, and how much they naturally comply.</command_response>',
-        ].join('\n'),
-    ];
-
-    return sections.filter(Boolean).join('\n\n');
-};
-
-const buildMimicSynthesisPrompt = (
-    targetName: string,
-    gender: 'female' | 'male',
-    extraNotes: string,
-    voiceSamples: string[] = [],
-) => {
-    const sections = [
-        'You are creating a romance-chat persona from analyzed conversation history.',
-        `Target person name: ${targetName || 'Unknown'}`,
-        `Gender: ${gender}`,
-        extraNotes.trim() ? `User requested later adjustments:\n${extraNotes.trim()}` : '',
-        voiceSamples.length > 0
-            ? `Transcript voice examples (style compass only, do not quote mechanically):\n${voiceSamples.map(sample => `- ${sample}`).join('\n')}`
-            : '',
-        [
-            'Core rules:',
-            '- The final character is an adult woman. If age is unclear, treat her as at least 25 years old; never create a minor or school-age character.',
-            '- Preserve the target person\'s ORIGINAL personality, usual behavior, tone, and regional language identity first.',
-            '- This is for a romance-oriented chat app, so the final result should feel romantically interactive, intimate, and emotionally present.',
-            '- Do not erase the original person just to make them romantic. The romance layer must still sound like that person.',
-            '- However, the relationship stance in the final persona should be more romantically responsive to the user than the raw real-life transcript may be.',
-            '- If the real transcript is platonic, distant, busy, or emotionally flat, keep the voice and personality but convert the private relationship layer into hidden attraction, growing softness, and romance potential toward the user.',
-            '- Prioritize the real speaking rhythm and wording habits from the transcript over broad archetypes such as toxic, tsundere, clingy, bold, or shy.',
-            '- Do not let one trait take over everything. Avoid turning mild teasing into nonstop meanness, or turning reserve into emotional flatness.',
-            '- Clearly distinguish who they are in everyday life versus how they act specifically with the user once attraction, familiarity, or emotional safety appears.',
-            '- The persona should generally be willing to listen to the user\'s commands, but still react through their own personality, shyness, pride, habits, and emotional style.',
-            '- If the user later asks this person to be gentler, sweeter, softer, or more caring, the persona must be able to adapt the surface tone without losing identity.',
-            '- Keep Taiwan, Hong Kong, and Mainland China distinctions accurate. Do not mix them together.',
-            '- For Hong Kong voices, keep the Cantonese flavor natural and selective. Do not force heavy slang, profanity, or exaggerated particles into every reply.',
-            '- Write all final output in Traditional Chinese.',
-        ].join('\n'),
-        [
-            'Output format:',
-            '<personality>2 to 4 concise sentences summarizing the original personality you inferred.</personality>',
-            '<behavior>2 to 4 concise sentences summarizing usual behavior and reactions.</behavior>',
-            '<usual_self>2 to 4 concise sentences summarizing how this person normally behaves in everyday life.</usual_self>',
-            '<with_user_self>2 to 4 concise sentences summarizing how this person changes, softens, flirts, resists, or opens up specifically with the user.</with_user_self>',
-            '<romance_style>2 to 4 concise sentences summarizing the romance dynamic, intimacy rhythm, possessiveness, jealousy, teasing, and emotional comfort style.</romance_style>',
-            '<tone>2 to 4 concise sentences summarizing wording, rhythm, and emotional temperature.</tone>',
-            '<regionality>State the likely region or that it is unclear, and explain the language cues briefly.</regionality>',
-            '<command_response>Describe how this person usually reacts when asked or pushed.</command_response>',
-            '<description>One concise sentence summarizing the person.</description>',
-            '<prompt>A full persona prompt for the romance chat app. Include original personality, tone, behavior, regional language identity, how they react to commands, how they interact romantically with the user, and how they soften without breaking character.</prompt>',
-            '<greeting>A natural first greeting in that person\'s voice.</greeting>',
-            '<memory>Short internal notes for the app to remember, including region/tone cues and command-response style.</memory>',
-        ].join('\n'),
-    ];
-
-    return sections.filter(Boolean).join('\n\n');
-};
-
-const buildManualPersonaSynthesisPrompt = (seed: ManualPersonaSeed) => {
-    const sections = [
-        'You are creating a romance-chat persona from direct user instructions instead of transcript analysis.',
-        `Target person name: ${seed.name}`,
-        `Gender: ${seed.gender}`,
-        seed.occupation ? `Occupation / identity: ${seed.occupation}` : '',
-        seed.personality ? `Original personality cues:\n${seed.personality}` : '',
-        seed.background ? `Background / relationship setup:\n${seed.background}` : '',
-        seed.notes ? `Extra user requests:\n${seed.notes}` : '',
-        [
-            'Core rules:',
-            '- The final character is an adult woman. If age is not specified, make her at least 25 years old; never create a minor or school-age character.',
-            '- Use the manual description as the source of truth. Do not invent a completely unrelated person.',
-            '- This app is romance-oriented, so the final persona should be emotionally present, interactive, and capable of moving toward intimacy with the user.',
-            '- Adult romantic and consensual intimate tension may develop naturally. Do not reduce the character to generic explicit lines; preserve emotional pacing and personality.',
-            '- Keep the original vibe first. Romance should feel like an extension of that person, not a generic flirt mask.',
-            '- If the name or setup points to a celebrity, public figure, idol, or familiar real-person archetype, keep the recognizable public aura only through the user-provided cues. Do not talk about being famous unless it naturally belongs in the background.',
-            '- The character should listen to the user more than in real life, but still react through their own pride, warmth, shyness, wit, habits, and pacing.',
-            '- If regional language is not specified, keep the wording in natural Traditional Chinese without forcing a location.',
-            '- Do not output assistant framing, JSON, markdown headings, or meta commentary.',
-        ].join('\n'),
-        [
-            'Output format:',
-            '<personality>2 to 4 concise sentences summarizing the core personality.</personality>',
-            '<behavior>2 to 4 concise sentences summarizing habits, reactions, and everyday behavior.</behavior>',
-            '<usual_self>2 to 4 concise sentences summarizing the normal public or daily self.</usual_self>',
-            '<with_user_self>2 to 4 concise sentences summarizing how this person changes specifically with the user.</with_user_self>',
-            '<romance_style>2 to 4 concise sentences summarizing romance rhythm, intimacy style, teasing, jealousy, and softness.</romance_style>',
-            '<tone>2 to 4 concise sentences summarizing wording, rhythm, and emotional temperature.</tone>',
-            '<regionality>State the language/region style if the user specified one, otherwise say it should stay natural Traditional Chinese.</regionality>',
-            '<command_response>Describe how this person reacts when the user asks, pushes, or guides them.</command_response>',
-            '<description>One concise sentence summarizing the person.</description>',
-            '<prompt>A full persona prompt for the romance chat app. Include occupation, background, original personality, tone, command response, and how they grow romantic with the user while staying in character.</prompt>',
-            '<greeting>A natural first greeting in that person\'s voice.</greeting>',
-            '<memory>Short internal notes for the app to remember, including vibe, region if known, and command-response style.</memory>',
-        ].join('\n'),
-    ];
-
-    return sections.filter(Boolean).join('\n\n');
-};
-
-const buildPublicPersonaFallbackAnalysis = (seed: PublicPersonaSeed): MimicAnalysisSummary => {
-    const sourceSummary = seed.resolution.identity.summary || seed.resolution.candidate?.extract || '公開資料有限';
-    return {
-        personality: `依公開資料與公眾形象推斷：${sourceSummary}`,
-        behavior: sourceSummary,
-        usualSelf: `以「${seed.resolution.identity.canonicalName}」的公開身份、工作與已知經歷作為日常狀態基礎。`,
-        withUserSelf: seed.notes || '戀愛互動層屬角色模擬，可較公開場合放鬆、親近，但仍保留辨識度。',
-        romanceStyle: '以公眾形象為核心，再自然延伸成慢慢建立信任與親密感的戀愛互動。',
-        tone: '依已確認身份與公開形象推斷；沒有可靠資料的語氣特徵不會當成事實。',
-        regionality: `依 Wikipedia 條目所示的國家、地區及語言背景處理，不混淆香港、台灣、中國大陸、韓國、日本等文化語感。`,
-        commandResponse: seed.notes || '會理解並配合使用者的要求，但先以角色本身的節奏、態度與情緒作出自然反應。',
-    };
-};
-
-const buildPublicPersonaSynthesisPrompt = (seed: PublicPersonaSeed) => {
-    const { identity, candidate } = seed.resolution;
-    const sourceProfile = candidate?.extract?.trim().slice(0, 7000) || identity.summary;
-    return [
-        'You create an editable romance-chat character draft for one user-confirmed public identity.',
-        `User display name: ${seed.displayName}`,
-        `Confirmed canonical identity: ${identity.canonicalName}`,
-        `Identity type: ${identity.kind}`,
-        `Wikipedia title: ${identity.sourceTitle}`,
-        `Wikipedia language: ${identity.sourceLanguage}`,
-        candidate?.description ? `Public description: ${candidate.description}` : '',
-        `Verified public summary: ${identity.summary}`,
-        `Wikipedia introduction:\n${sourceProfile}`,
-        `Source: ${identity.sourceUrl}`,
-        seed.notes ? `User-requested interaction adjustments:\n${seed.notes}` : '',
-        [
-            'Research and truthfulness rules:',
-            '- Treat the confirmed Wikipedia identity and supplied public material as the factual anchor.',
-            '- Separate documented facts from careful interpretation of the public-facing image. Never present inferred private personality, private relationships, secrets, diagnoses, or rumours as fact.',
-            '- For a real person, build a recognizable public-image simulation from profession, cultural background, career context, public manner and broadly known presentation. Personality and speaking style must be worded as an AI interpretation for this fictional chat character.',
-            '- For a fictional character, preserve canonical background, temperament, speech rhythm, world and original-medium identity where supported by the source.',
-            '- Keep nationality, region and language identity precise. Never merge Hong Kong, Taiwan and Mainland China, or flatten Korean and Japanese identities into generic East Asian traits.',
-            '- Do not invent exact catchphrases or claim to reproduce private speech. Create a natural Traditional Chinese conversational voice that remains compatible with the person\'s known cultural background.',
-            '- Avoid a generic celebrity, idol or flirt template. Give the character distinctive priorities, emotional pacing, habits, boundaries, humour and reactions grounded in the confirmed identity.',
-        ].join('\n'),
-        [
-            'Romance-chat adaptation rules:',
-            '- The final app character is an adult woman and is an explicitly fictionalized conversational simulation, not a claim about the real person\'s private feelings.',
-            '- Preserve the recognizable public persona first, then add a private relationship layer that can gradually become warmer, more trusting, affectionate and romantically responsive toward the user.',
-            '- The character should generally follow the user\'s direction, but react through her own confidence, shyness, wit, habits, pride, tenderness and pacing instead of complying like a blank assistant.',
-            '- She must sustain normal, fluent long-form conversation, react to the newest message, avoid repetitive loops and continue scenes coherently.',
-            '- Write every output field in natural Traditional Chinese. Do not output JSON, markdown headings or assistant commentary.',
-        ].join('\n'),
-        [
-            'Return only these XML tags:',
-            '<personality>2 to 4 concise sentences: core public-facing personality interpretation.</personality>',
-            '<behavior>2 to 4 concise sentences: public habits, work rhythm and likely reactions.</behavior>',
-            '<usual_self>2 to 4 concise sentences: ordinary public or daily self.</usual_self>',
-            '<with_user_self>2 to 4 concise sentences: fictionalized private self with the user.</with_user_self>',
-            '<romance_style>2 to 4 concise sentences: romance pacing, affection, teasing, jealousy and emotional safety.</romance_style>',
-            '<tone>2 to 4 concise sentences: wording, rhythm and emotional temperature.</tone>',
-            '<regionality>Precise cultural, language and regional guidance.</regionality>',
-            '<command_response>How she responds when the user asks, guides or pushes.</command_response>',
-            '<description>One concise character-list description.</description>',
-            '<prompt>A detailed, durable persona prompt containing factual identity, public persona interpretation, distinctive behavior, voice, regional identity, romance progression, command response and anti-repetition guidance.</prompt>',
-            '<greeting>A natural first greeting in character, without claiming a real private relationship already exists.</greeting>',
-            '<memory>Short internal notes preserving identity facts, public-image interpretation, cultural voice and relationship pacing.</memory>',
-        ].join('\n'),
-    ].filter(Boolean).join('\n\n');
-};
-
-const analyzeTranscriptChunk = async (
-    chunk: string,
-    targetName: string,
-    extraNotes: string,
-    index: number,
-    total: number,
-) => {
-    setMimicAnalysisStatus(`正在分析第 ${index + 1} / ${total} 段聊天紀錄...`);
-
-    return runMimicModelCall(
-        [
-            { role: 'system', content: buildMimicChunkAnalysisPrompt(targetName, extraNotes) },
-            {
-                role: 'user',
-                content: `Transcript excerpt ${index + 1}/${total}:\n\n${chunk}`,
-            },
-        ],
-        680,
-    );
-};
-
-const runManualPersonaDraftGeneration = async () => {
-    const seed = getManualPersonaSeed();
-    if (!seed.name) {
-        throw new Error('請先輸入角色名字。');
-    }
-
-    setMimicAnalysisStatus('正在整理手動設定並生成角色草稿...');
-    const fallbackAnalysis = buildManualFallbackAnalysis(seed);
-    const response = await runMimicModelCall(
-        [
-            { role: 'system', content: buildManualPersonaSynthesisPrompt(seed) },
-            {
-                role: 'user',
-                content: [
-                    `名字：${seed.name}`,
-                    `性別：${seed.gender === 'male' ? '男性' : '女性'}`,
-                    `職業 / 身分：${seed.occupation || '未指定'}`,
-                    `原始人格：${seed.personality || '未指定'}`,
-                    `背景 / 關係設定：${seed.background || '未指定'}`,
-                    `補充要求：${seed.notes || '未指定'}`,
-                ].join('\n'),
-            },
-        ],
-        980,
-    );
-
-    const parsedDraft = parseMimicPersonaDraftV2(response, fallbackAnalysis);
-    if (!parsedDraft) {
-        throw new Error('這次沒有成功組出完整的角色草稿，請再試一次。');
-    }
-
-    mimicDraftPersona = parsedDraft;
-    renderMimicAnalysisPreviewV2(
-        parsedDraft.analysis,
-        `來源：手動建立｜名字：${seed.name}｜職業：${seed.occupation || '未指定'}｜模式：不需聊天紀錄`,
-    );
-    mimicDescriptionEditor.value = parsedDraft.description;
-    mimicPromptEditor.value = parsedDraft.prompt;
-    mimicGreetingEditor.value = parsedDraft.greeting;
-    mimicMemoryEditor.value = parsedDraft.memory;
-    mimicResultEmpty.classList.add('hidden');
-    mimicResultPanel.classList.remove('hidden');
-    saveMimicPersonaBtn.disabled = false;
-    setMimicAnalysisStatus('角色草稿已生成，你可以先微調再儲存。', 'success');
-};
-
-const runPublicPersonaDraftGeneration = async () => {
-    const displayName = mimicNameInput.value.trim();
-    if (!displayName) {
-        throw new Error('請先輸入公眾人物名字。');
-    }
-
-    let resolution = mimicPublicIdentityQuery === displayName
-        ? mimicPublicIdentityResolution
-        : null;
-    if (!resolution) {
-        setMimicAnalysisStatus('正在搜尋 Wikipedia，請先確認正確人物...');
-        resolution = await requestPublicIdentityResolution(displayName);
-    }
-    if (!resolution) {
-        setMimicAnalysisStatus('身份確認已取消；尚未產生角色草稿。');
-        return;
-    }
-
-    mimicPublicIdentityResolution = resolution;
-    mimicPublicIdentityQuery = displayName;
-    mimicPublicIdentityCheckbox.checked = true;
-    mimicOccupationInput.value = resolution.candidate?.description || getPublicIdentityKindLabel(resolution.identity.kind);
-    mimicBackgroundInput.value = resolution.identity.summary;
-    mimicPublicSourceSummary.textContent = [
-        `已確認：${resolution.identity.canonicalName}`,
-        resolution.candidate?.description || resolution.identity.summary,
-        `來源：${resolution.identity.sourceTitle}`,
-    ].filter(Boolean).join('｜');
-    renderMimicAvatarPreview();
-
-    const seed: PublicPersonaSeed = {
-        displayName,
-        notes: mimicNotesInput.value.trim(),
-        resolution,
-    };
-    setMimicAnalysisStatus(`正在研究「${resolution.identity.canonicalName}」的公開形象並產生人格草稿...`);
-    const fallbackAnalysis = buildPublicPersonaFallbackAnalysis(seed);
-    const response = await runMimicModelCall(
-        [
-            { role: 'system', content: buildPublicPersonaSynthesisPrompt(seed) },
-            {
-                role: 'user',
-                content: '請根據上面的已確認公開資料，產生完整、鮮明、可長期對話的人格草稿。所有未證實的性格只能作為公眾形象推斷。',
-            },
-        ],
-        1300,
-    );
-    const draft = parseMimicPersonaDraftV2(response, fallbackAnalysis);
-    if (!draft) {
-        throw new Error('身份已確認，但這次沒有成功組出完整人格草稿，請再按一次重試。');
-    }
-
-    mimicDraftPersona = draft;
-    renderMimicAnalysisPreviewV2(
-        draft.analysis,
-        `來源：${resolution.identity.sourceTitle}（${resolution.identity.sourceLanguage.toUpperCase()} Wikipedia）｜身份：${resolution.identity.canonicalName}｜以下性格與語氣為 AI 依公開形象推斷，可在儲存前修改`,
-    );
-    mimicDescriptionEditor.value = draft.description;
-    mimicPromptEditor.value = draft.prompt;
-    mimicGreetingEditor.value = draft.greeting;
-    mimicMemoryEditor.value = draft.memory;
-    mimicResultEmpty.classList.add('hidden');
-    mimicResultPanel.classList.remove('hidden');
-    saveMimicPersonaBtn.disabled = false;
-    setMimicAnalysisStatus('人格草稿已完成。請先檢查右側內容；不符合的部分可直接修改，再儲存角色。', 'success');
-};
-
-const runMimicTranscriptAnalysis = async () => {
-    if (!mimicTranscriptFile) {
-        throw new Error('請先選擇聊天紀錄檔案。');
-    }
-
-    const targetName = mimicNameInput.value.trim();
-    if (!targetName) {
-        throw new Error('請先輸入對方名字。');
-    }
-
-    const extraNotes = mimicNotesInput.value.trim();
-    const transcriptResult = await readTranscriptTextFromFile(mimicTranscriptFile);
-    const normalized = normalizeTranscriptText(transcriptResult.text);
-    if (!normalized) {
-        throw new Error('聊天紀錄內容是空的，無法分析。');
-    }
-
-    const focusedTranscript = focusTranscriptOnTargetSpeakerV2(normalized, targetName);
-    const voiceReferenceSamples = buildTranscriptVoiceReferenceSamples(focusedTranscript.text, targetName);
-    const preparedChunks = prepareTranscriptChunksForAnalysis(focusedTranscript.text);
-    const chunks = preparedChunks.chunks;
-    if (chunks.length === 0) {
-        throw new Error('這份聊天紀錄沒有整理出可分析的片段。');
-    }
-
-    const focusSummary = focusedTranscript.usedFocusedWindows
-        ? `已聚焦到 ${targetName} 的 ${focusedTranscript.matchedTurns} 則發話附近內容`
-        : focusedTranscript.matchedTurns > 0
-            ? `只找到 ${focusedTranscript.matchedTurns} 則 ${targetName} 發話，這次改用整份紀錄分析`
-            : `找不到明確的 ${targetName} 說話標記，這次改用整份紀錄分析`;
-    const parserSummary = transcriptResult.mergedLines > 0
-        ? `${transcriptResult.parserLabel}，並合併 ${transcriptResult.mergedLines} 行續訊`
-        : transcriptResult.parserLabel;
-
-    mimicTranscriptMeta.textContent = `來源：${transcriptResult.sourceName}，格式：${parserSummary}，共 ${normalized.length.toLocaleString()} 字，分析 ${chunks.length} 段。`;
-
-    const chunkSummaries: string[] = [];
-    for (let index = 0; index < chunks.length; index += 1) {
-        chunkSummaries.push(await analyzeTranscriptChunk(chunks[index], targetName, extraNotes, index, chunks.length));
-    }
-
-    setMimicAnalysisStatus('正在合成角色草稿...');
-    const fallbackAnalysis = buildAnalysisSummaryFromChunkSummaries(chunkSummaries);
-
-    const synthesisResponse = await runMimicModelCall(
-        [
-            {
-                role: 'system',
-                content: buildMimicSynthesisPrompt(targetName, getSelectedMimicGender(), extraNotes, voiceReferenceSamples),
-            },
-            {
-                role: 'user',
-                content: [
-                    `Chunk analyses for ${targetName}:`,
-                    '',
-                    ...chunkSummaries.map((summary, index) => `### Chunk ${index + 1}\n${summary}`),
-                    voiceReferenceSamples.length > 0
-                        ? `Voice reference lines from ${targetName} (style compass only):\n${voiceReferenceSamples.map(sample => `- ${sample}`).join('\n')}`
-                        : '',
-                ].filter(Boolean).join('\n\n'),
-            },
-        ],
-        1200,
-    );
-
-    const parsedDraft = parseMimicPersonaDraftV2(synthesisResponse, fallbackAnalysis);
-    const draft = parsedDraft ? enrichMimicDraftWithVoiceReference(parsedDraft, voiceReferenceSamples) : null;
-    if (!draft) {
-        throw new Error('這次沒有成功組出完整的角色草稿，請再試一次。');
-    }
-
-    mimicDraftPersona = draft;
-    renderMimicAnalysisPreviewV2(
-        draft.analysis,
-        `來源：${transcriptResult.sourceName}｜解析格式：${parserSummary}｜抓到約 ${transcriptResult.speakerTurns} 則對話｜${focusSummary}`,
-    );
-    mimicDescriptionEditor.value = draft.description;
-    mimicPromptEditor.value = draft.prompt;
-    mimicGreetingEditor.value = draft.greeting;
-    mimicMemoryEditor.value = draft.memory;
-    mimicResultEmpty.classList.add('hidden');
-    mimicResultPanel.classList.remove('hidden');
-    saveMimicPersonaBtn.disabled = false;
-    setMimicAnalysisStatus('分析完成，你現在可以手動微調後再儲存。', 'success');
-};
-
-const runMimicTranscriptAnalysisV2 = async () => {
-    if (!mimicTranscriptFile) {
-        throw new Error('請先選擇聊天紀錄檔案。');
-    }
-
-    const targetName = mimicNameInput.value.trim();
-    if (!targetName) {
-        throw new Error('請先輸入對方名字。');
-    }
-
-    const extraNotes = mimicNotesInput.value.trim();
-    const transcriptResult = await readTranscriptTextFromFile(mimicTranscriptFile);
-    const normalized = normalizeTranscriptText(transcriptResult.text);
-    if (!normalized) {
-        throw new Error('聊天紀錄內容是空的，無法分析。');
-    }
-
-    const focusedTranscript = focusTranscriptOnTargetSpeakerV2(normalized, targetName);
-    const voiceReferenceSamples = buildTranscriptVoiceReferenceSamples(focusedTranscript.text, targetName);
-    const preparedChunks = prepareTranscriptChunksForAnalysis(focusedTranscript.text);
-    const chunks = preparedChunks.chunks;
-    if (chunks.length === 0) {
-        throw new Error('這份聊天紀錄沒有整理出可分析的片段。');
-    }
-
-    const focusSummary = focusedTranscript.usedFocusedWindows
-        ? `已聚焦到 ${targetName} 的 ${focusedTranscript.matchedTurns} 則發話附近內容`
-        : focusedTranscript.matchedTurns > 0
-            ? `只找到 ${focusedTranscript.matchedTurns} 則 ${targetName} 發話，這次改用整份紀錄分析`
-            : `找不到明確的 ${targetName} 說話標記，這次改用整份紀錄分析`;
-    const parserSummary = transcriptResult.mergedLines > 0
-        ? `${transcriptResult.parserLabel}，並合併 ${transcriptResult.mergedLines} 行續訊`
-        : transcriptResult.parserLabel;
-    const samplingSummary = preparedChunks.sampled
-        ? `從 ${preparedChunks.sourceChunkCount} 段原始片段中等距抽樣 ${chunks.length} 段`
-        : `直接分析 ${chunks.length} 段`;
-
-    mimicTranscriptMeta.textContent = `來源：${transcriptResult.sourceName}，格式：${parserSummary}，共 ${normalized.length.toLocaleString()} 字，${samplingSummary}。`;
-
-    const chunkSummaries: string[] = [];
-    for (let index = 0; index < chunks.length; index += 1) {
-        chunkSummaries.push(await analyzeTranscriptChunk(chunks[index], targetName, extraNotes, index, chunks.length));
-    }
-
-    setMimicAnalysisStatus('正在合成角色草稿...');
-    const fallbackAnalysis = buildAnalysisSummaryFromChunkSummaries(chunkSummaries);
-
-    const synthesisResponse = await runMimicModelCall(
-        [
-            {
-                role: 'system',
-                content: buildMimicSynthesisPrompt(targetName, getSelectedMimicGender(), extraNotes, voiceReferenceSamples),
-            },
-            {
-                role: 'user',
-                content: [
-                    `Chunk analyses for ${targetName}:`,
-                    '',
-                    ...chunkSummaries.map((summary, index) => `### Chunk ${index + 1}\n${summary}`),
-                    voiceReferenceSamples.length > 0
-                        ? `Voice reference lines from ${targetName} (style compass only):\n${voiceReferenceSamples.map(sample => `- ${sample}`).join('\n')}`
-                        : '',
-                ].filter(Boolean).join('\n\n'),
-            },
-        ],
-        1200,
-    );
-
-    const parsedDraft = parseMimicPersonaDraftV2(synthesisResponse, fallbackAnalysis);
-    const draft = parsedDraft ? enrichMimicDraftWithVoiceReference(parsedDraft, voiceReferenceSamples) : null;
-    if (!draft) {
-        throw new Error('這次沒有成功組出完整的角色草稿，請再試一次。');
-    }
-
-    mimicDraftPersona = draft;
-    renderMimicAnalysisPreviewV2(
-        draft.analysis,
-        `來源：${transcriptResult.sourceName}｜解析格式：${parserSummary}｜抓到約 ${transcriptResult.speakerTurns} 則對話｜${focusSummary}`,
-    );
-    mimicDescriptionEditor.value = draft.description;
-    mimicPromptEditor.value = draft.prompt;
-    mimicGreetingEditor.value = draft.greeting;
-    mimicMemoryEditor.value = draft.memory;
-    mimicResultEmpty.classList.add('hidden');
-    mimicResultPanel.classList.remove('hidden');
-    saveMimicPersonaBtn.disabled = false;
-    setMimicAnalysisStatus('分析完成，你現在可以手動微調後再儲存。', 'success');
-};
-
-const saveMimicPersona = async () => {
-    if (!mimicDraftPersona) {
-        throw new Error('請先完成分析，再儲存角色。');
-    }
-
-    const name = mimicNameInput.value.trim();
-    if (!name) {
-        throw new Error('請先輸入對方名字。');
-    }
-
-    const description = mimicDescriptionEditor.value.trim();
-    const prompt = mimicPromptEditor.value.trim();
-    const greeting = mimicGreetingEditor.value.trim();
-    const memory = mimicMemoryEditor.value.trim();
-    if (!description || !prompt || !greeting) {
-        throw new Error('角色簡介、人格 Prompt、開場問候都需要有內容。');
-    }
-
-    let publicIdentityResolution = mimicPublicIdentityResolution;
-    if (mimicPublicIdentityCheckbox.checked) {
-        if (!publicIdentityResolution) {
-            mimicPublicIdentityHint.textContent = '正在搜尋公開身份，請在確認視窗選擇正確對象。';
-            const query = [
-                name,
-                mimicOccupationInput.value.trim(),
-                mimicBackgroundInput.value.trim(),
-            ].filter(Boolean).join(' ');
-            publicIdentityResolution = await requestPublicIdentityResolution(query);
-            if (!publicIdentityResolution) {
-                mimicPublicIdentityHint.textContent = '身份確認已取消；角色尚未儲存。';
-                return false;
-            }
-        }
-    } else {
-        publicIdentityResolution = null;
-    }
-
-    const key = memoryManager.saveCustomPersona({
-        name,
-        emoji: '🫧',
-        description,
-        prompt,
-        greeting,
-        avatarPrompt: publicIdentityResolution
-            ? [
-                publicIdentityResolution.identity.visualPrompt,
-                publicIdentityResolution.identity.stylePrompt,
-                'single-character portrait',
-            ].filter(Boolean).join(' ')
-            : `romance portrait of ${name}`,
-        gender: getSelectedMimicGender(),
-        publicIdentityEnabled: Boolean(publicIdentityResolution),
-        publicIdentity: publicIdentityResolution?.identity,
-    });
-
-    memoryManager.updatePersona(key, {
-        description,
-        prompt,
-        greeting,
-        memory,
-        avatarUrl: mimicAvatarDataUrl || publicIdentityResolution?.avatarUrl,
-        publicIdentityEnabled: Boolean(publicIdentityResolution),
-        publicIdentity: publicIdentityResolution?.identity,
-    });
-
-    renderPersonaList();
-    hideMimicImportModalView();
-    startChat(key, null, 'push');
-    return true;
-};
-
-const deleteCustomPersona = async (key: string) => {
-    if (isDeletingPersona) return;
-    if (!key.startsWith('custom_')) return;
-
-    isDeletingPersona = true;
-
-    try {
-        if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, key)) {
-            cancelActiveChatRequest();
-        }
-        const history = memoryManager.getChatHistory(key);
-        if (currentPersonaKey === key && characterPhotoRequestController) {
-            characterPhotoRequestController.abort();
-        }
-        await Promise.all([
-            deleteCharacterPhotoAssetsForHistory(history, key),
-            deleteChatAttachmentAssetsForHistory(history, key),
-        ]);
-        if (memoryManager.deleteCustomPersona(key)) {
-            renderPersonaList();
-        }
-    } finally {
-        isDeletingPersona = false;
-    }
-};
-
-function getPolicyViolationResponse(persona: any) {
-    return "?�…�?說�?話好?��?點太?�接了�??��??��?該怎麼?��??�可以�??�方式說?��?";
-};
-
-const getSystemPhotoFailResponse = (persona: any, action: string | null) => {
-    const actionText = action ? `要�?${action}?�…�?` : '';
-    return `${actionText}奇怪…相機好?�怪怪�??��??��?給�?一點�??�…�?`;
-};
-
-const getSystemErrorResponse = (persona: any) => {
-    return "?�…�??�腦袋�??��??�空?�…�??��?給�?一點�??�…�?馬�?就好?��?";
-};
-
-const renderLegacyPersonaList = () => {
-    aiAssistantList.innerHTML = '';
-    femalePersonaList.innerHTML = '';
-    const personas = memoryManager.getAllPersonas();
-
-    for (const key in personas) {
-        const persona = personas[key];
-        const isAssistant = key === VENICE_ASSISTANT_PERSONA_KEY;
-        if (!isAssistant && persona.gender !== 'female') continue;
-
-        const card = document.createElement('div');
-        card.className = `persona-card group rounded-lg shadow-lg relative ${isAssistant ? 'assistant-persona-card' : ''}`;
-        card.dataset.key = key;
-
-        card.innerHTML = `
-            <div id="avatar-container-${key}" class="avatar-container persona-avatar rounded-t-lg">
-                <div id="avatar-${key}" class="w-full h-full object-cover flex items-center justify-center text-gray-400 ${persona.avatarUrl ? '' : 'emoji-avatar'}">
-                    ${persona.avatarUrl ? `<img src="${persona.avatarUrl}" alt="${persona.name}" class="w-full h-full rounded-t-lg object-cover">` : `<span class="text-6xl">${persona.emoji}</span>`}
-                </div>
-            </div>
-            <div class="p-3 bg-black/25 rounded-b-lg">
-                <h3 class="font-bold text-md text-gray-100 truncate">${persona.name}</h3>
-                <p class="text-sm text-gray-400 truncate">${persona.description}</p>
-            </div>
-            <div class="card-buttons ${isAssistant ? 'hidden' : ''}">
-                <button title="更換 ${persona.name} 的頭像" aria-label="更換 ${persona.name} 的頭像" class="upload-avatar-btn avatar-card-action p-2 rounded-full" data-key="${key}">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-white">
-                        <path fill-rule="evenodd" d="M9.25 13.25a.75.75 0 001.5 0V4.636l2.158 2.158a.75.75 0 001.06-1.06l-3.5-3.5a.75.75 0 00-1.06 0l-3.5 3.5a.75.75 0 101.06 1.06L9.25 4.636v8.614z" clip-rule="evenodd" />
-                        <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
-                    </svg>
-                    <span>頭像</span>
-                </button>
-                ${key.startsWith('custom_') ? `<button title="刪除 ${persona.name}" aria-label="刪除 ${persona.name}" class="delete-persona-btn p-2 rounded-full" data-key="${key}"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-white"><path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.58.22-2.365.468a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193v-.443A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25-.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clip-rule="evenodd"></path></svg></button>` : ''}
-            </div>
-        `;
-
-        if (isAssistant) {
-            aiAssistantList.appendChild(card);
-        } else {
-            femalePersonaList.appendChild(card);
-        }
-
-        card.addEventListener('click', (e) => {
-            const target = e.target as HTMLElement;
-            if (target.closest('.card-buttons')) return;
-            startChat(key);
-        });
-    }
-
-    document.querySelectorAll('.upload-avatar-btn').forEach(button => {
-        button.addEventListener('click', (e) => {
-            e.stopPropagation();
-            requestPersonaAvatarUpload((button as HTMLElement).dataset.key!);
-        });
-    });
-
-    document.querySelectorAll('.delete-persona-btn').forEach(button => {
-        button.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const key = (button as HTMLElement).dataset.key;
-            if (!key) return;
-
-            const persona = memoryManager.getPersona(key);
-            if (persona && confirm(`確定要刪除 ${persona.name} 嗎？這個動作無法復原。`)) {
-                void deleteCustomPersona(key);
-            }
-        });
+    const { requestResolvedPublicIdentity } = await import('./features/publicIdentityResolution.js');
+    return requestResolvedPublicIdentity(initialQuery, {
+        handleAuthRequired: () => handleAuthRequired(),
     });
 };
 
+let mimicPersonaCreatorUi: import('./features/mimicPersonaCreator.js').MimicPersonaCreatorHandle | null = null;
+let mimicPersonaCreatorUiLoad: Promise<import('./features/mimicPersonaCreator.js').MimicPersonaCreatorHandle> | null = null;
+
+const loadMimicPersonaCreatorUi = async () => {
+    if (mimicPersonaCreatorUi) return mimicPersonaCreatorUi;
+    if (!mimicPersonaCreatorUiLoad) {
+        mimicPersonaCreatorUiLoad = import('./features/mimicPersonaCreator.js')
+            .then(({ createMimicPersonaCreator }) => {
+                const ui = createMimicPersonaCreator({
+                    createRandomPersonaSeed: async () => {
+                        const persona = await createFreshRandomPersona();
+                        return {
+                            name: persona.name,
+                            occupation: persona.occupation,
+                            personality: persona.personality,
+                            background: persona.background,
+                            notes: persona.notes,
+                        };
+                    },
+                    savePersona: async input => {
+                        const key = memoryManager.saveCustomPersona({
+                            name: input.name,
+                            emoji: '🫧',
+                            description: input.description,
+                            prompt: input.prompt,
+                            greeting: input.greeting,
+                            avatarPrompt: input.avatarPrompt,
+                            gender: 'female',
+                            publicIdentityEnabled: input.publicIdentityEnabled,
+                            publicIdentity: input.publicIdentity,
+                        });
+                        memoryManager.updatePersona(key, {
+                            description: input.description,
+                            prompt: input.prompt,
+                            greeting: input.greeting,
+                            memory: input.memory,
+                            publicIdentityEnabled: input.publicIdentityEnabled,
+                            publicIdentity: input.publicIdentity,
+                        });
+                        if (input.avatarUrl?.startsWith('data:image/')) {
+                            await memoryManager.setPersonaAvatar(key, input.avatarUrl);
+                        } else if (input.avatarUrl !== undefined) {
+                            memoryManager.updatePersona(key, { avatarUrl: input.avatarUrl });
+                        }
+                        return key;
+                    },
+                    afterSave: personaKey => {
+                        renderPersonaList();
+                        startChat(personaKey, null, 'push');
+                    },
+                    runRandomRecruit: () => randomlyRecruitNewPersona(),
+                    handleAuthRequired: () => handleAuthRequired(),
+                });
+                mimicPersonaCreatorUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                mimicPersonaCreatorUiLoad = null;
+                throw error;
+            });
+    }
+    return mimicPersonaCreatorUiLoad;
+};
+
+const openMimicImportModal = (mode: 'transcript' | 'public' | 'manual' = 'transcript') => {
+    void loadMimicPersonaCreatorUi()
+        .then(ui => ui.open(mode))
+        .catch(error => console.error('Failed to load persona creator', error));
+};
 const resolveRoomMemberAvatarPersona = (member: RoomMember) => {
     if (member.persona.avatarUrl) return member.persona;
     return member.sourcePersonaKey
@@ -3532,7 +807,10 @@ const enableAvatarPreview = (target: HTMLElement, persona: Persona) => {
     };
 };
 
+let personaListRenderVersion = 0;
+
 const renderPersonaList = () => {
+    personaListRenderVersion += 1;
     aiAssistantList.innerHTML = '';
     femalePersonaList.innerHTML = '';
     const personas = memoryManager.getAllPersonas();
@@ -3560,9 +838,13 @@ const renderPersonaList = () => {
         if (message.content.photoIntent?.status === 'pending') return '待確認：是否請角色準備照片';
         if (message.content.memoryProposal?.status === 'pending') return '待確認：儲存為永久記憶';
         if (message.content.npcProposal?.status === 'pending') return `待確認：是否固定加入 ${message.content.npcProposal.name}`;
-        if (message.content.imageAssetId || message.content.imageUrl) return `照片 · ${message.content.text || ''}`;
-        if (message.content.attachments?.length) return `附件 · ${message.content.text || message.content.attachments[0].name}`;
-        return (message.content.text || fallback).replace(/\s+/gu, ' ').trim();
+        const rawPreview = message.content.text || fallback;
+        const visiblePreview = roomManager.getRoom(key)
+            ? stripGroupTransportResidue(rawPreview)
+            : rawPreview;
+        if (message.content.imageAssetId || message.content.imageUrl) return `照片 · ${visiblePreview}`;
+        if (message.content.attachments?.length) return `附件 · ${visiblePreview || message.content.attachments[0].name}`;
+        return visiblePreview.replace(/\s+/gu, ' ').trim();
     };
     const appendAvatar = (container: HTMLElement, persona: Persona) => {
         if (persona.avatarUrl && !persona.avatarUrl.startsWith('generating_')) {
@@ -3699,89 +981,18 @@ const renderPersonaList = () => {
     }
 };
 
-const requestPersonaAvatarUpload = (key: string) => {
-    const persona = memoryManager.getPersona(key);
-    if (!persona || key === VENICE_ASSISTANT_PERSONA_KEY) return;
-    avatarSourceTarget = { personaKey: key };
-    avatarSourceTitle.textContent = `更換 ${persona.name} 的頭像`;
-    avatarSourceMembers.classList.add('hidden');
-    avatarSourceOptions.classList.remove('hidden');
-    avatarSourceModal.classList.remove('hidden');
-};
-
-const requestRoomMemberAvatarUpload = (roomId: string, memberId: string) => {
-    const member = roomManager.getMember(roomId, memberId);
-    if (!member) return;
-    avatarSourceTarget = { roomId, memberId };
-    avatarSourceTitle.textContent = `更換 ${member.persona.name} 的頭像`;
-    avatarSourceMembers.classList.add('hidden');
-    avatarSourceOptions.classList.remove('hidden');
-    avatarSourceModal.classList.remove('hidden');
-};
-
-const requestRoomAvatarUpload = (roomId: string) => {
-    const room = roomManager.getRoom(roomId);
-    if (!room) return;
-    avatarSourceTarget = null;
-    avatarSourceTitle.textContent = '選擇要更換頭像的成員';
-    avatarSourceOptions.classList.add('hidden');
-    avatarSourceMembers.innerHTML = '';
-    room.members.forEach(member => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'avatar-source-member';
-
-        const avatar = document.createElement('span');
-        avatar.className = 'avatar-source-member-avatar';
-        const sourcePersona = member.persona.avatarUrl
-            ? member.persona
-            : member.sourcePersonaKey
-                ? memoryManager.getPersona(member.sourcePersonaKey) || member.persona
-                : member.persona;
-        if (sourcePersona.avatarUrl && !sourcePersona.avatarUrl.startsWith('generating_')) {
-            const image = document.createElement('img');
-            image.src = sourcePersona.avatarUrl;
-            image.alt = member.persona.name;
-            avatar.appendChild(image);
-        } else {
-            avatar.textContent = sourcePersona.emoji || '●';
-        }
-
-        const copy = document.createElement('span');
-        const name = document.createElement('strong');
-        name.textContent = member.persona.name;
-        const detail = document.createElement('small');
-        detail.textContent = '按此選擇本機圖片或搜尋網上公開圖片';
-        copy.append(name, detail);
-        button.append(avatar, copy);
-        button.addEventListener('click', () => requestRoomMemberAvatarUpload(room.id, member.id));
-        avatarSourceMembers.appendChild(button);
+const schedulePersonaListRefreshAfterPaint = () => {
+    const scheduledVersion = personaListRenderVersion;
+    window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+            if (personaListRenderVersion !== scheduledVersion) return;
+            renderPersonaList();
+        });
     });
-    avatarSourceMembers.classList.remove('hidden');
-    avatarSourceModal.classList.remove('hidden');
 };
 
-const closeAvatarSourceModal = () => {
-    avatarSourceModal.classList.add('hidden');
-    avatarSourceTarget = null;
-    avatarSourceMembers.classList.add('hidden');
-    avatarSourceOptions.classList.remove('hidden');
-};
-
-const chooseLocalAvatarSource = () => {
-    const target = avatarSourceTarget;
-    if (!target) return;
-    avatarSourceModal.classList.add('hidden');
-    if ('personaKey' in target) {
-        avatarUploadRoomTarget = null;
-        currentPersonaKeyForUpload = target.personaKey;
-    } else {
-        currentPersonaKeyForUpload = null;
-        avatarUploadRoomTarget = { roomId: target.roomId, memberId: target.memberId };
-    }
-    avatarSourceTarget = null;
-    avatarUploadInput.click();
-};
+let avatarAdminUi: import('./features/avatarAdminUi.js').AvatarAdminUiHandle | null = null;
+let avatarAdminUiLoad: Promise<import('./features/avatarAdminUi.js').AvatarAdminUiHandle> | null = null;
 
 const refreshAvatarUi = () => {
     if (currentRoom) currentRoom = roomManager.getRoom(currentRoom.id) || currentRoom;
@@ -3796,273 +1007,74 @@ const refreshAvatarUi = () => {
     if (!roomInfoModal.classList.contains('hidden')) renderRoomInfo();
 };
 
-const chooseSearchedAvatarSource = async () => {
-    const target = avatarSourceTarget;
-    if (!target) return;
-    const restoreRoomInfo = !roomInfoModal.classList.contains('hidden');
-    avatarSourceModal.classList.add('hidden');
-    if (restoreRoomInfo) roomInfoModal.classList.add('hidden');
-    avatarSourceTarget = null;
-
-    const persona = 'personaKey' in target
-        ? memoryManager.getPersona(target.personaKey)
-        : roomManager.getMember(target.roomId, target.memberId)?.persona;
-    if (!persona) {
-        if (restoreRoomInfo) roomInfoModal.classList.remove('hidden');
-        return;
+const loadAvatarAdminUi = async () => {
+    if (avatarAdminUi) return avatarAdminUi;
+    if (!avatarAdminUiLoad) {
+        avatarAdminUiLoad = import('./features/avatarAdminUi.js')
+            .then(({ createAvatarAdminUi }) => {
+                const ui = createAvatarAdminUi({
+                    assistantPersonaKey: VENICE_ASSISTANT_PERSONA_KEY,
+                    getPersona: key => memoryManager.getPersona(key),
+                    getRoom: roomId => roomManager.getRoom(roomId),
+                    getRoomMember: (roomId, memberId) => roomManager.getMember(roomId, memberId),
+                    updatePersona: (key, update) => memoryManager.updatePersona(key, update),
+                    updateRoomMemberPersona: (roomId, memberId, update) => {
+                        roomManager.updateMember(roomId, memberId, { persona: update });
+                    },
+                    saveLocalAvatar: async (target, avatarUrl) => {
+                        if ('personaKey' in target) {
+                            await memoryManager.setPersonaAvatar(target.personaKey, avatarUrl);
+                        } else {
+                            await roomManager.setMemberAvatar(target.roomId, target.memberId, avatarUrl);
+                        }
+                    },
+                    resolvePublicIdentity: requestPublicIdentityResolution,
+                    refreshAvatarUi,
+                    suspendRoomInfo: () => {
+                        const wasVisible = !roomInfoModal.classList.contains('hidden');
+                        if (wasVisible) roomInfoModal.classList.add('hidden');
+                        return wasVisible;
+                    },
+                    restoreRoomInfo: wasVisible => {
+                        if (!wasVisible) return;
+                        renderRoomInfo();
+                        roomInfoModal.classList.remove('hidden');
+                    },
+                });
+                avatarAdminUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                avatarAdminUiLoad = null;
+                throw error;
+            });
     }
-    const query = persona.publicIdentity
-        ? [persona.publicIdentity.canonicalName, persona.publicIdentity.sourceTitle].filter(Boolean).join(' ')
-        : [persona.name, persona.description].filter(Boolean).join(' ');
-    const result = await requestPublicIdentityResolution(query);
-    if (!result) {
-        if (restoreRoomInfo) {
-            renderRoomInfo();
-            roomInfoModal.classList.remove('hidden');
-        }
-        return;
-    }
-
-    const personaUpdate: Partial<Persona> = {
-        publicIdentityEnabled: true,
-        publicIdentity: result.identity,
-        avatarPrompt: result.identity.visualPrompt,
-    };
-    if (result.avatarUrl) personaUpdate.avatarUrl = result.avatarUrl;
-
-    if ('personaKey' in target) {
-        memoryManager.updatePersona(target.personaKey, personaUpdate);
-    } else {
-        roomManager.updateMember(target.roomId, target.memberId, { persona: personaUpdate });
-    }
-    refreshAvatarUi();
-    if (restoreRoomInfo) {
-        renderRoomInfo();
-        roomInfoModal.classList.remove('hidden');
-    }
-    if (!result.avatarUrl) {
-        alert('身份資料已更新，但你在搜尋畫面選擇了「保留目前頭像」，所以圖片沒有改動。');
-    }
+    return avatarAdminUiLoad;
 };
 
+const requestPersonaAvatarUpload = (key: string) => {
+    void loadAvatarAdminUi()
+        .then(ui => ui.openPersona(key))
+        .catch(error => console.error('Failed to load Avatar Admin UI', error));
+};
+
+const requestRoomMemberAvatarUpload = (roomId: string, memberId: string) => {
+    void loadAvatarAdminUi()
+        .then(ui => ui.openRoomMember(roomId, memberId))
+        .catch(error => console.error('Failed to load Avatar Admin UI', error));
+};
+
+const requestRoomAvatarUpload = (roomId: string) => {
+    void loadAvatarAdminUi()
+        .then(ui => ui.openRoom(roomId))
+        .catch(error => console.error('Failed to load Avatar Admin UI', error));
+};
 const readBlobAsDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ''));
     reader.onerror = () => reject(reader.error || new Error('無法讀取圖片。'));
     reader.readAsDataURL(blob);
 });
-
-const createOptimizedAvatarDataUrl = async (blob: Blob): Promise<string> => {
-    if (!blob.type.startsWith('image/')) throw new Error('請選擇有效的圖片檔案。');
-    if (blob.size > 25 * 1024 * 1024) throw new Error('頭像圖片不可超過 25MB。');
-
-    const sourceUrl = URL.createObjectURL(blob);
-    const image = new Image();
-    image.src = sourceUrl;
-    try {
-        await image.decode();
-        const sourceSize = Math.min(image.naturalWidth, image.naturalHeight);
-        if (sourceSize < 64) throw new Error('頭像圖片尺寸太小。');
-
-        const sourceX = Math.max(0, Math.round((image.naturalWidth - sourceSize) / 2));
-        const sourceY = Math.max(0, Math.round((image.naturalHeight - sourceSize) / 2));
-        const outputSize = Math.min(512, sourceSize);
-        const canvas = document.createElement('canvas');
-        canvas.width = outputSize;
-        canvas.height = outputSize;
-        const context = canvas.getContext('2d');
-        if (!context) throw new Error('瀏覽器無法處理這張圖片。');
-        context.drawImage(
-            image,
-            sourceX,
-            sourceY,
-            sourceSize,
-            sourceSize,
-            0,
-            0,
-            outputSize,
-            outputSize,
-        );
-
-        const optimizedBlob = await new Promise<Blob>((resolve, reject) => {
-            canvas.toBlob(result => {
-                if (result) resolve(result);
-                else reject(new Error('無法壓縮頭像。'));
-            }, 'image/webp', 0.84);
-        });
-        return readBlobAsDataUrl(optimizedBlob);
-    } finally {
-        URL.revokeObjectURL(sourceUrl);
-    }
-};
-
-const openAvatarPromptEditor = (key: string) => {
-    currentPersonaKeyForPromptEdit = key;
-    const persona = memoryManager.getPersona(key);
-    if (persona) {
-        avatarPromptEditor.value = persona.avatarPrompt;
-        editAvatarPromptModal.classList.remove('hidden');
-    }
-};
-
-const closeAvatarPromptEditor = () => {
-    editAvatarPromptModal.classList.add('hidden');
-    currentPersonaKeyForPromptEdit = null;
-};
-
-const saveAvatarPrompt = () => {
-    if (currentPersonaKeyForPromptEdit) {
-        const newPrompt = avatarPromptEditor.value.trim();
-        if (newPrompt) {
-            memoryManager.updatePersona(currentPersonaKeyForPromptEdit, { avatarPrompt: newPrompt });
-            closeAvatarPromptEditor();
-        } else {
-            alert('提示詞不能為空。');
-        }
-    }
-};
-
-const handleAvatarUpload = async (event: Event) => {
-    const file = (event.target as HTMLInputElement).files?.[0];
-    const targetKey = currentPersonaKeyForUpload;
-    const roomTarget = avatarUploadRoomTarget;
-    try {
-        if (file && (targetKey || roomTarget)) {
-            const dataUrl = await createOptimizedAvatarDataUrl(file);
-            if (roomTarget) {
-                await roomManager.setMemberAvatar(roomTarget.roomId, roomTarget.memberId, dataUrl);
-                if (currentRoom?.id === roomTarget.roomId) {
-                    currentRoom = roomManager.getRoom(roomTarget.roomId) || currentRoom;
-                    if (activeRoomMemberId === roomTarget.memberId && currentPersona) {
-                        currentPersona.avatarUrl = dataUrl;
-                    }
-                }
-            } else if (targetKey) {
-                await memoryManager.setPersonaAvatar(targetKey, dataUrl);
-            }
-            if (targetKey && targetKey === currentPersonaKey) {
-                currentPersona = memoryManager.getPersona(targetKey) || currentPersona;
-            }
-            refreshAvatarUi();
-        }
-    } catch (error) {
-        alert(error instanceof Error ? error.message : '頭像更新失敗。');
-    } finally {
-        currentPersonaKeyForUpload = null;
-        avatarUploadRoomTarget = null;
-        (event.target as HTMLInputElement).value = '';
-    }
-};
-
-const handleMimicTranscriptUpload = (event: Event) => {
-    const file = (event.target as HTMLInputElement).files?.[0];
-    if (!file) {
-        return;
-    }
-
-    mimicTranscriptFile = file;
-    mimicDraftPersona = null;
-    resetMimicDraftEditors();
-    mimicTranscriptStatus.textContent = `已選擇：${file.name}`;
-    mimicTranscriptMeta.textContent = `檔案大小：約 ${(file.size / 1024).toFixed(1)} KB。分析前會先辨識聊天格式、整理說話者，再切段抽出原始人格與語氣。`;
-    saveMimicPersonaBtn.disabled = true;
-    setMimicAnalysisStatus('檔案已載入，可以開始分析。');
-    mimicTranscriptInput.value = '';
-};
-
-const handleMimicAvatarUpload = async (event: Event) => {
-    const file = (event.target as HTMLInputElement).files?.[0];
-    if (!file) {
-        return;
-    }
-
-    try {
-        mimicAvatarStatus.textContent = '正在壓縮頭像...';
-        mimicAvatarDataUrl = await createOptimizedAvatarDataUrl(file);
-        renderMimicAvatarPreview();
-    } catch (error) {
-        mimicAvatarDataUrl = null;
-        mimicAvatarStatus.textContent = error instanceof Error ? error.message : '頭像載入失敗。';
-    } finally {
-        mimicAvatarInput.value = '';
-    }
-};
-
-const runMimicAnalysisFromModal = async () => {
-    if (isMimicAnalysisRunning) {
-        return;
-    }
-
-    setMimicBusyState(true);
-    try {
-        if (mimicBuildMode === 'manual') {
-            await runManualPersonaDraftGeneration();
-        } else if (mimicBuildMode === 'public') {
-            await runPublicPersonaDraftGeneration();
-        } else {
-            await runMimicTranscriptAnalysisV2();
-        }
-    } catch (error) {
-        const message = error instanceof Error ? error.message : '分身分析失敗，請再試一次。';
-        setMimicAnalysisStatus(message, 'error');
-    } finally {
-        setMimicBusyState(false);
-    }
-};
-
-const saveMimicPersonaFromModal = async () => {
-    if (isMimicAnalysisRunning) return;
-    setMimicBusyState(true);
-    try {
-        await saveMimicPersona();
-    } catch (error) {
-        const message = error instanceof Error ? error.message : '儲存分身失敗，請再試一次。';
-        setMimicAnalysisStatus(message, 'error');
-    } finally {
-        setMimicBusyState(false);
-    }
-};
-
-const generateAndSetAvatar = async (key: string) => {
-    const persona = memoryManager.getPersona(key);
-    if (!persona) return;
-
-    const avatarContainer = document.getElementById(`avatar-${key}`)!;
-    const avatarLoading = document.getElementById(`avatar-loading-${key}`)!;
-    const avatarEl = document.getElementById(`avatar-container-${key}`)!;
-
-    avatarLoading.classList.remove('hidden');
-    memoryManager.updatePersona(key, { avatarUrl: `generating_${Date.now()}` }); // Set generating state
-
-    try {
-        const response = await ai.models.generateImages({
-            model: 'imagen-4.0-generate-001',
-            prompt: persona.avatarPrompt,
-            config: {
-              numberOfImages: 1,
-              outputMimeType: 'image/jpeg',
-            },
-        });
-
-        const base64ImageBytes = response.generatedImages[0].image.imageBytes;
-        const imageUrl = `data:image/jpeg;base64,${base64ImageBytes}`;
-
-        memoryManager.updatePersona(key, { avatarUrl: imageUrl });
-
-        avatarContainer.innerHTML = `<img src="${imageUrl}" alt="${persona.name}" class="w-full h-full rounded-t-lg object-cover">`;
-        avatarContainer.classList.remove('emoji-avatar');
-
-    } catch (error) {
-        console.error("?��??��??�誤:", error);
-        alert(`?��??��?失�?: ${error}`);
-        // Reset to emoji if generation fails
-        memoryManager.updatePersona(key, { avatarUrl: null });
-        avatarContainer.innerHTML = `<span class="text-6xl">${persona.emoji}</span>`;
-        avatarContainer.classList.add('emoji-avatar');
-    } finally {
-        avatarLoading.classList.add('hidden');
-    }
-};
 
 const syncBrowserViewState = (state: AppHistoryState, mode: 'push' | 'replace' | 'skip' = 'replace') => {
     if (mode === 'skip') {
@@ -4096,644 +1108,138 @@ const syncBrowserViewState = (state: AppHistoryState, mode: 'push' | 'replace' |
 
 const isAssistantPersonaKey = (key: string | null): boolean => key === VENICE_ASSISTANT_PERSONA_KEY;
 
-const formatContextSize = (tokens?: number) => {
-    if (!tokens || tokens <= 0) return '';
-    if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M context`;
-    return `${Math.round(tokens / 1000)}K context`;
-};
-
 const formatModelPrice = (value?: number) => {
     if (typeof value !== 'number') return '?';
     return value < 0.01 ? value.toFixed(4) : value.toFixed(2);
 };
 
-const buildFallbackAssistantModels = (): VeniceModelSummary[] => {
-    return Array.from(new Set([
-        VENICE_ASSISTANT_MODEL,
-        ...Object.values(chatModelSettings),
-        ...Object.values(DEFAULT_CHAT_MODEL_SETTINGS),
-        VENICE_GOD_MODEL,
-        VENICE_GOD_FALLBACK_MODEL,
-    ].filter(Boolean))).map(id => ({
-        id,
-        name: id,
-        description: '本機設定中的 Venice 模型',
-        privacy: 'unknown',
-        traits: [],
-        uncensored: /uncensored|heretic|dolphin|role[ -]?play/i.test(id),
-    }));
-};
+let assistantModelUi: import('./features/assistantModelUi.js').AssistantModelUiHandle | null = null;
+let assistantModelUiLoad: Promise<import('./features/assistantModelUi.js').AssistantModelUiHandle> | null = null;
 
-const updateAssistantModelMeta = () => {
-    const model = assistantModels.find(item => item.id === selectedAssistantModel);
-    if (!model) {
-        assistantModelMeta.textContent = `目前模型：${selectedAssistantModel}`;
-        return;
+const loadAssistantModelUi = async () => {
+    if (assistantModelUi) return assistantModelUi;
+    if (!assistantModelUiLoad) {
+        assistantModelUiLoad = import('./features/assistantModelUi.js')
+            .then(({ createAssistantModelUi }) => {
+                const ui = createAssistantModelUi({
+                    preferredModelId: VENICE_ASSISTANT_MODEL,
+                    getSelectedModelId: () => selectedAssistantModel,
+                    setSelectedModelId: modelId => {
+                        selectedAssistantModel = modelId;
+                        setPersistedAppSetting(ASSISTANT_MODEL_STORAGE_KEY, selectedAssistantModel);
+                    },
+                    getFallbackModelIds: () => [
+                        VENICE_ASSISTANT_MODEL,
+                        ...Object.values(chatModelSettings),
+                        ...Object.values(DEFAULT_CHAT_MODEL_SETTINGS),
+                        VENICE_GOD_MODEL,
+                        VENICE_GOD_FALLBACK_MODEL,
+                    ],
+                    isRequestActive: () => activeChatRequest !== null,
+                    handleAuthRequired: () => handleAuthRequired(),
+                    onModelsUpdated: () => chatModelSettingsUi?.refresh(),
+                });
+                assistantModelUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                assistantModelUiLoad = null;
+                throw error;
+            });
     }
-
-    const details = [
-        model.uncensored ? '自由模型' : '',
-        formatContextSize(model.contextTokens),
-        model.privacy !== 'unknown' ? model.privacy : '',
-        `輸入 $${formatModelPrice(model.inputUsd)} / 輸出 $${formatModelPrice(model.outputUsd)}（每百萬 token）`,
-    ].filter(Boolean);
-    assistantModelMeta.textContent = details.join(' · ');
+    return assistantModelUiLoad;
 };
 
-const renderAssistantModelOptions = () => {
-    assistantModelSelect.innerHTML = '';
+let chatModelSettingsUi: import('./features/chatModelSettingsUi.js').ChatModelSettingsUiHandle | null = null;
+let chatModelSettingsUiLoad: Promise<import('./features/chatModelSettingsUi.js').ChatModelSettingsUiHandle> | null = null;
 
-    const sortedModels = [...assistantModels].sort((left, right) => {
-        if (left.uncensored !== right.uncensored) return left.uncensored ? -1 : 1;
-        if (left.privacy !== right.privacy) return left.privacy === 'private' ? -1 : 1;
-        return left.name.localeCompare(right.name, 'zh-Hant');
-    });
-
-    const selectedExists = sortedModels.some(model => model.id === selectedAssistantModel);
-    if (!selectedExists) {
-        const preferred = sortedModels.find(model => model.id === VENICE_ASSISTANT_MODEL)
-            || sortedModels.find(model => model.uncensored)
-            || sortedModels[0];
-        if (preferred) {
-            selectedAssistantModel = preferred.id;
-            localStorage.setItem(ASSISTANT_MODEL_STORAGE_KEY, selectedAssistantModel);
-        }
+const loadChatModelSettingsUi = async () => {
+    if (chatModelSettingsUi) return chatModelSettingsUi;
+    if (!chatModelSettingsUiLoad) {
+        chatModelSettingsUiLoad = Promise.all([
+            import('./features/chatModelSettingsUi.js'),
+            loadAssistantModelUi(),
+        ])
+            .then(([{ createChatModelSettingsUi }, modelUi]) => {
+                const ui = createChatModelSettingsUi({
+                    getSettings: () => chatModelSettings,
+                    applySettings: next => { chatModelSettings = next; },
+                    getDefaults: () => DEFAULT_CHAT_MODEL_SETTINGS,
+                    getModels: () => modelUi.getModels(),
+                    getModelListState: () => modelUi.getModelListState(),
+                    loadModels: force => modelUi.loadModels(force),
+                    formatContextSize: tokens => modelUi.formatContextSize(tokens),
+                    hideMenus: () => {
+                        homeMenu.classList.add('hidden');
+                        moreOptionsMenu.classList.add('hidden');
+                    },
+                });
+                chatModelSettingsUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                chatModelSettingsUiLoad = null;
+                throw error;
+            });
     }
-
-    const groups = [
-        { label: '自由／角色扮演模型', models: sortedModels.filter(model => model.uncensored) },
-        { label: '私人模型', models: sortedModels.filter(model => !model.uncensored && model.privacy === 'private') },
-        { label: '其他文字模型', models: sortedModels.filter(model => !model.uncensored && model.privacy !== 'private') },
-    ];
-
-    groups.forEach(group => {
-        if (group.models.length === 0) return;
-        const optgroup = document.createElement('optgroup');
-        optgroup.label = group.label;
-        group.models.forEach(model => {
-            const option = document.createElement('option');
-            option.value = model.id;
-            const context = formatContextSize(model.contextTokens);
-            option.textContent = `${model.name}${context ? ` · ${context}` : ''} · $${formatModelPrice(model.inputUsd)}/$${formatModelPrice(model.outputUsd)}`;
-            optgroup.appendChild(option);
-        });
-        assistantModelSelect.appendChild(optgroup);
-    });
-
-    assistantModelSelect.value = selectedAssistantModel;
-    assistantModelSelect.disabled = activeChatRequest !== null || sortedModels.length === 0;
-    updateAssistantModelMeta();
+    return chatModelSettingsUiLoad;
 };
-
-const chatModelSelects = [
-    chatPrimaryModelSelect,
-    chatQualityModelSelect,
-    chatEmergencyModelSelect,
-    ccPrimaryModelSelect,
-];
-
-const getChatModelOptionLabel = (model: VeniceModelSummary) => {
-    const context = formatContextSize(model.contextTokens);
-    const identity = model.name === model.id ? model.id : `${model.name} · ${model.id}`;
-    return `${identity}${context ? ` · ${context}` : ''}`;
-};
-
-const populateChatModelSelect = (select: HTMLSelectElement, selectedId: string) => {
-    select.innerHTML = '';
-    const sorted = [...assistantModels].sort((left, right) => {
-        if (left.uncensored !== right.uncensored) return left.uncensored ? -1 : 1;
-        return left.name.localeCompare(right.name, 'zh-Hant');
-    });
-    if (selectedId && !sorted.some(model => model.id === selectedId)) {
-        const current = document.createElement('option');
-        current.value = selectedId;
-        current.textContent = `${selectedId} · 目前設定（Venice 清單未找到）`;
-        select.appendChild(current);
-    }
-    sorted.forEach(model => {
-        const option = document.createElement('option');
-        option.value = model.id;
-        option.textContent = getChatModelOptionLabel(model);
-        select.appendChild(option);
-    });
-    select.value = selectedId;
-    if (!select.value && select.options.length > 0) select.selectedIndex = 0;
-};
-
-const readChatModelSettingsDraftFromControls = () => normalizeChatModelSettings({
-    primary: chatPrimaryModelSelect.value,
-    qualityFallback: chatQualityModelSelect.value,
-    emergencyFallback: chatEmergencyModelSelect.value,
-    ccPrimary: ccPrimaryModelSelect.value,
-}, chatModelSettingsDraft);
-
-const updateChatModelRoutePreviews = () => {
-    chatModelSettingsDraft = readChatModelSettingsDraftFromControls();
-    globalModelRoutePreview.textContent = `實際次序：${buildCharacterModelRoute(chatModelSettingsDraft, false).join(' → ')}。嚴格審查：${buildStrictReviewModelRoute(chatModelSettingsDraft, false).join(' → ')}。`;
-    ccModelRoutePreview.textContent = `Cc 實際次序：${buildCharacterModelRoute(chatModelSettingsDraft, true).join(' → ')}。Cc 的生成及審查均先使用專用模型。`;
-};
-
-const renderChatModelSettingsOptions = () => {
-    populateChatModelSelect(chatPrimaryModelSelect, chatModelSettingsDraft.primary);
-    populateChatModelSelect(chatQualityModelSelect, chatModelSettingsDraft.qualityFallback);
-    populateChatModelSelect(chatEmergencyModelSelect, chatModelSettingsDraft.emergencyFallback);
-    populateChatModelSelect(ccPrimaryModelSelect, chatModelSettingsDraft.ccPrimary);
-    chatModelSelects.forEach(select => { select.disabled = assistantModelsPromise !== null; });
-    refreshChatModelsBtn.disabled = assistantModelsPromise !== null;
-    updateChatModelRoutePreviews();
-    if (assistantModelListUsesFallback) {
-        chatModelListStatus.textContent = '未能連接 Venice；目前顯示已保存及程式預設模型。';
-    } else if (assistantModelListUpdatedAt) {
-        chatModelListStatus.textContent = `已從 Venice 取得 ${assistantModels.length} 個模型 · ${new Date(assistantModelListUpdatedAt).toLocaleTimeString('zh-Hant', { hour: '2-digit', minute: '2-digit' })}`;
-    } else {
-        chatModelListStatus.textContent = '正在讀取 Venice 模型清單...';
-    }
-};
-
-const closeChatModelSettings = () => chatModelSettingsModal.classList.add('hidden');
 
 const openChatModelSettings = (scope: 'global' | 'cc' = 'global') => {
-    chatModelSettingsScope = scope;
-    chatModelSettingsDraft = { ...chatModelSettings };
-    chatModelSettingsTitle.textContent = scope === 'cc' ? 'Cc 專用模型設定' : '聊天模型設定';
-    globalChatModelFields.classList.toggle('hidden', scope === 'cc');
-    ccChatModelFields.classList.remove('hidden');
-    renderChatModelSettingsOptions();
-    chatModelSettingsModal.classList.remove('hidden');
-    homeMenu.classList.add('hidden');
-    moreOptionsMenu.classList.add('hidden');
-    void loadAssistantModels().then(renderChatModelSettingsOptions);
+    void loadChatModelSettingsUi()
+        .then(ui => ui.open(scope))
+        .catch(error => console.error('Failed to load Chat Model Settings UI', error));
 };
-
-const saveChatModelSettings = () => {
-    chatModelSettingsDraft = readChatModelSettingsDraftFromControls();
-    chatModelSettings = normalizeChatModelSettings(chatModelSettingsDraft, DEFAULT_CHAT_MODEL_SETTINGS);
-    localStorage.setItem(CHAT_MODEL_SETTINGS_STORAGE_KEY, JSON.stringify(chatModelSettings));
-    closeChatModelSettings();
-};
-
-const formatCloudBackupBytes = (bytes?: number) => {
-    if (!bytes || bytes <= 0) return '0 B';
-    if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
-    return `${bytes} B`;
-};
-
-const formatCloudBackupTime = (value: number | string) => new Date(value).toLocaleString('zh-HK', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-});
-
-const setCloudBackupBusy = (busy: boolean) => {
-    cloudBackupBusy = busy;
-    [
-        enableCloudBackupBtn,
-        restoreCloudWithPasswordBtn,
-        cloudBackupNowBtn,
-        cloudRestoreLatestBtn,
-        refreshCloudBackupsBtn,
-        deleteCloudBackupsBtn,
-        scanLocalPhotoVaultBtn,
-    ].forEach(button => { button.disabled = busy; });
-    cloudBackupAutoToggle.disabled = busy;
-};
-
-function renderCloudBackupProgress(progress: CloudBackupProgress) {
-    cloudBackupLastProgress = progress;
-    const active = ['packing', 'encrypting', 'uploading', 'restoring'].includes(progress.stage);
-    setCloudBackupBusy(active);
-    cloudBackupProgress.classList.toggle('hidden', progress.stage === 'idle');
-    cloudBackupProgressText.textContent = progress.message;
-    cloudBackupProgressPercent.textContent = typeof progress.percent === 'number' ? `${progress.percent}%` : '';
-    cloudBackupProgressBar.style.width = `${progress.percent ?? (active ? 8 : progress.stage === 'success' ? 100 : 0)}%`;
-    if (progress.stage === 'success') {
-        window.setTimeout(() => {
-            if (cloudBackupLastProgress.stage === 'success') {
-                cloudBackupProgress.classList.add('hidden');
-                cloudBackupLastProgress = { stage: 'idle', message: '尚未開始雲端備份。' };
-            }
-        }, 3500);
-        void refreshCloudBackupView(true);
+const loadCloudBackupUi = async (): Promise<CloudBackupUiHandle> => {
+    if (cloudBackupUi) return cloudBackupUi;
+    if (!cloudBackupUiLoad) {
+        cloudBackupUiLoad = Promise.all([
+            import('./features/cloudBackupUi.js'),
+            loadCloudBackupManager(),
+        ])
+            .then(([{ createCloudBackupUi }, manager]) => {
+                const ui = createCloudBackupUi(manager, memoryManager);
+                cloudBackupUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                cloudBackupUiLoad = null;
+                throw error;
+            });
     }
-}
-
-const renderCloudBackupVersions = () => {
-    cloudBackupVersionList.innerHTML = '';
-    if (cloudBackupList.length === 0) {
-        const empty = document.createElement('p');
-        empty.className = 'cloud-backup-empty';
-        empty.textContent = '雲端尚未有備份。';
-        cloudBackupVersionList.appendChild(empty);
-        return;
-    }
-
-    cloudBackupList.forEach((backup, index) => {
-        const row = document.createElement('div');
-        row.className = 'cloud-backup-version-row';
-        const copy = document.createElement('span');
-        const title = document.createElement('strong');
-        title.textContent = `${index === 0 ? '最新 · ' : ''}${formatCloudBackupTime(backup.uploadedAt)}`;
-        const details = document.createElement('small');
-        details.textContent = `${formatCloudBackupBytes(backup.size)} · 已加密`;
-        copy.append(title, details);
-        const restore = document.createElement('button');
-        restore.type = 'button';
-        restore.textContent = '還原';
-        restore.disabled = cloudBackupBusy;
-        restore.addEventListener('click', () => {
-            if (!cloudBackupHasLocalKey) {
-                cloudBackupRecovery.classList.remove('hidden');
-                cloudRestorePassword.focus();
-                return;
-            }
-            void restoreCloudBackupVersion(backup);
-        });
-        row.append(copy, restore);
-        cloudBackupVersionList.appendChild(row);
-    });
+    return cloudBackupUiLoad;
 };
-
-const renderCloudBackupState = () => {
-    const state = cloudBackupManager.getState();
-    const hasRemoteBackup = cloudBackupList.length > 0;
-    cloudBackupSetup.classList.toggle('hidden', cloudBackupHasLocalKey);
-    cloudBackupRecovery.classList.toggle('hidden', cloudBackupHasLocalKey);
-    cloudBackupControls.classList.toggle('hidden', !cloudBackupHasLocalKey);
-    cloudBackupVersionsSection.classList.toggle('hidden', !hasRemoteBackup && !cloudBackupHasLocalKey);
-    cloudBackupDanger.classList.toggle('hidden', !hasRemoteBackup && !cloudBackupHasLocalKey);
-    cloudBackupAutoToggle.checked = state.enabled && cloudBackupHasLocalKey;
-
-    cloudBackupStatusIcon.className = 'cloud-backup-status-icon';
-    if (state.lastError) {
-        cloudBackupStatusIcon.textContent = '!';
-        cloudBackupStatusIcon.classList.add('is-error');
-        cloudBackupStatusTitle.textContent = '上次雲端操作失敗';
-        cloudBackupStatusDetail.textContent = state.lastError;
-    } else if (!cloudBackupHasLocalKey) {
-        cloudBackupStatusIcon.textContent = hasRemoteBackup ? '↧' : '＋';
-        cloudBackupStatusIcon.classList.add('is-warning');
-        cloudBackupStatusTitle.textContent = hasRemoteBackup ? '找到可復原的加密備份' : '這部裝置尚未連接雲端';
-        cloudBackupStatusDetail.textContent = hasRemoteBackup
-            ? '已找到這個復原密碼的私人備份，可以立即還原。'
-            : '可建立新的私人備份，或輸入原有復原密碼找回資料。';
-    } else if (state.lastBackupAt && hasRemoteBackup) {
-        cloudBackupStatusIcon.textContent = '✓';
-        cloudBackupStatusTitle.textContent = state.enabled ? '自動備份已開啟' : '雲端備份已暫停';
-        cloudBackupStatusDetail.textContent = [
-            `最近備份：${formatCloudBackupTime(state.lastBackupAt)}`,
-            formatCloudBackupBytes(state.lastBackupSize),
-            typeof state.lastBackupPhotoCount === 'number' ? `聊天相片 ${state.lastBackupPhotoCount} 張` : '',
-        ].filter(Boolean).join(' · ');
-    } else if (cloudBackupHasLocalKey) {
-        cloudBackupStatusIcon.textContent = '↑';
-        cloudBackupStatusIcon.classList.add('is-warning');
-        cloudBackupStatusTitle.textContent = '金鑰已準備，尚未完成上傳';
-        cloudBackupStatusDetail.textContent = '按「立即備份」建立第一個加密雲端版本。';
-    }
-    renderCloudBackupVersions();
-};
-
-async function refreshCloudBackupView(fetchRemote = true) {
-    try {
-        cloudBackupHasLocalKey = await cloudBackupManager.hasLocalRecoveryKey();
-        if (fetchRemote) cloudBackupList = await cloudBackupManager.listBackups();
-    } catch (error) {
-        cloudBackupStatusIcon.textContent = '!';
-        cloudBackupStatusIcon.className = 'cloud-backup-status-icon is-error';
-        cloudBackupStatusTitle.textContent = '無法讀取雲端備份';
-        cloudBackupStatusDetail.textContent = error instanceof Error ? error.message : '請稍後再試。';
-    }
-    renderCloudBackupState();
-}
-
-async function scanLocalPhotoVault(showWorking = true) {
-    if (showWorking) localPhotoVaultResult.textContent = '正在掃描本機照片庫…';
-    scanLocalPhotoVaultBtn.disabled = true;
-    try {
-        const assets = await listCharacterPhotoAssets();
-        const referencedIds = new Set(
-            Object.values(memoryManager.getAllChatHistories())
-                .flatMap(history => history.map(message => message.content.imageAssetId))
-                .filter((assetId): assetId is string => Boolean(assetId)),
-        );
-        const orphanAssets = assets.filter(asset => !referencedIds.has(asset.id));
-        const ccKeys = new Set([
-            'cc',
-            'custom_seed_cc',
-            ...Object.entries(memoryManager.getAllPersonas())
-                .filter(([, persona]) => persona.name.trim().toLocaleLowerCase() === 'cc')
-                .map(([key]) => key),
-        ]);
-        const ccAssets = assets.filter(asset => ccKeys.has(asset.personaKey));
-        const ccOrphans = ccAssets.filter(asset => !referencedIds.has(asset.id));
-        localPhotoVaultResult.textContent = [
-            `找到 ${assets.length} 張實體照片`,
-            `${orphanAssets.length} 張失去聊天索引`,
-            `Cc 共 ${ccAssets.length} 張（其中 ${ccOrphans.length} 張待救回）`,
-            '待救回照片現在會直接顯示在所屬聊天室的「媒體」相簿，下一次備份亦會完整打包。',
-        ].join('；');
-    } catch (error) {
-        localPhotoVaultResult.textContent = `掃描失敗：${error instanceof Error ? error.message : '無法讀取本機照片資料庫'}`;
-    } finally {
-        scanLocalPhotoVaultBtn.disabled = cloudBackupBusy;
-    }
-}
 
 const openCloudBackup = () => {
-    cloudBackupSetupError.textContent = '';
-    cloudRestoreError.textContent = '';
-    cloudBackupModal.classList.remove('hidden');
-    homeMenu.classList.add('hidden');
-    void refreshCloudBackupView(true);
-    void scanLocalPhotoVault(false);
+    void loadCloudBackupUi()
+        .then(ui => ui.open())
+        .catch(error => console.error('Failed to load Cloud Backup UI', error));
 };
-
-const closeCloudBackup = () => cloudBackupModal.classList.add('hidden');
-
-const formatLiveCloudTime = (timestamp?: number) => timestamp
-    ? new Intl.DateTimeFormat('zh-HK', {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-    }).format(new Date(timestamp))
-    : '';
-
-function renderSupabaseCloudState(state: SupabaseCloudSyncState) {
-    const busy = ['sending_link', 'connecting', 'pulling', 'pushing'].includes(state.phase);
-    const signedIn = Boolean(state.email);
-    const titles: Record<SupabaseCloudSyncState['phase'], string> = {
-        unconfigured: '即時雲端尚未設定',
-        signed_out: '尚未登入即時雲端',
-        sending_link: '正在傳送登入連結',
-        connecting: '正在連接私人雲端',
-        pulling: '正在下載最新資料',
-        pushing: '正在上傳本機變更',
-        synced: '即時雲端已同步',
-        offline: '目前使用離線快取',
-        error: '即時雲端需要處理',
-    };
-    supabaseCloudStatusTitle.textContent = titles[state.phase];
-    supabaseCloudStatusDetail.textContent = state.lastSyncAt && state.phase === 'synced'
-        ? `${state.detail} 最近同步：${formatLiveCloudTime(state.lastSyncAt)}`
-        : state.detail;
-    supabaseCloudStatusIcon.className = 'cloud-backup-status-icon';
-    if (state.phase === 'error') {
-        supabaseCloudStatusIcon.textContent = '!';
-        supabaseCloudStatusIcon.classList.add('is-error');
-    } else if (state.phase === 'synced') {
-        supabaseCloudStatusIcon.textContent = '✓';
-    } else if (state.phase === 'pulling') {
-        supabaseCloudStatusIcon.textContent = '↓';
-        supabaseCloudStatusIcon.classList.add('is-warning');
-    } else if (state.phase === 'pushing') {
-        supabaseCloudStatusIcon.textContent = '↑';
-        supabaseCloudStatusIcon.classList.add('is-warning');
-    } else {
-        supabaseCloudStatusIcon.textContent = '↥';
-        supabaseCloudStatusIcon.classList.add('is-warning');
+const loadLiveCloudUi = async (): Promise<LiveCloudUiHandle> => {
+    if (liveCloudUi) return liveCloudUi;
+    if (!liveCloudUiLoad) {
+        liveCloudUiLoad = Promise.all([
+            import('./features/liveCloudUi.js'),
+            loadSupabaseCloudSyncManager(),
+        ])
+            .then(([{ createLiveCloudUi }, manager]) => {
+                const ui = createLiveCloudUi(manager);
+                liveCloudUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                liveCloudUiLoad = null;
+                throw error;
+            });
     }
-
-    supabaseCloudLogin.classList.toggle('hidden', signedIn);
-    supabaseCloudControls.classList.toggle('hidden', !signedIn);
-    supabaseCloudAccount.textContent = state.email || '';
-    supabaseCloudError.textContent = state.phase === 'error' ? state.detail : '';
-    supabaseCloudPasswordLogin.disabled = busy || !state.configured;
-    supabaseCloudSendLink.disabled = busy || !state.configured;
-    supabaseCloudSyncNow.disabled = busy;
-    supabaseCloudReload.disabled = busy;
-    supabaseCloudSetPassword.disabled = busy;
-    supabaseCloudSignOut.disabled = busy;
-    supabaseCloudProgress.classList.toggle('hidden', !busy);
-    supabaseCloudProgressText.textContent = state.detail;
-    supabaseCloudProgressPercent.textContent = typeof state.progress === 'number' ? `${state.progress}%` : '';
-    supabaseCloudProgressBar.style.width = `${state.progress ?? (busy ? 12 : 0)}%`;
-}
+    return liveCloudUiLoad;
+};
 
 const openSupabaseCloud = () => {
-    homeMenu.classList.add('hidden');
-    supabaseCloudEmail.value = supabaseCloudSyncManager.getOwnerEmail();
-    renderSupabaseCloudState(supabaseCloudSyncManager.getState());
-    supabaseCloudModal.classList.remove('hidden');
+    void loadLiveCloudUi()
+        .then(ui => ui.open())
+        .catch(error => console.error('Failed to load Live Cloud UI', error));
 };
-
-const closeSupabaseCloud = () => supabaseCloudModal.classList.add('hidden');
-
-const signInSupabaseCloudWithPassword = async () => {
-    supabaseCloudError.textContent = '';
-    try {
-        await supabaseCloudSyncManager.signInWithPassword(
-            supabaseCloudEmail.value,
-            supabaseCloudPassword.value,
-        );
-        supabaseCloudPassword.value = '';
-    } catch (error) {
-        supabaseCloudError.textContent = error instanceof Error ? error.message : '密碼登入失敗。';
-    }
-};
-
-const sendSupabaseMagicLink = async () => {
-    supabaseCloudError.textContent = '';
-    try {
-        await supabaseCloudSyncManager.sendMagicLink(supabaseCloudEmail.value);
-    } catch (error) {
-        supabaseCloudError.textContent = error instanceof Error ? error.message : '未能傳送登入連結。';
-    }
-};
-
-const setSupabaseCloudPassword = async () => {
-    supabaseCloudControlsError.textContent = '';
-    const password = supabaseCloudNewPassword.value;
-    if (password.length < 8) {
-        supabaseCloudControlsError.textContent = '雲端密碼至少需要 8 個字元。';
-        supabaseCloudNewPassword.focus();
-        return;
-    }
-    if (password !== supabaseCloudNewPasswordConfirm.value) {
-        supabaseCloudControlsError.textContent = '兩次輸入的雲端密碼不同。';
-        supabaseCloudNewPasswordConfirm.focus();
-        return;
-    }
-    try {
-        await supabaseCloudSyncManager.setPassword(password);
-        supabaseCloudNewPassword.value = '';
-        supabaseCloudNewPasswordConfirm.value = '';
-    } catch (error) {
-        supabaseCloudControlsError.textContent = error instanceof Error ? error.message : '未能設定雲端密碼。';
-    }
-};
-
-const syncSupabaseCloudNow = async () => {
-    try {
-        await supabaseCloudSyncManager.syncNow();
-    } catch (error) {
-        supabaseCloudError.textContent = error instanceof Error ? error.message : '同步失敗。';
-    }
-};
-
-const reloadSupabaseCloud = async () => {
-    if (!confirm('會先上傳尚未同步的本機變更，再重新載入雲端最新資料。繼續嗎？')) return;
-    try {
-        await supabaseCloudSyncManager.reloadFromCloud();
-    } catch (error) {
-        supabaseCloudError.textContent = error instanceof Error ? error.message : '重新載入失敗。';
-    }
-};
-
-const setupCloudBackup = async () => {
-    cloudBackupSetupError.textContent = '';
-    const password = cloudBackupPassword.value;
-    if (password.normalize('NFKC').trim().length < 12) {
-        cloudBackupSetupError.textContent = '復原密碼至少需要 12 個字元。';
-        cloudBackupPassword.focus();
-        return;
-    }
-    if (password !== cloudBackupPasswordConfirm.value) {
-        cloudBackupSetupError.textContent = '兩次輸入的復原密碼不同。';
-        cloudBackupPasswordConfirm.focus();
-        return;
-    }
-
-    setCloudBackupBusy(true);
-    try {
-        await cloudBackupManager.setup(password);
-        cloudBackupPassword.value = '';
-        cloudBackupPasswordConfirm.value = '';
-        cloudBackupHasLocalKey = true;
-        await refreshCloudBackupView(true);
-    } catch (error) {
-        const message = error instanceof Error ? error.message : '首次備份失敗。';
-        if (message === 'CLOUD_BACKUP_EXISTS') {
-            cloudBackupSetupError.textContent = '這個復原密碼已有雲端備份，請在下方使用「從雲端復原」，避免覆蓋原資料。';
-            cloudRestorePassword.focus();
-        } else {
-            cloudBackupSetupError.textContent = message;
-        }
-    } finally {
-        setCloudBackupBusy(false);
-    }
-};
-
-async function restoreCloudBackupVersion(backup: CloudBackupListItem, password?: string) {
-    if (!confirm(
-        `以 ${formatCloudBackupTime(backup.uploadedAt)} 的完整雲端備份取代這部裝置的本機副本？\n\n雲端版本不會被修改；自動備份會維持目前的開關狀態。`,
-    )) return;
-    cloudRestoreError.textContent = '';
-    setCloudBackupBusy(true);
-    try {
-        await cloudBackupManager.restoreBackup(backup, password);
-        cloudRestorePassword.value = '';
-        cloudBackupHasLocalKey = true;
-        await refreshCloudBackupView(true);
-    } catch (error) {
-        const message = error instanceof Error ? error.message : '雲端還原失敗。';
-        cloudRestoreError.textContent = message === 'NEEDS_RECOVERY_PASSWORD'
-            ? '請先輸入原本的復原密碼。'
-            : message;
-        cloudBackupRecovery.classList.remove('hidden');
-        cloudRestorePassword.focus();
-    } finally {
-        setCloudBackupBusy(false);
-    }
-};
-
-const restoreLatestCloudBackupWithPassword = async () => {
-    const password = cloudRestorePassword.value;
-    if (!password) {
-        cloudRestoreError.textContent = '請輸入復原密碼。';
-        cloudRestorePassword.focus();
-        return;
-    }
-    cloudRestoreError.textContent = '';
-    setCloudBackupBusy(true);
-    try {
-        cloudBackupList = await cloudBackupManager.listBackups(password);
-        const latest = cloudBackupList[0];
-        if (!latest) {
-            cloudRestoreError.textContent = '找不到這個復原密碼所屬的備份，請檢查密碼是否正確。';
-            renderCloudBackupState();
-            return;
-        }
-        renderCloudBackupState();
-        await restoreCloudBackupVersion(latest, password);
-    } catch (error) {
-        cloudRestoreError.textContent = error instanceof Error ? error.message : '無法讀取雲端備份。';
-    } finally {
-        setCloudBackupBusy(false);
-    }
-};
-
-const backupCloudNow = async () => {
-    setCloudBackupBusy(true);
-    try {
-        await cloudBackupManager.backupNow();
-        await refreshCloudBackupView(true);
-    } catch (error) {
-        cloudBackupStatusDetail.textContent = error instanceof Error ? error.message : '雲端備份失敗。';
-    } finally {
-        setCloudBackupBusy(false);
-    }
-};
-
-const deleteAllCloudBackups = async () => {
-    if (!confirm('確定刪除所有雲端備份及這部裝置的備份金鑰？\n\n本機聊天不會刪除，但之後無法從這些雲端版本復原。')) return;
-    if (!confirm('這個動作不能復原。確定繼續？')) return;
-    setCloudBackupBusy(true);
-    try {
-        await cloudBackupManager.deleteAllCloudData();
-        cloudBackupList = [];
-        cloudBackupHasLocalKey = false;
-        renderCloudBackupState();
-    } catch (error) {
-        cloudBackupStatusDetail.textContent = error instanceof Error ? error.message : '刪除雲端備份失敗。';
-    } finally {
-        setCloudBackupBusy(false);
-    }
-};
-
-const loadAssistantModels = async (force = false) => {
-    if (assistantModelsPromise) {
-        return assistantModelsPromise;
-    }
-    if (!force && assistantModels.length > 0) {
-        renderAssistantModelOptions();
-        return;
-    }
-
-    assistantModelSelect.disabled = true;
-    refreshAssistantModelsBtn.disabled = true;
-    refreshChatModelsBtn.disabled = true;
-    assistantModelMeta.textContent = '正在讀取 Venice 可用模型...';
-
-    assistantModelsPromise = (async () => {
-        try {
-            assistantModels = await listVeniceTextModels(force);
-            if (assistantModels.length === 0) {
-                throw new Error('沒有可用的文字模型。');
-            }
-            assistantModelListUsesFallback = false;
-            assistantModelListUpdatedAt = Date.now();
-        } catch (error) {
-            console.warn('Unable to load Venice models; using configured fallback list.', error);
-            assistantModels = buildFallbackAssistantModels();
-            assistantModelListUsesFallback = true;
-            if (error instanceof Error && error.message === VENICE_AUTH_REQUIRED_ERROR) {
-                handleAuthRequired();
-            }
-        } finally {
-            renderAssistantModelOptions();
-            refreshAssistantModelsBtn.disabled = false;
-            assistantModelsPromise = null;
-            renderChatModelSettingsOptions();
-        }
-    })();
-
-    return assistantModelsPromise;
-};
-
 const PIXEL_IMAGE_DIMENSIONS: Record<string, { width: number; height: number }> = {
     '1:1': { width: 1024, height: 1024 },
     '3:2': { width: 1152, height: 768 },
@@ -4801,175 +1307,12 @@ const buildFallbackImageModels = (mode: VeniceImageMode): VeniceImageModelSummar
     ];
 };
 
-const getSelectedImageModel = () => {
-    return imageModels[imageStudioMode].find(model => model.id === selectedImageModels[imageStudioMode]);
-};
-
-const getImageModelPrice = (model?: VeniceImageModelSummary, requestedResolution?: string) => {
-    if (!model) return undefined;
-    const resolution = requestedResolution
-        || imageResolution.value
-        || model.constraints.defaultResolution
-        || Object.keys(model.resolutionPrices)[0];
-    const resolutionPrice = resolution ? model.resolutionPrices[resolution] : undefined;
-    return typeof resolutionPrice === 'number' ? resolutionPrice : model.priceUsd;
-};
-
-const formatImagePrivacy = (privacy: string) => {
-    if (privacy === 'private') return '私人處理';
-    if (privacy === 'anonymized') return '匿名化處理';
-    return privacy === 'unknown' ? '' : privacy;
-};
-
-const updateImageCostEstimate = () => {
-    const price = getImageModelPrice(getSelectedImageModel());
-    if (typeof price !== 'number') {
-        imageCostEstimate.textContent = '';
+const loadImageModels = async (mode: VeniceImageMode, force = false): Promise<void> => {
+    if (imageModelPromises[mode]) {
+        await imageModelPromises[mode];
         return;
     }
-    const count = imageStudioMode === 'generate' ? Number(imageVariants.value || 1) : 1;
-    imageCostEstimate.textContent = `估計 US$${formatModelPrice(price * count)}`;
-};
-
-const updateImageGenerateButton = () => {
-    const promptReady = Boolean(imagePrompt.value.trim());
-    const sourceReady = imageStudioMode === 'generate' || Boolean(imageSource);
-    const modelReady = Boolean(imageModelSelect.value);
-    imageGenerateButton.disabled = isImageRequestRunning
-        || !promptReady
-        || !sourceReady
-        || !modelReady
-        || !imageAdultConfirm.checked;
-};
-
-const updateImagePromptCounter = () => {
-    const model = getSelectedImageModel();
-    const maxLength = model?.constraints.promptCharacterLimit || 7500;
-    imagePrompt.maxLength = maxLength;
-    imagePromptCount.textContent = `${imagePrompt.value.length} / ${maxLength}`;
-    updateImageGenerateButton();
-};
-
-const replaceSelectOptions = (
-    select: HTMLSelectElement,
-    values: string[],
-    preferred: string,
-    labels: Record<string, string> = {},
-) => {
-    const previous = select.value;
-    select.innerHTML = '';
-    values.forEach(value => {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = labels[value] || value;
-        select.appendChild(option);
-    });
-    select.value = values.includes(previous)
-        ? previous
-        : values.includes(preferred)
-            ? preferred
-            : values[0] || '';
-};
-
-const updateImageModelControls = () => {
-    const model = getSelectedImageModel();
-    const constraints = model?.constraints || {};
-    const supportedRatios = constraints.aspectRatios?.length
-        ? constraints.aspectRatios
-        : Object.keys(PIXEL_IMAGE_DIMENSIONS);
-    const preferredRatio = imageStudioMode === 'edit'
-        ? constraints.defaultAspectRatio || (supportedRatios.includes('auto') ? 'auto' : supportedRatios[0])
-        : constraints.defaultAspectRatio || (supportedRatios.includes('3:4') ? '3:4' : supportedRatios[0]);
-
-    replaceSelectOptions(imageAspectRatio, supportedRatios, preferredRatio, { auto: '自動（跟隨原圖）' });
-
-    const resolutions = (constraints.resolutions || []).filter(resolution => resolution !== '4K');
-    imageResolutionWrap.classList.toggle('hidden', resolutions.length === 0);
-    replaceSelectOptions(imageResolution, resolutions, constraints.defaultResolution || '1K');
-
-    const details = [
-        model?.id === (imageStudioMode === 'generate' ? VENICE_IMAGE_GENERATE_MODEL : VENICE_IMAGE_EDIT_MODEL)
-            ? '目前推薦'
-            : '',
-        model?.traits.includes('most_uncensored') ? '最自由' : '',
-        model?.traits.includes('highest_quality') ? '高畫質' : '',
-        model?.traits.includes('fastest') ? '最快' : '',
-        model ? formatImagePrivacy(model.privacy) : '',
-        typeof getImageModelPrice(model) === 'number'
-            ? `約 US$${formatModelPrice(getImageModelPrice(model))}／張`
-            : '',
-    ].filter(Boolean);
-    imageModelMeta.textContent = details.length
-        ? details.join(' · ')
-        : '模型能力資料暫時不可用。';
-
-    updateImagePromptCounter();
-    updateImageCostEstimate();
-};
-
-const renderImageModelOptions = () => {
-    const models = [...imageModels[imageStudioMode]].sort((left, right) => {
-        const preferred = imageStudioMode === 'generate' ? VENICE_IMAGE_GENERATE_MODEL : VENICE_IMAGE_EDIT_MODEL;
-        if (left.id === preferred) return -1;
-        if (right.id === preferred) return 1;
-        const leftUncensored = left.traits.includes('most_uncensored') || /uncensored|lustify/i.test(left.id);
-        const rightUncensored = right.traits.includes('most_uncensored') || /uncensored|lustify/i.test(right.id);
-        if (leftUncensored !== rightUncensored) return leftUncensored ? -1 : 1;
-        if (left.privacy !== right.privacy) return left.privacy === 'private' ? -1 : 1;
-        return (getImageModelPrice(left, left.constraints.defaultResolution) ?? Number.MAX_SAFE_INTEGER)
-            - (getImageModelPrice(right, right.constraints.defaultResolution) ?? Number.MAX_SAFE_INTEGER);
-    });
-
-    const preferredId = imageStudioMode === 'generate' ? VENICE_IMAGE_GENERATE_MODEL : VENICE_IMAGE_EDIT_MODEL;
-    if (!models.some(model => model.id === selectedImageModels[imageStudioMode])) {
-        selectedImageModels[imageStudioMode] = models.find(model => model.id === preferredId)?.id || models[0]?.id || '';
-    }
-
-    imageModelSelect.innerHTML = '';
-    const recommended = models.filter(model => model.id === preferredId);
-    const privateModels = models.filter(model => model.id !== preferredId && model.privacy === 'private');
-    const otherModels = models.filter(model => model.id !== preferredId && model.privacy !== 'private');
-    [
-        { label: '推薦', models: recommended },
-        { label: '其他私人模型', models: privateModels },
-        { label: '其他模型', models: otherModels },
-    ].forEach(group => {
-        if (!group.models.length) return;
-        const optgroup = document.createElement('optgroup');
-        optgroup.label = group.label;
-        group.models.forEach(model => {
-            const option = document.createElement('option');
-            option.value = model.id;
-            const trait = model.traits.includes('most_uncensored')
-                ? ' · 最自由'
-                : model.traits.includes('fastest')
-                    ? ' · 最快'
-                    : model.traits.includes('highest_quality')
-                        ? ' · 高畫質'
-                        : '';
-            const modelPrice = getImageModelPrice(model, model.constraints.defaultResolution);
-            const price = typeof modelPrice === 'number' ? ` · $${formatModelPrice(modelPrice)}` : '';
-            option.textContent = `${model.name}${trait}${price}`;
-            optgroup.appendChild(option);
-        });
-        imageModelSelect.appendChild(optgroup);
-    });
-
-    imageModelSelect.value = selectedImageModels[imageStudioMode];
-    imageModelSelect.disabled = isImageRequestRunning || models.length === 0;
-    updateImageModelControls();
-};
-
-const loadImageModels = async (mode: VeniceImageMode = imageStudioMode, force = false) => {
-    if (imageModelPromises[mode]) return imageModelPromises[mode];
-    if (!force && imageModels[mode].length > 0) {
-        if (mode === imageStudioMode) renderImageModelOptions();
-        return;
-    }
-
-    imageModelSelect.disabled = true;
-    refreshImageModelsBtn.disabled = true;
-    imageModelMeta.textContent = '正在讀取 Venice 圖片模型...';
+    if (!force && imageModels[mode].length > 0) return;
 
     imageModelPromises[mode] = (async () => {
         try {
@@ -4983,12 +1326,19 @@ const loadImageModels = async (mode: VeniceImageMode = imageStudioMode, force = 
             }
         } finally {
             imageModelPromises[mode] = null;
-            refreshImageModelsBtn.disabled = false;
-            if (mode === imageStudioMode) renderImageModelOptions();
         }
     })();
 
-    return imageModelPromises[mode];
+    await imageModelPromises[mode];
+};
+
+const getImageModelPrice = (model?: VeniceImageModelSummary, requestedResolution?: string) => {
+    if (!model) return undefined;
+    const resolution = requestedResolution
+        || model.constraints.defaultResolution
+        || Object.keys(model.resolutionPrices)[0];
+    const resolutionPrice = resolution ? model.resolutionPrices[resolution] : undefined;
+    return typeof resolutionPrice === 'number' ? resolutionPrice : model.priceUsd;
 };
 
 const normalizeImageSeed = (value: string | number | undefined) => {
@@ -5014,7 +1364,7 @@ const resolveImageSeedForRequest = (input: HTMLInputElement, locked: boolean) =>
     if (!locked || seed === undefined) {
         seed = setSeedInputValue(input, createRandomImageSeed());
     }
-    localStorage.setItem(IMAGE_SEED_STORAGE_KEY, String(seed));
+    setPersistedAppSetting(IMAGE_SEED_STORAGE_KEY, String(seed));
     return seed;
 };
 
@@ -5022,31 +1372,6 @@ const initializeImageSeedControls = () => {
     imageSeedLock.checked = localStorage.getItem(IMAGE_SEED_LOCK_STORAGE_KEY) === 'true';
     const stored = normalizeImageSeed(localStorage.getItem(IMAGE_SEED_STORAGE_KEY) || undefined);
     setSeedInputValue(imageSeed, stored ?? createRandomImageSeed());
-};
-
-const setImageStudioMode = (mode: VeniceImageMode) => {
-    if (isImageRequestRunning || imageStudioMode === mode) {
-        if (!imageModels[mode].length) void loadImageModels(mode);
-        return;
-    }
-    imageStudioMode = mode;
-    const isGenerate = mode === 'generate';
-    imageModeGenerateBtn.classList.toggle('is-active', isGenerate);
-    imageModeGenerateBtn.setAttribute('aria-selected', String(isGenerate));
-    imageModeEditBtn.classList.toggle('is-active', !isGenerate);
-    imageModeEditBtn.setAttribute('aria-selected', String(!isGenerate));
-    imageSourceSection.classList.toggle('hidden', isGenerate);
-    imageNegativeSection.classList.toggle('hidden', !isGenerate);
-    imageVariantWrap.classList.toggle('hidden', !isGenerate);
-    imageSeedWrap.classList.toggle('hidden', !isGenerate);
-    imageAspectRatio.value = '';
-    imageResolution.value = '';
-    imageGenerateLabel.textContent = isGenerate ? '開始生成' : '開始修改';
-    imageStudioStatus.textContent = isGenerate ? '填寫描述後即可生成' : '加入來源圖片及修改指令';
-    imageStudioError.classList.add('hidden');
-    imageModelSelect.innerHTML = '<option value="">載入模型中...</option>';
-    void loadImageModels(mode);
-    updateImageGenerateButton();
 };
 
 const blobToBase64 = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
@@ -5063,1668 +1388,139 @@ const canvasToBlob = (canvas: HTMLCanvasElement, quality: number): Promise<Blob>
     }, 'image/webp', quality);
 });
 
-const setImageSourceFromBlob = async (sourceBlob: Blob, name: string) => {
-    if (!sourceBlob.type.startsWith('image/')) throw new Error('請選擇 JPEG、PNG 或 WebP 圖片。');
-    if (sourceBlob.size > 25 * 1024 * 1024) throw new Error('來源圖片不可超過 25MB。');
+let imageStudioUi: import('./features/imageStudio.js').ImageStudioHandle | null = null;
+let imageStudioUiLoad: Promise<import('./features/imageStudio.js').ImageStudioHandle> | null = null;
 
-    const rawUrl = URL.createObjectURL(sourceBlob);
-    const sourceImage = new Image();
-    sourceImage.src = rawUrl;
-    try {
-        await sourceImage.decode();
-        if (sourceImage.naturalWidth * sourceImage.naturalHeight < 65_536) {
-            throw new Error('來源圖片太小，寬高總像素至少需要 65,536。');
-        }
+const getSharedImageSeed = () => normalizeImageSeed(imageSeed.value);
 
-        const scale = Math.min(1, 1536 / Math.max(sourceImage.naturalWidth, sourceImage.naturalHeight));
-        const width = Math.max(256, Math.round(sourceImage.naturalWidth * scale));
-        const height = Math.max(256, Math.round(sourceImage.naturalHeight * scale));
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const context = canvas.getContext('2d');
-        if (!context) throw new Error('瀏覽器無法處理這張圖片。');
-        context.drawImage(sourceImage, 0, 0, width, height);
+const setSharedImageSeed = (seed: number) => {
+    const normalized = normalizeImageSeed(seed) ?? createRandomImageSeed();
+    setSeedInputValue(imageSeed, normalized);
+    setPersistedAppSetting(IMAGE_SEED_STORAGE_KEY, String(normalized));
+    return normalized;
+};
 
-        let compressed = await canvasToBlob(canvas, 0.88);
-        if (compressed.size > 2_650_000) compressed = await canvasToBlob(canvas, 0.68);
-        if (compressed.size > 2_650_000) throw new Error('壓縮後的圖片仍然太大，請改用較小的來源圖。');
+const randomizeSharedImageSeed = () => setSharedImageSeed(createRandomImageSeed());
 
-        if (imageSource) URL.revokeObjectURL(imageSource.previewUrl);
-        const previewUrl = URL.createObjectURL(compressed);
-        imageSource = {
-            blob: compressed,
-            base64: await blobToBase64(compressed),
-            previewUrl,
-            width,
-            height,
-            name,
-        };
-        imageSourcePreview.src = previewUrl;
-        imageSourceMeta.textContent = `${name} · ${width} × ${height} · ${(compressed.size / 1024).toFixed(0)} KB`;
-        imageSourceEmpty.classList.add('hidden');
-        imageSourcePreviewWrap.classList.remove('hidden');
-        updateImageGenerateButton();
-    } finally {
-        URL.revokeObjectURL(rawUrl);
+const setSharedImageSeedLocked = (locked: boolean) => {
+    imageSeedLock.checked = locked;
+    setPersistedAppSetting(IMAGE_SEED_LOCK_STORAGE_KEY, String(locked));
+    if (locked && getSharedImageSeed() === undefined) randomizeSharedImageSeed();
+};
+
+const loadImageStudioUi = async () => {
+    if (imageStudioUi) return imageStudioUi;
+    if (!imageStudioUiLoad) {
+        imageStudioUiLoad = import('./features/imageStudio.js')
+            .then(({ createImageStudio }) => {
+                const ui = createImageStudio({
+                    getImageModels: mode => imageModels[mode],
+                    loadImageModels,
+                    getSelectedImageModelId: mode => selectedImageModels[mode],
+                    setSelectedImageModelId: (mode, modelId) => {
+                        selectedImageModels[mode] = modelId;
+                        setPersistedAppSetting(
+                            mode === 'generate' ? IMAGE_GENERATE_MODEL_STORAGE_KEY : IMAGE_EDIT_MODEL_STORAGE_KEY,
+                            modelId,
+                        );
+                    },
+                    getImageModelPrice,
+                    formatModelPrice,
+                    requestImage: requestVeniceImage,
+                    resolveSharedSeed: () => resolveImageSeedForRequest(imageSeed, imageSeedLock.checked),
+                    getSharedSeed: getSharedImageSeed,
+                    getSharedSeedLocked: () => imageSeedLock.checked,
+                    setSharedSeedLocked: setSharedImageSeedLocked,
+                    setSharedSeed: setSharedImageSeed,
+                    randomizeSharedSeed: randomizeSharedImageSeed,
+                    handleAuthRequired: () => handleAuthRequired(),
+                    cancelActiveChatRequest: () => cancelActiveChatRequest(),
+                    enterImageView: historyMode => {
+                        personaSelectionView.classList.add('hidden');
+                        chatView.classList.add('hidden');
+                        chatView.classList.remove('flex');
+                        syncBrowserViewState({ view: 'image' }, historyMode);
+                    },
+                    showSelectionView: () => showSelectionView('replace'),
+                    hideVideoStudio: () => videoStudioUi?.hide(),
+                    openPhotoViewer: (imageUrl, context) => openPhotoViewer(
+                        imageUrl,
+                        context as PhotoViewerContext,
+                    ),
+                });
+                imageStudioUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                imageStudioUiLoad = null;
+                throw error;
+            });
     }
-};
-
-const loadImageSourceFile = async (file?: File) => {
-    if (!file) return;
-    clearImageStudioError();
-    imageStudioStatus.textContent = '正在準備來源圖片...';
-    try {
-        await setImageSourceFromBlob(file, file.name);
-        imageStudioStatus.textContent = '來源圖片已準備好';
-    } catch (error) {
-        showImageStudioError(error instanceof Error ? error.message : '無法讀取來源圖片。');
-        imageStudioStatus.textContent = '來源圖片載入失敗';
-    } finally {
-        imageSourceInput.value = '';
-    }
-};
-
-const showImageStudioError = (message: string) => {
-    imageStudioError.textContent = message;
-    imageStudioError.classList.remove('hidden');
-};
-
-const clearImageStudioError = () => {
-    imageStudioError.textContent = '';
-    imageStudioError.classList.add('hidden');
-};
-
-const setImageStudioBusy = (busy: boolean) => {
-    isImageRequestRunning = busy;
-    imageGenerateSpinner.classList.toggle('hidden', !busy);
-    imageGenerateLabel.textContent = busy
-        ? imageStudioMode === 'generate' ? '生成中...' : '修改中...'
-        : imageStudioMode === 'generate' ? '開始生成' : '開始修改';
-    imageModeGenerateBtn.disabled = busy;
-    imageModeEditBtn.disabled = busy;
-    imageModelSelect.disabled = busy || imageModels[imageStudioMode].length === 0;
-    refreshImageModelsBtn.disabled = busy;
-    imageSourceDropzone.disabled = busy;
-    imagePrompt.disabled = busy;
-    imageNegativePrompt.disabled = busy;
-    imageAspectRatio.disabled = busy;
-    imageResolution.disabled = busy;
-    imageVariants.disabled = busy;
-    imageSeed.disabled = busy;
-    imageSeedLock.disabled = busy;
-    imageSeedRandom.disabled = busy;
-    imageAdultConfirm.disabled = busy;
-    updateImageGenerateButton();
-};
-
-const renderImageResults = () => {
-    imageStudioResults.innerHTML = '';
-    imageStudioEmpty.classList.toggle('hidden', imageResults.length > 0);
-    clearImageResultsBtn.classList.toggle('hidden', imageResults.length === 0);
-
-    imageResults.forEach((result, index) => {
-        const card = document.createElement('article');
-        card.className = 'image-result-card';
-        card.style.animationDelay = `${Math.min(index, 5) * 55}ms`;
-
-        const image = document.createElement('img');
-        image.src = result.url;
-        image.alt = result.prompt;
-        image.loading = 'lazy';
-        image.addEventListener('click', () => openPhotoViewer(result.url, {
-            source: 'studio',
-            prompt: result.prompt,
-            caption: 'Venice 圖片工作室作品',
-            mode: result.mode,
-            modelId: result.modelId,
-            modelName: result.model,
-            aspectRatio: result.aspectRatio,
-            resolution: result.resolution,
-            negativePrompt: result.negativePrompt,
-            useAvatarReference: false,
-            sourceImageBase64: result.sourceImageBase64,
-            seed: result.seed,
-        }));
-
-        const actions = document.createElement('div');
-        actions.className = 'image-result-actions';
-        const downloadButton = document.createElement('button');
-        downloadButton.type = 'button';
-        downloadButton.className = 'image-result-action';
-        downloadButton.textContent = '下載 WebP';
-        downloadButton.addEventListener('click', () => {
-            const anchor = document.createElement('a');
-            anchor.href = result.url;
-            anchor.download = `venice-${result.createdAt.toISOString().replace(/[:.]/g, '-')}.webp`;
-            anchor.click();
-        });
-
-        const editButton = document.createElement('button');
-        editButton.type = 'button';
-        editButton.className = 'image-result-action';
-        editButton.textContent = '以此圖繼續修改';
-        editButton.addEventListener('click', async () => {
-            try {
-                clearImageStudioError();
-                await setImageSourceFromBlob(result.blob, 'Venice 生成圖片');
-                setImageStudioMode('edit');
-                imageSourceSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            } catch (error) {
-                showImageStudioError(error instanceof Error ? error.message : '無法載入這張圖片。');
-            }
-        });
-
-        const meta = document.createElement('p');
-        meta.className = 'image-result-meta';
-        meta.textContent = [
-            result.model,
-            typeof result.seed === 'number' ? `Seed ${result.seed}` : '',
-            result.createdAt.toLocaleTimeString('zh-Hant', { hour: '2-digit', minute: '2-digit' }),
-        ].filter(Boolean).join(' · ');
-
-        actions.append(downloadButton, editButton);
-        card.append(image, actions, meta);
-        imageStudioResults.appendChild(card);
-    });
-};
-
-const clearImageResults = () => {
-    imageResults.forEach(result => URL.revokeObjectURL(result.url));
-    imageResults = [];
-    renderImageResults();
-    imageStudioStatus.textContent = '作品已清除';
-};
-
-const cancelImageRequest = () => {
-    imageRequestController?.abort();
-    imageRequestController = null;
-    if (isImageRequestRunning) {
-        setImageStudioBusy(false);
-        imageStudioStatus.textContent = '已停止生成';
-    }
-};
-
-const runImageGeneration = async () => {
-    const prompt = imagePrompt.value.trim();
-    const model = getSelectedImageModel();
-    clearImageStudioError();
-
-    if (!prompt || !model || !imageAdultConfirm.checked) {
-        showImageStudioError('請填寫畫面描述、選擇模型並確認成年及圖片使用權。');
-        return;
-    }
-    if (imageStudioMode === 'edit' && !imageSource) {
-        showImageStudioError('圖生圖需要先加入一張來源圖片。');
-        return;
-    }
-    if (/\b(?:minor|underage|child|kid|teen(?:ager)?|schoolgirl|schoolboy|loli|shota)\b|(?:未成年|幼女|兒童|小孩|學生妹)/i.test(prompt)) {
-        showImageStudioError('此工作室只可生成明確成年的人物，請修改描述。');
-        return;
-    }
-
-    const controller = new AbortController();
-    imageRequestController = controller;
-    setImageStudioBusy(true);
-    imageStudioStatus.textContent = imageStudioMode === 'generate' ? '正在生成畫面...' : '正在分析並修改來源圖片...';
-    const startedAt = performance.now();
-
-    try {
-        const hasAspectRatioApi = Boolean(model.constraints.aspectRatios?.length);
-        const pixelSize = PIXEL_IMAGE_DIMENSIONS[imageAspectRatio.value] || PIXEL_IMAGE_DIMENSIONS['1:1'];
-        const seedValue = imageStudioMode === 'generate'
-            ? resolveImageSeedForRequest(imageSeed, imageSeedLock.checked)
-            : undefined;
-        const result = await requestVeniceImage({
-            mode: imageStudioMode,
-            model: model.id,
-            prompt,
-            negativePrompt: imageNegativePrompt.value.trim(),
-            sourceImageBase64: imageSource?.base64,
-            aspectRatio: imageStudioMode === 'edit' || hasAspectRatioApi ? imageAspectRatio.value : undefined,
-            resolution: model.constraints.resolutions?.length ? imageResolution.value : undefined,
-            width: imageStudioMode === 'generate' && !hasAspectRatioApi ? pixelSize.width : undefined,
-            height: imageStudioMode === 'generate' && !hasAspectRatioApi ? pixelSize.height : undefined,
-            variants: imageStudioMode === 'generate' ? Number(imageVariants.value || 1) : 1,
-            steps: imageStudioMode === 'generate' ? model.constraints.steps?.default : undefined,
-            seed: Number.isFinite(seedValue) ? seedValue : undefined,
-            adultConfirmed: true,
-            signal: controller.signal,
-        });
-
-        const now = new Date();
-        const newResults = result.blobs.map((blob, index) => ({
-            id: `${now.getTime()}-${index}`,
-            blob,
-            url: URL.createObjectURL(blob),
-            prompt,
-            model: model.name,
-            modelId: model.id,
-            mode: imageStudioMode,
-            aspectRatio: imageAspectRatio.value,
-            resolution: model.constraints.resolutions?.length ? imageResolution.value : undefined,
-            negativePrompt: imageNegativePrompt.value.trim(),
-            sourceImageBase64: imageStudioMode === 'edit' ? imageSource?.base64 : undefined,
-            seed: seedValue,
-            createdAt: now,
-        }));
-        imageResults = [...newResults, ...imageResults];
-        renderImageResults();
-        const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
-        imageStudioStatus.textContent = [
-            `完成 ${newResults.length} 張`,
-            typeof seedValue === 'number' ? `Seed ${seedValue}` : '',
-            `${elapsed} 秒`,
-        ].filter(Boolean).join(' · ');
-    } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-            imageStudioStatus.textContent = '已停止生成';
-        } else {
-            const message = error instanceof Error ? error.message : '圖片生成失敗。';
-            showImageStudioError(message);
-            imageStudioStatus.textContent = '生成失敗';
-            if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
-        }
-    } finally {
-        if (imageRequestController === controller) imageRequestController = null;
-        setImageStudioBusy(false);
-    }
+    return imageStudioUiLoad;
 };
 
 const showImageStudio = (historyMode: 'push' | 'replace' | 'skip' = 'push') => {
-    cancelActiveChatRequest();
-    personaSelectionView.classList.add('hidden');
-    chatView.classList.add('hidden');
-    chatView.classList.remove('flex');
-    videoStudioView.classList.add('hidden');
-    videoStudioView.classList.remove('flex');
-    imageStudioView.classList.remove('hidden');
-    imageStudioView.classList.add('flex');
-    imageAdultConfirm.checked = sessionStorage.getItem(IMAGE_ADULT_CONFIRM_STORAGE_KEY) === 'true';
-    renderImageResults();
-    void loadImageModels(imageStudioMode);
-    updateImageGenerateButton();
-    syncBrowserViewState({ view: 'image' }, historyMode);
+    void loadImageStudioUi()
+        .then(ui => ui.show(historyMode))
+        .catch(error => console.error('Failed to load Image Studio', error));
 };
 
-const navigateBackFromImageStudio = () => {
-    cancelImageRequest();
-    const currentState = window.history.state as AppHistoryState | null;
-    if (currentState?.view === 'image') {
-        window.history.back();
-        return;
-    }
-    showSelectionView('replace');
-};
-
-const buildFallbackVideoModels = (mode: VeniceVideoMode): VeniceVideoModelSummary[] => {
-    if (mode === 'text-to-video') {
-        return [
-            {
-                id: VENICE_VIDEO_TEXT_MODEL,
-                name: 'Wan 2.7 Enhanced',
-                mode,
-                privacy: 'anonymized',
-                modelSets: ['uncensored', 'high_resolution', 'long_duration', 'venice_recommendations'],
-                traits: [],
-                constraints: {
-                    model_type: mode,
-                    aspect_ratios: ['16:9', '9:16', '1:1'],
-                    resolutions: ['720p', '1080p'],
-                    durations: ['5s', '10s', '15s'],
-                    audio: false,
-                    audio_configurable: false,
-                },
-            },
-            {
-                id: 'grok-imagine-1-5-text-to-video-private',
-                name: 'Grok Imagine 1.5',
-                mode,
-                privacy: 'private',
-                modelSets: ['photorealistic', 'high_resolution', 'audio'],
-                traits: [],
-                constraints: {
-                    model_type: mode,
-                    aspect_ratios: ['16:9', '4:3', '3:2', '1:1', '2:3', '3:4', '9:16'],
-                    resolutions: ['480p', '720p', '1080p'],
-                    durations: Array.from({ length: 15 }, (_, index) => `${index + 1}s`),
-                    audio: true,
-                    audio_configurable: false,
-                    prompt_character_limit: 4096,
-                },
-            },
-            {
-                id: 'happyhorse-1-1-text-to-video',
-                name: 'HappyHorse 1.1',
-                mode,
-                privacy: 'anonymized',
-                modelSets: ['high_resolution', 'audio'],
-                traits: [],
-                constraints: {
-                    model_type: mode,
-                    aspect_ratios: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '4:5'],
-                    resolutions: ['720p', '1080p'],
-                    durations: Array.from({ length: 13 }, (_, index) => `${index + 3}s`),
-                    audio: true,
-                    audio_configurable: false,
-                },
-            },
-        ];
-    }
-
-    return [
-        {
-            id: VENICE_VIDEO_IMAGE_MODEL,
-            name: 'Wan 2.7 Enhanced',
-            mode,
-            privacy: 'anonymized',
-            modelSets: ['uncensored', 'high_resolution', 'long_duration', 'venice_recommendations'],
-            traits: [],
-            constraints: {
-                model_type: mode,
-                aspect_ratios: [],
-                resolutions: ['720p', '1080p'],
-                durations: ['5s', '10s', '15s'],
-                audio: false,
-                audio_configurable: false,
-            },
-        },
-        {
-            id: 'wan-2.1-pro-image-to-video',
-            name: 'Wan 2.1 Pro',
-            mode,
-            privacy: 'private',
-            modelSets: ['uncensored', 'open_source'],
-            traits: [],
-            constraints: {
-                model_type: mode,
-                aspect_ratios: ['16:9'],
-                resolutions: [],
-                durations: ['6s'],
-                audio: false,
-                audio_configurable: false,
-            },
-        },
-        {
-            id: 'grok-imagine-image-to-video-private',
-            name: 'Grok Imagine',
-            mode,
-            privacy: 'private',
-            modelSets: ['photorealistic', 'audio', 'long_duration'],
-            traits: [],
-            constraints: {
-                model_type: mode,
-                aspect_ratios: [],
-                resolutions: ['480p', '720p'],
-                durations: Array.from({ length: 15 }, (_, index) => `${index + 1}s`),
-                audio: true,
-                audio_configurable: false,
-                prompt_character_limit: 4096,
-            },
-        },
-        {
-            id: 'grok-imagine-1-5-image-to-video-private',
-            name: 'Grok Imagine 1.5',
-            mode,
-            privacy: 'private',
-            modelSets: ['photorealistic', 'high_resolution', 'audio', 'venice_recommendations'],
-            traits: [],
-            constraints: {
-                model_type: mode,
-                aspect_ratios: [],
-                resolutions: ['480p', '720p', '1080p'],
-                durations: Array.from({ length: 15 }, (_, index) => `${index + 1}s`),
-                audio: true,
-                audio_configurable: false,
-                prompt_character_limit: 4096,
-            },
-        },
-        {
-            id: 'ltx-2-v2-3-fast-image-to-video',
-            name: 'LTX Video 2.3 Fast',
-            mode,
-            privacy: 'anonymized',
-            modelSets: ['high_resolution', 'audio', 'open_source'],
-            traits: [],
-            constraints: {
-                model_type: mode,
-                aspect_ratios: ['16:9', '9:16'],
-                resolutions: ['1080p', '1440p', '2160p'],
-                durations: ['6s', '8s', '10s', '12s', '14s', '16s', '18s', '20s'],
-                audio: true,
-                audio_configurable: true,
-            },
-        },
-    ];
-};
-
-const getSelectedVideoModel = () => {
-    return videoModels[videoStudioMode].find(model => model.id === selectedVideoModels[videoStudioMode]);
-};
-
-const isUncensoredVideoModel = (model: VeniceVideoModelSummary) => {
-    return model.modelSets.some(value => value.toLowerCase() === 'uncensored');
-};
-
-const formatVideoPrivacy = (privacy: string) => {
-    if (privacy === 'private') return '私人處理';
-    if (privacy === 'anonymized') return '匿名化處理';
-    return privacy === 'unknown' ? '' : privacy;
-};
-
-const readPersistedVideoJob = (): PersistedVideoJob | null => {
-    try {
-        const raw = localStorage.getItem(VIDEO_PENDING_JOB_STORAGE_KEY);
-        if (!raw) return null;
-        const value = JSON.parse(raw) as Partial<PersistedVideoJob>;
-        const validMode = value.mode === 'image-to-video' || value.mode === 'text-to-video';
-        const validDownloadUrl = value.downloadUrl === undefined
-            || (typeof value.downloadUrl === 'string' && /^https:\/\//i.test(value.downloadUrl));
-        if (
-            value.version !== 1
-            || typeof value.model !== 'string'
-            || !value.model.trim()
-            || typeof value.queueId !== 'string'
-            || !/^[a-z0-9_-]+$/i.test(value.queueId)
-            || typeof value.prompt !== 'string'
-            || !value.prompt.trim()
-            || typeof value.queuedAt !== 'number'
-            || !Number.isFinite(value.queuedAt)
-            || value.queuedAt <= 0
-            || !validMode
-            || !validDownloadUrl
-        ) {
-            throw new Error('Invalid persisted video job.');
-        }
-        return {
-            version: 1,
-            model: value.model,
-            modelName: typeof value.modelName === 'string' && value.modelName.trim()
-                ? value.modelName
-                : value.model,
-            queueId: value.queueId,
-            downloadUrl: value.downloadUrl,
-            prompt: value.prompt,
-            mode: value.mode as VeniceVideoMode,
-            queuedAt: value.queuedAt,
-        };
-    } catch (error) {
-        console.warn('Unable to restore persisted Venice video job.', error);
-        localStorage.removeItem(VIDEO_PENDING_JOB_STORAGE_KEY);
-        return null;
-    }
-};
-
-const persistVideoJob = (job: PersistedVideoJob): boolean => {
-    pendingVideoJob = job;
-    try {
-        localStorage.setItem(VIDEO_PENDING_JOB_STORAGE_KEY, JSON.stringify(job));
-        return true;
-    } catch (error) {
-        console.warn('Unable to persist Venice video job.', error);
-        showVideoStudioError('工作已提交，但瀏覽器無法保存恢復資料；完成前請保持此分頁開啟。');
-        return false;
-    }
-};
-
-const clearPersistedVideoJob = () => {
-    pendingVideoJob = null;
-    try {
-        localStorage.removeItem(VIDEO_PENDING_JOB_STORAGE_KEY);
-    } catch (error) {
-        console.warn('Unable to clear persisted Venice video job.', error);
-    }
-};
-
-const setVideoProgressState = (
-    state: 'idle' | 'quoting' | 'quoted' | 'queueing' | 'generating' | 'paused' | 'completed' | 'error',
-) => {
-    const stageIndexes: Record<string, number> = { quote: 0, queue: 1, generate: 2, complete: 3 };
-    let activeIndex = -1;
-    let completedThrough = -1;
-
-    if (state === 'quoting') activeIndex = 0;
-    if (state === 'quoted') completedThrough = 0;
-    if (state === 'queueing') {
-        activeIndex = 1;
-        completedThrough = 0;
-    }
-    if (state === 'generating') {
-        activeIndex = 2;
-        completedThrough = 1;
-    }
-    if (state === 'paused') completedThrough = 1;
-    if (state === 'completed') completedThrough = 3;
-    if (state === 'error') activeIndex = Math.max(0, videoLastProgressIndex);
-
-    if (activeIndex >= 0 && state !== 'error') videoLastProgressIndex = activeIndex;
-    videoProgressSteps.forEach(step => {
-        const index = stageIndexes[step.dataset.videoStage || ''] ?? -1;
-        step.classList.toggle('is-complete', index >= 0 && index <= completedThrough);
-        step.classList.toggle('is-active', index === activeIndex && state !== 'error');
-        step.classList.toggle('is-error', index === activeIndex && state === 'error');
-    });
-};
-
-const showVideoStudioError = (message: string) => {
-    videoStudioError.textContent = message;
-    videoStudioError.classList.remove('hidden');
-};
-
-const clearVideoStudioError = () => {
-    videoStudioError.textContent = '';
-    videoStudioError.classList.add('hidden');
-};
-
-const containsDisallowedMinorTerms = (text: string) => {
-    return /\b(?:minor|underage|child|kid|teen(?:ager)?|schoolgirl|schoolboy|loli|shota)\b|(?:未成年|幼女|兒童|小孩|學生妹)/i.test(text);
-};
-
-const getVideoModelIdentity = (model: VeniceVideoModelSummary) => {
-    return `${model.id} ${model.name}`.toLowerCase();
-};
-
-const isWan27VideoModel = (model: VeniceVideoModelSummary) => {
-    return /wan[\s._-]*2[\s._-]*7/.test(getVideoModelIdentity(model));
-};
-
-const getVideoPromptTargetLabel = (model: VeniceVideoModelSummary) => {
-    return isWan27VideoModel(model) ? 'Wan 2.7' : `${model.name} (${model.id})`;
-};
-
-const getVideoPromptModelStyle = (model: VeniceVideoModelSummary) => {
-    const identity = getVideoModelIdentity(model);
-    if (identity.includes('seedance')) {
-        return 'Use structured cinematic language: shot size, deliberate camera movement, lighting, location, then an exact chronological action sequence.';
-    }
-    if (identity.includes('grok')) {
-        return 'Use natural, mood-driven language. Prioritize emotion, atmosphere, subtle expression, and how the moment should feel over dense lens jargon.';
-    }
-    if (/happy[\s-]?horse/.test(identity)) {
-        return 'Use clear practical motion language with realistic body mechanics, weight shifts, balance, limb direction, timing, and fluid camera tracking.';
-    }
-    if (isWan27VideoModel(model)) {
-        return 'Treat every Wan 2.7 variant, including Enhanced, as the same Wan 2.7 prompt family. Be exceptionally explicit and detailed. Separate the initial state from the visible action timeline, then use First, Then, and Finally. State exactly who does what, to whom or what, in which direction, in what order, and how each movement finishes. Never rely on implication.';
-    }
-    if (identity.includes('wan')) {
-        return 'Be exceptionally explicit and detailed: state exactly who does what, to whom or what, in which direction, in what order, and how each movement finishes. Never rely on implication.';
-    }
-    if (/(?:kling|runway|veo|ltx|pixverse|vidu)/.test(identity)) {
-        return 'Use one coherent cinematic shot with a precise subject, chronological action beats, restrained camera direction, lighting, environment motion, and continuity.';
-    }
-    return 'Use a balanced production-ready prompt with a concrete subject, chronological action, camera movement, environment, lighting, timing, and continuity.';
-};
-
-const getVideoPromptStructureRule = (model: VeniceVideoModelSummary) => {
-    if (!isWan27VideoModel(model)) {
-        return 'Return one coherent production prompt without commentary.';
-    }
-    return [
-        'Use this exact compact Wan 2.7 structure in English:',
-        'Subject: identify only the adult subject or subjects explicitly present; never invent clothing, appearance, ethnicity, hairstyle, or accessories.',
-        'Initial state: include only facts explicitly true before movement begins; if the initial facing direction is unstated, leave it unstated.',
-        'Action sequence: preserve the exact count and order of requested human actions. Write First, Then, and Finally as explicit visible beats. Never place the result of First into Initial state.',
-        'Camera: copy the requested camera instruction; if none exists, use a stationary camera.',
-        'Environment: copy only the stated setting, light, weather, objects, and secondary motion. Never invent rain, fog, traffic, props, or atmospheric events.',
-        'Continuity: preserve identity, anatomy, clothing, objects, direction, and background unless the draft explicitly requests a change.',
-        'Keep direct adult or NSFW terms equally direct in the Action sequence; never sanitize them into vague romance, intimacy, revealing clothing, or a generic transformation.',
-        'Do not omit any label. Do not add a title, explanation, bullet list, alternative version, warning, or moral commentary.',
-    ].join(' ');
-};
-
-const getVideoPromptSettingsKey = (model: VeniceVideoModelSummary) => JSON.stringify({
-    mode: videoStudioMode,
-    model: model.id,
-    duration: videoDuration.value,
-    resolution: videoResolutionWrap.classList.contains('hidden') ? '' : videoResolution.value,
-    aspectRatio: videoAspectRatioWrap.classList.contains('hidden') ? '' : videoAspectRatio.value,
-    audio: model.constraints.audio_configurable
-        ? videoAudio.checked
-        : model.constraints.audio === true,
-});
-
-const updateVideoPromptOptimizerButton = () => {
-    const modelReady = Boolean(getSelectedVideoModel());
-    const promptReady = Boolean(videoPrompt.value.trim());
-    videoPromptOptimizeButton.disabled = isVideoPromptOptimizing
-        || isVideoRequestRunning
-        || Boolean(pendingVideoJob)
-        || !isUnlocked
-        || !modelReady
-        || !promptReady;
-    videoPromptOptimizeButton.setAttribute('aria-busy', String(isVideoPromptOptimizing));
-};
-
-const updateVideoGenerateButton = () => {
-    if (pendingVideoJob) {
-        videoGenerateButton.disabled = isVideoRequestRunning || isVideoPromptOptimizing || !isUnlocked;
-        if (!isVideoRequestRunning) videoGenerateLabel.textContent = '繼續查詢未完成影片';
-        return;
-    }
-    const modelReady = Boolean(videoModelSelect.value);
-    const promptReady = Boolean(videoPrompt.value.trim());
-    const sourceReady = videoStudioMode === 'text-to-video' || Boolean(videoSource);
-    const quoteReady = typeof videoQuoteUsd === 'number';
-    videoGenerateButton.disabled = isVideoRequestRunning
-        || isVideoPromptOptimizing
-        || !modelReady
-        || !promptReady
-        || !sourceReady
-        || !quoteReady
-        || !videoAdultConfirm.checked;
-    if (!isVideoRequestRunning) {
-        videoGenerateLabel.textContent = quoteReady
-            ? `開始生成 · US$${formatModelPrice(videoQuoteUsd as number)}`
-            : '開始生成影片';
-    }
-};
-
-const updateVideoPromptCounter = () => {
-    const maxLength = getSelectedVideoModel()?.constraints.prompt_character_limit || 2500;
-    videoPrompt.maxLength = maxLength;
-    videoPromptCount.textContent = `${videoPrompt.value.length} / ${maxLength}`;
-    updateVideoPromptOptimizerButton();
-    updateVideoGenerateButton();
-};
-
-const getVideoPricingOptions = () => {
-    const model = getSelectedVideoModel();
-    if (!model || !videoDuration.value) return null;
-    return {
-        model: model.id,
-        duration: videoDuration.value,
-        resolution: videoResolutionWrap.classList.contains('hidden') ? undefined : videoResolution.value,
-        aspectRatio: videoAspectRatioWrap.classList.contains('hidden') ? undefined : videoAspectRatio.value,
-        audio: model.constraints.audio_configurable ? videoAudio.checked : undefined,
-    };
-};
-
-const cancelPendingVideoQuote = () => {
-    videoQuoteVersion += 1;
-    if (videoQuoteTimer !== null) {
-        window.clearTimeout(videoQuoteTimer);
-        videoQuoteTimer = null;
-    }
-    videoQuoteController?.abort();
-    videoQuoteController = null;
-};
-
-const scheduleVideoQuote = (delay = 320) => {
-    if (isVideoRequestRunning || isVideoPromptOptimizing || pendingVideoJob) return;
-    cancelPendingVideoQuote();
-    const pricing = getVideoPricingOptions();
-    videoQuoteUsd = null;
-    updateVideoGenerateButton();
-    if (!pricing) {
-        videoCostEstimate.textContent = '';
-        setVideoProgressState('idle');
-        return;
-    }
-
-    const version = videoQuoteVersion;
-    videoCostEstimate.textContent = '正在報價...';
-    setVideoProgressState('quoting');
-    videoQuoteTimer = window.setTimeout(async () => {
-        videoQuoteTimer = null;
-        const controller = new AbortController();
-        videoQuoteController = controller;
-        try {
-            const quote = await quoteVeniceVideo({ ...pricing, signal: controller.signal });
-            if (version !== videoQuoteVersion) return;
-            videoQuoteUsd = quote;
-            videoCostEstimate.textContent = `即時報價 US$${formatModelPrice(quote)}`;
-            videoStudioStatus.textContent = '報價已更新，生成時只會提交一次';
-            clearVideoStudioError();
-            setVideoProgressState('quoted');
-        } catch (error) {
-            if (controller.signal.aborted || version !== videoQuoteVersion) return;
-            const message = error instanceof Error ? error.message : '無法取得影片報價。';
-            videoCostEstimate.textContent = '報價失敗';
-            videoStudioStatus.textContent = '無法取得即時報價';
-            showVideoStudioError(message);
-            setVideoProgressState('error');
-            if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
-        } finally {
-            if (videoQuoteController === controller) videoQuoteController = null;
-            updateVideoGenerateButton();
-        }
-    }, delay);
-};
-
-type VideoPromptFeedbackTone = 'info' | 'success' | 'error';
-
-const setVideoPromptFeedback = (message: string, tone: VideoPromptFeedbackTone = 'info') => {
-    videoPromptFeedback.textContent = message;
-    videoPromptFeedback.classList.remove('hidden', 'is-success', 'is-error');
-    if (tone === 'success') videoPromptFeedback.classList.add('is-success');
-    if (tone === 'error') videoPromptFeedback.classList.add('is-error');
-};
-
-const clearVideoPromptFeedback = () => {
-    videoPromptFeedback.textContent = '';
-    videoPromptFeedback.classList.add('hidden');
-    videoPromptFeedback.classList.remove('is-success', 'is-error');
-};
-
-const cleanVideoPromptCandidate = (candidate: string) => {
-    return candidate
-        .replace(/^```(?:text|markdown)?\s*/i, '')
-        .replace(/\s*```$/i, '')
-        .replace(/<\/?optimized_prompt>/gi, '')
-        .replace(/^#{1,4}\s*(?:optimized\s+)?(?:video\s+)?prompt\s*[:：]?\s*/i, '')
-        .replace(/^(?:optimized\s+)?(?:video\s+)?prompt\s*[:：]\s*/i, '')
-        .replace(/^["“]|["”]$/g, '')
-        .replace(/\r\n?/g, '\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-};
-
-const isVideoPromptOptimizerRefusal = (candidate: string) => {
-    return /^(?:#{1,4}\s*)?(?:sorry\b|i(?:['’]m| am)? sorry\b|i apologize\b|i (?:can(?:not|'t)|won't|am unable)\b|i(?:['’]m) unable\b|as an ai\b|(?:很)?抱歉|對不起|我(?:不能|無法)|無法協助|不能協助)/i.test(candidate.trim());
-};
-
-const cleanOptimizedVideoPrompt = (raw: string) => {
-    const tagged = extractXmlTag(raw, 'optimized_prompt');
-    if (tagged) {
-        const cleaned = cleanVideoPromptCandidate(tagged);
-        return isVideoPromptOptimizerRefusal(cleaned) ? '' : cleaned;
-    }
-
-    const unfenced = raw
-        .replace(/^```(?:json|text|markdown)?\s*/i, '')
-        .replace(/\s*```$/i, '')
-        .trim();
-    let candidate = unfenced;
-    try {
-        const parsed = JSON.parse(unfenced) as unknown;
-        if (typeof parsed === 'string') {
-            candidate = parsed;
-        } else if (parsed && typeof parsed === 'object') {
-            const record = parsed as Record<string, unknown>;
-            const value = record.optimized_prompt ?? record.optimizedPrompt ?? record.prompt;
-            candidate = typeof value === 'string' ? value : '';
-        } else {
-            candidate = '';
-        }
-    } catch {
-        // Some Venice text models return the requested prompt directly without a wrapper.
-    }
-
-    const cleaned = cleanVideoPromptCandidate(candidate);
-    if (!cleaned || isVideoPromptOptimizerRefusal(cleaned)) return '';
-    return cleaned;
-};
-
-const normalizeVideoPromptForComparison = (prompt: string) => {
-    return prompt
-        .normalize('NFKC')
-        .toLowerCase()
-        .replace(/\s+/g, ' ')
-        .replace(/[.!?。！？]+$/g, '')
-        .trim();
-};
-
-const ensureWan27PromptStructure = (prompt: string) => {
-    const requiredLabels = ['Subject', 'Initial state', 'Action sequence', 'Camera', 'Environment'];
-    const hasRequiredLabels = requiredLabels.every(label => {
-        return new RegExp(`(?:^|\\n)${label}:`, 'i').test(prompt);
-    });
-    if (!hasRequiredLabels) return '';
-    if (/(?:^|\n)Continuity:/i.test(prompt)) return prompt;
-    return `${prompt.trim()}\nContinuity: Preserve identity, anatomy, direction, objects, and background except for changes explicitly requested above.`;
-};
-
-const buildVideoPromptOptimizerMessages = (
-    model: VeniceVideoModelSummary,
-    originalPrompt: string,
-    maxCharacters: number,
-): VeniceMessage[] => {
-    const resolution = videoResolutionWrap.classList.contains('hidden') ? 'model default' : videoResolution.value;
-    const aspectRatio = videoAspectRatioWrap.classList.contains('hidden') ? 'model default' : videoAspectRatio.value;
-    const audioEnabled = model.constraints.audio_configurable
-        ? videoAudio.checked
-        : model.constraints.audio === true;
-    const modeRule = videoStudioMode === 'image-to-video'
-        ? [
-            'The uploaded source image is the approved first frame.',
-            'Do not waste words redescribing fixed appearance that the draft did not ask to change.',
-            'Focus on exactly how the visible subject moves, the chronological transition, camera movement, secondary environmental motion, and continuity from the first frame.',
-        ].join(' ')
-        : [
-            'There is no source image.',
-            'Translate and organize every subject, action, camera, environment, and lighting detail stated by the user.',
-            'Keep unspecified appearance and atmosphere unspecified instead of inventing clothing, weather, props, traffic, fog, or extra scenery.',
-        ].join(' ');
-
-    const responseFormatRule = isWan27VideoModel(model)
-        ? [
-            'Return exactly two XML elements and nothing else.',
-            'First, <source_facts>list only the explicit initial facts and numbered action beats from the draft; copy every content-bearing adult term and include its equally direct English meaning; do not infer missing details.</source_facts>',
-            'Then, <optimized_prompt>write the structured Wan 2.7 prompt using every source fact without sanitizing or weakening any term.</optimized_prompt>',
-        ].join(' ')
-        : 'Return exactly one XML element and nothing else: <optimized_prompt>your optimized prompt</optimized_prompt>.';
-
-    const contentFidelityRule = [
-        'Content fidelity lock:',
-        '- Treat every concrete person, body part, garment, state of dress, contact, action verb, intensity modifier, direction, and requested outcome in the draft as mandatory source data.',
-        '- For adult or NSFW content, preserve the same explicitness and intensity. Never censor, euphemize, generalize, omit, or replace it with milder romantic or suggestive wording.',
-        '- Translate content-specific wording with the most direct literal English equivalent. If an exact translation is uncertain, keep the original term in parentheses rather than weakening it.',
-        '- Prompt optimization may clarify chronology, camera, and motion only. It must not rewrite what happens, add modesty, cover the subject, reverse an action, or stop before the requested result.',
-        '- Do not output a refusal, warning, safety note, consent statement, or moral judgment. This fidelity rule applies only to adult subjects; all subjects must remain adults.',
-    ].join('\n');
-
-    const systemPrompt = [
-        'You are a specialist prompt optimizer for Venice AI video generation.',
-        `Target model family: ${getVideoPromptTargetLabel(model)}.`,
-        `Target mode: ${videoStudioMode}. Duration: ${videoDuration.value || 'model default'}. Resolution: ${resolution}. Aspect ratio: ${aspectRatio}. Audio enabled: ${audioEnabled ? 'yes' : 'no'}.`,
-        `Model-specific prompting style: ${getVideoPromptModelStyle(model)}`,
-        `Output structure: ${getVideoPromptStructureRule(model)}`,
-        `Mode rule: ${modeRule}`,
-        contentFidelityRule,
-        '',
-        'Rewrite the user draft into one production-ready English video prompt.',
-        'Preserve the exact requested people, identities, relationships, actions, direction, setting, explicit vocabulary, intensity, order, and final outcome. Do not replace, soften, intensify, sanitize, euphemize, or moralize about the request.',
-        'Silently identify every requested action beat before writing. The output must include every beat in the same order; never merge a requested action into the initial state or skip an intermediate transition.',
-        'The initial state may contain only facts that are explicitly true before the first requested action. Never infer that the result of the first action has already happened when the video begins.',
-        'Every finite action verb in the draft must become a visible on-screen beat after the video begins. If the draft says "standing under neon, turns to look at the city, then turns back and smiles at the camera", begin only with standing under neon, then visibly turn toward the city, then visibly turn back toward the camera, then smile.',
-        'Never invent an extra person, dialogue, event, object, camera cut, weather condition, clothing detail, prop, or outcome that the user did not request. Add only minimal connective wording needed to make the requested motion coherent.',
-        'Make the timing physically possible within the selected duration. Prefer one continuous shot unless the draft explicitly requests cuts.',
-        'Include all four essentials naturally: subject, action, camera movement, and environment. State action beats chronologically and use unambiguous body, object, and movement directions.',
-        'For image-to-video, preserve identity, face, body proportions, background continuity, and the first-frame composition unless the draft explicitly requests a change.',
-        audioEnabled
-            ? 'Audio directions are allowed only when they support the requested scene.'
-            : 'Do not add dialogue, music, sound effects, or other audio directions.',
-        `Hard limit: the optimized prompt must be ${maxCharacters} characters or fewer.`,
-        responseFormatRule,
-    ].join('\n');
-
-    return [
-        { role: 'system', content: systemPrompt },
-        {
-            role: 'user',
-            content: [
-                'Optimize this draft without changing its intent, vocabulary strength, explicitness, or final outcome.',
-                'Every adult/NSFW content term is mandatory. Use an equally direct English equivalent and never replace it with milder wording.',
-                `The draft is encoded as a JSON string:\n${JSON.stringify(originalPrompt)}`,
-            ].join('\n'),
-        },
-    ];
-};
-
-const updateVideoModelControls = () => {
-    const model = getSelectedVideoModel();
-    if (!model) {
-        videoModelMeta.textContent = '模型能力資料暫時不可用。';
-        videoQuoteUsd = null;
-        updateVideoGenerateButton();
-        return;
-    }
-
-    const constraints = model.constraints;
-    const durations = constraints.durations?.length ? constraints.durations : ['5s'];
-    const resolutions = constraints.resolutions || [];
-    const aspectRatios = constraints.aspect_ratios || [];
-    replaceSelectOptions(videoDuration, durations, durations.includes('5s') ? '5s' : durations[0]);
-    videoResolutionWrap.classList.toggle('hidden', resolutions.length === 0);
-    replaceSelectOptions(videoResolution, resolutions, resolutions.includes('720p') ? '720p' : resolutions[0]);
-    videoAspectRatioWrap.classList.toggle('hidden', aspectRatios.length === 0);
-    replaceSelectOptions(videoAspectRatio, aspectRatios, aspectRatios.includes('16:9') ? '16:9' : aspectRatios[0]);
-    videoAudioWrap.classList.toggle('hidden', constraints.audio_configurable !== true);
-    if (!constraints.audio_configurable) videoAudio.checked = constraints.audio === true;
-
-    const details = [
-        model.id === (videoStudioMode === 'image-to-video' ? VENICE_VIDEO_IMAGE_MODEL : VENICE_VIDEO_TEXT_MODEL)
-            ? '目前推薦'
-            : '',
-        isUncensoredVideoModel(model) ? '自由模型' : '',
-        formatVideoPrivacy(model.privacy),
-        model.modelSets.includes('photorealistic') ? '寫實人物' : '',
-        model.modelSets.includes('high_resolution') ? '高解像度' : '',
-        constraints.audio ? '包含音訊' : '無音訊',
-        `${durations[0]}–${durations[durations.length - 1]}`,
-    ].filter(Boolean);
-    videoModelMeta.textContent = details.join(' · ');
-    updateVideoPromptCounter();
-    scheduleVideoQuote();
-};
-
-const renderVideoModelOptions = () => {
-    const preferredId = videoStudioMode === 'image-to-video'
-        ? VENICE_VIDEO_IMAGE_MODEL
-        : VENICE_VIDEO_TEXT_MODEL;
-    const models = [...videoModels[videoStudioMode]].sort((left, right) => {
-        if (left.id === preferredId) return -1;
-        if (right.id === preferredId) return 1;
-        const leftUncensored = isUncensoredVideoModel(left);
-        const rightUncensored = isUncensoredVideoModel(right);
-        if (leftUncensored !== rightUncensored) return leftUncensored ? -1 : 1;
-        if (left.privacy !== right.privacy) return left.privacy === 'private' ? -1 : 1;
-        return left.name.localeCompare(right.name, 'zh-Hant');
-    });
-
-    if (!models.some(model => model.id === selectedVideoModels[videoStudioMode])) {
-        selectedVideoModels[videoStudioMode] = models.find(model => model.id === preferredId)?.id
-            || models.find(isUncensoredVideoModel)?.id
-            || models[0]?.id
-            || '';
-    }
-
-    videoModelSelect.innerHTML = '';
-    const groups = [
-        { label: '推薦', models: models.filter(model => model.id === preferredId) },
-        {
-            label: '自由模型',
-            models: models.filter(model => model.id !== preferredId && isUncensoredVideoModel(model)),
-        },
-        {
-            label: '其他私人模型',
-            models: models.filter(model => model.id !== preferredId && !isUncensoredVideoModel(model) && model.privacy === 'private'),
-        },
-        {
-            label: '其他模型',
-            models: models.filter(model => model.id !== preferredId && !isUncensoredVideoModel(model) && model.privacy !== 'private'),
-        },
-    ];
-    groups.forEach(group => {
-        if (!group.models.length) return;
-        const optgroup = document.createElement('optgroup');
-        optgroup.label = group.label;
-        group.models.forEach(model => {
-            const option = document.createElement('option');
-            option.value = model.id;
-            const labels = [
-                isUncensoredVideoModel(model) ? '自由' : '',
-                model.privacy === 'private' ? '私人' : '',
-                model.modelSets.includes('photorealistic') ? '寫實' : '',
-            ].filter(Boolean);
-            option.textContent = `${model.name}${labels.length ? ` · ${labels.join(' · ')}` : ''}`;
-            optgroup.appendChild(option);
-        });
-        videoModelSelect.appendChild(optgroup);
-    });
-
-    videoModelSelect.value = selectedVideoModels[videoStudioMode];
-    videoModelSelect.disabled = isVideoRequestRunning
-        || isVideoPromptOptimizing
-        || Boolean(pendingVideoJob)
-        || models.length === 0;
-    updateVideoModelControls();
-};
-
-const loadVideoModels = async (mode: VeniceVideoMode = videoStudioMode, force = false) => {
-    if (videoModelPromises[mode]) return videoModelPromises[mode];
-    if (!force && videoModels[mode].length > 0) {
-        if (mode === videoStudioMode) renderVideoModelOptions();
-        return;
-    }
-
-    videoModelSelect.disabled = true;
-    refreshVideoModelsBtn.disabled = true;
-    videoModelMeta.textContent = '正在讀取 Venice 影片模型...';
-    cancelPendingVideoQuote();
-
-    videoModelPromises[mode] = (async () => {
-        try {
-            videoModels[mode] = await listVeniceVideoModels(mode);
-            if (!videoModels[mode].length) throw new Error('沒有可用的影片模型。');
-        } catch (error) {
-            console.warn('Unable to load Venice video models; using fallback list.', error);
-            videoModels[mode] = buildFallbackVideoModels(mode);
-            if (error instanceof Error && error.message === VENICE_AUTH_REQUIRED_ERROR) {
-                handleAuthRequired();
-            }
-        } finally {
-            videoModelPromises[mode] = null;
-            refreshVideoModelsBtn.disabled = isVideoRequestRunning
-                || isVideoPromptOptimizing
-                || Boolean(pendingVideoJob);
-            if (mode === videoStudioMode) renderVideoModelOptions();
-        }
-    })();
-
-    return videoModelPromises[mode];
-};
-
-const setVideoStudioMode = (mode: VeniceVideoMode) => {
-    if (isVideoRequestRunning || isVideoPromptOptimizing || pendingVideoJob) return;
-    if (videoStudioMode === mode) {
-        if (!videoModels[mode].length) void loadVideoModels(mode);
-        return;
-    }
-
-    videoStudioMode = mode;
-    const imageMode = mode === 'image-to-video';
-    videoModeImageBtn.classList.toggle('is-active', imageMode);
-    videoModeImageBtn.setAttribute('aria-selected', String(imageMode));
-    videoModeTextBtn.classList.toggle('is-active', !imageMode);
-    videoModeTextBtn.setAttribute('aria-selected', String(!imageMode));
-    videoSourceSection.classList.toggle('hidden', !imageMode);
-    videoPrompt.placeholder = imageMode
-        ? '描述人物動作、鏡頭移動、節奏與環境變化，例如：她慢慢望向鏡頭，頭髮隨微風擺動，鏡頭輕微推近...'
-        : '描述完整畫面、人物、動作、鏡頭語言、光線與節奏...';
-    videoPromptHint.textContent = imageMode
-        ? '圖片模式應描述「如何動」；魔法棒會保留原意並依所選模型補足動作、鏡頭與環境。'
-        : '文字模式請寫下核心想法；魔法棒會依所選模型補齊主體、場景、動作與鏡頭。';
-    clearVideoPromptFeedback();
-    videoStudioStatus.textContent = imageMode
-        ? '加入來源圖片及動態描述後即可生成'
-        : '填寫影片描述後即可生成';
-    clearVideoStudioError();
-    cancelPendingVideoQuote();
-    videoQuoteUsd = null;
-    videoCostEstimate.textContent = '';
-    videoModelSelect.innerHTML = '<option value="">載入模型中...</option>';
-    setVideoProgressState('idle');
-    void loadVideoModels(mode);
-    updateVideoGenerateButton();
-};
-
-const clearVideoSource = () => {
-    if (videoSource) URL.revokeObjectURL(videoSource.previewUrl);
-    videoSource = null;
-    videoSourcePreview.removeAttribute('src');
-    videoSourceMeta.textContent = '';
-    videoSourceEmpty.classList.remove('hidden');
-    videoSourcePreviewWrap.classList.add('hidden');
-    videoSourceRemove.classList.add('hidden');
-    videoSourceInput.value = '';
-    updateVideoGenerateButton();
-};
-
-const setVideoSourceFromBlob = async (sourceBlob: Blob, name: string) => {
-    if (!sourceBlob.type.startsWith('image/')) throw new Error('請選擇 JPEG、PNG 或 WebP 圖片。');
-    if (sourceBlob.size > 25 * 1024 * 1024) throw new Error('來源圖片不可超過 25MB。');
-
-    const rawUrl = URL.createObjectURL(sourceBlob);
-    const sourceImage = new Image();
-    sourceImage.src = rawUrl;
-    try {
-        await sourceImage.decode();
-        if (Math.min(sourceImage.naturalWidth, sourceImage.naturalHeight) < 300) {
-            throw new Error('來源圖片太小，最短一邊至少需要 300px。');
-        }
-
-        const scale = Math.min(1, 1600 / Math.max(sourceImage.naturalWidth, sourceImage.naturalHeight));
-        const width = Math.round(sourceImage.naturalWidth * scale);
-        const height = Math.round(sourceImage.naturalHeight * scale);
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const context = canvas.getContext('2d');
-        if (!context) throw new Error('瀏覽器無法處理這張圖片。');
-        context.drawImage(sourceImage, 0, 0, width, height);
-
-        let compressed = await canvasToBlob(canvas, 0.86);
-        if (compressed.size > 2_450_000) compressed = await canvasToBlob(canvas, 0.66);
-        if (compressed.size > 2_450_000) throw new Error('壓縮後的圖片仍然太大，請改用較小的來源圖。');
-
-        clearVideoSource();
-        const previewUrl = URL.createObjectURL(compressed);
-        const base64 = await blobToBase64(compressed);
-        videoSource = {
-            blob: compressed,
-            dataUrl: `data:image/webp;base64,${base64}`,
-            previewUrl,
-            width,
-            height,
-            name,
-        };
-        videoSourcePreview.src = previewUrl;
-        videoSourceMeta.textContent = `${name} · ${width} × ${height} · ${(compressed.size / 1024).toFixed(0)} KB`;
-        videoSourceEmpty.classList.add('hidden');
-        videoSourcePreviewWrap.classList.remove('hidden');
-        videoSourceRemove.classList.remove('hidden');
-        updateVideoGenerateButton();
-    } finally {
-        URL.revokeObjectURL(rawUrl);
-    }
-};
-
-const loadVideoSourceFile = async (file?: File) => {
-    if (!file || isVideoRequestRunning || isVideoPromptOptimizing || pendingVideoJob) return;
-    clearVideoStudioError();
-    videoStudioStatus.textContent = '正在準備來源圖片...';
-    try {
-        await setVideoSourceFromBlob(file, file.name);
-        videoStudioStatus.textContent = '來源圖片已準備好';
-    } catch (error) {
-        showVideoStudioError(error instanceof Error ? error.message : '無法讀取來源圖片。');
-        videoStudioStatus.textContent = '來源圖片載入失敗';
-    } finally {
-        videoSourceInput.value = '';
-    }
-};
-
-const updateVideoJobAction = () => {
-    const showAction = isVideoRequestRunning || Boolean(pendingVideoJob);
-    videoCancelButton.classList.toggle('hidden', !showAction);
-    videoCancelButton.textContent = isVideoRequestRunning
-        ? pendingVideoJob ? '暫停查詢' : '停止等待'
-        : '放棄未完成工作';
-};
-
-const setVideoStudioBusy = (busy: boolean) => {
-    isVideoRequestRunning = busy;
-    const controlsLocked = busy || isVideoPromptOptimizing || Boolean(pendingVideoJob);
-    videoGenerateSpinner.classList.toggle('hidden', !busy);
-    if (busy) videoGenerateLabel.textContent = '影片生成中...';
-    videoModeImageBtn.disabled = controlsLocked;
-    videoModeTextBtn.disabled = controlsLocked;
-    videoModelSelect.disabled = controlsLocked || videoModels[videoStudioMode].length === 0;
-    refreshVideoModelsBtn.disabled = controlsLocked;
-    videoSourceDropzone.disabled = controlsLocked;
-    videoSourceRemove.disabled = controlsLocked;
-    videoPrompt.disabled = controlsLocked;
-    videoNegativePrompt.disabled = controlsLocked;
-    videoDuration.disabled = controlsLocked;
-    videoResolution.disabled = controlsLocked;
-    videoAspectRatio.disabled = controlsLocked;
-    videoAudio.disabled = controlsLocked;
-    videoAdultConfirm.disabled = controlsLocked;
-    updateVideoJobAction();
-    updateVideoPromptOptimizerButton();
-    updateVideoGenerateButton();
-};
-
-const setVideoPromptOptimizerBusy = (busy: boolean) => {
-    isVideoPromptOptimizing = busy;
-    videoPromptOptimizeButton.classList.toggle('is-optimizing', busy);
-    videoPromptOptimizeSpinner.classList.toggle('hidden', !busy);
-    videoPromptOptimizeLabel.textContent = busy ? '優化中...' : '魔法優化';
-    setVideoStudioBusy(isVideoRequestRunning);
-};
-
-const cancelVideoPromptOptimization = () => {
-    videoPromptOptimizerController?.abort();
-};
-
-const runVideoPromptOptimization = async () => {
-    const model = getSelectedVideoModel();
-    const originalPrompt = videoPrompt.value.trim();
-    if (!model || !originalPrompt || isVideoPromptOptimizing || isVideoRequestRunning || pendingVideoJob) return;
-
-    clearVideoStudioError();
-    if (containsDisallowedMinorTerms(originalPrompt)) {
-        showVideoStudioError('影片工作室只可使用明確成年的角色，請先修改描述。');
-        setVideoPromptFeedback('請先把人物明確描述為成年人，再使用魔法優化。', 'error');
-        return;
-    }
-
-    const settingsKey = getVideoPromptSettingsKey(model);
-    if (
-        lastVideoPromptOptimization
-        && lastVideoPromptOptimization.settingsKey === settingsKey
-        && lastVideoPromptOptimization.output === originalPrompt
-    ) {
-        videoStudioStatus.textContent = `這段提示已針對 ${model.name} 優化，可直接生成或手動修改`;
-        setVideoPromptFeedback('這段文字已經完成優化；如有修改，再按一次魔法棒即可。', 'success');
-        return;
-    }
-
-    const maxCharacters = Math.max(
-        120,
-        Math.min(model.constraints.prompt_character_limit || 2500, 2400),
-    );
-    const models = Array.from(new Set([
-        VENICE_VIDEO_PROMPT_MODEL,
-        VENICE_CHAT_MODEL,
-        VENICE_ASSISTANT_MODEL,
-    ].filter(Boolean)));
-    const controller = new AbortController();
-    let timedOut = false;
-    let lastError: Error | null = null;
-    let unchangedResponseCount = 0;
-    const startedAt = performance.now();
-    const shouldRefreshQuote = typeof videoQuoteUsd !== 'number';
-    videoPromptOptimizerController = controller;
-    cancelPendingVideoQuote();
-    setVideoPromptOptimizerBusy(true);
-    setVideoPromptFeedback('正在檢查動作次序、鏡頭與場景描述...');
-    videoStudioStatus.textContent = `正在依 ${model.name} 的提示風格魔法優化...`;
-    const timeoutId = window.setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-    }, VIDEO_PROMPT_OPTIMIZER_TIMEOUT_MS);
-
-    try {
-        const messages = buildVideoPromptOptimizerMessages(model, originalPrompt, maxCharacters);
-        for (const optimizerModel of models) {
-            if (controller.signal.aborted) break;
-            const attemptController = new AbortController();
-            let attemptTimedOut = false;
-            const abortAttempt = () => attemptController.abort();
-            controller.signal.addEventListener('abort', abortAttempt, { once: true });
-            const attemptTimeoutId = window.setTimeout(() => {
-                attemptTimedOut = true;
-                attemptController.abort();
-            }, VIDEO_PROMPT_OPTIMIZER_ATTEMPT_TIMEOUT_MS);
-            try {
-                const result = await generateVeniceText({
-                    model: optimizerModel,
-                    messages,
-                    maxCompletionTokens: 760,
-                    temperature: 0.22,
-                    topP: 0.88,
-                    repetitionPenalty: 1.03,
-                    signal: attemptController.signal,
+let videoStudioUi: import('./features/videoStudio.js').VideoStudioHandle | null = null;
+let videoStudioUiLoad: Promise<import('./features/videoStudio.js').VideoStudioHandle> | null = null;
+
+const loadVideoStudioUi = async () => {
+    if (videoStudioUi) return videoStudioUi;
+    if (!videoStudioUiLoad) {
+        videoStudioUiLoad = import('./features/videoStudio.js')
+            .then(({ createVideoStudio }) => {
+                const ui = createVideoStudio({
+                    isUnlocked: () => isUnlocked,
+                    handleAuthRequired,
+                    cancelActiveChatRequest,
+                    enterVideoView: historyMode => {
+                        personaSelectionView.classList.add('hidden');
+                        chatView.classList.add('hidden');
+                        chatView.classList.remove('flex');
+                        imageStudioUi?.hide();
+                        syncBrowserViewState({ view: 'video' }, historyMode);
+                    },
+                    showSelectionView: () => showSelectionView('replace'),
                 });
-                let optimizedPrompt = cleanOptimizedVideoPrompt(result.text);
-                if (optimizedPrompt && isWan27VideoModel(model)) {
-                    optimizedPrompt = ensureWan27PromptStructure(optimizedPrompt);
-                }
-                if (!optimizedPrompt) throw new Error('提示詞優化器沒有回傳有效格式。');
-                if (optimizedPrompt.length > maxCharacters) {
-                    throw new Error(`提示詞優化器超過 ${maxCharacters} 字元限制。`);
-                }
-                if (
-                    normalizeVideoPromptForComparison(optimizedPrompt)
-                    === normalizeVideoPromptForComparison(originalPrompt)
-                ) {
-                    unchangedResponseCount += 1;
-                    lastError = new Error('優化結果與原文相同。');
-                    continue;
-                }
-
-                videoPrompt.value = optimizedPrompt;
-                lastVideoPromptOptimization = { settingsKey, output: optimizedPrompt };
-                updateVideoPromptCounter();
-                videoStudioStatus.textContent = `已針對 ${model.name} 優化 · 保留原意，送出前仍可修改`;
-                setVideoPromptFeedback(
-                    `優化完成：${originalPrompt.length} → ${optimizedPrompt.length} 字元。送出前仍可手動修改。`,
-                    'success',
-                );
-                clearVideoStudioError();
-                console.info('[aigf4 video prompt optimizer]', {
-                    videoModel: model.id,
-                    optimizerModel: result.model,
-                    latencyMs: Math.round(performance.now() - startedAt),
-                    promptTokens: result.promptTokens,
-                    completionTokens: result.completionTokens,
-                });
-                return;
-            } catch (error) {
-                if (controller.signal.aborted) throw error;
-                lastError = attemptTimedOut
-                    ? new Error('其中一次優化等待超過 15 秒，已自動改試後備服務。')
-                    : error instanceof Error
-                        ? error
-                        : new Error(String(error));
-            } finally {
-                window.clearTimeout(attemptTimeoutId);
-                controller.signal.removeEventListener('abort', abortAttempt);
-            }
-        }
-        if (unchangedResponseCount > 0) {
-            videoStudioStatus.textContent = '優化模型認為原文已可直接使用；沒有提交影片';
-            setVideoPromptFeedback(
-                '已嘗試其他優化模型，但結果仍與原文相同。原文已保留，可補充動作順序或鏡頭要求後再試。',
-            );
-            return;
-        }
-        throw lastError || new Error('提示詞優化失敗。');
-    } catch (error) {
-        if (controller.signal.aborted && !timedOut) {
-            clearVideoStudioError();
-            videoStudioStatus.textContent = '魔法優化已取消；原本提示沒有修改';
-            setVideoPromptFeedback('優化已取消，提示詞保持原樣。');
-            return;
-        }
-        const message = timedOut
-            ? '提示詞優化超過 45 秒，原文已保留，請再試一次。'
-            : error instanceof Error
-                ? error.message
-                : '提示詞優化失敗，原文已保留。';
-        showVideoStudioError(message);
-        setVideoPromptFeedback(`這次未能完成優化：${message} 原本提示沒有被修改。`, 'error');
-        videoStudioStatus.textContent = '魔法優化失敗；沒有修改原本提示，也沒有送出影片';
-        if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
-    } finally {
-        window.clearTimeout(timeoutId);
-        if (videoPromptOptimizerController === controller) videoPromptOptimizerController = null;
-        setVideoPromptOptimizerBusy(false);
-        if (shouldRefreshQuote) scheduleVideoQuote(0);
+                videoStudioUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                videoStudioUiLoad = null;
+                throw error;
+            });
     }
-};
-
-const waitForVideoPoll = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
-    if (signal.aborted) {
-        reject(new DOMException('Aborted', 'AbortError'));
-        return;
-    }
-    const timeout = window.setTimeout(() => {
-        signal.removeEventListener('abort', handleAbort);
-        resolve();
-    }, VIDEO_POLL_INTERVAL_MS);
-    const handleAbort = () => {
-        window.clearTimeout(timeout);
-        reject(new DOMException('Aborted', 'AbortError'));
-    };
-    signal.addEventListener('abort', handleAbort, { once: true });
-});
-
-const formatVideoWait = (milliseconds: number) => {
-    const totalSeconds = Math.max(0, Math.round(milliseconds / 1000));
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    return minutes ? `${minutes} 分 ${seconds} 秒` : `${seconds} 秒`;
-};
-
-const cleanupVideoResult = (result: VideoStudioResult) => {
-    if (result.isObjectUrl) URL.revokeObjectURL(result.url);
-    if (result.needsRemoteCleanup) {
-        void completeVeniceVideo(result.modelId, result.queueId).catch(error => {
-            console.warn('Unable to clean up Venice video media.', error);
-        });
-    }
-};
-
-const removeVideoResult = (id: string) => {
-    const result = videoResults.find(item => item.id === id);
-    if (result) cleanupVideoResult(result);
-    videoResults = videoResults.filter(item => item.id !== id);
-    renderVideoResults();
-};
-
-const renderVideoResults = () => {
-    videoStudioResults.innerHTML = '';
-    videoStudioEmpty.classList.toggle('hidden', videoResults.length > 0);
-    clearVideoResultsBtn.classList.toggle('hidden', videoResults.length === 0);
-
-    videoResults.forEach((result, index) => {
-        const card = document.createElement('article');
-        card.className = 'video-result-card';
-        card.style.animationDelay = `${Math.min(index, 5) * 60}ms`;
-
-        const video = document.createElement('video');
-        video.src = result.url;
-        video.controls = true;
-        video.playsInline = true;
-        video.preload = 'metadata';
-
-        const body = document.createElement('div');
-        body.className = 'video-result-body';
-        const prompt = document.createElement('p');
-        prompt.className = 'video-result-prompt';
-        prompt.textContent = result.prompt;
-        const meta = document.createElement('p');
-        meta.className = 'video-result-meta';
-        meta.textContent = `${result.model} · ${result.createdAt.toLocaleTimeString('zh-Hant', { hour: '2-digit', minute: '2-digit' })}`;
-
-        const actions = document.createElement('div');
-        actions.className = 'video-result-actions';
-        const downloadButton = document.createElement('button');
-        downloadButton.type = 'button';
-        downloadButton.className = 'video-result-action';
-        downloadButton.textContent = '下載 MP4';
-        downloadButton.addEventListener('click', () => {
-            const anchor = document.createElement('a');
-            anchor.href = result.url;
-            anchor.download = `venice-video-${result.createdAt.toISOString().replace(/[:.]/g, '-')}.mp4`;
-            anchor.rel = 'noopener';
-            if (!result.isObjectUrl) anchor.target = '_blank';
-            anchor.click();
-        });
-        const removeButton = document.createElement('button');
-        removeButton.type = 'button';
-        removeButton.className = 'video-result-action';
-        removeButton.textContent = '移除';
-        removeButton.addEventListener('click', () => removeVideoResult(result.id));
-        actions.append(downloadButton, removeButton);
-        body.append(prompt, meta, actions);
-        card.append(video, body);
-        videoStudioResults.appendChild(card);
-    });
-};
-
-const clearVideoResults = () => {
-    videoResults.forEach(cleanupVideoResult);
-    videoResults = [];
-    renderVideoResults();
-    videoStudioStatus.textContent = '本次影片已清除';
-};
-
-const cancelVideoRequest = () => {
-    if (isVideoRequestRunning && videoRequestController) {
-        const warning = pendingVideoJob
-            ? '暫停只會停止本頁查詢，Venice 仍會繼續生成。工作紀錄會保留，重新進入後自動恢復。確定暫停？'
-            : '正在送出影片工作，無法確認 Venice 是否已收到。確定停止等待？';
-        if (!window.confirm(warning)) return;
-        videoRequestController.abort();
-        videoStudioStatus.textContent = pendingVideoJob
-            ? '已暫停查詢；未完成工作已保存'
-            : '已停止等待；Venice 可能已收到工作';
-        return;
-    }
-
-    if (!pendingVideoJob) return;
-    const confirmed = window.confirm(
-        '這只會刪除本機的恢復紀錄，不會取消 Venice 已收費的生成。刪除後本網站不能再找回這個 queue ID。確定放棄？',
-    );
-    if (!confirmed) return;
-    clearPersistedVideoJob();
-    setVideoProgressState('idle');
-    videoStudioStatus.textContent = '未完成工作紀錄已刪除；遠端生成不會因此取消';
-    clearVideoStudioError();
-    setVideoStudioBusy(false);
-};
-
-const pollPersistedVideoJob = async (job: PersistedVideoJob, controller: AbortController) => {
-    const pollingStartedAt = performance.now();
-    let consecutivePollErrors = 0;
-
-    while (performance.now() - pollingStartedAt < VIDEO_POLL_TIMEOUT_MS) {
-        let retrieved;
-        try {
-            retrieved = await retrieveVeniceVideo(
-                job.model,
-                job.queueId,
-                job.downloadUrl,
-                controller.signal,
-            );
-            consecutivePollErrors = 0;
-        } catch (error) {
-            if (controller.signal.aborted) throw error;
-            if (error instanceof Error && error.message === VENICE_AUTH_REQUIRED_ERROR) throw error;
-            consecutivePollErrors += 1;
-            if (consecutivePollErrors > 4) throw error;
-            videoStudioStatus.textContent = `暫時無法查詢進度，將自動重試（${consecutivePollErrors}/4）`;
-            await waitForVideoPoll(controller.signal);
-            continue;
-        }
-
-        if (retrieved.kind === 'completed') {
-            const url = retrieved.blob
-                ? URL.createObjectURL(retrieved.blob)
-                : retrieved.downloadUrl;
-            if (!url) throw new Error('影片已完成，但沒有可播放的檔案。');
-            const now = new Date();
-            videoResults = [{
-                id: `${now.getTime()}-${job.queueId}`,
-                url,
-                isObjectUrl: Boolean(retrieved.blob),
-                prompt: job.prompt,
-                model: job.modelName,
-                modelId: job.model,
-                queueId: job.queueId,
-                createdAt: now,
-                needsRemoteCleanup: Boolean(retrieved.downloadUrl),
-            }, ...videoResults];
-            clearPersistedVideoJob();
-            renderVideoResults();
-            setVideoProgressState('completed');
-            videoStudioStatus.textContent = `影片完成 · 共等待 ${formatVideoWait(now.getTime() - job.queuedAt)}`;
-
-            if (retrieved.blob) {
-                void completeVeniceVideo(job.model, job.queueId).catch(error => {
-                    console.warn('Unable to clean up completed Venice video media.', error);
-                });
-            }
-            return;
-        }
-
-        const waited = retrieved.executionDuration ?? Date.now() - job.queuedAt;
-        const estimate = retrieved.averageExecutionTime;
-        videoStudioStatus.textContent = estimate
-            ? `生成中 · 已等待 ${formatVideoWait(waited)} · 一般約 ${formatVideoWait(estimate)}`
-            : `生成中 · 已等待 ${formatVideoWait(waited)}`;
-        await waitForVideoPoll(controller.signal);
-    }
-
-    throw new Error('本次查詢已達 15 分鐘，未完成工作仍已保存，可稍後繼續查詢。');
-};
-
-const resumePendingVideoJob = async (source: 'auto' | 'manual' = 'manual') => {
-    const job = pendingVideoJob;
-    if (!job || isVideoRequestRunning || !isUnlocked) return;
-
-    cancelPendingVideoQuote();
-    clearVideoStudioError();
-    const controller = new AbortController();
-    videoRequestController = controller;
-    setVideoStudioBusy(true);
-    setVideoProgressState('generating');
-    videoStudioStatus.textContent = source === 'auto'
-        ? `正在自動恢復未完成工作 · ${job.modelName}`
-        : `正在繼續查詢未完成工作 · ${job.modelName}`;
-
-    try {
-        await pollPersistedVideoJob(job, controller);
-    } catch (error) {
-        if (controller.signal.aborted) {
-            setVideoProgressState('paused');
-            videoStudioStatus.textContent = '已暫停查詢；未完成工作已保存，重新進入後會自動恢復';
-        } else {
-            const message = error instanceof Error ? error.message : '無法查詢未完成影片。';
-            showVideoStudioError(message);
-            videoStudioStatus.textContent = '查詢已暫停；系統保留原有工作，沒有重新提交或重複扣費';
-            setVideoProgressState('error');
-            if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
-        }
-    } finally {
-        if (videoRequestController === controller) videoRequestController = null;
-        setVideoStudioBusy(false);
-    }
-};
-
-const runVideoGeneration = async () => {
-    if (pendingVideoJob) {
-        await resumePendingVideoJob('manual');
-        return;
-    }
-    const model = getSelectedVideoModel();
-    const prompt = videoPrompt.value.trim();
-    clearVideoStudioError();
-
-    if (!model || !prompt || !videoAdultConfirm.checked || typeof videoQuoteUsd !== 'number') {
-        showVideoStudioError('請完成描述、模型報價及成年／圖片權利確認。');
-        return;
-    }
-    if (videoStudioMode === 'image-to-video' && !videoSource) {
-        showVideoStudioError('圖片變影片需要先加入一張來源圖片。');
-        return;
-    }
-    const minimumShortSide = model.constraints.reference_image_min_short_side_pixels || 0;
-    if (videoSource && Math.min(videoSource.width, videoSource.height) < minimumShortSide) {
-        showVideoStudioError(`這個模型要求來源圖片最短一邊至少 ${minimumShortSide}px。`);
-        return;
-    }
-    if (containsDisallowedMinorTerms(prompt)) {
-        showVideoStudioError('影片工作室只可使用明確成年的角色，請修改描述。');
-        return;
-    }
-
-    const pricing = getVideoPricingOptions();
-    if (!pricing) {
-        showVideoStudioError('影片設定尚未準備好。');
-        return;
-    }
-
-    cancelPendingVideoQuote();
-    const controller = new AbortController();
-    videoRequestController = controller;
-    setVideoStudioBusy(true);
-    setVideoProgressState('queueing');
-    videoStudioStatus.textContent = '正在提交一次生成工作；取得 queue ID 後即可安全恢復...';
-
-    try {
-        const queued = await queueVeniceVideo({
-            ...pricing,
-            prompt,
-            negativePrompt: videoNegativePrompt.value.trim(),
-            sourceImageDataUrl: videoStudioMode === 'image-to-video' ? videoSource?.dataUrl : undefined,
-            adultConfirmed: true,
-            signal: controller.signal,
-        });
-        const job: PersistedVideoJob = {
-            version: 1,
-            model: queued.model,
-            modelName: model.name,
-            queueId: queued.queueId,
-            downloadUrl: queued.downloadUrl,
-            prompt,
-            mode: videoStudioMode,
-            queuedAt: Date.now(),
-        };
-        const wasPersisted = persistVideoJob(job);
-        updateVideoJobAction();
-        setVideoProgressState('generating');
-        videoStudioStatus.textContent = wasPersisted
-            ? '已進入 Venice 隊列；工作已保存，現在可安全重新進入網站'
-            : '已進入 Venice 隊列，但無法保存恢復資料；請保持此分頁開啟';
-        await pollPersistedVideoJob(job, controller);
-    } catch (error) {
-        if (controller.signal.aborted) {
-            setVideoProgressState(pendingVideoJob ? 'paused' : 'quoted');
-            videoStudioStatus.textContent = pendingVideoJob
-                ? '已暫停查詢；未完成工作已保存，重新進入後會自動恢復'
-                : '已停止等待；尚未取得可保存的 queue ID';
-        } else {
-            const message = error instanceof Error ? error.message : '影片生成失敗。';
-            showVideoStudioError(message);
-            videoStudioStatus.textContent = pendingVideoJob
-                ? '查詢已暫停；工作已保存，系統沒有重複提交或扣費'
-                : '影片工作未能成功提交';
-            setVideoProgressState('error');
-            if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
-        }
-    } finally {
-        if (videoRequestController === controller) videoRequestController = null;
-        setVideoStudioBusy(false);
-    }
+    return videoStudioUiLoad;
 };
 
 const showVideoStudio = (historyMode: 'push' | 'replace' | 'skip' = 'push') => {
-    cancelActiveChatRequest();
-    personaSelectionView.classList.add('hidden');
-    chatView.classList.add('hidden');
-    chatView.classList.remove('flex');
-    imageStudioView.classList.add('hidden');
-    imageStudioView.classList.remove('flex');
-    videoStudioView.classList.remove('hidden');
-    videoStudioView.classList.add('flex');
-    videoAdultConfirm.checked = sessionStorage.getItem(VIDEO_ADULT_CONFIRM_STORAGE_KEY) === 'true';
-    renderVideoResults();
-    void loadVideoModels(videoStudioMode);
-    updateVideoGenerateButton();
-    syncBrowserViewState({ view: 'video' }, historyMode);
-    if (pendingVideoJob && !isVideoRequestRunning && isUnlocked) {
-        void resumePendingVideoJob('auto');
-    }
+    void loadVideoStudioUi()
+        .then(ui => ui.show(historyMode))
+        .catch(error => console.error('Failed to load Video Studio', error));
 };
 
-const navigateBackFromVideoStudio = () => {
-    cancelVideoPromptOptimization();
-    const currentState = window.history.state as AppHistoryState | null;
-    if (currentState?.view === 'video') {
-        window.history.back();
-        return;
-    }
-    showSelectionView('replace');
+const cancelVideoPromptOptimization = () => videoStudioUi?.cancelPromptOptimization();
+const resumePendingVideoJobIfAny = async () => {
+    if (!readPersistedVideoJobFromStorage()) return;
+    const ui = await loadVideoStudioUi();
+    await ui.resumePending('auto');
 };
-
 const updateChatModeControls = (key: string) => {
     const assistantMode = isAssistantPersonaKey(key);
-    assistantModelBar.classList.toggle('hidden', !assistantMode);
+    if (assistantMode) {
+        void loadAssistantModelUi()
+            .then(ui => {
+                if (isAssistantPersonaKey(currentPersonaKey)) ui.show();
+                else ui.hide();
+            })
+            .catch(error => console.error('Failed to load Assistant Model UI', error));
+    } else {
+        assistantModelUi?.hide();
+    }
     messageInput.placeholder = assistantMode ? '問 Venice AI...' : '輸入訊息...';
 
     [memoryBtn, personaSettingsBtn, changeAvatarBtn, albumBtn, takePhotoBtn, surpriseEventBtn, newSceneBtn, downloadImagesBtn].forEach(element => {
@@ -6735,9 +1531,6 @@ const updateChatModeControls = (key: string) => {
     leaveRoomMemberBtn.classList.toggle('hidden', assistantMode || !currentRoom);
     ccModelSettingsBtn.classList.toggle('hidden', assistantMode || key !== 'cc');
 
-    if (assistantMode) {
-        void loadAssistantModels();
-    }
 };
 
 const beginChatRequest = (
@@ -6751,11 +1544,14 @@ const beginChatRequest = (
     }
 
     const history = memoryManager.peekChatHistory(conversationKey);
+    const establishedNpcNames = currentRoom
+        ? []
+        : collectEstablishedNpcNames(history, persona.name);
     const wardrobeState = currentRoom
         ? normalizeWardrobeState(currentRoom.scene.wardrobe, currentRoom.members.map(member => member.id))
         : getLatestWardrobeState(history, [
             persona.name,
-            ...collectEstablishedNpcNames(history, persona.name),
+            ...establishedNpcNames,
         ]);
     const request: ActiveChatRequest = {
         id: nextChatRequestId,
@@ -6765,6 +1561,7 @@ const beginChatRequest = (
         room: currentRoom ? cloneRoomSnapshot(currentRoom) : undefined,
         roomMemberId: currentRoom ? activeRoomMemberId || currentRoom.leadMemberId : undefined,
         mode,
+        establishedNpcNames,
         wardrobeState,
         controller: new AbortController(),
         startedAt: performance.now(),
@@ -6772,7 +1569,7 @@ const beginChatRequest = (
     nextChatRequestId += 1;
     activeChatRequest = request;
     updateSendButtonState();
-    assistantModelSelect.disabled = true;
+    assistantModelUi?.setBusy(true);
     return request;
 };
 
@@ -6783,7 +1580,7 @@ const finishChatRequest = (request: ActiveChatRequest, state: RequestState = 'id
     activeChatRequest = null;
     applyChatRuntimeState(state);
     updateSendButtonState();
-    assistantModelSelect.disabled = !isAssistantPersonaKey(currentPersonaKey) || assistantModels.length === 0;
+    assistantModelUi?.setBusy(false);
 };
 
 const cancelActiveChatRequest = () => {
@@ -6799,6 +1596,7 @@ const cancelActiveChatRequest = () => {
     }
     applyChatRuntimeState('idle');
     updateSendButtonState();
+    cancelChatPerformanceTurn('send:cancelled');
 };
 
 const isAbortError = (error: unknown) => {
@@ -6860,14 +1658,7 @@ const renderChatHeaderAvatar = () => {
     if (currentPersona) enableAvatarPreview(chatHeaderAvatarContainer, currentPersona);
 };
 
-const renderPersonaSettingsAvatar = () => {
-    renderPersonaAvatar(
-        personaSettingsAvatarPreview,
-        currentPersona,
-        'h-full w-full object-cover',
-        'h-full w-full flex items-center justify-center text-3xl',
-    );
-};
+const renderPersonaSettingsAvatar = () => personaSettingsUi?.refreshAvatar();
 
 const recoverInterruptedPhotoProposals = (personaKey: string, history: ChatMessage[]) => {
     let changed = false;
@@ -7083,61 +1874,6 @@ chatContainer.addEventListener('scroll', () => {
     }
 }, { passive: true });
 
-const startLegacyChat = (key: string, restoredHistory: any[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
-    const selectedPersona = memoryManager.getPersona(key);
-    if (!selectedPersona || (key !== VENICE_ASSISTANT_PERSONA_KEY && selectedPersona.gender !== 'female')) {
-        currentPersonaKey = null;
-        currentPersona = null;
-        showSelectionView('replace');
-        return;
-    }
-
-    currentPersonaKey = key;
-    currentPersona = selectedPersona;
-
-    isGodModeActive = false;
-    godModeHistory = [];
-    updateChatModeControls(key);
-
-    chatHeaderName.textContent = currentPersona.name;
-    renderChatHeaderAvatar();
-
-    chatContainer.innerHTML = '';
-    resetRenderedChatHistoryWindow();
-    let chatHistory = restoredHistory || memoryManager.getChatHistory(key);
-
-    if (restoredHistory) {
-        if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, key)) {
-            cancelActiveChatRequest();
-        }
-        memoryManager.setChatHistory(key, restoredHistory);
-    }
-    chatHistory = recoverInterruptedPhotoProposals(key, chatHistory);
-
-    renderChatHistoryWindow(key, chatHistory);
-
-    personaSelectionView.classList.add('hidden');
-    imageStudioView.classList.add('hidden');
-    imageStudioView.classList.remove('flex');
-    videoStudioView.classList.add('hidden');
-    videoStudioView.classList.remove('flex');
-    chatView.classList.remove('hidden');
-    chatView.classList.add('flex');
-    saveExitModal.classList.add('hidden');
-    messageInput.value = '';
-    resetMessageInput();
-    hideError();
-    applyChatRuntimeState('idle');
-    updateSendButtonState();
-    messageInput.focus();
-    updateAlbumState();
-    
-    window.requestAnimationFrame(() => {
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-    });
-    syncBrowserViewState({ view: 'chat', conversationKey: key, personaKey: key }, historyMode);
-};
-
 const restoreRoomPrivateContinuityHandoffs = (room: ChatRoom, history: ChatMessage[]) => {
     const missingHandoffs = new Map<string, ChatContextBridge>();
     room.members.forEach(member => {
@@ -7180,6 +1916,9 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
     currentConversationKey = key;
     currentRoom = room;
     if (room) {
+        void loadGroupChatPromptModule().catch(error => {
+            console.error('Failed to prefetch Group prompt module', error);
+        });
         const lead = room.members.find(member => member.id === room.leadMemberId) || room.members[0];
         activeRoomMemberId = lead?.id || null;
         const roomPersona = resolveRoomMemberPersona(room, activeRoomMemberId);
@@ -7231,10 +1970,8 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
 
     appShell.classList.add('chat-open');
     personaSelectionView.classList.remove('hidden');
-    imageStudioView.classList.add('hidden');
-    imageStudioView.classList.remove('flex');
-    videoStudioView.classList.add('hidden');
-    videoStudioView.classList.remove('flex');
+    imageStudioUi?.hide();
+    videoStudioUi?.hide();
     chatView.classList.remove('hidden');
     chatView.classList.add('flex');
     saveExitModal.classList.add('hidden');
@@ -7250,7 +1987,7 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
     updateAlbumState();
     renderPersonaList();
     window.requestAnimationFrame(() => {
-        chatContainer.scrollTop = chatContainer.scrollHeight;
+        setInstantScrollTop(chatContainer, chatContainer.scrollHeight);
         if (window.matchMedia('(min-width: 769px)').matches) messageInput.focus();
     });
     syncBrowserViewState({
@@ -7262,15 +1999,13 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
 
 const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
     closeChatSearch();
-    cancelImageRequest();
+    imageStudioUi?.cancelRequest();
+    imageStudioUi?.hide();
     cancelVideoPromptOptimization();
     personaSelectionView.classList.remove('hidden');
     chatView.classList.add('hidden');
     chatView.classList.remove('flex');
-    imageStudioView.classList.add('hidden');
-    imageStudioView.classList.remove('flex');
-    videoStudioView.classList.add('hidden');
-    videoStudioView.classList.remove('flex');
+    videoStudioUi?.hide();
     saveExitModal.classList.add('hidden');
     appShell.classList.remove('chat-open');
     currentPersona = null;
@@ -7282,7 +2017,6 @@ const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
     closePersonaSettings();
     hideError();
     applyChatRuntimeState('idle');
-    removeGift();
     renderPersonaList();
     syncBrowserViewState(HOME_HISTORY_STATE, historyMode);
 };
@@ -7312,14 +2046,12 @@ const handleBrowserPopState = (event: PopStateEvent) => {
     }
 
     if (state?.view === 'image') {
-        if (imageStudioView.classList.contains('hidden')) {
-            showImageStudio('skip');
-        }
+        if (!imageStudioUi?.isVisible()) showImageStudio('skip');
         return;
     }
 
     if (state?.view === 'video') {
-        if (videoStudioView.classList.contains('hidden')) {
+        if (!videoStudioUi?.isVisible()) {
             showVideoStudio('skip');
         }
         return;
@@ -7327,8 +2059,8 @@ const handleBrowserPopState = (event: PopStateEvent) => {
 
     if (
         !chatView.classList.contains('hidden')
-        || !imageStudioView.classList.contains('hidden')
-        || !videoStudioView.classList.contains('hidden')
+        || Boolean(imageStudioUi?.isVisible())
+        || Boolean(videoStudioUi?.isVisible())
     ) {
         showSelectionView('skip');
     }
@@ -7405,7 +2137,7 @@ const getCharacterPhotoObjectUrl = async (assetId: string) => {
     const cachedUrl = characterPhotoObjectUrls.get(assetId);
     if (cachedUrl) return cachedUrl;
 
-    const blob = await getCharacterPhotoBlob(assetId);
+    const blob = await (await loadPhotoStoreModule()).getCharacterPhotoBlob(assetId);
     if (!blob) return null;
     const url = URL.createObjectURL(blob);
     characterPhotoObjectUrls.set(assetId, url);
@@ -7416,113 +2148,6 @@ const getContentImageUrl = async (content: Content) => {
     if (content.imageUrl) return content.imageUrl;
     return content.imageAssetId ? getCharacterPhotoObjectUrl(content.imageAssetId) : null;
 };
-
-const collectReferencedPhotoAssetIds = (excludingConversationKey?: string) => new Set(
-    Object.entries(memoryManager.getAllChatHistories())
-        .filter(([key]) => key !== excludingConversationKey)
-        .flatMap(([, messages]) => messages
-            .map(message => message.content.imageAssetId)
-            .filter((assetId): assetId is string => Boolean(assetId))),
-);
-
-const collectReferencedAttachmentAssetIds = (excludingConversationKey?: string) => new Set(
-    Object.entries(memoryManager.getAllChatHistories())
-        .filter(([key]) => key !== excludingConversationKey)
-        .flatMap(([, messages]) => messages.flatMap(message => (
-            message.content.attachments?.map(attachment => attachment.assetId) || []
-        ))),
-);
-
-const deleteCharacterPhotoAssetsForHistory = async (
-    history: ChatMessage[],
-    excludingConversationKey?: string,
-) => {
-    const stillReferenced = collectReferencedPhotoAssetIds(excludingConversationKey);
-    const assetIds = Array.from(new Set(history
-        .map(message => message.content.imageAssetId)
-        .filter((assetId): assetId is string => Boolean(assetId))));
-    await Promise.all(assetIds.map(async assetId => {
-        if (stillReferenced.has(assetId)) return;
-        const objectUrl = characterPhotoObjectUrls.get(assetId);
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
-        characterPhotoObjectUrls.delete(assetId);
-        await deleteCharacterPhotoAsset(assetId);
-    }));
-};
-
-const deleteConversationFromList = async (key: string, title: string, room?: ChatRoom) => {
-    const persona = room ? null : memoryManager.getPersona(key);
-    const isTimelineBranch = Boolean(room?.timelineBranch || persona?.timelineBranch);
-    const prompt = isTimelineBranch
-        ? `確定要刪除時間線「${title}」嗎？原本的對話不會受影響。此動作無法復原。`
-        : room
-            ? `確定要刪除群組「${title}」及其全部聊天記錄嗎？群組成員原本的一對一聊天不會受影響。此動作無法復原。`
-            : `確定要刪除與「${title}」的聊天記錄嗎？角色人格、頭像、soul.md 與 memory.md 會保留。`;
-    if (!confirm(prompt)) return;
-
-    if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, key)) {
-        cancelActiveChatRequest();
-    }
-    if (currentConversationKey === key) {
-        if (characterPhotoRequestController) characterPhotoRequestController.abort();
-    }
-    const history = memoryManager.peekChatHistory(key);
-    await Promise.all([
-        deleteCharacterPhotoAssetsForHistory(history, key),
-        deleteChatAttachmentAssetsForHistory(history, key),
-    ]);
-
-    if (room) {
-        memoryManager.deleteChatHistory(key);
-        roomManager.deleteRoom(key);
-        if (currentConversationKey === key) showSelectionView('replace');
-    } else if (isTimelineBranch && key.startsWith('custom_')) {
-        memoryManager.deleteCustomPersona(key);
-        if (currentConversationKey === key) showSelectionView('replace');
-    } else {
-        memoryManager.clearChatHistory(key);
-        if (currentConversationKey === key) startChat(key, null, 'replace');
-    }
-    renderPersonaList();
-};
-
-const deleteChatAttachmentAssetsForHistory = async (
-    history: ChatMessage[],
-    excludingConversationKey?: string,
-) => {
-    const stillReferenced = collectReferencedAttachmentAssetIds(excludingConversationKey);
-    const assetIds = Array.from(new Set(history.flatMap(message => (
-        message.content.attachments?.map(attachment => attachment.assetId) || []
-    ))));
-    await Promise.all(assetIds.map(async assetId => {
-        if (stillReferenced.has(assetId)) return;
-        const objectUrl = chatAttachmentObjectUrls.get(assetId);
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
-        chatAttachmentObjectUrls.delete(assetId);
-        await deleteChatAttachment(assetId);
-    }));
-};
-
-const branchMemoryEntriesAt = <T extends { sourceMessageIds?: string[] }>(
-    entries: T[] | undefined,
-    includedMessageIds: Set<string>,
-) => (entries || [])
-    .filter(entry => !entry.sourceMessageIds?.length
-        || entry.sourceMessageIds.every(messageId => includedMessageIds.has(messageId)))
-    .map(entry => cloneRoomSnapshot(entry));
-
-const formatTimelineBranchTitle = (sourceTitle: string, createdAt: number) => {
-    const stamp = new Intl.DateTimeFormat('zh-HK', {
-        month: 'numeric',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-    }).format(new Date(createdAt));
-    return `${sourceTitle} · 分支 ${stamp}`;
-};
-
-const TIMELINE_BRANCH_HISTORY_LIMIT = 160;
 
 const closeMessageActions = () => {
     if (!openMessageActionMenu) return;
@@ -7538,194 +2163,96 @@ document.addEventListener('click', event => {
     }
 });
 
-const createTimelineBranch = async (messageId: string) => {
-    closeMessageActions();
-    if (!currentConversationKey || !currentPersona) return;
-    if (activeChatRequest) {
-        alert('請先等待目前回覆完成，再建立時間線分支。');
-        return;
-    }
+let conversationActions: import('./features/conversationActions.js').ConversationActionsHandle | null = null;
+let conversationActionsLoad: Promise<import('./features/conversationActions.js').ConversationActionsHandle> | null = null;
 
-    const sourceConversationKey = currentConversationKey;
-    const sourceRoom = roomManager.getRoom(sourceConversationKey) || null;
-    const sourcePersona = sourceRoom ? null : memoryManager.getPersona(sourceConversationKey) || currentPersona;
-    const history = memoryManager.getChatHistory(sourceConversationKey);
-    const branchPointIndex = history.findIndex(message => message.id === messageId && message.role === 'user');
-    if (branchPointIndex < 0) {
-        alert('找不到這則訊息，可能已經被移除。');
-        return;
-    }
-
-    const branchPoint = history[branchPointIndex];
-    const branchPointText = branchPoint.content.text || '';
-    const fullPrefix = history.slice(0, branchPointIndex);
-    const prefix = cloneRoomSnapshot(fullPrefix.slice(-TIMELINE_BRANCH_HISTORY_LIMIT));
-    const omittedMessageCount = Math.max(0, fullPrefix.length - prefix.length);
-    const includedMessageIds = new Set(fullPrefix
-        .map(message => message.id)
-        .filter((id): id is string => Boolean(id)));
-    const now = Date.now();
-    const sourceTitle = sourceRoom?.title
-        || sourcePersona?.conversationLabel
-        || sourcePersona?.name
-        || currentPersona.name;
-    const branchTitle = formatTimelineBranchTitle(sourceTitle, now);
-    const branchInfo = {
-        sourceConversationKey,
-        sourceMessageId: messageId,
-        sourceTitle,
-        createdAt: now,
-        omittedMessageCount: omittedMessageCount || undefined,
-    };
-    const marker: ChatMessage = {
-        id: crypto.randomUUID?.() || `branch-${now}-${Math.random().toString(36).slice(2, 8)}`,
-        createdAt: now,
-        role: 'system',
-        content: {
-            text: [
-                `[時間線分支] 已從「${branchPointText.replace(/\s+/gu, ' ').trim().slice(0, 80) || '這則訊息'}」之前建立獨立分支；原對話保持不變。`,
-                omittedMessageCount > 0
-                    ? `為避免長對話重複佔用儲存空間，這裡顯示分支點前最近 ${prefix.length} 則訊息；更早內容仍在原對話，已整理的 soul.md 與 memory.md 亦已承接。`
-                    : '',
-            ].filter(Boolean).join('\n'),
-        },
-    };
-
-    let branchConversationKey: string | null = null;
-    let createdRoom = false;
-    try {
-        if (sourceRoom) {
-            const roomCopy = cloneRoomSnapshot(sourceRoom);
-            branchConversationKey = `room_branch_${now}_${Math.random().toString(36).slice(2, 9)}`;
-            roomCopy.id = branchConversationKey;
-            roomCopy.title = branchTitle;
-            roomCopy.description = `由「${sourceTitle}」建立的獨立時間線`;
-            roomCopy.timelineBranch = branchInfo;
-            roomCopy.createdAt = now;
-            roomCopy.updatedAt = now;
-            roomCopy.lastSummarizedUserMessageCount = prefix.filter(message => message.role === 'user').length;
-            roomCopy.scene = cloneRoomSnapshot(branchPoint.content.roomSceneBeforeTurn || sourceRoom.scene);
-            const validMemberIds = new Set(roomCopy.members.map(member => member.id));
-            roomCopy.scene.presentMemberIds = roomCopy.scene.presentMemberIds.filter(id => validMemberIds.has(id));
-            if (!roomCopy.scene.presentMemberIds.length) roomCopy.scene.presentMemberIds = [roomCopy.leadMemberId];
-            roomCopy.members.forEach(member => {
-                member.soul = branchMemoryEntriesAt(member.soul, includedMessageIds);
-                member.memories = branchMemoryEntriesAt(member.memories, includedMessageIds);
-                member.persona.soul = branchMemoryEntriesAt(member.persona.soul, includedMessageIds);
-                member.persona.memories = branchMemoryEntriesAt(member.persona.memories, includedMessageIds);
+const loadConversationActions = async () => {
+    if (conversationActions) return conversationActions;
+    if (!conversationActionsLoad) {
+        conversationActionsLoad = import('./features/conversationActions.js')
+            .then(({ createConversationActions }) => {
+                const actions = createConversationActions({
+                    memoryManager,
+                    roomManager,
+                    getCurrentConversationKey: () => currentConversationKey,
+                    getCurrentPersona: () => currentPersona,
+                    getCurrentPersonaKey: () => currentPersonaKey,
+                    getCurrentRoom: () => currentRoom,
+                    hasActiveChatRequest: () => Boolean(activeChatRequest),
+                    cancelRequestForConversation: conversationKey => {
+                        if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, conversationKey)) {
+                            cancelActiveChatRequest();
+                        }
+                    },
+                    abortCharacterPhotoRequest: () => characterPhotoRequestController?.abort(),
+                    clearSessionMemories,
+                    removeSessionMemoriesBySourceMessageIds,
+                    closeMessageActions,
+                    releaseCharacterPhotoObjectUrl: assetId => {
+                        const objectUrl = characterPhotoObjectUrls.get(assetId);
+                        if (objectUrl) URL.revokeObjectURL(objectUrl);
+                        characterPhotoObjectUrls.delete(assetId);
+                    },
+                    releaseChatAttachmentObjectUrl: assetId => {
+                        const objectUrl = chatAttachmentObjectUrls.get(assetId);
+                        if (objectUrl) URL.revokeObjectURL(objectUrl);
+                        chatAttachmentObjectUrls.delete(assetId);
+                    },
+                    renderPersonaList,
+                    startChat,
+                    showSelectionView,
+                    restoreDraft: (text, mode) => {
+                        messageInput.value = text;
+                        resetMessageInput();
+                        updateSendButtonState();
+                        const focusDraft = () => {
+                            if (mode === 'branch') chatContainer.scrollTop = chatContainer.scrollHeight;
+                            if (mode === 'recall' || window.matchMedia('(min-width: 769px)').matches) {
+                                messageInput.focus();
+                                messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+                            }
+                        };
+                        if (mode === 'branch') window.requestAnimationFrame(focusDraft);
+                        else window.setTimeout(focusDraft, 40);
+                    },
+                });
+                conversationActions = actions;
+                return actions;
+            })
+            .catch(error => {
+                conversationActionsLoad = null;
+                throw error;
             });
-            roomCopy.sharedSoul = branchMemoryEntriesAt(roomCopy.sharedSoul, includedMessageIds);
-            roomCopy.sharedMemories = branchMemoryEntriesAt(roomCopy.sharedMemories, includedMessageIds);
-            roomManager.saveRoom(roomCopy);
-            createdRoom = true;
-        } else if (sourcePersona) {
-            const personaCopy = cloneRoomSnapshot(sourcePersona);
-            personaCopy.conversationLabel = branchTitle;
-            personaCopy.timelineBranch = branchInfo;
-            personaCopy.soul = branchMemoryEntriesAt(personaCopy.soul, includedMessageIds);
-            personaCopy.memories = branchMemoryEntriesAt(personaCopy.memories, includedMessageIds);
-            personaCopy.lastMemorySummaryUserMessageCount = prefix.filter(message => message.role === 'user').length;
-            branchConversationKey = await memoryManager.saveCustomPersonaCopy(personaCopy);
-        }
-
-        if (!branchConversationKey) throw new Error('無法建立分支對話。');
-        memoryManager.setChatHistory(branchConversationKey, [...prefix, marker], true);
-        renderPersonaList();
-        startChat(branchConversationKey, null, 'push');
-        messageInput.value = branchPoint.content.attachments?.length
-            && branchPointText.trim() === '請查看附件。'
-            ? ''
-            : branchPointText;
-        resetMessageInput();
-        updateSendButtonState();
-        window.requestAnimationFrame(() => {
-            chatContainer.scrollTop = chatContainer.scrollHeight;
-            if (window.matchMedia('(min-width: 769px)').matches) {
-                messageInput.focus();
-                messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
-            }
-        });
-    } catch (error) {
-        if (branchConversationKey) {
-            memoryManager.deleteChatHistory(branchConversationKey);
-            if (createdRoom) roomManager.deleteRoom(branchConversationKey);
-            else memoryManager.deleteCustomPersona(branchConversationKey);
-        }
-        console.error('Unable to create timeline branch:', error);
-        alert(error instanceof Error ? `建立時間線分支失敗：${error.message}` : '建立時間線分支失敗。');
     }
+    return conversationActionsLoad;
 };
 
-const recallUserMessage = async (messageId: string) => {
-    closeMessageActions();
-    if (!currentConversationKey) return;
-    const conversationKey = currentConversationKey;
-    const history = memoryManager.getChatHistory(conversationKey);
-    const startIndex = history.findIndex(message => message.id === messageId && message.role === 'user');
-    if (startIndex < 0) {
-        alert('找不到這則訊息，可能已經被移除。');
-        return;
-    }
-    let endIndex = startIndex + 1;
-    while (endIndex < history.length && history[endIndex].role !== 'user') endIndex += 1;
-    const turn = history.slice(startIndex, endIndex);
-    const replyCount = turn.filter(message => message.role === 'model').length;
-    const confirmed = confirm(replyCount > 0
-        ? '收回這則訊息，並刪除角色對這一回合的回覆？'
-        : '收回這則訊息？');
-    if (!confirmed) return;
-
-    if (activeChatRequest?.conversationKey === conversationKey) cancelActiveChatRequest();
-    const result = memoryManager.removeUserTurn(conversationKey, messageId);
-    if (!result) return;
-    const removedSourceMessageIds = result.removed
-        .map(message => message.id)
-        .filter((id): id is string => Boolean(id));
-    const remainingUserMessageCount = result.remaining.filter(message => message.role === 'user').length;
-    if (roomManager.getRoom(conversationKey)) {
-        roomManager.removeMemoriesBySourceMessageIds(
-            conversationKey,
-            removedSourceMessageIds,
-            remainingUserMessageCount,
-        );
-    } else {
-        memoryManager.removePersonaMemoriesBySourceMessageIds(
-            conversationKey,
-            removedSourceMessageIds,
-            remainingUserMessageCount,
-        );
-    }
-    const recalledMessage = result.removed[0];
-    const sceneBeforeTurn = recalledMessage.content.roomSceneBeforeTurn;
-    if (sceneBeforeTurn && roomManager.getRoom(conversationKey)) {
-        roomManager.updateRoom(conversationKey, room => {
-            room.scene = cloneRoomSnapshot(sceneBeforeTurn);
-        });
-    }
-    await Promise.all([
-        deleteCharacterPhotoAssetsForHistory(result.removed).catch(error => {
-            console.warn('Unable to remove recalled photo assets:', error);
-        }),
-        deleteChatAttachmentAssetsForHistory(result.removed).catch(error => {
-            console.warn('Unable to remove recalled attachment assets:', error);
-        }),
-    ]);
-
-    const recalledText = recalledMessage.content.attachments?.length
-        && recalledMessage.content.text?.trim() === '請查看附件。'
-        ? ''
-        : recalledMessage.content.text || '';
-    startChat(conversationKey, null, 'skip');
-    messageInput.value = recalledText;
-    resetMessageInput();
-    updateSendButtonState();
-    renderPersonaList();
-    window.setTimeout(() => {
-        messageInput.focus();
-        messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
-    }, 40);
+const deleteCustomPersona = (key: string) => {
+    void loadConversationActions()
+        .then(actions => actions.deleteCustomPersona(key))
+        .catch(error => console.error('Failed to delete custom persona', error));
 };
 
+const deleteConversationFromList = (key: string, title: string, room?: ChatRoom) => {
+    void loadConversationActions()
+        .then(actions => actions.deleteConversation(key, title, room))
+        .catch(error => console.error('Failed to delete conversation', error));
+};
+
+const createTimelineBranch = (messageId: string) => {
+    void loadConversationActions()
+        .then(actions => actions.createTimelineBranch(messageId))
+        .catch(error => console.error('Failed to create timeline branch', error));
+};
+
+const recallUserMessage = (messageId: string) => {
+    void loadConversationActions()
+        .then(actions => actions.recallUserMessage(messageId))
+        .catch(error => {
+            console.error('Failed to recall message', error);
+            alert('收回訊息失敗，請重試。如果問題持續，請重新載入頁面後再試。');
+        });
+};
 const findPhotoProposalMessage = (personaKey: string, proposalId: string) => {
     const history = memoryManager.getChatHistory(personaKey);
     const historyIndex = history.findIndex(message => message.content.photoProposal?.id === proposalId);
@@ -8194,7 +2721,7 @@ const createStoredChatAttachmentCard = (attachment: ChatAttachment) => {
     button.addEventListener('click', async () => {
         button.disabled = true;
         try {
-            const blob = await getChatAttachmentBlob(attachment.assetId);
+            const blob = await (await loadChatMediaStoreModule()).getChatAttachmentBlob(attachment.assetId);
             if (!blob) throw new Error('附件只存在原本裝置，或已被清除。');
             let objectUrl = chatAttachmentObjectUrls.get(attachment.assetId);
             if (!objectUrl) {
@@ -8202,10 +2729,7 @@ const createStoredChatAttachmentCard = (attachment: ChatAttachment) => {
                 chatAttachmentObjectUrls.set(attachment.assetId, objectUrl);
             }
             if (attachment.kind === 'image') {
-                photoFullscreenImage.src = objectUrl;
-                photoFullscreenModal.classList.remove('hidden');
-                resetPhotoFullscreenTransform();
-                window.setTimeout(() => closePhotoFullscreen.focus(), 0);
+                openImageFullscreen(objectUrl, attachment.name);
             } else if (attachment.kind === 'video') {
                 window.open(objectUrl, '_blank', 'noopener,noreferrer');
             } else {
@@ -8247,8 +2771,17 @@ const createMemoryProposalCard = (proposal: NonNullable<Content['memoryProposal'
     const card = document.createElement('section');
     card.className = 'system-action-card memory-proposal-card';
     card.dataset.memoryProposalId = proposal.id;
+    const memoryIntent = detectExplicitMemoryIntent(proposal.originalText);
+    const requestedScope = memoryIntent?.scope || 'unspecified';
+    const memoryKind = memoryIntent?.kind || inferExplicitMemoryKind(proposal.originalText);
     const title = document.createElement('strong');
-    title.textContent = proposal.status === 'pending' ? '要把這件事記住很久嗎？' : '記憶處理結果';
+    title.textContent = proposal.status === 'pending'
+        ? requestedScope === 'permanent'
+            ? '你要求永久記住；確認儲存方式'
+            : requestedScope === 'session'
+                ? '你要求只限本次；確認儲存方式'
+                : '這件事要記多久？'
+        : '記憶處理結果';
     const summary = document.createElement('p');
     summary.textContent = proposal.summary;
     card.append(title, summary);
@@ -8276,7 +2809,9 @@ const createMemoryProposalCard = (proposal: NonNullable<Content['memoryProposal'
         status.className = 'system-action-status';
         status.textContent = proposal.status === 'saved'
             ? '已加入永久記憶'
-            : proposal.status === 'session-only' ? '只在目前對話使用' : '沒有儲存';
+            : proposal.status === 'session-only'
+                ? '只在本次瀏覽工作階段記住；重新載入後清除'
+                : '沒有儲存';
         card.appendChild(status);
         return card;
     }
@@ -8293,30 +2828,39 @@ const createMemoryProposalCard = (proposal: NonNullable<Content['memoryProposal'
             const targetIds = room
                 ? Array.from(targetWrap.querySelectorAll<HTMLInputElement>('input:checked')).map(input => input.value)
                 : [];
-            if (action === 'saved' && room && targetIds.length === 0) {
+            if ((action === 'saved' || action === 'session-only') && room && targetIds.length === 0) {
                 alert('請至少選擇 1 位角色。');
                 return;
             }
+            const conversationKey = currentConversationKey;
             if (action === 'saved') {
                 if (room) {
                     roomManager.addSoulMemory(room.id, targetIds, {
-                        kind: 'vulnerability',
+                        kind: memoryKind,
                         title: proposal.summary.slice(0, 36),
                         summary: proposal.summary,
                         originalText: proposal.originalText,
+                        sourceMessageIds: proposal.sourceMessageId ? [proposal.sourceMessageId] : [],
                         participants: targetIds,
                     });
                     refreshCurrentRoom();
                 } else if (currentPersonaKey && currentPersona) {
                     memoryManager.addPersonaMemory(currentPersonaKey, 'soul', {
-                        kind: 'vulnerability',
+                        kind: memoryKind,
                         title: proposal.summary.slice(0, 36),
                         summary: proposal.summary,
                         originalText: proposal.originalText,
+                        sourceMessageIds: proposal.sourceMessageId ? [proposal.sourceMessageId] : [],
                     });
                 }
+            } else if (action === 'session-only') {
+                addSessionMemory(conversationKey, {
+                    kind: memoryKind,
+                    summary: proposal.summary,
+                    targetMemberIds: targetIds,
+                    sourceMessageIds: proposal.sourceMessageId ? [proposal.sourceMessageId] : [],
+                });
             }
-            const conversationKey = currentConversationKey;
             updateMemoryProposal(conversationKey, proposal.id, {
                 status: action,
                 targetMemberIds: targetIds,
@@ -8327,8 +2871,8 @@ const createMemoryProposalCard = (proposal: NonNullable<Content['memoryProposal'
         return button;
     };
     actions.append(
-        makeButton('永久記住', 'saved', true),
-        makeButton('只限本次', 'session-only'),
+        makeButton('永久記住', 'saved', requestedScope === 'permanent'),
+        makeButton('只限本次', 'session-only', requestedScope === 'session'),
         makeButton('不要儲存', 'declined'),
     );
     card.appendChild(actions);
@@ -8478,11 +3022,19 @@ const findStoredPersonaForNpc = (name: string, excludedKey?: string) => (
     })
 );
 
+let observedNpcPersonaModuleLoad: Promise<typeof import('./observedNpcPersona.js')> | null = null;
+
+const loadObservedNpcPersonaModule = () => {
+    observedNpcPersonaModuleLoad ??= import('./observedNpcPersona.js');
+    return observedNpcPersonaModuleLoad;
+};
+
 const analyzeObservedNpcPersona = async (
     proposal: NonNullable<Content['npcProposal']>,
     mainPersona: Persona,
     identity?: PublicIdentity,
 ): Promise<ObservedNpcPersonaDraft> => {
+    const { analyzeObservedNpcPersonaDraft } = await loadObservedNpcPersonaModule();
     const liveEvidence = currentConversationKey
         ? buildNpcObservationEvidence(currentConversationKey, proposal.name)
         : '';
@@ -8490,93 +3042,24 @@ const analyzeObservedNpcPersona = async (
         .filter((value): value is string => Boolean(value?.trim()))
         .join('\n\n')
         .slice(-NPC_OBSERVATION_EVIDENCE_LIMIT);
-    const fallback = buildFallbackObservedNpcPersonaDraft({
+    return analyzeObservedNpcPersonaDraft({
         proposal,
         mainPersonaName: mainPersona.name,
         identity,
         evidence,
+    }, {
+        models: buildStrictReviewModelRoute(chatModelSettings, false),
+        runModel: async (modelRequest, timeoutMs) => (
+            await generateChatTextWithTimeout({
+                model: modelRequest.model,
+                messages: modelRequest.messages,
+                responseFormat: modelRequest.responseFormat as Parameters<typeof generateChatTextWithTimeout>[0]['responseFormat'],
+                temperature: modelRequest.temperature,
+                topP: modelRequest.topP,
+                repetitionPenalty: modelRequest.repetitionPenalty,
+            }, timeoutMs)
+        ).text,
     });
-    if (proposal.detectionSource !== 'observed' || evidence.length < 20) return fallback;
-
-    const models = buildStrictReviewModelRoute(chatModelSettings, false);
-    for (const model of models) {
-        try {
-            const result = await generateChatTextWithTimeout({
-                model,
-                messages: [
-                    {
-                        role: 'system',
-                        content: [
-                            `Analyze the recurring adult character "${proposal.name}" from a private fictional romance conversation.`,
-                            `The original main character is "${mainPersona.name}" and the user is a separate person. Never merge either of them into ${proposal.name}.`,
-                            identity ? `Confirmed public identity: ${identity.canonicalName}. ${identity.summary}` : '',
-                            'Infer only patterns supported by the transcript: personality, initiative, resistance, humour, emotional rhythm, regional language, relationship position, established knowledge and recurring behaviour.',
-                            'Create a vivid independent persona that can keep developing naturally and respond to user direction without becoming generic, instantly obedient or trapped replaying the sampled lines.',
-                            'soul entries hold durable identity, voice, relationship anchors, values and boundaries. memory entries hold concrete events, promises, preferences and emotional moments already experienced.',
-                            'Do not copy long dialogue verbatim. Write concise Traditional Chinese, while preserving Hong Kong Cantonese, Taiwan Mandarin or another established regional voice accurately when evidence supports it.',
-                            'Return only one valid JSON object that matches the requested response schema.',
-                        ].filter(Boolean).join('\n'),
-                    },
-                    {
-                        role: 'user',
-                        content: `Observed conversation evidence for ${proposal.name}:\n\n${evidence}`,
-                    },
-                ],
-                responseFormat: {
-                    type: 'json_schema',
-                    json_schema: {
-                        name: 'observed_npc_persona',
-                        strict: true,
-                        schema: {
-                            type: 'object',
-                            additionalProperties: false,
-                            required: ['description', 'persona_prompt', 'greeting', 'soul', 'memories'],
-                            properties: {
-                                description: { type: 'string' },
-                                persona_prompt: { type: 'string' },
-                                greeting: { type: 'string' },
-                                soul: {
-                                    type: 'array', minItems: 2, maxItems: 6,
-                                    items: {
-                                        type: 'object', additionalProperties: false,
-                                        required: ['kind', 'title', 'summary'],
-                                        properties: {
-                                            kind: { type: 'string', enum: ['core', 'relationship', 'vulnerability', 'promise', 'preference', 'boundary'] },
-                                            title: { type: 'string' }, summary: { type: 'string' },
-                                        },
-                                    },
-                                },
-                                memories: {
-                                    type: 'array', minItems: 1, maxItems: 8,
-                                    items: {
-                                        type: 'object', additionalProperties: false,
-                                        required: ['kind', 'title', 'summary'],
-                                        properties: {
-                                            kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
-                                            title: { type: 'string' }, summary: { type: 'string' },
-                                        },
-                                    },
-                                },
-                            },
-                        },
-                    },
-                },
-                temperature: 0.25,
-                topP: 0.85,
-                repetitionPenalty: 1.04,
-            }, 20_000);
-            const parsed = parseObservedNpcPersonaDraft(result.text, fallback);
-            if (parsed) return parsed;
-        } catch (error) {
-            console.warn('[aigf4 observed NPC analysis retry]', {
-                name: proposal.name,
-                model,
-                reason: error instanceof Error ? error.message : String(error),
-            });
-        }
-    }
-    console.warn('[aigf4 observed NPC analysis fallback]', { name: proposal.name });
-    return fallback;
 };
 
 const buildNpcMemberPersona = (
@@ -8866,55 +3349,36 @@ const createNpcProposalCard = (proposal: NonNullable<Content['npcProposal']>) =>
     return card;
 };
 
-const clearChatSearchMatches = () => {
-    chatSearchMatches.forEach(element => element.classList.remove('chat-search-match', 'is-current'));
-    chatSearchMatches = [];
-    chatSearchMatchIndex = -1;
-    chatSearchCount.textContent = '0 / 0';
-    chatSearchPrev.disabled = true;
-    chatSearchNext.disabled = true;
-};
+let chatSearchUi: import('./features/chatSearchUi.js').ChatSearchUiHandle | null = null;
+let chatSearchUiLoad: Promise<import('./features/chatSearchUi.js').ChatSearchUiHandle> | null = null;
 
-const focusChatSearchMatch = (index: number) => {
-    if (chatSearchMatches.length === 0) return;
-    chatSearchMatches.forEach(element => element.classList.remove('is-current'));
-    chatSearchMatchIndex = (index + chatSearchMatches.length) % chatSearchMatches.length;
-    const current = chatSearchMatches[chatSearchMatchIndex];
-    current.classList.add('is-current');
-    chatSearchCount.textContent = `${chatSearchMatchIndex + 1} / ${chatSearchMatches.length}`;
-    current.scrollIntoView({ block: 'center', behavior: 'smooth' });
-};
-
-const runChatSearch = () => {
-    clearChatSearchMatches();
-    const query = chatSearchInput.value.trim().toLocaleLowerCase();
-    if (!query) return;
-    if (renderedChatHistoryStartIndex > 0) {
-        prependOlderChatHistory(renderedChatHistoryStartIndex);
+const loadChatSearchUi = async () => {
+    if (chatSearchUi) return chatSearchUi;
+    if (!chatSearchUiLoad) {
+        chatSearchUiLoad = import('./features/chatSearchUi.js')
+            .then(({ createChatSearchUi }) => {
+                const ui = createChatSearchUi({
+                    getHiddenHistoryCount: () => renderedChatHistoryStartIndex,
+                    expandOlderHistory: count => prependOlderChatHistory(count),
+                });
+                chatSearchUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                chatSearchUiLoad = null;
+                throw error;
+            });
     }
-    chatSearchMatches = Array.from(chatContainer.children)
-        .filter((element): element is HTMLElement => element instanceof HTMLElement)
-        .filter(element => element.textContent?.toLocaleLowerCase().includes(query));
-    chatSearchMatches.forEach(element => element.classList.add('chat-search-match'));
-    const hasMatches = chatSearchMatches.length > 0;
-    chatSearchPrev.disabled = !hasMatches;
-    chatSearchNext.disabled = !hasMatches;
-    if (hasMatches) focusChatSearchMatch(chatSearchMatches.length - 1);
+    return chatSearchUiLoad;
 };
 
 const openChatSearch = () => {
-    chatSearchBar.classList.remove('hidden');
-    chatSearchInput.focus();
-    chatSearchInput.select();
-    runChatSearch();
+    void loadChatSearchUi()
+        .then(ui => ui.open())
+        .catch(error => console.error('Failed to load Chat Search UI', error));
 };
 
-const closeChatSearch = () => {
-    clearChatSearchMatches();
-    chatSearchInput.value = '';
-    chatSearchBar.classList.add('hidden');
-};
-
+const closeChatSearch = () => chatSearchUi?.close();
 const createContextBridgeCard = (bridge: ChatContextBridge) => {
     const card = document.createElement('section');
     card.className = 'system-action-card context-bridge-card';
@@ -9216,7 +3680,7 @@ const appendMessage = (
         messageWrapper = document.createElement('div');
         messageWrapper.className = 'system-action-message';
         messageWrapper.appendChild(createContextBridgeCard(content.contextBridge));
-    } else if (sender === 'bot' && currentRoom && groupDisplaySegments.length) {
+    } else if (sender === 'bot' && currentRoom) {
         messageWrapper = document.createElement('div');
         messageWrapper.className = 'group-chat-turn';
         const storyBubble = document.createElement('div');
@@ -9357,7 +3821,7 @@ const appendMessage = (
             recallAction.type = 'button';
             recallAction.className = 'message-action-item is-danger';
             recallAction.setAttribute('role', 'menuitem');
-            recallAction.innerHTML = '<span class="message-action-icon">↶</span><span><strong>收回訊息</strong><small>同時刪除這回合回覆</small></span>';
+            recallAction.innerHTML = '<span class="message-action-icon">↶</span><span><strong>收回訊息</strong><small>同時撤回回覆與衍生記憶</small></span>';
             recallAction.addEventListener('click', event => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -9448,11 +3912,7 @@ const applyChatRuntimeState = (state: RequestState, detail?: string) => {
     }
 
     updateSendButtonState();
-    assistantModelSelect.disabled = showLoadingIndicator || assistantModels.length === 0;
-};
-
-const setLoading = (isLoading: boolean, text: string = '\u751f\u6210\u4e2d...') => {
-    applyChatRuntimeState(isLoading ? 'generating' : 'idle', text);
+    assistantModelUi?.setBusy(showLoadingIndicator);
 };
 
 const showError = (message: string) => {
@@ -9488,8 +3948,7 @@ const setUnlockedState = (unlocked: boolean) => {
         appShell.classList.remove('app-shell-locked');
         guardConversationSearchFromAutofill();
         updateSendButtonState();
-        updateVideoPromptOptimizerButton();
-        updateVideoGenerateButton();
+        videoStudioUi?.refreshControls();
         return;
     }
 
@@ -9505,8 +3964,7 @@ const setUnlockedState = (unlocked: boolean) => {
     }
 
     updateSendButtonState();
-    updateVideoPromptOptimizerButton();
-    updateVideoGenerateButton();
+    videoStudioUi?.refreshControls();
 };
 
 const handleAuthRequired = (message: string = '\u767b\u5165\u5df2\u5931\u6548\uff0c\u8acb\u518d\u8f38\u5165\u5bc6\u78bc\u3002') => {
@@ -9550,7 +4008,7 @@ const refreshAuthSession = async (): Promise<boolean> => {
 const submitUnlock = async () => {
     if (!USES_VENICE_PROXY_AUTH) {
         setUnlockedState(true);
-        void supabaseCloudSyncManager.start();
+        void startSupabaseCloudSync();
         return;
     }
 
@@ -9580,8 +4038,8 @@ const submitUnlock = async () => {
         }
 
         setUnlockedState(true);
-        void supabaseCloudSyncManager.start();
-        if (pendingVideoJob) void resumePendingVideoJob('auto');
+        void startSupabaseCloudSync();
+        void resumePendingVideoJobIfAny();
     } catch (error) {
         setUnlockedState(false);
         showAuthError(
@@ -9610,72 +4068,6 @@ const updateSendButtonState = () => {
     composerCameraButton.classList.toggle('is-hidden-for-text', hideCamera);
     composerCameraButton.setAttribute('aria-hidden', hideCamera ? 'true' : 'false');
     composerCameraButton.tabIndex = hideCamera ? -1 : 0;
-};
-
-const removeGift = () => {
-    attachedGift = null;
-    giftPreviewContainer.classList.add('hidden');
-    giftPreviewImage.src = '';
-};
-
-const getAttachmentKind = (mimeType: string): ChatAttachment['kind'] => {
-    if (mimeType.startsWith('image/')) return 'image';
-    if (mimeType.startsWith('video/')) return 'video';
-    if (/pdf|text|json|xml|csv|word|excel|sheet|presentation|markdown|javascript|typescript|yaml|sql/iu.test(mimeType)) {
-        return 'document';
-    }
-    return 'other';
-};
-
-const prepareChatAttachment = async (sourceFile: File) => {
-    let file = sourceFile;
-    let width: number | undefined;
-    let height: number | undefined;
-    if (sourceFile.type.startsWith('image/')) {
-        const sourceUrl = URL.createObjectURL(sourceFile);
-        const image = new Image();
-        image.src = sourceUrl;
-        try {
-            await image.decode();
-            const scale = Math.min(1, MAX_CHAT_IMAGE_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
-            width = Math.max(1, Math.round(image.naturalWidth * scale));
-            height = Math.max(1, Math.round(image.naturalHeight * scale));
-            const canvas = document.createElement('canvas');
-            canvas.width = width;
-            canvas.height = height;
-            const context = canvas.getContext('2d');
-            if (!context) throw new Error('瀏覽器無法處理這張附件圖片。');
-            context.imageSmoothingEnabled = true;
-            context.imageSmoothingQuality = 'high';
-            context.drawImage(image, 0, 0, width, height);
-            let blob = await canvasToBlob(canvas, 0.86);
-            if (blob.size > 1_500_000) blob = await canvasToBlob(canvas, 0.68);
-            const name = sourceFile.name.replace(/\.[^.]+$/u, '') || 'image';
-            file = new File([blob], `${name}.webp`, { type: blob.type, lastModified: Date.now() });
-        } finally {
-            URL.revokeObjectURL(sourceUrl);
-        }
-    }
-    const currentBytes = pendingChatAttachments.reduce((sum, item) => sum + item.file.size, 0);
-    if (currentBytes + file.size > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
-        throw new Error('本次要交給 AI 分析的附件合計不可超過 2.5MB。圖片已先自動壓縮。');
-    }
-    const id = crypto.randomUUID?.() || `attachment-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const attachment: ChatAttachment = {
-        id,
-        assetId: id,
-        name: file.name,
-        mimeType: file.type || 'application/octet-stream',
-        size: file.size,
-        kind: getAttachmentKind(file.type || ''),
-        width,
-        height,
-    };
-    return {
-        attachment,
-        file,
-        previewUrl: attachment.kind === 'image' ? URL.createObjectURL(file) : undefined,
-    };
 };
 
 const renderPendingChatAttachments = () => {
@@ -9715,11 +4107,15 @@ const renderPendingChatAttachments = () => {
 const handleChatAttachmentSelection = async () => {
     const files = Array.from(chatAttachmentInput.files || []);
     chatAttachmentInput.value = '';
-    for (const file of files) {
-        try {
-            pendingChatAttachments.push(await prepareChatAttachment(file));
-        } catch (error) {
-            alert(error instanceof Error ? error.message : `無法加入 ${file.name}。`);
+    if (files.length > 0) {
+        const { prepareChatAttachment } = await import('./features/chatAttachmentPrep.js');
+        for (const file of files) {
+            try {
+                const currentBytes = pendingChatAttachments.reduce((sum, item) => sum + item.file.size, 0);
+                pendingChatAttachments.push(await prepareChatAttachment(file, currentBytes));
+            } catch (error) {
+                alert(error instanceof Error ? error.message : `無法加入 ${file.name}。`);
+            }
         }
     }
     renderPendingChatAttachments();
@@ -9730,7 +4126,7 @@ const persistPendingChatAttachments = async (conversationKey: string) => {
     const snapshot = [...pendingChatAttachments];
     const contentParts: VeniceMessageContentPart[] = [];
     for (const item of snapshot) {
-        await saveChatAttachment({
+        await (await loadChatMediaStoreModule()).saveChatAttachment({
             id: item.attachment.assetId,
             conversationKey,
             blob: item.file,
@@ -9759,10 +4155,6 @@ const persistPendingChatAttachments = async (conversationKey: string) => {
     pendingChatAttachments = [];
     renderPendingChatAttachments();
     return { attachments: snapshot.map(item => item.attachment), contentParts };
-};
-
-const showDisabledFeatureNotice = (featureName: string) => {
-    alert(`${featureName} 在目前版本暫時停用。`);
 };
 
 const resetMessageInput = () => {
@@ -9876,22 +4268,6 @@ const PERSONA_TEXT_GUIDANCE_RULES: Array<{ pattern: RegExp; guidance: string }> 
     },
 ];
 
-const PERSONA_INSPECT_PATTERNS = [
-    /^show current persona$/i,
-    /^show persona$/i,
-    /^current persona$/i,
-    /^show current setting$/i,
-    /^顯示(?:目前|當前)?(?:角色)?人格(?:設定)?$/u,
-    /^查看(?:目前|當前)?(?:角色)?人格(?:設定)?$/u,
-    /^目前人格(?:設定)?$/u,
-    /^當前人格(?:設定)?$/u,
-];
-
-const isPersonaInspectCommand = (text: string) => {
-    const normalized = text.trim();
-    return PERSONA_INSPECT_PATTERNS.some(pattern => pattern.test(normalized));
-};
-
 const buildPersonaBehaviorGuidance = (personaKey: string, persona: Persona): string[] => {
     const source = `${persona?.description || ''} ${persona?.prompt || ''} ${persona?.greeting || ''}`;
     const guidance = [
@@ -9902,31 +4278,6 @@ const buildPersonaBehaviorGuidance = (personaKey: string, persona: Persona): str
     ].filter(Boolean);
 
     return Array.from(new Set(guidance));
-};
-
-const formatCurrentPersonaDetails = () => {
-    if (!currentPersona) {
-        return '[系統] 目前沒有選中的角色。';
-    }
-
-    const sections = [
-        `目前角色：${currentPersona.name}`,
-        `角色簡述：${currentPersona.description || '未設定'}`,
-        `人格主設定：\n${currentPersona.prompt || '未設定'}`,
-        `開場語 / 語氣樣本：\n${currentPersona.greeting || '未設定'}`,
-    ];
-
-    const soulMemory = formatPersonaMemoryPrompt(currentPersona, 'soul');
-    const episodicMemory = formatPersonaMemoryPrompt(currentPersona, 'memory');
-    if (soulMemory) sections.push(`soul.md：\n${soulMemory}`);
-    if (episodicMemory) sections.push(`memory.md：\n${episodicMemory}`);
-
-    return sections.join('\n\n');
-};
-
-const handleGiftSelection = (event: Event) => {
-    (event.target as HTMLInputElement).value = '';
-    showDisabledFeatureNotice('\u9001\u79ae\u529f\u80fd');
 };
 
 const normalizeHistoryText = (text: string): string => {
@@ -10342,7 +4693,11 @@ const buildArchivedRecallPrompt = (
         (room ? GROUP_CHAT_HISTORY_MESSAGE_LIMIT : CHAT_HISTORY_MESSAGE_LIMIT) / 2,
     ) + 4;
     const archivedTurns = turns.slice(0, Math.max(0, turns.length - recentTurnsKeptVerbatim));
-    const recalled = selectRelevantArchivedTurns(archivedTurns, latestUserMessage, 3);
+    const recalled = selectRelevantArchivedTurns(
+        archivedTurns,
+        latestUserMessage,
+        getMemoryRecallLimit(latestUserMessage, 3, 6),
+    );
     if (!recalled.length) return '';
     const excerpts = recalled.map(turn => [
         `[OLDER_TURN_ID=${turn.id}]`,
@@ -10388,7 +4743,8 @@ const formatPersonaMemoryPrompt = (persona: Persona, type: 'soul' | 'memory', qu
     const legacy = type === 'soul' && persona.memory?.trim()
         ? [`- 舊版永久記憶：${persona.memory.trim()}`]
         : [];
-    const structured = selectRelevantMemories(entries, query, type === 'soul' ? 12 : 12)
+    const limit = getMemoryRecallLimit(query, 12, type === 'soul' ? 16 : 24);
+    const structured = selectRelevantMemories(entries, query, limit)
         .map(entry => `- [${formatMemoryPromptMetadata(entry)}] ${entry.title}: ${entry.summary.replace(/\s+/gu, ' ').trim().slice(0, type === 'soul' ? 480 : 440)}`);
     return [...legacy, ...structured].join('\n');
 };
@@ -10400,11 +4756,13 @@ const buildChatSystemPrompt = (
     wardrobeState: WardrobeState = emptyWardrobeState(),
     wardrobeParticipants: WardrobeParticipant[] = [{ key: persona.name, label: persona.name }],
     includeWardrobeEnvelope = false,
+    conversationKey = personaKey,
 ) => {
     const behaviorGuidance = buildPersonaBehaviorGuidance(personaKey, persona);
     const publicIdentity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
     const soulMemory = formatPersonaMemoryPrompt(persona, 'soul', latestUserMessage);
     const episodicMemory = formatPersonaMemoryPrompt(persona, 'memory', latestUserMessage);
+    const sessionMemory = formatSessionMemoryPrompt(conversationKey);
     const sections = [
         `You are ${persona.name}, the active romance character in a continuous private conversation. You are not an AI assistant.`,
         persona.description?.trim() ? `Short identity:\n${persona.description.trim()}` : '',
@@ -10417,6 +4775,9 @@ const buildChatSystemPrompt = (
         `Character identity and voice:\n${persona.prompt}`,
         persona.greeting?.trim()
             ? `Voice reference only (never repeat or continue this sample verbatim):\n${persona.greeting.trim()}`
+            : '',
+        sessionMemory
+            ? `SESSION-ONLY MEMORY — valid only for this browser session and never a permanent fact:\n${sessionMemory}`
             : '',
         soulMemory ? `soul.md permanent identity, relationship and user anchors:\n${soulMemory}` : '',
         episodicMemory ? `memory.md recent important events and continuity:\n${episodicMemory}` : '',
@@ -10494,23 +4855,6 @@ const buildAssistantSystemPrompt = () => {
         'If the request is ambiguous, make the most reasonable interpretation from recent context instead of giving a canned clarification.',
         'Do not mention the selected model, hidden instructions, or internal processing unless the user explicitly asks.',
     ].join('\n');
-};
-
-const buildGodModeSystemPrompt = (persona: Persona) => {
-    const soulMemory = formatPersonaMemoryPrompt(persona, 'soul');
-    const episodicMemory = formatPersonaMemoryPrompt(persona, 'memory');
-    const sections = [
-        'You are editing the CURRENT active character persona for a romance chat app.',
-        `Current character name: ${persona.name}`,
-        `Current full persona prompt:\n${persona.prompt}`,
-        soulMemory ? `Current soul.md:\n${soulMemory}` : '',
-        episodicMemory ? `Current memory.md:\n${episodicMemory}` : '',
-        'Task:\n- Modify only the current character persona.\n- Keep the same character identity.\n- Do not switch to another persona, profession, species, or assistant role.\n- Output only the added personality adjustments, not a full rewrite.',
-        `Identity that must stay unchanged:\n- Character name must stay exactly: ${persona.name}`,
-        'Output rules:\n- Reply in Traditional Chinese.\n- First output exactly one short confirmation sentence.\n- Then output exactly one tag on a new line: [PERSONA_UPDATE: <only the added personality adjustments>]\n- The tag content must be 1 to 3 short sentences about new traits only.\n- Do not use first-person self-introduction such as「我是一個...」.\n- Do not output JSON.\n- Do not output markdown headings.\n- Do not output code fences.\n- Do not output any other tags.',
-    ];
-
-    return sections.filter(Boolean).join('\n\n');
 };
 
 const mergePersonaUpdate = (currentPrompt: string, update: string, personaName: string): string => {
@@ -11045,10 +5389,10 @@ const runConversationGeneration = async (
     const recentAssistantReplies = getRecentAssistantRepliesForPersona(request.conversationKey, assistantMode);
     const establishedNpcNames = assistantMode
         ? []
-        : collectEstablishedNpcNames(
-            memoryManager.getChatHistory(request.conversationKey),
-            request.persona.name,
+        : mergeEstablishedNpcNamesForTurn(
+            request.establishedNpcNames,
             latestUserMessage,
+            request.persona.name,
         );
     const wardrobeParticipants = getWardrobeParticipantsForRequest(request, establishedNpcNames);
     const baseSystemPrompt = assistantMode
@@ -11060,6 +5404,7 @@ const runConversationGeneration = async (
             request.wardrobeState,
             wardrobeParticipants,
             true,
+            request.conversationKey,
         );
     const addressedNpcNames = assistantMode
         ? []
@@ -11361,73 +5706,6 @@ const runConversationGeneration = async (
     throw lastError || new Error('Venice reply invalid.');
 };
 
-type CharacterPhotoProposalDraft = {
-    reply: string;
-    scenePrompt: string;
-    favoriteScenePrompt?: string;
-    caption: string;
-    aspectRatio: CharacterPhotoProposal['aspectRatio'];
-};
-
-const extractPhotoProposalSection = (text: string, tag: string) => {
-    const escapedTag = escapeRegExp(tag);
-    return text.match(new RegExp(`<${escapedTag}>\\s*([\\s\\S]*?)\\s*</${escapedTag}>`, 'iu'))?.[1]?.trim() || '';
-};
-
-const parseCharacterPhotoProposalDraft = (
-    text: string,
-    personaKey?: string,
-): CharacterPhotoProposalDraft | null => {
-    const unfenced = text
-        .replace(/^\s*```(?:json|text)?\s*/iu, '')
-        .replace(/\s*```\s*$/iu, '')
-        .trim();
-    let jsonDraft: Record<string, unknown> | null = null;
-    try {
-        const parsed = JSON.parse(unfenced) as unknown;
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            jsonDraft = parsed as Record<string, unknown>;
-        }
-    } catch {
-        // Older or fallback models may still return the legacy XML envelope.
-    }
-    const readJsonString = (key: string) => typeof jsonDraft?.[key] === 'string'
-        ? (jsonDraft[key] as string).trim()
-        : '';
-    const fallbackReply = personaKey === 'cc'
-        ? '好呀，我按住而家嘅情境諗好咗點影。你睇吓下面個 Prompt 啱唔啱，確認後我先影。'
-        : '好，我已經按照現在的情境構思好照片了。你看看下面的 Prompt 是否正確，確認後我才拍。';
-    const fallbackCaption = personaKey === 'cc' ? '影好喇，畀你。' : '拍好了，給你。';
-    const reply = cleanVeniceChatReply(
-        readJsonString('reply') || extractPhotoProposalSection(text, 'reply') || fallbackReply,
-    );
-    const scenePrompt = cleanGeneratedPhotoPrompt((readJsonString('prompt') || extractPhotoProposalSection(text, 'prompt'))
-        .replace(/^```(?:text)?\s*|\s*```$/giu, '')
-        .trim());
-    const favoriteScenePrompt = cleanGeneratedPhotoPrompt((readJsonString('favorite_prompt') || extractPhotoProposalSection(text, 'favorite_prompt'))
-        .replace(/^```(?:text)?\s*|\s*```$/giu, '')
-        .trim());
-    const caption = cleanVeniceChatReply(
-        readJsonString('caption') || extractPhotoProposalSection(text, 'caption') || fallbackCaption,
-    );
-    const rawRatio = readJsonString('ratio')
-        || readJsonString('aspect_ratio')
-        || extractPhotoProposalSection(text, 'ratio');
-    const allowedRatios: CharacterPhotoProposal['aspectRatio'][] = ['1:1', '3:4', '4:5', '16:9', '9:16'];
-    const aspectRatio = allowedRatios.includes(rawRatio as CharacterPhotoProposal['aspectRatio'])
-        ? rawRatio as CharacterPhotoProposal['aspectRatio']
-        : '3:4';
-
-    if (!reply || !scenePrompt || !caption || scenePrompt.length < 20) return null;
-    return {
-        reply,
-        scenePrompt,
-        favoriteScenePrompt: favoriteScenePrompt || undefined,
-        caption,
-        aspectRatio,
-    };
-};
-
 const trimPhotoPromptSection = (text: string, maxLength: number) => {
     const normalized = text.replace(/\s{2,}/gu, ' ').trim();
     if (normalized.length <= maxLength) return normalized;
@@ -11531,189 +5809,71 @@ const getPreferredCharacterPhotoModel = (mode: VeniceImageMode) => {
         || imageModels[mode][0];
 };
 
+let characterPhotoProposalGenerationModuleLoad: Promise<typeof import('./features/characterPhotoProposalGeneration.js')> | null = null;
+
+const loadCharacterPhotoProposalGenerationModule = () => {
+    characterPhotoProposalGenerationModuleLoad ??= import('./features/characterPhotoProposalGeneration.js');
+    return characterPhotoProposalGenerationModuleLoad;
+};
+
 const buildCharacterPhotoProposal = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
 ): Promise<{ text: string; proposal: CharacterPhotoProposal }> => {
-    const favoritePrompt = normalizeFavoritePhotoPrompt(
-        request.room ? request.room.favoritePhotoPrompt : request.persona.favoritePhotoPrompt,
-    );
-    const subjectMembers = request.room
-        ? request.room.members.filter(member => request.photoSubjectMemberIds?.includes(member.id))
-        : [];
-    const subjectPersonas = subjectMembers.length > 0
-        ? subjectMembers.map(member => member.persona)
-        : [request.persona];
-    const isMultiSubject = subjectPersonas.length > 1;
-    const usesPublicIdentity = usesConfirmedPublicIdentity(request.persona);
-    const usesAnyPublicIdentity = subjectPersonas.some(usesConfirmedPublicIdentity);
-    const useAvatarReference = Boolean(
-        !isMultiSubject
-        &&
-        !usesPublicIdentity
-        && request.persona.avatarUrl
-        && !request.persona.avatarUrl.startsWith('generating_'),
-    );
-    const publicIdentity = request.persona.publicIdentity;
-    const imagePromptIdentityRules = isMultiSubject
-        ? [
-            `This is one group photo with exactly ${subjectPersonas.length} distinct people: ${subjectPersonas.map(persona => persona.publicIdentity?.canonicalName || persona.name).join(', ')}.`,
-            'No reference image will be supplied. Begin <prompt> by listing every person by exact name. Keep each face, body, clothing, pose and action separate; do not merge, clone, omit or add people.',
-            ...subjectPersonas.map(persona => {
-                const identity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
-                return identity
-                    ? `${persona.name}: canonical identity ${identity.canonicalName}; ${identity.visualPrompt}; ${identity.summary}`
-                    : `${persona.name}: ${persona.avatarPrompt || persona.description}`;
-            }),
-        ]
-        : usesPublicIdentity && publicIdentity
-        ? [
-            'No reference image will be supplied. The app will add a user-confirmed public identity block separately.',
-            `Inside the prompt field, begin exactly with "${publicIdentity.canonicalName}" and thereafter refer to the subject consistently. Describe the requested scene, pose, action, expression, clothing or requested state, setting, lighting, framing, viewpoint, and relevant objects.`,
-            publicIdentity.kind === 'fictional_character'
-                ? 'Keep the scene compatible with the character’s canonical franchise design and original source-medium visual language; do not turn the character into a generic photorealistic person.'
-                : 'Do not replace the named public figure with a generic nationality, ethnicity, age group, or lookalike description.',
-        ]
-        : useAvatarReference
-        ? [
-            'A reference portrait will be attached later and is the only source of visual identity.',
-            `Inside the prompt field, begin exactly with "${request.persona.name}" and thereafter refer to the subject only as "she". Describe only the requested scene, pose, action, expression, clothing or requested state, setting, lighting, camera framing, viewpoint, and relevant objects.`,
-            'Do not infer or state her age, ethnicity, nationality, facial features, skin tone, eye appearance, hair identity, or body type unless the newest user message explicitly requests that exact visible change.',
-            'Never replace her identity with a generic demographic description. The app will add the identity-lock instruction separately.',
-        ]
-        : [
-            `No reference image will be supplied. Inside the prompt field, identify ${request.persona.name} by name and use the established character appearance where useful.`,
-            'Describe the subject count and identity, visible pose or action, expression, clothing or requested state, setting, lighting, camera framing, viewpoint, and relevant objects.',
-        ];
-    const systemPrompt = [
-        buildChatSystemPrompt(
+    const { generateCharacterPhotoProposalDraft } = await loadCharacterPhotoProposalGenerationModule();
+    const generatedDraft = await generateCharacterPhotoProposalDraft({
+        id: request.id,
+        personaKey: request.personaKey,
+        conversationKey: request.conversationKey,
+        persona: request.persona,
+        room: request.room,
+        photoSenderMemberId: request.photoSenderMemberId,
+        photoSubjectMemberIds: request.photoSubjectMemberIds,
+        signal: request.controller.signal,
+    }, {
+        latestUserMessage,
+        baseChatSystemPrompt: buildChatSystemPrompt(
             request.personaKey,
             request.persona,
             latestUserMessage,
             request.wardrobeState,
             getWardrobeParticipantsForRequest(request),
+            false,
+            request.conversationKey,
         ),
-        request.room ? [
-            `This request belongs to fixed room "${request.room.title}".`,
-            `The character preparing the photo is ${request.persona.name} (${request.photoSenderMemberId || request.room.leadMemberId}).`,
-            `The requested visible character subjects are: ${subjectPersonas.map(persona => persona.name).join(', ')}.`,
-            'Do not make an absent or unselected room member visible in the image.',
-        ].join('\n') : '',
-        'The newest user message is a request for the character to take or send a photo.',
-        'Do not generate an image and do not claim the photo has already been taken or sent. Stay fully in character and propose exactly what the character intends to photograph.',
-        [
-            'CURRENT-MOMENT CONTINUITY LOCK:',
-            '- Reconstruct the exact current moment from the latest completed conversation: who is present, each person\'s clothing and colors, location, time, lighting, body position, held objects, ongoing action, and physical relationships.',
-            '- That established visible continuity is authoritative. Never change a white shirt to black, add or remove a held object, move to another location, swap people, or contradict the current action unless the newest user photo request explicitly asks for that exact change.',
-            '- Resolve pronouns against the fixed character identities. Do not confuse the user, photographer, visible subjects, or third persons.',
-            '- Produce one internally coherent image instruction. Never include mutually exclusive colors, clothes, poses, actions, objects, camera views, or both a positive and negative version of the same detail.',
-        ].join('\n'),
-        'The proposal may be ordinary, romantic, fantasy, or explicitly adult according to the user request and established context. Preserve direct wording and intent; do not make an ordinary request sexual, and do not sanitize an explicit adult request.',
-        favoritePrompt ? [
-            `SAVED FAVORITE PHOTO INSTRUCTION: ${favoritePrompt}`,
-            '- The prompt field must be the clean baseline based only on the newest request and current-moment continuity; do not apply the saved favorite instruction there.',
-            '- The favorite_prompt field must be a second complete image prompt that integrates every compatible part of the saved favorite instruction into the same current moment.',
-            '- Current visible continuity and the newest explicit request outrank the saved favorite instruction. Silently adapt or omit only the conflicting favorite detail instead of writing both alternatives.',
-            '- The two prompts must each stand alone. Do not mention merging, conflicts, defaults, options, checkboxes, omitted details, or these rules inside either prompt.',
-            '- Never describe a discarded alternative negatively. If all favorite details conflict, make <favorite_prompt> identical to <prompt>. The final image prompt must contain only the one positive visual truth the image model should draw.',
-        ].join('\n') : '',
-        ...imagePromptIdentityRules,
-        'The English image prompt must describe one still image. Do not invent a new major event or a user action.',
-        'Do not merely translate, quote, or paraphrase the user request. Turn it into a production-ready visual prompt by resolving the current environment, clothing, facial expression, body pose, movement, camera angle, framing, lighting, and relevant objects from the latest conversation.',
-        'When a visible detail is not established and the user leaves it to the character, choose one specific detail that fits the character and current moment. Never leave placeholders such as "as requested", "appropriate clothing", "same environment", or unresolved options.',
-        'Choose one definite composition yourself. Do not offer multiple unresolved clothing, pose, expression, or scene options; the visible reply and English prompt must describe the same single choice.',
-        'The reply and later caption must use the character’s established Traditional Chinese regional voice. The reply must briefly describe that one chosen photo and naturally ask the user to approve it without mentioning AI, models, policy, generation, or internal prompts.',
-        'Return only one JSON object with these fields: reply, prompt, favorite_prompt, caption, ratio.',
-        `prompt must be a complete English still-image ${useAvatarReference ? 'edit instruction of 25 to 70 words' : 'scene prompt of 45 to 100 words'}.`,
-        favoritePrompt
-            ? 'favorite_prompt must be a second complete English prompt with the compatible saved favorite instruction already reconciled.'
-            : 'favorite_prompt must be an empty string.',
-        'ratio must be exactly one of 1:1, 3:4, 4:5, 16:9, 9:16.',
-    ].join('\n\n');
-    const models = buildCharacterModelRoute(chatModelSettings, request.personaKey === 'cc');
-    let draft: CharacterPhotoProposalDraft | null = null;
-    let lastError: Error | null = null;
-
-    for (let modelIndex = 0; modelIndex < models.length && !draft; modelIndex += 1) {
-        const model = models[modelIndex];
-        applyChatRuntimeState(modelIndex === 0 ? 'generating' : 'retrying', '構思照片中...');
-        try {
-            const recentMessages = getRecentChatMessages(
-                request.conversationKey,
-                latestUserMessage,
-                false,
-                request.persona,
-                request.room,
-            ).slice(-24);
-            while (recentMessages[0]?.role === 'assistant') recentMessages.shift();
-            const result = await generateChatTextWithTimeout({
-                model,
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    ...recentMessages,
-                    { role: 'user', content: getLatestUserVeniceContent(request, latestUserMessage) },
-                ],
-                temperature: 0.76,
-                topP: 0.92,
-                repetitionPenalty: 1.06,
-                responseFormat: {
-                    type: 'json_schema',
-                    json_schema: {
-                        name: 'character_photo_proposal',
-                        strict: true,
-                        schema: {
-                            type: 'object',
-                            additionalProperties: false,
-                            required: ['reply', 'prompt', 'favorite_prompt', 'caption', 'ratio'],
-                            properties: {
-                                reply: { type: 'string' },
-                                prompt: { type: 'string' },
-                                favorite_prompt: { type: 'string' },
-                                caption: { type: 'string' },
-                                ratio: { type: 'string', enum: ['1:1', '3:4', '4:5', '16:9', '9:16'] },
-                            },
-                        },
-                    },
-                },
-                signal: request.controller.signal,
-            });
-            const candidate = parseCharacterPhotoProposalDraft(result.text, request.personaKey);
-            if (!candidate) {
-                throw new Error(`Invalid photo proposal from ${model}.`);
-            }
-            draft = candidate;
-        } catch (error) {
-            if (isAbortError(error)) throw error;
-            lastError = error instanceof Error ? error : new Error(String(error));
-            if (modelIndex === models.length - 1) {
-                console.warn('Using a local photo proposal because the model proposal was unavailable.', lastError);
-                const subjectNames = subjectPersonas
-                    .map(persona => persona.publicIdentity?.canonicalName || persona.name)
-                    .join(', ');
-                const currentScene = request.room
-                    ? [
-                        request.room.scene.location ? `Current location: ${request.room.scene.location}.` : '',
-                        request.room.scene.summary ? `Current moment: ${request.room.scene.summary}.` : '',
-                    ].filter(Boolean).join(' ')
-                    : '';
-                draft = {
-                    reply: request.personaKey === 'cc'
-                        ? '好呀，我照你講嘅內容構思咗張相。你睇吓下面個 Prompt 啱唔啱，確認後我先影。'
-                        : '好，我已經按照現在的情境構思好照片了。你看看下面的 Prompt 是否正確，確認後我才拍。',
-                    scenePrompt: [
-                        `One coherent still image featuring exactly: ${subjectNames}.`,
-                        currentScene,
-                        `Follow this exact user request: ${latestUserMessage}`,
-                        'Preserve the established current location, clothing, visible objects, actions, and relationships unless the user explicitly asks to change them.',
-                    ].filter(Boolean).join(' '),
-                    caption: request.personaKey === 'cc' ? '影好喇，畀你。' : '拍好了，給你。',
-                    aspectRatio: '3:4',
-                };
-            }
-        }
-    }
-
-    if (!draft) throw lastError || new Error('角色未能整理照片草稿。');
+        latestUserContent: getLatestUserVeniceContent(request, latestUserMessage),
+        chatModelSettings,
+        getRecentMessages: () => getRecentChatMessages(
+            request.conversationKey,
+            latestUserMessage,
+            false,
+            request.persona,
+            request.room,
+        ).slice(-24),
+        setRuntimeState: applyChatRuntimeState,
+        runModel: async modelRequest => (
+            await generateChatTextWithTimeout({
+                model: modelRequest.model,
+                messages: modelRequest.messages,
+                temperature: modelRequest.temperature,
+                topP: modelRequest.topP,
+                repetitionPenalty: modelRequest.repetitionPenalty,
+                responseFormat: modelRequest.responseFormat as Parameters<typeof generateChatTextWithTimeout>[0]['responseFormat'],
+                signal: modelRequest.signal,
+            })
+        ).text,
+        cleanChatReply: cleanVeniceChatReply,
+        isAbortError,
+    });
+    const {
+        draft,
+        favoritePrompt,
+        subjectPersonas,
+        isMultiSubject,
+        usesAnyPublicIdentity,
+        useAvatarReference,
+        contentMode,
+    } = generatedDraft;
     const mode: VeniceImageMode = useAvatarReference ? 'edit' : 'generate';
     let imageModel = getPreferredCharacterPhotoModel(mode);
     try {
@@ -11781,6 +5941,7 @@ const buildCharacterPhotoProposal = async (
             identityMode: usesAnyPublicIdentity
                 ? 'public_identity'
                 : useAvatarReference ? 'avatar_reference' : 'persona_description',
+            contentMode,
             senderMemberId: request.photoSenderMemberId,
             subjectMemberIds: request.photoSubjectMemberIds,
             modelId: imageModel?.id,
@@ -11792,72 +5953,6 @@ const buildCharacterPhotoProposal = async (
     };
 };
 
-const buildEmergencyCharacterPhotoProposal = (
-    request: ActiveChatRequest,
-    latestUserMessage: string,
-): { text: string; proposal: CharacterPhotoProposal } => {
-    const subjectMembers = request.room
-        ? request.room.members.filter(member => request.photoSubjectMemberIds?.includes(member.id))
-        : [];
-    const subjectPersonas = subjectMembers.length > 0
-        ? subjectMembers.map(member => member.persona)
-        : [request.persona];
-    const isMultiSubject = subjectPersonas.length > 1;
-    const usesAnyPublicIdentity = subjectPersonas.some(usesConfirmedPublicIdentity);
-    const useAvatarReference = Boolean(
-        !isMultiSubject
-        && !usesConfirmedPublicIdentity(request.persona)
-        && request.persona.avatarUrl
-        && !request.persona.avatarUrl.startsWith('generating_'),
-    );
-    const currentScene = request.room
-        ? [
-            request.room.scene.location ? `Current location: ${request.room.scene.location}.` : '',
-            request.room.scene.summary ? `Current moment: ${request.room.scene.summary}.` : '',
-        ].filter(Boolean).join(' ')
-        : '';
-    const scenePrompt = trimPhotoPromptSection([
-        currentScene,
-        `Follow this exact user request: ${latestUserMessage}`,
-        'Keep the image internally coherent and preserve established current-moment continuity unless the request explicitly changes it.',
-    ].filter(Boolean).join(' '), 760);
-    const basePrompt = isMultiSubject
-        ? trimPhotoPromptSection([
-            `Create one coherent still image with exactly ${subjectPersonas.length} distinct people:`,
-            ...subjectPersonas.map(persona => {
-                const identity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
-                return identity
-                    ? `${identity.canonicalName} (${identity.visualPrompt})`
-                    : `${persona.name} (${persona.avatarPrompt || persona.description})`;
-            }),
-            scenePrompt,
-            'Keep every named identity, face, body, clothing, pose, and action separate. No extra or omitted people, merged faces, captions, logos, or watermarks.',
-        ].join(' '), CHARACTER_PHOTO_PROMPT_MAX_LENGTH)
-        : buildCharacterPhotoPrompt(request.persona, scenePrompt, useAvatarReference);
-
-    return {
-        text: request.personaKey === 'cc'
-            ? '好呀，我照你講嘅內容整好咗個照片 Prompt。你睇吓啱唔啱，確認後我先影。'
-            : '好，我已經按照現在的情境整理好照片 Prompt。你看看是否正確，確認後我才拍。',
-        proposal: {
-            id: crypto.randomUUID?.() || `photo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-            prompt: basePrompt,
-            basePrompt,
-            scenePrompt,
-            caption: request.personaKey === 'cc' ? '影好喇，畀你。' : '拍好了，給你。',
-            aspectRatio: '3:4',
-            status: 'pending',
-            createdAt: Date.now(),
-            useAvatarReference,
-            identityMode: usesAnyPublicIdentity
-                ? 'public_identity'
-                : useAvatarReference ? 'avatar_reference' : 'persona_description',
-            senderMemberId: request.photoSenderMemberId,
-            subjectMemberIds: request.photoSubjectMemberIds,
-        },
-    };
-};
-
 const runRoomConversationGeneration = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
@@ -11865,6 +5960,8 @@ const runRoomConversationGeneration = async (
     trace?: GenerationTrace,
 ): Promise<GroupGenerationResult> => {
     if (!request.room) throw new Error('Room snapshot is unavailable.');
+    const preparationStartedAt = performance.now();
+    const groupPromptModule = await loadGroupChatPromptModule();
 
     let lastError: Error | null = null;
     let rejectedReply = '';
@@ -11889,7 +5986,11 @@ const runRoomConversationGeneration = async (
             const attemptPhase = classifySingleGenerationAttempt(modelIndex, attempt + 1);
             applyChatRuntimeState(isRetry ? 'retrying' : 'generating', isRetry ? '重新思考中...' : '思考中...');
             try {
-                const groupPromptBuild = buildGroupSystemPromptWithAccounting(request.room, latestUserMessage);
+                const groupPromptBuild = groupPromptModule.buildGroupSystemPromptWithAccounting(
+                    request.room,
+                    latestUserMessage,
+                    formatSessionMemoryPrompt(request.conversationKey),
+                );
                 const groupSystemPrompt = groupPromptBuild.prompt;
                 const surpriseEventContract = request.surpriseEvent
                     ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
@@ -11941,6 +6042,7 @@ const runRoomConversationGeneration = async (
                 }
                 messages.push(...recentMessages);
                 messages.push({ role: 'user', content: latestUserContent });
+                markChatPerformance('generation:prompt-build', preparationStartedAt);
 
                 const generationStartedAt = performance.now();
                 markChatPerformance(isRetry ? 'generation:repair-request-start' : 'generation:primary-request-start');
@@ -11979,9 +6081,11 @@ const runRoomConversationGeneration = async (
                     { repair: isRetry, fallback: modelIndex > 0 },
                     result,
                 );
+                const groupParseStartedAt = performance.now();
                 const parsed = normalizeGroupGenerationTraditional(
                     parseGroupGeneration(result.text, request.room, fallbackMemberId),
                 );
+                markChatPerformance('generation:group-parse', groupParseStartedAt);
                 if (parsed.npcCandidate && isUnconfirmedAddressPrefixName(
                     parsed.npcCandidate.name,
                     latestUserMessage,
@@ -12230,10 +6334,12 @@ const startStrictReviewShadow = (
     candidateText: string,
     mode: 'single' | 'group',
     proposedScene?: RoomSceneState,
+    deterministicGroupNarrationViolation?: boolean,
 ) => startJevShadowEvaluation({
     requestId: String(request.id),
     mode,
     ccMode: request.personaKey === 'cc',
+    deterministicGroupNarrationViolation,
     signal: request.controller.signal,
     state: buildReviewState({
         latestUserText: latestUserMessage,
@@ -12277,6 +6383,7 @@ const strictReviewSingleReply = async (
             request.wardrobeState,
             getWardrobeParticipantsForRequest(request, establishedNpcNames),
             true,
+            request.conversationKey,
         ),
         request.surpriseEvent
             ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
@@ -12351,9 +6458,14 @@ const strictReviewGroupReply = async (
     trace?: GenerationTrace,
 ) => {
     if (!request.room) return candidate;
+    const { buildGroupSystemPrompt } = await loadGroupChatPromptModule();
     const serializedCandidate = serializeGroupGenerationForReview(candidate);
     const authoritativePrompt = [
-        buildGroupSystemPrompt(request.room, latestUserMessage),
+        buildGroupSystemPrompt(
+            request.room,
+            latestUserMessage,
+            formatSessionMemoryPrompt(request.conversationKey),
+        ),
         request.surpriseEvent
             ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
             : '',
@@ -12365,6 +6477,7 @@ const strictReviewGroupReply = async (
         serializedCandidate,
         'group',
         candidate.scene,
+        groupNarrationUsesFirstPerson(candidate),
     );
     let decision;
     try {
@@ -12446,63 +6559,33 @@ const runAssistantChatGeneration = async (
     return runConversationGeneration(request, latestUserMessage, [model], true);
 };
 
+let godModeGenerationModuleLoad: Promise<typeof import('./features/godModeGeneration.js')> | null = null;
+
+const loadGodModeGenerationModule = () => {
+    godModeGenerationModuleLoad ??= import('./features/godModeGeneration.js');
+    return godModeGenerationModuleLoad;
+};
+
 const runGodModeGeneration = async (
     request: ActiveChatRequest,
     latestUserInstruction: string,
 ): Promise<{ visibleText: string; personaUpdate: string | null }> => {
-    const models = Array.from(new Set([VENICE_GOD_MODEL, VENICE_GOD_FALLBACK_MODEL].filter(Boolean)));
-    let lastError: Error | null = null;
-
-    for (let index = 0; index < models.length; index += 1) {
-        const model = models[index];
-        const detail = index === 0 ? '調整人格中...' : '重新整理人格設定中...';
-        applyChatRuntimeState(index === 0 ? 'generating' : 'retrying', detail);
-
-        try {
-            const result = await generateVeniceText({
-                model,
-                messages: [
-                    { role: 'system', content: buildGodModeSystemPrompt(request.persona) },
-                    ...getRecentGodModeMessages(latestUserInstruction),
-                    { role: 'user', content: latestUserInstruction },
-                ],
-                maxCompletionTokens: 180,
-                temperature: 0.25,
-                topP: 0.9,
-                repetitionPenalty: 1.04,
-                signal: request.controller.signal,
-            });
-
-            console.info('[aigf4 generation]', {
-                requestId: request.id,
-                mode: request.mode,
-                phase: index === 0 ? 'primary' : 'fallback',
-                model: result.model,
-                latencyMs: Math.round(performance.now() - request.startedAt),
-                promptTokens: result.promptTokens,
-                completionTokens: result.completionTokens,
-                finishReason: result.finishReason,
-            });
-
-            const parsed = extractPersonaUpdatePayload(result.text);
-            if (!parsed.personaUpdate) {
-                throw new Error(`No PERSONA_UPDATE returned from ${model}.`);
-            }
-
-            return parsed;
-        } catch (error) {
-            if (isAbortError(error)) {
-                throw error;
-            }
-            lastError = error instanceof Error ? error : new Error(String(error));
-        }
-    }
-
-    throw lastError || new Error('God Mode could not return a valid PERSONA_UPDATE.');
-};
-
-const getPostActionResponse = async (_triggeringMessage: string) => {
-    showDisabledFeatureNotice('\u5ef6\u4f38\u4e92\u52d5\u529f\u80fd');
+    const { runGodModeGeneration: runColdGodModeGeneration } = await loadGodModeGenerationModule();
+    return runColdGodModeGeneration({
+        id: request.id,
+        mode: request.mode,
+        startedAt: request.startedAt,
+        persona: request.persona,
+        signal: request.controller.signal,
+    }, latestUserInstruction, {
+        models: [VENICE_GOD_MODEL, VENICE_GOD_FALLBACK_MODEL],
+        recentMessages: getRecentGodModeMessages(latestUserInstruction),
+        soulMemory: formatPersonaMemoryPrompt(request.persona, 'soul'),
+        episodicMemory: formatPersonaMemoryPrompt(request.persona, 'memory'),
+        setRuntimeState: applyChatRuntimeState,
+        runModel: modelRequest => generateVeniceText(modelRequest),
+        isAbortError,
+    });
 };
 
 const getGodModeResponse = async (request: ActiveChatRequest) => {
@@ -12539,14 +6622,17 @@ const getGodModeResponse = async (request: ActiveChatRequest) => {
         }
         godModeHistory.push({ role: 'model', content: godModeContent });
         finishChatRequest(request);
+        completeChatPerformanceTurn('response:god-mode-visible');
     } catch (error) {
         if (isAbortError(error)) {
             finishChatRequest(request);
+            cancelChatPerformanceTurn('send:aborted');
             return;
         }
         console.error('God Mode response error:', error);
         if (error instanceof Error && error.message === VENICE_AUTH_REQUIRED_ERROR) {
             finishChatRequest(request);
+            cancelChatPerformanceTurn('send:auth-error');
             handleAuthRequired();
             return;
         }
@@ -12557,6 +6643,7 @@ const getGodModeResponse = async (request: ActiveChatRequest) => {
             showError(message);
             appendMessage({ text: `[系統] ${message}` }, 'system');
         }
+        cancelChatPerformanceTurn('send:error');
     }
 };
 
@@ -12612,7 +6699,8 @@ const approveCharacterPhoto = async (proposalId: string) => {
     if (!persona || !proposal || proposal.status === 'generated' || proposal.status === 'declined') return;
 
     activeCharacterPhotoProposalId = proposalId;
-    characterPhotoRequestController = new AbortController();
+    const controller = new AbortController();
+    characterPhotoRequestController = controller;
     updatePhotoProposal(conversationKey, proposalId, { status: 'generating', error: undefined });
     refreshPhotoProposalCard(proposalId);
 
@@ -12625,42 +6713,120 @@ const approveCharacterPhoto = async (proposalId: string) => {
 
         const mode: VeniceImageMode = sourceImageBase64 ? 'edit' : 'generate';
         await loadImageModels(mode);
-        const model = imageModels[mode].find(item => item.id === proposal.modelId)
+        const preferredModel = imageModels[mode].find(item => item.id === proposal.modelId)
             || getPreferredCharacterPhotoModel(mode);
-        if (!model) throw new Error('目前沒有可用的 Venice 圖片模型。');
+        if (!preferredModel) throw new Error('目前沒有可用的 Venice 圖片模型。');
         const generationSeed = mode === 'generate'
             ? proposal.seed ?? resolveImageSeedForRequest(imageSeed, imageSeedLock.checked)
             : undefined;
-
-        const supportedRatios = model.constraints.aspectRatios || [];
-        const aspectRatio = supportedRatios.includes(proposal.aspectRatio)
-            ? proposal.aspectRatio
-            : model.constraints.defaultAspectRatio || supportedRatios[0];
-        const resolution = model.constraints.defaultResolution || model.constraints.resolutions?.[0];
         const pixelSize = PIXEL_IMAGE_DIMENSIONS[proposal.aspectRatio] || PIXEL_IMAGE_DIMENSIONS['3:4'];
-        const result = await requestVeniceImage({
+        const [
+            { runWithTransientImageRetry, validateGeneratedImageBlob },
+            { buildCharacterPhotoModelLadder, inferCharacterPhotoContentMode },
+        ] = await Promise.all([
+            import('./features/characterPhotoImageReliability.js'),
+            import('./features/characterPhotoImagePolicy.js'),
+        ]);
+        const contentMode = proposal.contentMode
+            || inferCharacterPhotoContentMode(proposal.prompt, proposal.scenePrompt, proposal.favoriteScenePrompt);
+        const modelLadder = buildCharacterPhotoModelLadder({
             mode,
-            model: model.id,
-            prompt: proposal.prompt,
-            negativePrompt: mode === 'generate'
-                ? 'unintended duplicated bodies, cloned face, malformed anatomy, deformed hands, distorted face, text, captions, interface, logo, watermark, blurry, low quality'
-                : undefined,
-            sourceImageBase64: sourceImageBase64 || undefined,
-            aspectRatio: mode === 'edit' || supportedRatios.length > 0 ? aspectRatio : undefined,
-            resolution,
-            width: mode === 'generate' && supportedRatios.length === 0 ? pixelSize.width : undefined,
-            height: mode === 'generate' && supportedRatios.length === 0 ? pixelSize.height : undefined,
-            variants: 1,
-            steps: mode === 'generate' ? model.constraints.steps?.default : undefined,
-            seed: generationSeed,
-            adultConfirmed: true,
-            signal: characterPhotoRequestController.signal,
+            models: imageModels[mode],
+            primaryModelId: preferredModel.id,
+            contentMode,
+            limit: 3,
         });
-        const blob = result.blobs[0];
-        if (!blob) throw new Error('Venice 沒有傳回照片。');
+        if (!modelLadder.length) throw new Error('目前沒有可用的 Venice 圖片模型。');
+
+        let model: VeniceImageModelSummary | null = null;
+        let blob: Blob | null = null;
+        let aspectRatio: string | undefined;
+        let resolution: string | undefined;
+        const failedModels: string[] = [];
+
+        for (let modelIndex = 0; modelIndex < modelLadder.length; modelIndex += 1) {
+            const candidateModel = modelLadder[modelIndex];
+            const supportedRatios = candidateModel.constraints.aspectRatios || [];
+            const candidateAspectRatio = supportedRatios.includes(proposal.aspectRatio)
+                ? proposal.aspectRatio
+                : candidateModel.constraints.defaultAspectRatio || supportedRatios[0];
+            const candidateResolution = candidateModel.constraints.defaultResolution
+                || candidateModel.constraints.resolutions?.[0];
+            const requestImage = () => requestVeniceImage({
+                mode,
+                model: candidateModel.id,
+                prompt: proposal.prompt,
+                negativePrompt: mode === 'generate'
+                    ? 'unintended duplicated bodies, cloned face, malformed anatomy, deformed hands, distorted face, text, captions, interface, logo, watermark, blurry, low quality'
+                    : undefined,
+                sourceImageBase64: sourceImageBase64 || undefined,
+                aspectRatio: mode === 'edit' || supportedRatios.length > 0 ? candidateAspectRatio : undefined,
+                resolution: candidateResolution,
+                width: mode === 'generate' && supportedRatios.length === 0 ? pixelSize.width : undefined,
+                height: mode === 'generate' && supportedRatios.length === 0 ? pixelSize.height : undefined,
+                variants: 1,
+                steps: mode === 'generate' ? candidateModel.constraints.steps?.default : undefined,
+                seed: generationSeed,
+                adultConfirmed: true,
+                signal: controller.signal,
+            });
+
+            try {
+                const result = modelIndex === 0
+                    ? (await runWithTransientImageRetry(requestImage, {
+                        signal: controller.signal,
+                        onRetry: () => {
+                            updatePhotoProposal(conversationKey, proposalId, {
+                                status: 'generating',
+                                error: '首選圖片模型暫時繁忙，正在自動重試一次…',
+                            });
+                            if (currentConversationKey === conversationKey) refreshPhotoProposalCard(proposalId);
+                        },
+                    })).result
+                    : await requestImage();
+                const candidateBlob = result.blobs[0];
+                if (!candidateBlob) throw new Error('Venice 沒有傳回照片。');
+                await validateGeneratedImageBlob(candidateBlob);
+                if (controller.signal.aborted) {
+                    throw new DOMException('Image generation aborted.', 'AbortError');
+                }
+
+                model = candidateModel;
+                blob = candidateBlob;
+                aspectRatio = candidateAspectRatio;
+                resolution = candidateResolution;
+                break;
+            } catch (error) {
+                if (isAbortError(error)) throw error;
+                failedModels.push(candidateModel.id);
+                const nextModel = modelLadder[modelIndex + 1];
+                console.warn('Character photo image model failed; advancing fallback ladder.', {
+                    contentMode,
+                    mode,
+                    failedModel: candidateModel.id,
+                    nextModel: nextModel?.id,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+                if (!nextModel) {
+                    throw new Error(
+                        `已自動嘗試 ${modelLadder.length} 個圖片模型（${failedModels.join(' → ')}），仍未能產生有效照片。請稍後再試。`,
+                        { cause: error instanceof Error ? error : undefined },
+                    );
+                }
+                updatePhotoProposal(conversationKey, proposalId, {
+                    status: 'generating',
+                    error: `圖片結果異常，正在自動轉用 ${nextModel.name}…`,
+                });
+                if (currentConversationKey === conversationKey) refreshPhotoProposalCard(proposalId);
+            }
+        }
+
+        if (!blob || !model) {
+            throw new Error('所有圖片模型都未能產生有效照片，請稍後再試。');
+        }
 
         const assetId = `character-photo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-        await saveCharacterPhotoAsset({
+        await (await loadPhotoStoreModule()).saveCharacterPhotoAsset({
             id: assetId,
             personaKey: conversationKey,
             blob,
@@ -12702,17 +6868,20 @@ const approveCharacterPhoto = async (proposalId: string) => {
             updateAlbumState();
         }
     } catch (error) {
+        const rawMessage = error instanceof Error ? error.message : '這次照片生成失敗。';
         const message = isAbortError(error)
             ? '照片生成已停止，可以按「重試生成」再試。'
-            : error instanceof Error ? error.message : '這次照片生成失敗。';
+            : /(?:demand|too many requests|rate[ -]?limit|overload|busy|capacity|temporar|try again|unavailable|service unavailable)/iu.test(rawMessage)
+                ? '圖片模型目前需求過高；系統已自動重試一次但仍未成功。請稍後按「重試生成」。'
+                : rawMessage;
         updatePhotoProposal(conversationKey, proposalId, { status: 'failed', error: message });
         if (currentConversationKey === conversationKey) {
             refreshPhotoProposalCard(proposalId);
-            if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
+            if (rawMessage === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
         }
     } finally {
         activeCharacterPhotoProposalId = null;
-        characterPhotoRequestController = null;
+        if (characterPhotoRequestController === controller) characterPhotoRequestController = null;
         if (currentConversationKey === conversationKey) refreshPhotoProposalCard(proposalId);
     }
 };
@@ -12863,275 +7032,11 @@ function refreshSurpriseEventCard(proposalId: string) {
     currentCard.replaceWith(createSurpriseEventCard(proposal));
 }
 
-const buildSurpriseEventMemberContext = (request: ActiveChatRequest, selectedMemberIds: string[]) => {
-    const compactEventText = (value: string | undefined, limit: number) => (
-        value?.replace(/\s+/gu, ' ').trim().slice(0, limit) || ''
-    );
-    if (!request.room) {
-        const identity = request.persona.publicIdentityEnabled ? request.persona.publicIdentity : undefined;
-        return [
-            `MEMBER ID: ${request.personaKey}`,
-            `Name: ${request.persona.name}`,
-            `Identity / occupation: ${compactEventText(request.persona.description, 600)}`,
-            identity ? `Confirmed public identity: ${identity.canonicalName}. ${compactEventText(identity.summary, 700)}` : '',
-            `Personality and voice: ${compactEventText(request.persona.prompt, 2200)}`,
-            formatRelationshipStatePrompt(request.persona),
-        ].filter(Boolean).join('\n');
-    }
+let surpriseEventGenerationModuleLoad: Promise<typeof import('./features/surpriseEventGeneration.js')> | null = null;
 
-    const selected = new Set(selectedMemberIds);
-    return request.room.members.filter(member => selected.has(member.id)).map(member => {
-        const identity = member.persona.publicIdentityEnabled ? member.persona.publicIdentity : undefined;
-        return [
-            `MEMBER ID: ${member.id}`,
-            `Name: ${member.persona.name}`,
-            'Participation: SELECTED FOR THIS EVENT',
-            `Identity / occupation: ${compactEventText(member.persona.description, 500)}`,
-            identity ? `Confirmed public identity: ${identity.canonicalName}. ${compactEventText(identity.summary, 650)}` : '',
-            `Personality and voice: ${compactEventText(member.persona.prompt, 1800)}`,
-            formatRelationshipStatePrompt(member.persona),
-        ].filter(Boolean).join('\n');
-    }).join('\n\n---\n\n');
-};
-
-const generateSurpriseEvent = async (
-    request: ActiveChatRequest,
-    options: SurpriseEventDrawOptions,
-): Promise<SurpriseEventProposal> => {
-    const history = memoryManager.getChatHistory(request.conversationKey);
-    const recentEvents = collectRecentSurpriseEvents(history, 8);
-    const availableMemberIds = request.room
-        ? request.room.scene.presentMemberIds
-        : [request.personaKey];
-    const availableMemberIdSet = new Set(availableMemberIds);
-    const validMemberIds = Array.from(new Set(options.participantIds))
-        .filter(id => availableMemberIdSet.has(id));
-    if (validMemberIds.length === 0) throw new Error('No selected surprise-event participant is still present.');
-    const fallbackMemberId = request.room
-        ? validMemberIds.includes(request.roomMemberId || '')
-            ? request.roomMemberId!
-            : validMemberIds[0]
-        : request.personaKey;
-    const participants = request.room
-        ? validMemberIds.map(id => ({
-            id,
-            name: request.room?.members.find(member => member.id === id)?.persona.name || id,
-        }))
-        : [{ id: request.personaKey, name: request.persona.name }];
-    const recentEventLedger = recentEvents.length > 0
-        ? recentEvents.map(event => `- ${event.category} | ${event.title} | ${event.hook}`).join('\n')
-        : '- none';
-    const identityLedger = buildSurpriseEventMemberContext(request, validMemberIds);
-    const idolLike = /歌手|偶像|藝人|演員|舞台|音樂|團體|idol|singer|actress|performer|k-pop/iu.test(identityLedger);
-    const categoryPool = (idolLike
-        ? ['backstage', 'idol_schedule', 'public_spotlight', 'secret_escape', 'unexpected_guest', 'celebration', 'travel', 'emotional_turn', 'rivalry', 'mystery']
-        : ['secret_escape', 'unexpected_guest', 'celebration', 'travel', 'domestic', 'emotional_turn', 'rivalry', 'mystery', 'fantasy']) as SurpriseEventProposal['category'][];
-    const nsfwDirection = NSFW_SURPRISE_EVENT_DIRECTIONS[
-        Math.floor(Math.random() * NSFW_SURPRISE_EVENT_DIRECTIONS.length)
-    ];
-    const compatibleCategoryPool = options.contentMode === 'nsfw'
-        ? categoryPool.filter(category => (
-            (nsfwDirection.categories as readonly SurpriseEventProposal['category'][]).includes(category)
-        ))
-        : categoryPool;
-    const recentlyUsedCategories = new Set(recentEvents.slice(-6).map(event => event.category));
-    const freshCategoryPool = compatibleCategoryPool.filter(category => !recentlyUsedCategories.has(category));
-    const selectableCategories = freshCategoryPool.length > 0 ? freshCategoryPool : compatibleCategoryPool;
-    const allowedCategories = [...selectableCategories]
-        .sort(() => Math.random() - 0.5)
-        .slice(0, Math.min(3, selectableCategories.length));
-    const fallbackCategory = allowedCategories[0] || categoryPool[0];
-    const allowedCategoryProof = allowedCategories
-        .map(category => `- ${category}: ${SURPRISE_EVENT_CATEGORY_GUIDES[category]}`)
-        .join('\n');
-    const contentModeRules = options.contentMode === 'nsfw'
-        ? [
-            'CONTENT MODE: EXPLICIT ADULT 18+ / NSFW.',
-            'Create one ready-to-start interactive adult SHOW with a named format, concrete rules and a first round. This is not a date idea, travel plan, story prompt, writing outline or behind-the-scenes planning exercise.',
-            'The show must already be set up when the card appears. Do not ask the characters to confirm schedules, find a route, manage logistics, design the event or discuss what they might do later.',
-            'Every selected character is an active cast member in the same first round. Give each one an immediate in-show action; nobody may merely observe, organize, assess risk or wait for instructions.',
-            `MANDATORY SHOW FORMAT DIRECTION: ${nsfwDirection.prompt}. Turn this into one coherent adult program that fits the live context and selected characters.`,
-            'The visible hook and setup must explain what the program is, its venue or stage, the rule of the first round, and what happens immediately after the user presses start.',
-            'Treat every selected participant and the user as an adult in this fictional conversation. Keep the event consensual and leave the user free to accept, refuse or redirect it.',
-            'Do not censor, euphemize or silently downgrade the card into a non-sexual event.',
-        ]
-        : [
-            'CONTENT MODE: NON-SEXUAL / NOT NSFW.',
-            'The event may be romantic, funny, dramatic, mysterious or emotionally charged, but it must contain no nudity, sexual act, erotic role-play, sexual toy or explicit sexual proposition.',
-            'Do not drift into an adult sexual event even if the recent conversation contains sexual material.',
-        ];
-    const sceneContext = request.room
-        ? `Location: ${request.room.scene.location}\nReality layer: ${request.room.scene.realityLayer}\nPresent member IDs: ${request.room.scene.presentMemberIds.join(', ')}\nCurrent summary: ${request.room.scene.summary}\nUnresolved: ${request.room.scene.unresolved.join('; ') || 'none'}`
-        : 'Infer the live location, reality layer, participants and unfinished beat from the recent completed conversation. Do not contradict it.';
-    const eventSystemPrompt = [
-        options.contentMode === 'nsfw'
-            ? 'You are the format director of one ready-to-begin interactive adult program inside a continuous private romance conversation.'
-            : 'You design one fresh surprise-event card for a continuous private romance conversation.',
-        'The card is a playable opening, not a complete short story: create an immediate hook, concrete situation and unresolved tension that can develop naturally over several chat turns.',
-        'Build one causal chain that is easy to understand: what concretely happened, where it happened, why it matters now, how each selected participant became involved, and what decision remains for the user. Do not splice together unrelated random ideas.',
-        'The active characters must remain recognizable and retain their established voice, nationality, occupation, public identity, memories and current relationship progress.',
-        'For a singer, idol, actor or other public performer, strongly prefer identity-specific inspiration when fresh: backstage timing, rehearsal, recording, award events, travel schedules, members or staff, public-versus-private tension, secret rest time, or a performance-related surprise. Keep all private developments explicitly inside this fictional conversation and never present invented claims as real news.',
-        'Vary scale and mood. Events may be tender, funny, awkward, dramatic, mysterious, romantically charged or adult according to established context, but must not sanitize the current relationship or force an intensity unsupported by it.',
-        'A surprise must contain one specific catalyst that changes the current moment: an interruption, deadline, discovery, secret, mistake, invitation, public/private conflict, unexpected person, or emotionally risky choice.',
-        'Reject routine waking up, ordinary meals, generic dates, generic rain, merely discussing an existing plan, or “they spend time together” unless a genuinely new concrete twist transforms it.',
-        'Never puppet the user, decide the user agrees, resolve the central tension, skip directly to the ending, reset the current relationship, or replay a completed scene.',
-        'An event may include a clearly attributed staff member, friend, fan, manager or other NPC when useful, but do not silently turn an NPC into a fixed room member.',
-        'The opening_instruction is hidden from the user. It must tell the chat model exactly how to begin the event in character while preserving current location, clothing, positions and reality layer unless the event itself naturally initiates a transition.',
-        'Write title, hook, setup, activities, user_choice and opening_instruction in natural Traditional Chinese. Return only the requested JSON.',
-        ...contentModeRules,
-        `SELECTED PARTICIPANTS (fixed by the app): ${participants.map(participant => participant.name).join(', ')}. Include every one of them in the same event. Do not return participant IDs or hidden member-role data; the app supplies those locally.`,
-        'activities must contain 3 to 5 different concrete activities in execution order. Every item must name an observable action, who acts or how participants rotate, any card/prop/timer/pairing involved, and how that item ends.',
-        'Never use “adult challenge”, “sexual challenge”, “intimate interaction”, “something exciting”, “different activity” or similar labels as a complete activity. Those are categories, not descriptions. State the actual game mechanic and action.',
-        'user_choice must be one clear unresolved decision the user can answer immediately. It must not assume consent or narrate the user’s action.',
-        'Unselected fixed room members must not speak, act, or become part of this event card.',
-        'OUTPUT CONTRACT: return one JSON object only, with exactly these keys and no Markdown: {"title":"...","category":"...","intensity":"gentle|playful|dramatic|heated","hook":"...","setup":"...","opening_instruction":"...","activities":["...","...","..."],"user_choice":"...","relationship_effect":{"closeness":2,"trust":1,"romantic_tension":3,"initiative":2}}.',
-        `ALLOWED FRESH CATEGORIES: ${allowedCategories.join(', ')}. Choose exactly one category from this list.`,
-        options.contentMode === 'nsfw'
-            ? 'The category is only a flavor tag. The interactive adult-show format and first round take priority over category logistics.'
-            : `CATEGORY PROOF REQUIREMENTS:\n${allowedCategoryProof}\nThe setup must visibly contain the proof for the chosen category.`,
-        `CURRENT SCENE:\n${sceneContext}`,
-        `FIXED CHARACTER FILES:\n${identityLedger}`,
-        `RECENT EVENT CARDS THAT MUST NOT BE REPEATED OR MERELY RENAMED:\n${recentEventLedger}`,
-    ].join('\n\n');
-
-    const models = buildSurpriseEventModelRoute(chatModelSettings);
-    for (let index = 0; index < models.length; index += 1) {
-        const model = models[index];
-        applyChatRuntimeState(index === 0 ? 'generating' : 'retrying', index === 0 ? '正在抽取驚喜事件...' : '正在換一種靈感...');
-        try {
-            const result = await generateChatTextWithTimeout({
-                model,
-                messages: [
-                    { role: 'system', content: eventSystemPrompt },
-                    ...collectRecentMessagesWithinBudget(getRecentChatMessages(
-                        request.conversationKey,
-                        undefined,
-                        false,
-                        request.persona,
-                        request.room,
-                    ), 14000, 14),
-                    {
-                        role: 'user',
-                        content: `Create exactly one ${options.contentMode === 'nsfw' ? 'ready-to-start interactive 18+ / NSFW show' : 'non-sexual event card'} now for all selected participants. Do not continue the conversation itself.`,
-                    },
-                ],
-                temperature: 0.78,
-                topP: 0.9,
-                repetitionPenalty: 1.12,
-                responseFormat: /venice-uncensored-1-2/iu.test(model)
-                    ? SURPRISE_EVENT_RESPONSE_FORMAT
-                    : undefined,
-                signal: request.controller.signal,
-            }, SURPRISE_EVENT_ATTEMPT_TIMEOUT_MS);
-            const draft = parseSurpriseEventProposal(result.text, validMemberIds, fallbackMemberId);
-            if (draft) {
-                draft.involvedMemberIds = [...validMemberIds];
-                if (!allowedCategories.includes(draft.category)) draft.category = fallbackCategory;
-                if (options.contentMode === 'nsfw') {
-                    if (!/^18\+/iu.test(draft.title)) draft.title = `18+ 節目：${draft.title}`;
-                    if (!surpriseEventHasSpecificActivities(draft)) {
-                        draft.activities = [...nsfwDirection.showActivities];
-                    }
-                    draft.memberRoles = buildFallbackSurpriseShowMemberRoles(participants);
-                    draft.userChoice = draft.userChoice || nsfwDirection.showChoice;
-                } else {
-                    draft.memberRoles = buildFallbackSurpriseEventMemberRoles(participants, draft.category);
-                    draft.userChoice = draft.userChoice || (participants.length > 1
-                        ? '你要先回應哪一位的第一步？'
-                        : `你要接受 ${participants[0].name} 的第一步，還是要求她改變安排？`);
-                }
-            }
-            const draftParticipantIds = new Set(draft?.involvedMemberIds || []);
-            const hasExactParticipants = draftParticipantIds.size === validMemberIds.length
-                && validMemberIds.every(id => draftParticipantIds.has(id));
-            if (
-                !draft
-                || !hasExactParticipants
-                || !allowedCategories.includes(draft.category)
-                || (options.contentMode !== 'nsfw' && !surpriseEventMatchesCategory(draft))
-                || !surpriseEventMatchesContentMode(draft, options.contentMode)
-                || !surpriseEventHasPlayableStructure(draft, validMemberIds)
-                || (options.contentMode === 'nsfw' && !surpriseEventReadsLikeInteractiveShow(draft))
-                || (options.contentMode === 'nsfw' && !surpriseEventHasSpecificActivities(draft))
-                || recentEvents.some(previous => surpriseEventsAreTooSimilar(previous, draft))
-            ) {
-                throw new Error(`Repeated or invalid surprise event from ${model}.`);
-            }
-            draft.title = normalizeTraditionalChineseLeaks(draft.title);
-            draft.hook = normalizeTraditionalChineseLeaks(draft.hook);
-            draft.setup = normalizeTraditionalChineseLeaks(draft.setup);
-            draft.openingInstruction = normalizeTraditionalChineseLeaks(draft.openingInstruction);
-            draft.memberRoles = draft.memberRoles?.map(role => ({
-                ...role,
-                objective: normalizeTraditionalChineseLeaks(role.objective),
-                firstMove: normalizeTraditionalChineseLeaks(role.firstMove),
-            }));
-            if (draft.userChoice) draft.userChoice = normalizeTraditionalChineseLeaks(draft.userChoice);
-            draft.activities = draft.activities?.map(normalizeTraditionalChineseLeaks);
-            return {
-                ...draft,
-                contentMode: options.contentMode,
-                id: crypto.randomUUID?.() || `event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                status: 'pending',
-                createdAt: Date.now(),
-            };
-        } catch (error) {
-            if (isAbortError(error)) throw error;
-            console.warn('[aigf4 surprise event attempt rejected]', {
-                requestId: request.id,
-                model,
-                reason: error instanceof Error ? error.message : String(error),
-            });
-        }
-    }
-
-    const fallback = createFallbackSurpriseEvent(
-        request.persona,
-        fallbackMemberId,
-        recentEvents.map(event => event.category),
-        fallbackCategory,
-        validMemberIds,
-    );
-    const memberRoles = options.contentMode === 'nsfw'
-        ? buildFallbackSurpriseShowMemberRoles(participants)
-        : buildFallbackSurpriseEventMemberRoles(participants, fallback.category);
-    const userChoice = participants.length > 1
-        ? `你要先回應哪一位的第一步，還是要求她們重新協調安排？`
-        : `你要接受 ${participants[0].name} 的第一步、拒絕，還是要求她改變安排？`;
-    const modeAwareFallback = options.contentMode === 'nsfw'
-        ? {
-            ...fallback,
-            title: `18+ 節目：${nsfwDirection.showTitle}`,
-            hook: nsfwDirection.showHook,
-            setup: `${participants.map(participant => participant.name).join('、')} 全部是本節目的正式參與者。${nsfwDirection.showSetup} ${nsfwDirection.fallbackPremise}`,
-            openingInstruction: `直接以正在進行的 18+ 互動節目第一回合開場，不要再討論籌備、行程、路線或是否舉辦。${nsfwDirection.fallbackPremise} 讓每位已選角色依照隱藏分工立即說話及行動，彼此互動後停在使用者的第一個選擇，不要替使用者答應或一次完成整個節目。`,
-            intensity: 'heated' as const,
-            involvedMemberIds: validMemberIds,
-            memberRoles,
-            activities: [...nsfwDirection.showActivities],
-            userChoice: nsfwDirection.showChoice,
-            relationshipEffect: {
-                ...fallback.relationshipEffect,
-                romanticTension: Math.max(5, fallback.relationshipEffect.romanticTension),
-                initiative: Math.max(3, fallback.relationshipEffect.initiative),
-            },
-        }
-        : {
-            ...fallback,
-            involvedMemberIds: validMemberIds,
-            memberRoles,
-            activities: memberRoles.slice(0, 3).map(role => role.firstMove),
-            userChoice,
-            setup: fallback.setup,
-            openingInstruction: `${fallback.openingInstruction} 依照每人的指定第一步開始，停在使用者尚未作出的選擇。本事件必須保持非 18+。`,
-        };
-    return {
-        ...modeAwareFallback,
-        contentMode: options.contentMode,
-        id: crypto.randomUUID?.() || `event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        status: 'pending',
-        createdAt: Date.now(),
-    };
+const loadSurpriseEventGenerationModule = () => {
+    surpriseEventGenerationModuleLoad ??= import('./features/surpriseEventGeneration.js');
+    return surpriseEventGenerationModuleLoad;
 };
 
 async function drawSurpriseEventCard(
@@ -13151,7 +7056,41 @@ async function drawSurpriseEventCard(
     moreOptionsMenu.classList.add('hidden');
     const request = beginChatRequest(currentPersonaKey, currentPersona, 'event', conversationKey);
     try {
-        const proposal = await generateSurpriseEvent(request, options);
+        const { generateSurpriseEvent } = await loadSurpriseEventGenerationModule();
+        const proposal = await generateSurpriseEvent({
+            id: request.id,
+            personaKey: request.personaKey,
+            conversationKey: request.conversationKey,
+            persona: request.persona,
+            room: request.room,
+            roomMemberId: request.roomMemberId,
+            signal: request.controller.signal,
+        }, options, {
+            history: memoryManager.getChatHistory(request.conversationKey),
+            recentMessages: collectRecentMessagesWithinBudget(getRecentChatMessages(
+                request.conversationKey,
+                undefined,
+                false,
+                request.persona,
+                request.room,
+            ), 14000, 14),
+            chatModelSettings,
+            timeoutMs: SURPRISE_EVENT_ATTEMPT_TIMEOUT_MS,
+            setRuntimeState: applyChatRuntimeState,
+            runModel: async (modelRequest, timeoutMs) => (
+                await generateChatTextWithTimeout({
+                    model: modelRequest.model,
+                    messages: modelRequest.messages,
+                    temperature: modelRequest.temperature,
+                    topP: modelRequest.topP,
+                    repetitionPenalty: modelRequest.repetitionPenalty,
+                    responseFormat: modelRequest.responseFormat as Parameters<typeof generateChatTextWithTimeout>[0]['responseFormat'],
+                    signal: modelRequest.signal,
+                }, timeoutMs)
+            ).text,
+            normalizeText: normalizeTraditionalChineseLeaks,
+            isAbortError,
+        });
         if (!isActiveChatRequest(request)) return;
         const content: Content = { surpriseEvent: proposal };
         memoryManager.addMessage(conversationKey, 'system', content);
@@ -13356,23 +7295,24 @@ const getResponse = async (
 
     try {
         if (request.mode === 'photo' || (request.mode === 'character' && request.characterPhotoRequest)) {
-            let result: { text: string; proposal: CharacterPhotoProposal };
-            try {
-                result = await buildCharacterPhotoProposal(request, triggeringMessage);
-            } catch (error) {
-                if (isAbortError(error)) throw error;
-                console.warn('Photo proposal generation failed; showing an editable local proposal.', error);
-                result = buildEmergencyCharacterPhotoProposal(request, triggeringMessage);
-            }
+            const result = await buildCharacterPhotoProposal(request, triggeringMessage);
             if (!isActiveChatRequest(request)) return;
             const botContent: Content = { text: result.text, photoProposal: result.proposal };
+            const persistStartedAt = performance.now();
             memoryManager.addMessage(request.conversationKey, 'model', botContent, {
                 speakerId: request.photoSenderMemberId,
             });
-            if (currentConversationKey === request.conversationKey) appendMessage(botContent, 'bot', {
-                speakerId: request.photoSenderMemberId,
-            });
+            markChatPerformance('response:final-persist', persistStartedAt);
+            if (currentConversationKey === request.conversationKey) {
+                const renderStartedAt = performance.now();
+                appendMessage(botContent, 'bot', {
+                    speakerId: request.photoSenderMemberId,
+                });
+                markChatPerformance('response:final-render', renderStartedAt);
+            }
             finishChatRequest(request);
+            completeChatPerformanceTurn('response:photo-proposal-visible');
+            schedulePersonaListRefreshAfterPaint();
             return;
         }
 
@@ -13394,11 +7334,13 @@ const getResponse = async (
                 wardrobeState: normalizeWardrobeState(generated.scene.wardrobe),
         };
         if (typeof generated !== 'string' && request.room) {
+            const groupScenePersistStartedAt = performance.now();
             let persistedScene = generated.scene;
             try {
-                const storedRoom = roomManager.updateRoom(request.room.id, room => {
-                    room.scene = generated.scene;
-                });
+                const storedRoom = roomManager.updateRoomSceneDeferred(
+                    request.room.id,
+                    generated.scene,
+                );
                 persistedScene = storedRoom?.scene || generated.scene;
             } catch (error) {
                 // A nearly full mobile storage quota must not swallow a valid live reply.
@@ -13410,6 +7352,7 @@ const getResponse = async (
                 currentRoom = storedRoom || { ...currentRoom, scene: persistedScene };
                 currentRoom.scene = persistedScene;
             }
+            markChatPerformance('response:group-scene-persist', groupScenePersistStartedAt);
         }
         const persistStartedAt = performance.now();
         memoryManager.addMessage(request.conversationKey, 'model', botContent);
@@ -13475,11 +7418,9 @@ const getResponse = async (
                 if (currentConversationKey === request.conversationKey) appendMessage(proposalContent, 'system', undefined, 'none');
             });
         }
-        const personaListStartedAt = performance.now();
-        renderPersonaList();
-        markChatPerformance('response:persona-list-render', personaListStartedAt);
         finishChatRequest(request);
         completeChatPerformanceTurn('response:final-visible');
+        schedulePersonaListRefreshAfterPaint();
         if (request.room) void maybeSummarizeRoomMemory(request.room.id);
         else if (request.mode === 'character') void maybeSummarizePersonaMemory(request.personaKey);
     } catch (error) {
@@ -13491,6 +7432,7 @@ const getResponse = async (
                 });
             }
             finishChatRequest(request);
+            cancelChatPerformanceTurn('send:aborted');
             return;
         }
         console.error('Venice response error:', error);
@@ -13502,6 +7444,7 @@ const getResponse = async (
                 });
             }
             finishChatRequest(request);
+            cancelChatPerformanceTurn('send:auth-error');
             handleAuthRequired();
             return;
         }
@@ -13518,7 +7461,15 @@ const getResponse = async (
             showError(message);
             appendMessage({ text: `[系統] ${message}` }, 'system');
         }
+        cancelChatPerformanceTurn('send:error');
     }
+};
+
+let autoMemoryModuleLoad: Promise<typeof import('./autoMemory.js')> | null = null;
+
+const loadAutoMemoryModule = () => {
+    autoMemoryModuleLoad ??= import('./autoMemory.js');
+    return autoMemoryModuleLoad;
 };
 
 async function generateValidatedAutoMemory<T>(
@@ -13526,12 +7477,11 @@ async function generateValidatedAutoMemory<T>(
     responseFormat: NonNullable<Parameters<typeof generateVeniceText>[0]['responseFormat']>,
     parse: (text: string) => T | null,
 ): Promise<T> {
+    // Memory extraction uses a fixed route so changing the chat model does not
+    // change what the app decides is worth remembering.
     const models = Array.from(new Set([
-        chatModelSettings.primary,
-        chatModelSettings.qualityFallback,
-        chatModelSettings.emergencyFallback,
-        DEFAULT_CHAT_MODEL_SETTINGS.primary,
         DEFAULT_CHAT_MODEL_SETTINGS.qualityFallback,
+        DEFAULT_CHAT_MODEL_SETTINGS.primary,
         DEFAULT_CHAT_MODEL_SETTINGS.emergencyFallback,
     ].filter(Boolean)));
     let lastError: Error | null = null;
@@ -13587,18 +7537,23 @@ const buildRoomMemoryTranscript = (
     room: ChatRoom,
     messages: ChatMessage[],
     messageIds: ReadonlyMap<ChatMessage, string>,
+    manuallyControlledSourceIds: ReadonlySet<string> = new Set(),
 ): MemoryTranscriptBatch => {
     const sourceMessageIds = new Set<string>();
     const sceneIds: string[] = [];
     let activeScene = room.scene;
+    let suppressTurn = false;
     const lines = messages.flatMap(message => {
         if (message.content.roomSceneBeforeTurn) activeScene = message.content.roomSceneBeforeTurn;
+        const sourceId = messageIds.get(message);
+        if (message.role === 'user') {
+            suppressTurn = Boolean(sourceId && manuallyControlledSourceIds.has(sourceId));
+        }
+        if (suppressTurn || !sourceId) return [];
         const text = cleanMemoryEvidenceText(message.role === 'user'
             ? message.content.text || ''
             : contentToGroupHistoryText(message.content, room));
         if (!text) return [];
-        const sourceId = messageIds.get(message);
-        if (!sourceId) return [];
         sourceMessageIds.add(sourceId);
         const sceneId = activeScene.id || 'main';
         if (!sceneIds.includes(sceneId)) sceneIds.push(sceneId);
@@ -13615,14 +7570,19 @@ const buildPersonaMemoryTranscript = (
     persona: Persona,
     messages: ChatMessage[],
     messageIds: ReadonlyMap<ChatMessage, string>,
+    manuallyControlledSourceIds: ReadonlySet<string> = new Set(),
 ): MemoryTranscriptBatch => {
     const sourceMessageIds = new Set<string>();
     const sceneIds: string[] = [];
+    let suppressTurn = false;
     const lines = messages.flatMap(message => {
+        const sourceId = messageIds.get(message);
+        if (message.role === 'user') {
+            suppressTurn = Boolean(sourceId && manuallyControlledSourceIds.has(sourceId));
+        }
+        if (suppressTurn || !sourceId) return [];
         const text = cleanMemoryEvidenceText(message.content.text || '');
         if (!text) return [];
-        const sourceId = messageIds.get(message);
-        if (!sourceId) return [];
         sourceMessageIds.add(sourceId);
         const sceneId = message.content.roomSceneBeforeTurn?.id || 'main';
         if (!sceneIds.includes(sceneId)) sceneIds.push(sceneId);
@@ -13633,116 +7593,17 @@ const buildPersonaMemoryTranscript = (
 };
 
 const formatExistingMemoryForExtractor = (
-    entries: Array<Pick<PersonaMemoryEntry, 'kind' | 'title' | 'summary' | 'sourceMessageIds'>>,
+    entries: Array<Pick<PersonaMemoryEntry, 'kind' | 'title' | 'summary' | 'sourceMessageIds' | 'searchTags'>>,
     limit: number,
 ) => entries.slice(-limit).map(entry => {
     const sources = entry.sourceMessageIds?.length
         ? ` sources=${entry.sourceMessageIds.join(',')}`
         : '';
-    return `- [${entry.kind}${sources}] ${entry.title}: ${entry.summary.replace(/\s+/gu, ' ').slice(0, 280)}`;
+    const tags = entry.searchTags?.length
+        ? ` tags=${entry.searchTags.slice(0, 10).join('|')}`
+        : '';
+    return `- [${entry.kind}${sources}${tags}] ${entry.title}: ${entry.summary.replace(/\s+/gu, ' ').slice(0, 280)}`;
 }).join('\n');
-
-const roomMemoryResponseFormat = {
-    type: 'json_schema' as const,
-    json_schema: {
-        name: 'room_memory_update_v3',
-        strict: true,
-        schema: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['memories'],
-            properties: {
-                memories: {
-                    type: 'array',
-                    maxItems: 12,
-                    items: {
-                        type: 'object',
-                        additionalProperties: false,
-                        required: [
-                            'kind',
-                            'title',
-                            'shared_summary',
-                            'subject_ids',
-                            'importance',
-                            'visibility',
-                            'unresolved',
-                            'scene_id',
-                            'source_message_ids',
-                            'perspectives',
-                        ],
-                        properties: {
-                            kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
-                            title: { type: 'string' },
-                            shared_summary: { type: 'string' },
-                            subject_ids: { type: 'array', minItems: 1, items: { type: 'string' } },
-                            importance: { type: 'integer', minimum: 1, maximum: 5 },
-                            visibility: { type: 'string', enum: ['restricted', 'shared'] },
-                            unresolved: { type: 'boolean' },
-                            scene_id: { type: 'string' },
-                            source_message_ids: { type: 'array', minItems: 1, items: { type: 'string' } },
-                            perspectives: {
-                                type: 'array',
-                                minItems: 1,
-                                items: {
-                                    type: 'object',
-                                    additionalProperties: false,
-                                    required: ['member_id', 'salience', 'knowledge', 'memory'],
-                                    properties: {
-                                        member_id: { type: 'string' },
-                                        salience: { type: 'integer', minimum: 1, maximum: 5 },
-                                        knowledge: { type: 'string', enum: ['experienced', 'witnessed', 'told'] },
-                                        memory: { type: 'string' },
-                                    },
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    },
-};
-
-const personaMemoryResponseFormat = {
-    type: 'json_schema' as const,
-    json_schema: {
-        name: 'persona_memory_update_v3',
-        strict: true,
-        schema: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['memories'],
-            properties: {
-                memories: {
-                    type: 'array',
-                    maxItems: 12,
-                    items: {
-                        type: 'object',
-                        additionalProperties: false,
-                        required: [
-                            'kind',
-                            'title',
-                            'summary',
-                            'importance',
-                            'unresolved',
-                            'scene_id',
-                            'source_message_ids',
-                        ],
-                        properties: {
-                            kind: { type: 'string', enum: ['relationship', 'vulnerability', 'promise', 'preference', 'event', 'boundary'] },
-                            title: { type: 'string' },
-                            summary: { type: 'string' },
-                            importance: { type: 'integer', minimum: 1, maximum: 5 },
-                            unresolved: { type: 'boolean' },
-                            scene_id: { type: 'string' },
-                            source_message_ids: { type: 'array', minItems: 1, items: { type: 'string' } },
-                        },
-                    },
-                },
-            },
-        },
-    },
-};
 
 const maybeSummarizeRoomMemory = async (
     roomId: string,
@@ -13764,8 +7625,9 @@ const maybeSummarizeRoomMemory = async (
     if (mode === 'auto' && !needsRecovery && userMessageCount <= lastSummarized) {
         return { status: 'skipped', reason: 'threshold' };
     }
+    const autoMemory = await loadAutoMemoryModule();
     const effectiveMode: MemoryBatchMode = needsRecovery && mode !== 'full' ? 'recovery' : mode;
-    const batches = buildMemoryTurnBatches(history, lastSummarized, effectiveMode);
+    const batches = autoMemory.buildMemoryTurnBatches(history, lastSummarized, effectiveMode);
     if (!batches.length) return { status: 'skipped', reason: 'threshold' };
     roomSummaryInFlight.add(roomId);
     try {
@@ -13777,12 +7639,19 @@ const maybeSummarizeRoomMemory = async (
                 .forEach(value => participantAliases.set(value.trim().toLocaleLowerCase(), member.id));
         });
         const messageIds = createMemoryMessageIdMap(roomId, history);
+        const manuallyControlledSourceIds = getManualMemoryControlledSourceIds(history);
+        const manualLongTermExclusions = getManualMemoryLongTermExclusionSummaries(history);
         let added = 0;
         for (const [batchIndex, batch] of batches.entries()) {
             const completesRun = batchIndex === batches.length - 1;
             const checkpoint = completesRun ? batch.throughUserMessageCount : lastSummarized;
             const summaryVersion = completesRun ? AUTO_MEMORY_SUMMARY_VERSION : previousSummaryVersion;
-            const evidence = buildRoomMemoryTranscript(room, batch.messages, messageIds);
+            const evidence = buildRoomMemoryTranscript(
+                room,
+                batch.messages,
+                messageIds,
+                manuallyControlledSourceIds,
+            );
             if (!evidence.transcript) {
                 roomManager.applyEpisodicMemorySummary(
                     roomId,
@@ -13795,32 +7664,9 @@ const maybeSummarizeRoomMemory = async (
             const latestRoom = roomManager.getRoom(roomId) || room;
             const existing = formatExistingMemoryForExtractor(latestRoom.sharedMemories, 64);
             const memories = await generateValidatedAutoMemory(
-                [
-                    {
-                        role: 'system',
-                        content: [
-                            'You are a meticulous human-memory archivist for a continuous private group conversation.',
-                            'Return one JSON object matching the schema. Return an empty memories array when nothing is durable.',
-                            `Valid immutable member ledger: ${memberLedger}. Use only these member IDs.`,
-                            'Read the evidence as separate human minds, not as one shared narrator. A fact important to Rose can be a lasting Rose memory without becoming Jennie\'s memory.',
-                            'For each event, subject_ids identifies the fixed member(s) whose personal relationship storyline is affected. For a user disclosure, select its character recipient(s), since USER is not a member ID. perspectives lists only members who would genuinely retain it long-term.',
-                            'Mere presence is not enough for durable memory. Use experienced for a direct participant, witnessed for a meaningful observer, and told only when the transcript explicitly tells that member.',
-                            'Write each perspective from that member\'s knowledge and emotional significance. Do not give a member facts learned only in another member\'s private interaction.',
-                            'Prioritise user vulnerability, support needs, boundaries, promises, relationship changes, meaningful firsts, lasting preferences, unresolved tension and emotionally important romantic or adult milestones.',
-                            'When the user reveals vulnerability, preserve what they disclosed, what response helped or hurt, and why it matters, without diagnosing them.',
-                            'Preserve the relational meaning of intimate memories accurately; omit repetitive anatomy and moment-by-moment choreography unless a specific boundary or preference depends on it.',
-                            'Importance: 5 identity-level or explicitly permanent; 4 vulnerability, major promise/boundary/relationship milestone; 3 useful continuity; 1-2 usually omit.',
-                            'Use the smallest exact source_message_ids that prove each memory. Never invent an ID. scene_id must be one shown in the evidence.',
-                            'Set unresolved true only when a promise, conflict, plan, question or emotional need still needs follow-up.',
-                            'visibility is shared only when every fixed room member genuinely knows it; otherwise restricted.',
-                            'Write concise but complete Traditional Chinese. Do not merge unrelated events merely to save space.',
-                            existing ? `Existing memory.md entries; avoid duplicates and add only missing information:\n${existing}` : '',
-                        ].filter(Boolean).join('\n'),
-                    },
-                    { role: 'user', content: `Evidence transcript:\n\n${evidence.transcript}` },
-                ],
-                roomMemoryResponseFormat,
-                text => parseRoomAutoMemoryResponse(text, participantAliases, evidence.sourceMessageIds),
+                autoMemory.buildRoomAutoMemoryMessages(memberLedger, existing, evidence.transcript),
+                autoMemory.ROOM_MEMORY_RESPONSE_FORMAT,
+                text => autoMemory.parseRoomAutoMemoryResponse(text, participantAliases, evidence.sourceMessageIds),
             );
             const validSceneIds = new Set(evidence.sceneIds);
             const fallbackSceneId = evidence.sceneIds.at(-1) || room.scene.id;
@@ -13830,6 +7676,10 @@ const maybeSummarizeRoomMemory = async (
                 .filter((id): id is string => Boolean(id)));
             const normalized = memories.filter(memory => (
                 memory.sourceMessageIds?.every(id => stillExistingSourceIds.has(id))
+            )).filter(memory => (
+                Number(memory.importance ?? 3) >= AUTO_MEMORY_MIN_IMPORTANCE
+            )).filter(memory => (
+                !autoMemoryMatchesManualDecision(memory.summary, manualLongTermExclusions)
             )).map(memory => {
                 const knowerIds = memory.knowerIds || memory.perspectives?.map(item => item.memberId) || [];
                 return {
@@ -13857,9 +7707,7 @@ const maybeSummarizeRoomMemory = async (
         };
     } finally {
         roomSummaryInFlight.delete(roomId);
-        if (!roomMemoryModal.classList.contains('hidden') && currentRoom?.id === roomId) {
-            renderRoomMemory();
-        }
+        if (currentRoom?.id === roomId) refreshRoomMemoryIfOpen();
     }
 };
 
@@ -13883,18 +7731,26 @@ const maybeSummarizePersonaMemory = async (
     if (mode === 'auto' && !needsRecovery && userMessageCount <= lastSummarized) {
         return { status: 'skipped', reason: 'threshold' };
     }
+    const autoMemory = await loadAutoMemoryModule();
     const effectiveMode: MemoryBatchMode = needsRecovery && mode !== 'full' ? 'recovery' : mode;
-    const batches = buildMemoryTurnBatches(history, lastSummarized, effectiveMode);
+    const batches = autoMemory.buildMemoryTurnBatches(history, lastSummarized, effectiveMode);
     if (!batches.length) return { status: 'skipped', reason: 'threshold' };
     personaSummaryInFlight.add(personaKey);
     try {
         const messageIds = createMemoryMessageIdMap(personaKey, history);
+        const manuallyControlledSourceIds = getManualMemoryControlledSourceIds(history);
+        const manualLongTermExclusions = getManualMemoryLongTermExclusionSummaries(history);
         let added = 0;
         for (const [batchIndex, batch] of batches.entries()) {
             const completesRun = batchIndex === batches.length - 1;
             const checkpoint = completesRun ? batch.throughUserMessageCount : lastSummarized;
             const summaryVersion = completesRun ? AUTO_MEMORY_SUMMARY_VERSION : previousSummaryVersion;
-            const evidence = buildPersonaMemoryTranscript(persona, batch.messages, messageIds);
+            const evidence = buildPersonaMemoryTranscript(
+                persona,
+                batch.messages,
+                messageIds,
+                manuallyControlledSourceIds,
+            );
             if (!evidence.transcript) {
                 memoryManager.applyPersonaMemorySummary(
                     personaKey,
@@ -13907,27 +7763,9 @@ const maybeSummarizePersonaMemory = async (
             const latestPersona = memoryManager.getPersona(personaKey) || persona;
             const existing = formatExistingMemoryForExtractor(latestPersona.memories || [], 64);
             const memories = await generateValidatedAutoMemory(
-                [
-                    {
-                        role: 'system',
-                        content: [
-                            `You are ${persona.name}'s meticulous long-term human-memory archivist for a continuous private romance conversation.`,
-                            'Return one JSON object matching the schema. Return an empty memories array when nothing is durable.',
-                            `Store only what ${persona.name} personally experienced, witnessed, or was explicitly told. Never import another character's private knowledge.`,
-                            'Prioritise user vulnerability, support needs, boundaries, promises, relationship changes, meaningful firsts, lasting preferences, unresolved tension and emotionally important romantic or adult milestones.',
-                            'When the user reveals vulnerability, preserve what they disclosed, the response they needed, what helped or hurt, and why it matters, without diagnosis or generic therapy language.',
-                            'Preserve intimate memories by their emotional, relational, preference and boundary significance. Avoid repetitive anatomy and transient choreography unless a lasting boundary or preference depends on it.',
-                            'Importance: 5 identity-level or explicitly permanent; 4 vulnerability, major promise/boundary/relationship milestone; 3 useful continuity; 1-2 usually omit.',
-                            'Use the smallest exact source_message_ids that prove each memory. Never invent an ID. scene_id must be one shown in the evidence.',
-                            'Set unresolved true only when a promise, conflict, plan, question or emotional need still needs follow-up.',
-                            'Write concise but complete Traditional Chinese. Keep separate events separate and skip routine small talk.',
-                            existing ? `Existing memory.md entries; avoid duplicates and add only missing information:\n${existing}` : '',
-                        ].filter(Boolean).join('\n'),
-                    },
-                    { role: 'user', content: `Evidence transcript:\n\n${evidence.transcript}` },
-                ],
-                personaMemoryResponseFormat,
-                text => parsePersonaAutoMemoryResponse(text, evidence.sourceMessageIds),
+                autoMemory.buildPersonaAutoMemoryMessages(persona.name, existing, evidence.transcript),
+                autoMemory.PERSONA_MEMORY_RESPONSE_FORMAT,
+                text => autoMemory.parsePersonaAutoMemoryResponse(text, evidence.sourceMessageIds),
             );
             const validSceneIds = new Set(evidence.sceneIds);
             const fallbackSceneId = evidence.sceneIds.at(-1) || 'main';
@@ -13936,6 +7774,10 @@ const maybeSummarizePersonaMemory = async (
                 .filter((id): id is string => Boolean(id)));
             const normalized = memories.filter(memory => (
                 memory.sourceMessageIds?.every(id => stillExistingSourceIds.has(id))
+            )).filter(memory => (
+                Number(memory.importance ?? 3) >= AUTO_MEMORY_MIN_IMPORTANCE
+            )).filter(memory => (
+                !autoMemoryMatchesManualDecision(memory.summary, manualLongTermExclusions)
             )).map(memory => ({
                 ...memory,
                 sceneId: memory.sceneId && validSceneIds.has(memory.sceneId)
@@ -13958,9 +7800,7 @@ const maybeSummarizePersonaMemory = async (
         };
     } finally {
         personaSummaryInFlight.delete(personaKey);
-        if (!roomMemoryModal.classList.contains('hidden') && !currentRoom && currentPersonaKey === personaKey) {
-            renderRoomMemory();
-        }
+        if (!currentRoom && currentPersonaKey === personaKey) refreshRoomMemoryIfOpen();
     }
 };
 
@@ -14030,17 +7870,9 @@ const createPhotoIntentProposal = (text: string): NonNullable<Content['photoInte
     };
 };
 
-const isPermanentMemoryRequest = (text: string) => {
-    return /(?:永遠|一世|一直|以後都).{0,10}(?:記住|唔好忘記|不要忘記)|(?:記住|唔好忘記|不要忘記).{0,10}(?:永遠|一世|forever)|remember\s+(?:this|that|it).{0,8}forever|never\s+forget\s+(?:this|that|it)/iu.test(text);
-};
-
-const buildPermanentMemorySummary = (conversationKey: string, text: string) => {
-    const stripped = text
-        .replace(/(?:請|麻煩|我要|我想|希望)?(?:你|你們|大家)?(?:永遠|一世|一直|以後都)?(?:記住|唔好忘記|不要忘記)(?:這件事|呢件事|這個|呢個|this|that|it)?/giu, '')
-        .replace(/remember\s+(?:this|that|it).{0,8}forever|never\s+forget\s+(?:this|that|it)/giu, '')
-        .replace(/[：:，,。.!！?？\s]+$/gu, '')
-        .trim();
-    if (stripped.length >= 8) return stripped;
+const buildMemoryRequestSummary = (conversationKey: string, text: string) => {
+    const stripped = stripExplicitMemoryDirective(text);
+    if (stripped.length >= 3) return stripped;
     const previousUser = memoryManager.getChatHistory(conversationKey)
         .filter(message => message.role === 'user' && message.content.text?.trim() && message.content.text !== text)
         .at(-1)?.content.text?.trim();
@@ -14114,6 +7946,7 @@ const createExplicitNpcPromotionProposal = (
     persona: Persona,
     text: string,
 ): NonNullable<Content['npcProposal']> | null => {
+    if (!hasNpcPromotionIntent(text)) return null;
     const history = memoryManager.peekChatHistory(conversationKey);
     const establishedNames = collectEstablishedNpcNames(history, persona.name, text);
     const name = inferNpcPromotionNames(text, persona.name, establishedNames)[0];
@@ -14233,10 +8066,10 @@ const sendMessage = async ({
     if (!typedMessage && pendingChatAttachments.length === 0) return;
     const userMessage = typedMessage || '請查看附件。';
 
-    hideSuggestionContainer();
 
     const userMessageUpper = userMessage.toUpperCase();
     const assistantMode = isAssistantPersonaKey(currentPersonaKey);
+    startChatPerformanceTurn();
 
     if (!assistantMode && pendingChatAttachments.length === 0 && userMessageUpper === GOD_MODE_ENTER_COMMAND && !isGodModeActive) {
         isGodModeActive = true;
@@ -14247,6 +8080,7 @@ const sendMessage = async ({
         hideError();
         applyChatRuntimeState('idle');
         appendMessage({ text: '[系統] 已進入 God Mode，現在只會修改當前角色人格。' }, 'system');
+        completeChatPerformanceTurn('send:god-mode-enter-visible');
         return;
     }
 
@@ -14258,11 +8092,13 @@ const sendMessage = async ({
         hideError();
         applyChatRuntimeState('idle');
         appendMessage({ text: '[系統] 已離開 God Mode。' }, 'system');
+        completeChatPerformanceTurn('send:god-mode-exit-visible');
         return;
     }
 
     if (isGodModeActive && pendingChatAttachments.length > 0) {
         alert('God Mode 只修改人格；請先離開 God Mode 再傳附件。');
+        cancelChatPerformanceTurn('send:rejected');
         return;
     }
 
@@ -14278,6 +8114,7 @@ const sendMessage = async ({
         }
     } catch (error) {
         showError(error instanceof Error ? error.message : '附件儲存失敗。');
+        cancelChatPerformanceTurn('send:attachment-error');
         return;
     }
     const userContent: Content = {
@@ -14298,10 +8135,18 @@ const sendMessage = async ({
     markChatPerformance('send:user-render', userRenderStartedAt);
 
     if (isGodModeActive) {
-        if (isPersonaInspectCommand(userMessage)) {
-            appendMessage({ text: formatCurrentPersonaDetails() }, 'god-mode');
-            applyChatRuntimeState('idle');
-            return;
+        if (/persona|setting|人格|設定/iu.test(userMessage)) {
+            const { isPersonaInspectCommand, formatPersonaDetails } = await import('./features/personaInspect.js');
+            if (isPersonaInspectCommand(userMessage)) {
+                const soulMemory = currentPersona ? formatPersonaMemoryPrompt(currentPersona, 'soul') : '';
+                const episodicMemory = currentPersona ? formatPersonaMemoryPrompt(currentPersona, 'memory') : '';
+                appendMessage({
+                    text: formatPersonaDetails(currentPersona, soulMemory, episodicMemory),
+                }, 'god-mode');
+                applyChatRuntimeState('idle');
+                completeChatPerformanceTurn('send:god-mode-inspect-visible');
+                return;
+            }
         }
         godModeHistory.push({ role: 'user', content: userContent });
         const request = beginChatRequest(currentPersonaKey, currentPersona, 'god');
@@ -14313,24 +8158,27 @@ const sendMessage = async ({
     const persistStartedAt = performance.now();
     memoryManager.addMessage(conversationKey, 'user', userContent, userMessageMeta);
     markChatPerformance('send:user-persist', persistStartedAt);
+    const explicitMemoryIntent = detectExplicitMemoryIntent(userMessage);
     if (
         !assistantMode
         && !characterPhotoRequest
         && attachmentBundle.attachments.length === 0
-        && isPermanentMemoryRequest(userMessage)
+        && explicitMemoryIntent
     ) {
         const proposal = {
             id: crypto.randomUUID?.() || `memory-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             targetMemberIds: currentRoom ? [...currentRoom.scene.presentMemberIds] : [],
             originalText: userMessage,
-            summary: buildPermanentMemorySummary(conversationKey, userMessage),
+            sourceMessageId: userMessageMeta?.id,
+            summary: buildMemoryRequestSummary(conversationKey, userMessage),
             status: 'pending' as const,
             createdAt: Date.now(),
         };
         const systemContent: Content = { memoryProposal: proposal };
         memoryManager.addMessage(conversationKey, 'system', systemContent);
         appendMessage(systemContent, 'system');
-        renderPersonaList();
+        completeChatPerformanceTurn('send:memory-proposal-visible');
+        schedulePersonaListRefreshAfterPaint();
         return;
     }
     if (
@@ -14342,7 +8190,8 @@ const sendMessage = async ({
         const systemContent: Content = { photoIntent: createPhotoIntentProposal(userMessage) };
         memoryManager.addMessage(conversationKey, 'system', systemContent);
         appendMessage(systemContent, 'system');
-        renderPersonaList();
+        completeChatPerformanceTurn('send:photo-intent-visible');
+        schedulePersonaListRefreshAfterPaint();
         return;
     }
     if (
@@ -14355,7 +8204,8 @@ const sendMessage = async ({
             const systemContent: Content = { npcProposal: npcPromotion };
             memoryManager.addMessage(conversationKey, 'system', systemContent);
             appendMessage(systemContent, 'system');
-            renderPersonaList();
+            completeChatPerformanceTurn('send:npc-proposal-visible');
+            schedulePersonaListRefreshAfterPaint();
             return;
         }
     }
@@ -14374,7 +8224,6 @@ const sendMessage = async ({
 };
 
 const dispatchSendMessage = (options: Parameters<typeof sendMessage>[0] = {}) => {
-    startChatPerformanceTurn();
     void sendMessage(options).catch(error => {
         console.error('Unexpected send failure:', error);
         if (activeChatRequest) cancelActiveChatRequest();
@@ -14391,1327 +8240,174 @@ const dispatchSendMessage = (options: Parameters<typeof sendMessage>[0] = {}) =>
     });
 };
 
-function showDateProposal(location: string, duration: number) {
-    if (!currentPersona) return;
-    currentProposal = { location, duration };
+let albumUi: import('./features/albumUi.js').AlbumUiHandle | null = null;
+let albumUiLoad: Promise<import('./features/albumUi.js').AlbumUiHandle> | null = null;
 
-    const avatarContainer = dateProposalAvatar;
-    avatarContainer.innerHTML = '';
-     if (currentPersona.avatarUrl && !currentPersona.avatarUrl.startsWith('generating_')) {
-        const img = document.createElement('img');
-        img.src = currentPersona.avatarUrl;
-        img.alt = currentPersona.name;
-        img.className = 'w-full h-full rounded-full object-cover';
-        avatarContainer.appendChild(img);
-    } else {
-        avatarContainer.classList.add('emoji-avatar', 'flex', 'items-center', 'justify-center', 'text-4xl');
-        avatarContainer.textContent = currentPersona.emoji;
-    }
-    
-    dateProposalName.textContent = `${currentPersona.name} ?��??�出約�??�請�?`;
-    dateProposalLocation.textContent = location;
-    dateProposalDuration.textContent = duration.toString();
-    dateProposalModal.classList.remove('hidden');
-}
-
-function hideDateProposal() {
-    dateProposalModal.classList.add('hidden');
-    currentProposal = null;
-}
-
-function handleAcceptDate() {
-    if (currentProposal) {
-        datingModule.generateDateMemoriesFromProposal(currentProposal.location, currentProposal.duration);
-    }
-    hideDateProposal();
-}
-
-function handleDeclineDate() {
-    if (currentPersonaKey) {
-        const botContent = { text: "好吧?�那下次?��??��?約�??��?" };
-        appendMessage(botContent, 'bot');
-        memoryManager.addMessage(currentPersonaKey, 'model', botContent);
-    }
-    hideDateProposal();
-}
-
-function showNewInterestToast(_interest: Interest) {
-    showDisabledFeatureNotice('興趣技能');
-}
-
-function showInterestUnlockedToast(_interest: Interest) {
-    showDisabledFeatureNotice('興趣技能');
-}
-
-function renderInterests() {
-    interestsGridContainer.innerHTML = '<p class="text-gray-400 col-span-1 md:col-span-2 text-center">興趣技能在目前版本暫時停用。</p>';
-}
-
-function openInterestsModal() {
-    showDisabledFeatureNotice('興趣技能');
-}
-
-function closeInterestsModal() {
-    interestsModal.classList.add('hidden');
-}
-
-function updateAlbumState() {
-    if (!currentConversationKey) return;
-    const history = memoryManager.getChatHistory(currentConversationKey);
-    albumPhotos = history
-        .map((msg, index) => ({ ...msg, historyIndex: index })) // Add original index
-        .filter(msg => msg.content.imageUrl || msg.content.imageAssetId)
-        .map(msg => ({
-            imageUrl: msg.content.imageUrl,
-            imageAssetId: msg.content.imageAssetId,
-            caption: msg.content.text || '',
-            prompt: msg.content.imagePrompt || msg.content.text || '',
-            historyIndex: msg.historyIndex,
-            createdAt: msg.createdAt || msg.historyIndex,
-            content: msg.content,
-        }));
-    albumAttachments = history.flatMap(message => message.content.attachments || []);
-    
-    albumDownloadBtn.disabled = true;
-    albumDeleteBtn.disabled = true;
-    albumSelectAll.checked = false;
-    selectedPhotoIndices.clear();
-    showMainAlbumButtons();
-}
-
-async function mergeStoredPhotosIntoAlbum(conversationKey: string) {
-    const persona = memoryManager.getPersona(conversationKey);
-    const isCcConversation = persona?.name.trim().toLocaleLowerCase() === 'cc';
-    const storedAssets = isCcConversation
-        ? (await listCharacterPhotoAssets()).filter(asset => (
-            asset.personaKey === conversationKey
-            || asset.personaKey === 'cc'
-            || asset.personaKey === 'custom_seed_cc'
-        ))
-        : await listCharacterPhotoAssets(conversationKey);
-    if (currentConversationKey !== conversationKey) return;
-
-    const knownAssetIds = new Set(albumPhotos.map(photo => photo.imageAssetId).filter(Boolean));
-    storedAssets.forEach(asset => {
-        if (!asset.id || knownAssetIds.has(asset.id)) return;
-        const content: Content = {
-            text: '從本機照片庫救回的舊照片',
-            imageAssetId: asset.id,
-            imagePrompt: asset.prompt || '',
-            legacy: true,
-        };
-        albumPhotos.push({
-            imageAssetId: asset.id,
-            caption: content.text || '',
-            prompt: asset.prompt || '',
-            historyIndex: null,
-            createdAt: asset.createdAt || 0,
-            recoveredFromStore: true,
-            content,
-        });
-        knownAssetIds.add(asset.id);
-    });
-    albumPhotos.sort((left, right) => left.createdAt - right.createdAt);
-}
-
-function renderAlbum() {
-    if (!currentPersona) return;
-    albumModalTitle.textContent = `${currentRoom?.title || currentPersona.name} 的媒體`;
-    albumGridContainer.innerHTML = '';
-
-    if (albumPhotos.length === 0 && albumAttachments.length === 0) {
-        albumGridContainer.innerHTML = '<p class="text-gray-400 col-span-full text-center py-8">目前還沒有照片、文件或影片附件。</p>';
-        albumActions.classList.add('hidden');
-        return;
-    }
-     albumActions.classList.toggle('hidden', albumPhotos.length === 0);
-
-
-    albumPhotos.forEach((photo, index) => {
-        const thumb = document.createElement('div');
-        thumb.className = 'album-thumbnail';
-        const image = document.createElement('img');
-        image.alt = `${currentPersona.name} 的照片 ${index + 1}`;
-        image.className = 'w-full h-full object-cover is-loading';
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.className = 'thumbnail-checkbox form-checkbox h-5 w-5 text-yellow-500 bg-gray-900/50 border-gray-500 focus:ring-yellow-400 rounded';
-        thumb.append(image, checkbox);
-        void getContentImageUrl(photo).then(imageUrl => {
-            if (!imageUrl || !image.isConnected) return;
-            image.src = imageUrl;
-            image.classList.remove('is-loading');
-        });
-        
-        thumb.addEventListener('click', (e) => {
-            if (e.target === checkbox) return;
-            void getContentImageUrl(photo).then(imageUrl => {
-                if (imageUrl) {
-                    openPhotoViewer(
-                        imageUrl,
-                        buildPhotoViewerContextFromContent(photo.content, 'album', currentConversationKey),
-                    );
-                }
+const loadAlbumUi = async () => {
+    if (albumUi) return albumUi;
+    if (!albumUiLoad) {
+        albumUiLoad = import('./features/albumUi.js')
+            .then(({ createAlbumUi }) => {
+                const ui = createAlbumUi({
+                    getContext: () => ({
+                        conversationKey: currentConversationKey,
+                        personaName: currentPersona?.name || null,
+                        roomTitle: currentRoom?.title || null,
+                    }),
+                    getHistory: conversationKey => memoryManager.getChatHistory(conversationKey),
+                    getPersonaName: conversationKey => memoryManager.getPersona(conversationKey)?.name,
+                    setHistoryWithoutIndices: (conversationKey, indices) => {
+                        if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, conversationKey)) {
+                            cancelActiveChatRequest();
+                        }
+                        const removed = new Set(indices);
+                        const history = memoryManager.getChatHistory(conversationKey);
+                        memoryManager.setChatHistory(conversationKey, history.filter((_, index) => !removed.has(index)));
+                    },
+                    getContentImageUrl,
+                    openPhoto: (imageUrl, content, conversationKey) => {
+                        openPhotoViewer(
+                            imageUrl,
+                            buildPhotoViewerContextFromContent(content, 'album', conversationKey),
+                        );
+                    },
+                    createAttachmentCard: createStoredChatAttachmentCard,
+                    revokePhotoObjectUrl: assetId => {
+                        const objectUrl = characterPhotoObjectUrls.get(assetId);
+                        if (objectUrl) URL.revokeObjectURL(objectUrl);
+                        characterPhotoObjectUrls.delete(assetId);
+                    },
+                    refreshChat: conversationKey => startChat(conversationKey),
+                    hideMoreOptionsMenu: () => moreOptionsMenu.classList.add('hidden'),
+                });
+                albumUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                albumUiLoad = null;
+                throw error;
             });
-        });
-        
-        checkbox.addEventListener('change', () => {
-             if (checkbox.checked) {
-                selectedPhotoIndices.add(index);
-                thumb.classList.add('selected');
-            } else {
-                selectedPhotoIndices.delete(index);
-                thumb.classList.remove('selected');
-            }
-            updateAlbumActionButtons();
-        });
-
-        albumGridContainer.appendChild(thumb);
-    });
-
-    if (albumAttachments.length > 0) {
-        const attachmentSection = document.createElement('section');
-        attachmentSection.className = 'album-attachment-section';
-        const heading = document.createElement('h3');
-        heading.textContent = `文件與附件 (${albumAttachments.length})`;
-        attachmentSection.appendChild(heading);
-        albumAttachments.forEach(attachment => {
-            attachmentSection.appendChild(createStoredChatAttachmentCard(attachment));
-        });
-        albumGridContainer.appendChild(attachmentSection);
     }
-}
-
-function updateAlbumActionButtons() {
-    const hasSelection = selectedPhotoIndices.size > 0;
-    albumDownloadBtn.disabled = !hasSelection;
-    albumDeleteBtn.disabled = !hasSelection;
-    
-    if (selectedPhotoIndices.size === albumPhotos.length && albumPhotos.length > 0) {
-        albumSelectAll.checked = true;
-    } else {
-        albumSelectAll.checked = false;
-    }
-}
-
-
-function toggleSelectAllPhotos() {
-    const checkboxes = albumGridContainer.querySelectorAll('.thumbnail-checkbox') as NodeListOf<HTMLInputElement>;
-    const thumbnails = albumGridContainer.querySelectorAll('.album-thumbnail') as NodeListOf<HTMLElement>;
-    
-    if (albumSelectAll.checked) {
-        checkboxes.forEach((cb, index) => {
-            cb.checked = true;
-            thumbnails[index].classList.add('selected');
-            selectedPhotoIndices.add(index);
-        });
-    } else {
-        checkboxes.forEach((cb, index) => {
-            cb.checked = false;
-            thumbnails[index].classList.remove('selected');
-            selectedPhotoIndices.delete(index);
-        });
-    }
-    updateAlbumActionButtons();
-}
-
-
-async function downloadSelectedPhotos() {
-    if (selectedPhotoIndices.size === 0) return;
-
-    albumDownloadBtn.disabled = true;
-    albumDownloadBtn.textContent = '打包中...';
-    
-    const zip = new JSZip();
-    const downloadPromises = Array.from(selectedPhotoIndices).map(async (index) => {
-        const photo = albumPhotos[index];
-        const blob = photo.imageAssetId
-            ? await getCharacterPhotoBlob(photo.imageAssetId)
-            : await fetch(photo.imageUrl!).then(response => response.blob());
-        if (!blob) return;
-        const extension = blob.type.split('/')[1] || 'png';
-        zip.file(`photo_${index + 1}.${extension}`, blob);
-    });
-
-    await Promise.all(downloadPromises);
-
-    zip.generateAsync({ type: 'blob' }).then((content: Blob) => {
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(content);
-        link.download = `${currentPersona.name}_photos_${new Date().getTime()}.zip`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        albumDownloadBtn.textContent = '匯出所選 ZIP';
-        updateAlbumActionButtons();
-    });
-}
-
-
-function showDeleteConfirmation() {
-    albumMainButtons.classList.add('hidden');
-    deleteConfirmationSection.classList.remove('hidden');
-    deleteConfirmationSection.classList.add('flex');
-}
-
-function showMainAlbumButtons() {
-    albumMainButtons.classList.remove('hidden');
-    deleteConfirmationSection.classList.add('hidden');
-    deleteConfirmationSection.classList.remove('flex');
-}
-
-
-async function deleteSelectedPhotos() {
-    if (selectedPhotoIndices.size === 0 || !currentConversationKey) return;
-    const conversationKey = currentConversationKey;
-    
-    // Get the history indices of the photos to be deleted
-    const historyIndicesToDelete = new Set<number>(
-        Array.from(selectedPhotoIndices)
-            .map(photoIndex => albumPhotos[photoIndex].historyIndex)
-            .filter((historyIndex): historyIndex is number => historyIndex !== null)
-    );
-    const assetIdsToDelete = Array.from(selectedPhotoIndices)
-        .map(photoIndex => albumPhotos[photoIndex].imageAssetId)
-        .filter((assetId): assetId is string => Boolean(assetId));
-
-    // Filter the chat history, keeping only messages whose index is NOT in the deletion set
-    if (historyIndicesToDelete.size > 0) {
-        if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, conversationKey)) {
-            cancelActiveChatRequest();
-        }
-        const currentHistory = memoryManager.getChatHistory(conversationKey);
-        const newHistory = currentHistory.filter((_, index) => !historyIndicesToDelete.has(index));
-        memoryManager.setChatHistory(conversationKey, newHistory);
-    }
-    await Promise.all(assetIdsToDelete.map(async assetId => {
-        const objectUrl = characterPhotoObjectUrls.get(assetId);
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
-        characterPhotoObjectUrls.delete(assetId);
-        await deleteCharacterPhotoAsset(assetId);
-    }));
-    
-    // Refresh the album view
-    updateAlbumState();
-    renderAlbum();
-    
-    // Also refresh the main chat view
-    startChat(conversationKey);
-    
-    showMainAlbumButtons();
-}
-
-
-
-async function openAlbumModal() {
-    updateAlbumState();
-    albumModal.classList.remove('hidden');
-    renderAlbum();
-    if (!currentConversationKey) return;
-    const conversationKey = currentConversationKey;
-    try {
-        await mergeStoredPhotosIntoAlbum(conversationKey);
-        if (currentConversationKey === conversationKey && !albumModal.classList.contains('hidden')) renderAlbum();
-    } catch (error) {
-        console.warn('Unable to scan the local character photo vault:', error);
-    }
-}
-function closeAlbumModal() {
-    albumModal.classList.add('hidden');
-}
-
-const setPhotoViewerEditorCollapsed = (collapsed: boolean) => {
-    isPhotoViewerEditorCollapsed = collapsed;
-    photoViewerShell.classList.toggle('is-editor-collapsed', collapsed);
-    togglePhotoViewerEditor.setAttribute('aria-expanded', String(!collapsed));
-    togglePhotoViewerEditor.title = collapsed ? '展開重新生成設定' : '收起重新生成設定';
-    photoViewerToggleLabel.textContent = collapsed ? '重新生成' : '收起設定';
+    return albumUiLoad;
 };
 
-const clampPhotoFullscreenScale = (scale: number) => Math.min(4, Math.max(1, scale));
-
-const renderPhotoFullscreenTransform = () => {
-    photoFullscreenImage.style.transform = `translate(${photoFullscreenPan.x}px, ${photoFullscreenPan.y}px) scale(${photoFullscreenScale})`;
-    photoFullscreenZoomLevel.textContent = `${Math.round(photoFullscreenScale * 100)}%`;
-    photoFullscreenStage.classList.toggle('is-zoomed', photoFullscreenScale > 1);
+const updateAlbumState = () => albumUi?.refresh();
+const openAlbumModal = () => {
+    void loadAlbumUi()
+        .then(ui => ui.open())
+        .catch(error => console.error('Failed to load Album UI', error));
 };
+let photoViewerUi: import('./features/photoViewerUi.js').PhotoViewerUiHandle | null = null;
+let photoViewerUiLoad: Promise<import('./features/photoViewerUi.js').PhotoViewerUiHandle> | null = null;
 
-const setPhotoFullscreenScale = (scale: number) => {
-    photoFullscreenScale = clampPhotoFullscreenScale(scale);
-    if (photoFullscreenScale === 1) photoFullscreenPan = { x: 0, y: 0 };
-    renderPhotoFullscreenTransform();
-};
-
-const resetPhotoFullscreenTransform = () => {
-    photoFullscreenScale = 1;
-    photoFullscreenPan = { x: 0, y: 0 };
-    photoFullscreenDrag = null;
-    photoFullscreenPinch = null;
-    photoFullscreenPointers.clear();
-    photoFullscreenStage.classList.remove('is-dragging');
-    renderPhotoFullscreenTransform();
-};
-
-const getPhotoFullscreenPointerDistance = () => {
-    const pointers = [...photoFullscreenPointers.values()];
-    if (pointers.length < 2) return 0;
-    return Math.hypot(pointers[0].x - pointers[1].x, pointers[0].y - pointers[1].y);
-};
-
-function openPhotoFullscreenModal() {
-    if (!photoViewerImage.src) return;
-    photoFullscreenImage.src = photoViewerImage.src;
-    photoFullscreenModal.classList.remove('hidden');
-    resetPhotoFullscreenTransform();
-    window.setTimeout(() => closePhotoFullscreen.focus(), 0);
-}
-
-function openAvatarFullscreen(imageUrl: string, personaName: string) {
-    photoFullscreenImage.src = imageUrl;
-    photoFullscreenImage.alt = `${personaName} 的完整頭像`;
-    photoFullscreenModal.classList.remove('hidden');
-    resetPhotoFullscreenTransform();
-    window.setTimeout(() => closePhotoFullscreen.focus(), 0);
-}
-
-function closePhotoFullscreenModal() {
-    photoFullscreenModal.classList.add('hidden');
-    photoFullscreenImage.removeAttribute('src');
-    resetPhotoFullscreenTransform();
-    if (!photoViewerModal.classList.contains('hidden')) {
-        window.setTimeout(() => openPhotoFullscreen.focus(), 0);
-    }
-}
-
-
-const getPhotoViewerSelectedModel = () => {
-    if (!activePhotoViewerContext) return undefined;
-    return imageModels[activePhotoViewerContext.mode].find(model => model.id === photoViewerModel.value);
-};
-
-const setPhotoViewerStatus = (
-    message: string,
-    tone: 'idle' | 'busy' | 'success' | 'error' = 'idle',
-) => {
-    photoViewerStatus.textContent = message;
-    photoViewerStatus.classList.remove('is-busy', 'is-success', 'is-error');
-    if (tone !== 'idle') photoViewerStatus.classList.add(`is-${tone}`);
-};
-
-const updatePhotoViewerRegenerateButton = () => {
-    const model = getPhotoViewerSelectedModel();
-    const maxLength = model?.constraints.promptCharacterLimit || 10000;
-    const prompt = photoViewerPrompt.value.trim();
-    photoViewerPromptCount.textContent = `${photoViewerPrompt.value.length} / ${maxLength}`;
-    photoViewerRegenerate.disabled = Boolean(
-        isPhotoViewerRegenerating
-        || !activePhotoViewerContext
-        || !model
-        || !prompt
-        || prompt.length > maxLength,
-    );
-};
-
-const updatePhotoViewerModelControls = () => {
-    if (!activePhotoViewerContext) return;
-    const context = activePhotoViewerContext;
-    photoViewerSeedWrap.classList.toggle('hidden', context.mode !== 'generate');
-    const model = getPhotoViewerSelectedModel();
-    if (!model) {
-        photoViewerModelMeta.textContent = '目前沒有相容的 Venice 圖片模型。';
-        updatePhotoViewerRegenerateButton();
-        return;
-    }
-
-    const ratios = model.constraints.aspectRatios?.length
-        ? model.constraints.aspectRatios
-        : Object.keys(PIXEL_IMAGE_DIMENSIONS);
-    const preferredRatio = ratios.includes(context.aspectRatio)
-        ? context.aspectRatio
-        : model.constraints.defaultAspectRatio || (ratios.includes('3:4') ? '3:4' : ratios[0]);
-    replaceSelectOptions(photoViewerAspectRatio, ratios, preferredRatio, { auto: '自動（跟隨原圖）' });
-
-    const resolutions = (model.constraints.resolutions || []).filter(resolution => resolution !== '4K');
-    photoViewerResolutionWrap.classList.toggle('hidden', resolutions.length === 0);
-    replaceSelectOptions(
-        photoViewerResolution,
-        resolutions,
-        context.resolution || model.constraints.defaultResolution || '1K',
-    );
-
-    const maxLength = model.constraints.promptCharacterLimit || 10000;
-    photoViewerPrompt.maxLength = maxLength;
-    const price = getImageModelPrice(model, photoViewerResolution.value);
-    const details = [
-        context.mode === 'edit' ? '頭像參考圖生圖' : '文字生圖',
-        formatImagePrivacy(model.privacy),
-        typeof price === 'number' ? `約 US$${formatModelPrice(price)}／張` : '',
-    ].filter(Boolean);
-    photoViewerModelMeta.textContent = details.join(' · ');
-    updatePhotoViewerRegenerateButton();
-};
-
-const renderPhotoViewerModelOptions = () => {
-    if (!activePhotoViewerContext) return;
-    const context = activePhotoViewerContext;
-    const preferredId = context.mode === 'generate' ? VENICE_IMAGE_GENERATE_MODEL : VENICE_IMAGE_EDIT_MODEL;
-    const requestedId = context.mode === 'generate' && context.modelId === 'lustify-v8'
-        ? VENICE_IMAGE_GENERATE_MODEL
-        : context.modelId;
-    const models = [...imageModels[context.mode]].sort((left, right) => {
-        if (left.id === preferredId) return -1;
-        if (right.id === preferredId) return 1;
-        return (getImageModelPrice(left, left.constraints.defaultResolution) ?? Number.MAX_SAFE_INTEGER)
-            - (getImageModelPrice(right, right.constraints.defaultResolution) ?? Number.MAX_SAFE_INTEGER);
-    });
-
-    photoViewerModel.innerHTML = '';
-    models.forEach(model => {
-        const option = document.createElement('option');
-        option.value = model.id;
-        const price = getImageModelPrice(model, model.constraints.defaultResolution);
-        option.textContent = `${model.name}${typeof price === 'number' ? ` · $${formatModelPrice(price)}` : ''}`;
-        photoViewerModel.appendChild(option);
-    });
-    photoViewerModel.value = models.some(model => model.id === requestedId)
-        ? requestedId || preferredId
-        : models.some(model => model.id === preferredId) ? preferredId : models[0]?.id || '';
-    photoViewerModel.disabled = isPhotoViewerRegenerating || models.length === 0;
-    updatePhotoViewerModelControls();
-};
-
-const setPhotoViewerBusy = (busy: boolean) => {
-    isPhotoViewerRegenerating = busy;
-    const hasModel = Boolean(getPhotoViewerSelectedModel());
-    photoViewerPrompt.disabled = busy;
-    photoViewerModel.disabled = busy || !activePhotoViewerContext || !imageModels[activePhotoViewerContext.mode].length;
-    photoViewerAspectRatio.disabled = busy || !hasModel;
-    photoViewerResolution.disabled = busy || !hasModel;
-    photoViewerSeed.disabled = busy || activePhotoViewerContext?.mode !== 'generate';
-    photoViewerSeedLock.disabled = busy || activePhotoViewerContext?.mode !== 'generate';
-    photoViewerRegenerateSpinner.classList.toggle('hidden', !busy);
-    photoViewerRegenerateLabel.textContent = busy ? '重新生成中...' : '重新生成';
-    updatePhotoViewerRegenerateButton();
-};
-
-function openPhotoViewer(imageUrl: string, context: PhotoViewerContext) {
-    photoViewerRequestController?.abort();
-    const normalizedContext = {
-        ...context,
-        modelId: context.mode === 'generate' && context.modelId === 'lustify-v8'
-            ? VENICE_IMAGE_GENERATE_MODEL
-            : context.modelId,
-    };
-    activePhotoViewerContext = normalizedContext;
-    photoViewerImage.src = imageUrl;
-    photoViewerPrompt.value = normalizedContext.prompt;
-    photoViewerSeedLock.checked = localStorage.getItem(IMAGE_SEED_LOCK_STORAGE_KEY) === 'true';
-    const viewerSeed = normalizeImageSeed(normalizedContext.seed)
-        ?? normalizeImageSeed(localStorage.getItem(IMAGE_SEED_STORAGE_KEY) || undefined)
-        ?? createRandomImageSeed();
-    setSeedInputValue(photoViewerSeed, viewerSeed);
-    photoViewerSeedWrap.classList.toggle('hidden', normalizedContext.mode !== 'generate');
-    photoViewerAspectRatio.innerHTML = '';
-    photoViewerResolution.innerHTML = '';
-    photoViewerModel.innerHTML = '<option value="">載入模型中...</option>';
-    photoViewerMode.textContent = normalizedContext.mode === 'edit' ? '頭像參考圖生圖' : '文字生成';
-    const persona = normalizedContext.personaKey
-        ? memoryManager.getPersona(normalizedContext.personaKey)
-        : null;
-    photoViewerTitle.textContent = normalizedContext.source === 'studio'
-        ? '圖片工作室作品'
-        : `${persona?.name || currentPersona?.name || '角色'} 的照片`;
-    photoViewerMeta.textContent = [
-        normalizedContext.modelName,
-        normalizedContext.aspectRatio,
-        normalizedContext.resolution,
-        typeof normalizedContext.seed === 'number' ? `Seed ${normalizedContext.seed}` : '',
-        '原圖會保留',
-    ].filter(Boolean).join(' · ');
-    setPhotoViewerStatus('可修改 Prompt、模型與畫面設定後重新生成。');
-    setPhotoViewerBusy(false);
-    setPhotoViewerEditorCollapsed(window.matchMedia('(max-width: 760px)').matches);
-    photoViewerModal.classList.remove('hidden');
-    document.body.classList.add('photo-viewer-open');
-    window.setTimeout(() => closePhotoViewer.focus(), 0);
-
-    const openedContext = activePhotoViewerContext;
-    void loadImageModels(normalizedContext.mode).then(() => {
-        if (activePhotoViewerContext !== openedContext) return;
-        renderPhotoViewerModelOptions();
-    });
-}
-
-const runPhotoViewerRegeneration = async () => {
-    const context = activePhotoViewerContext;
-    const model = getPhotoViewerSelectedModel();
-    const prompt = photoViewerPrompt.value.trim();
-    if (!context || !model || !prompt || isPhotoViewerRegenerating) return;
-    if (prompt.length > (model.constraints.promptCharacterLimit || 10000)) {
-        setPhotoViewerStatus('Prompt 超過這個模型的長度上限，請先縮短內容。', 'error');
-        return;
-    }
-
-    const controller = new AbortController();
-    photoViewerRequestController = controller;
-    setPhotoViewerBusy(true);
-    setPhotoViewerStatus('正在重新生成；完成後會新增一張並保留原圖...', 'busy');
-    const startedAt = performance.now();
-
-    try {
-        let sourceImageBase64 = context.sourceImageBase64;
-        if (context.mode === 'edit' && !sourceImageBase64) {
-            const persona = context.personaKey ? memoryManager.getPersona(context.personaKey) : null;
-            if (!persona || !context.useAvatarReference) {
-                throw new Error('這張照片缺少原本的參考圖片，無法使用圖生圖模型重新生成。');
-            }
-            sourceImageBase64 = await prepareCharacterAvatarReference(persona) || undefined;
-            if (!sourceImageBase64) throw new Error('無法讀取角色頭像，請先更換頭像後再試。');
-        }
-
-        const supportedRatios = model.constraints.aspectRatios || [];
-        const selectedRatio = photoViewerAspectRatio.value || context.aspectRatio || '3:4';
-        const aspectRatio = supportedRatios.includes(selectedRatio)
-            ? selectedRatio
-            : model.constraints.defaultAspectRatio || supportedRatios[0];
-        const resolution = model.constraints.resolutions?.length
-            ? photoViewerResolution.value || model.constraints.defaultResolution || model.constraints.resolutions[0]
-            : undefined;
-        const pixelSize = PIXEL_IMAGE_DIMENSIONS[selectedRatio] || PIXEL_IMAGE_DIMENSIONS['3:4'];
-        const generationSeed = context.mode === 'generate'
-            ? resolveImageSeedForRequest(photoViewerSeed, photoViewerSeedLock.checked)
-            : undefined;
-        const result = await requestVeniceImage({
-            mode: context.mode,
-            model: model.id,
-            prompt,
-            negativePrompt: context.mode === 'generate'
-                ? context.negativePrompt || 'unintended duplicated bodies, cloned face, malformed anatomy, deformed hands, distorted face, text, captions, interface, logo, watermark, blurry, low quality'
-                : undefined,
-            sourceImageBase64,
-            aspectRatio: context.mode === 'edit' || supportedRatios.length > 0 ? aspectRatio : undefined,
-            resolution,
-            width: context.mode === 'generate' && supportedRatios.length === 0 ? pixelSize.width : undefined,
-            height: context.mode === 'generate' && supportedRatios.length === 0 ? pixelSize.height : undefined,
-            variants: 1,
-            steps: context.mode === 'generate' ? model.constraints.steps?.default : undefined,
-            seed: generationSeed,
-            adultConfirmed: true,
-            signal: controller.signal,
-        });
-        const blob = result.blobs[0];
-        if (!blob) throw new Error('Venice 沒有傳回圖片。');
-        if (controller.signal.aborted) throw new DOMException('Image regeneration aborted.', 'AbortError');
-
-        let nextImageUrl = '';
-        let nextContext: PhotoViewerContext;
-        if (context.source === 'studio') {
-            const now = new Date();
-            const studioResult: ImageStudioResult = {
-                id: `${now.getTime()}-regenerated`,
-                blob,
-                url: URL.createObjectURL(blob),
-                prompt,
-                model: model.name,
-                modelId: model.id,
-                mode: context.mode,
-                aspectRatio: selectedRatio,
-                resolution,
-                negativePrompt: context.negativePrompt,
-                sourceImageBase64,
-                seed: generationSeed,
-                createdAt: now,
-            };
-            imageResults = [studioResult, ...imageResults];
-            renderImageResults();
-            nextImageUrl = studioResult.url;
-            nextContext = {
-                ...context,
-                prompt,
-                modelId: model.id,
-                modelName: model.name,
-                aspectRatio: selectedRatio,
-                resolution,
-                sourceImageBase64,
-                seed: generationSeed,
-            };
-        } else {
-            if (!context.personaKey) throw new Error('找不到這張照片所屬的角色。');
-            const assetId = `character-photo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-            await saveCharacterPhotoAsset({
-                id: assetId,
-                personaKey: context.personaKey,
-                blob,
-                prompt,
-                createdAt: Date.now(),
+const loadPhotoViewerUi = async () => {
+    if (photoViewerUi) return photoViewerUi;
+    if (!photoViewerUiLoad) {
+        photoViewerUiLoad = import('./features/photoViewerUi.js')
+            .then(({ createPhotoViewerUi }) => {
+                const ui = createPhotoViewerUi({
+                    memoryManager,
+                    getImageModels: mode => imageModels[mode],
+                    loadImageModels: mode => loadImageModels(mode),
+                    getCurrentPersonaName: () => currentPersona?.name || null,
+                    getCurrentPersonaKey: () => currentPersonaKey,
+                    prepareCharacterAvatarReference,
+                    getCharacterPhotoObjectUrl,
+                    buildPhotoViewerContextFromContent,
+                    addStudioResult: result => {
+                        void loadImageStudioUi()
+                            .then(ui => ui.addResult(result))
+                            .catch(error => {
+                                URL.revokeObjectURL(result.url);
+                                console.error('Failed to store Image Studio result', error);
+                            });
+                    },
+                    appendVisiblePhoto: content => appendMessage(content, 'bot'),
+                    updateAlbumState,
+                    handleAuthRequired: () => handleAuthRequired(),
+                    syncSharedSeed: (locked, seed) => {
+                        imageSeedLock.checked = locked;
+                        if (typeof seed === 'number') setSeedInputValue(imageSeed, seed);
+                    },
+                });
+                photoViewerUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                photoViewerUiLoad = null;
+                throw error;
             });
-            const photoContent: Content = {
-                text: context.caption,
-                imageAssetId: assetId,
-                imagePrompt: prompt,
-                imageGeneration: {
-                    mode: context.mode,
-                    modelId: model.id,
-                    modelName: model.name,
-                    aspectRatio: selectedRatio,
-                    resolution,
-                    seed: generationSeed,
-                    useAvatarReference: context.useAvatarReference,
-                    identityMode: context.identityMode,
-                },
-            };
-            memoryManager.addMessage(context.personaKey, 'model', photoContent);
-            nextImageUrl = await getCharacterPhotoObjectUrl(assetId) || '';
-            nextContext = buildPhotoViewerContextFromContent(photoContent, context.source, context.personaKey);
-            if (currentPersonaKey === context.personaKey) {
-                appendMessage(photoContent, 'bot');
-                updateAlbumState();
-                if (!albumModal.classList.contains('hidden')) renderAlbum();
-            }
-        }
-
-        if (!nextImageUrl) throw new Error('新圖片已生成，但暫時無法開啟預覽。');
-        activePhotoViewerContext = nextContext;
-        photoViewerImage.src = nextImageUrl;
-        if (!photoFullscreenModal.classList.contains('hidden')) photoFullscreenImage.src = nextImageUrl;
-        photoViewerMeta.textContent = [
-            model.name,
-            selectedRatio,
-            resolution,
-            typeof generationSeed === 'number' ? `Seed ${generationSeed}` : '',
-            '已另存新圖',
-        ].filter(Boolean).join(' · ');
-        const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
-        setPhotoViewerStatus(`重新生成完成 · ${elapsed} 秒；原圖仍然保留。`, 'success');
-    } catch (error) {
-        if (isAbortError(error)) {
-            if (!photoViewerModal.classList.contains('hidden')) {
-                setPhotoViewerStatus('已停止重新生成。', 'error');
-            }
-        } else {
-            const message = error instanceof Error ? error.message : '重新生成失敗。';
-            setPhotoViewerStatus(`重新生成失敗：${message}`, 'error');
-            if (message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
-        }
-    } finally {
-        if (photoViewerRequestController === controller) photoViewerRequestController = null;
-        setPhotoViewerBusy(false);
     }
+    return photoViewerUiLoad;
 };
 
-function closePhotoViewerModal() {
-    photoViewerRequestController?.abort();
-    photoViewerRequestController = null;
-    if (!photoFullscreenModal.classList.contains('hidden')) closePhotoFullscreenModal();
-    photoViewerModal.classList.add('hidden');
-    document.body.classList.remove('photo-viewer-open');
-    photoViewerImage.removeAttribute('src');
-    photoViewerPrompt.value = '';
-    photoViewerModel.innerHTML = '';
-    activePhotoViewerContext = null;
-    setPhotoViewerBusy(false);
-}
-
-function hideSuggestionContainer() {
-    suggestionContainer.innerHTML = '';
-    suggestionContainer.classList.add('hidden');
-}
-
-async function getSuggestions() {
-    showDisabledFeatureNotice('建議功能');
-}
-
-interface ParticipantTransferCandidate {
-    id: string;
-    persona: Persona;
-    sourcePersonaKey?: string;
-    sourceLabel: string;
-    originRoomId?: string;
-    originMemberId?: string;
-    targetRoomId?: string;
-    replaceMemberId?: string;
-    privateUserTurnCount?: number;
-}
-
-const participantIdentityFingerprint = (persona: Persona) => (
-    persona.publicIdentity?.canonicalName || persona.name
-).replace(/\s+/gu, ' ').trim().toLocaleLowerCase();
-
-const participantContinuityFingerprint = (persona: Persona) => JSON.stringify({
-    name: persona.name,
-    description: persona.description,
-    prompt: persona.prompt,
-    soul: (persona.soul || []).map(entry => `${entry.kind}:${entry.summary}`),
-    memories: (persona.memories || []).map(entry => `${entry.kind}:${entry.summary}`),
-});
-
-const roomMemberMatchesCandidate = (member: RoomMember, candidate: ParticipantTransferCandidate) => {
-    if (candidate.sourcePersonaKey && (
-        member.sourcePersonaKey === candidate.sourcePersonaKey
-        || member.privatePersonaKey === candidate.sourcePersonaKey
-    )) return true;
-    return participantIdentityFingerprint(member.persona) === participantIdentityFingerprint(candidate.persona);
+const openPhotoViewer = (imageUrl: string, context: PhotoViewerContext) => {
+    void loadPhotoViewerUi()
+        .then(ui => ui.openPhoto(imageUrl, context))
+        .catch(error => console.error('Failed to load Photo Viewer UI', error));
 };
 
-const collectParticipantTransferCandidates = () => {
-    const candidates = new Map<string, ParticipantTransferCandidate>();
-    const excludedKeys = new Set<string>();
-    const excludedIdentities = new Set<string>();
+const openAvatarFullscreen = (imageUrl: string, personaName: string) => {
+    void loadPhotoViewerUi()
+        .then(ui => ui.openAvatar(imageUrl, personaName))
+        .catch(error => console.error('Failed to load Photo Viewer UI', error));
+};
 
-    if (currentRoom) {
-        currentRoom.members.forEach(member => {
-            if (member.sourcePersonaKey) excludedKeys.add(member.sourcePersonaKey);
-            if (member.privatePersonaKey) excludedKeys.add(member.privatePersonaKey);
-            excludedIdentities.add(participantIdentityFingerprint(member.persona));
-        });
-    } else if (currentPersona && currentPersonaKey) {
-        excludedKeys.add(currentPersonaKey);
-        excludedIdentities.add(participantIdentityFingerprint(currentPersona));
-        roomManager.getRooms().filter(room => !room.timelineBranch).forEach(room => {
-            const linkedMember = room.members.find(member => member.privatePersonaKey === currentPersonaKey);
-            if (!linkedMember) return;
-            const privateUserTurnCount = memoryManager.peekChatHistory(currentPersonaKey!)
-                .filter(message => message.role === 'user').length;
-            if (privateUserTurnCount <= Number(linkedMember.privateContinuityImportedUserMessageCount || 0)) return;
-            const candidateId = `return:${room.id}:${linkedMember.id}:${currentPersonaKey}`;
-            candidates.set(candidateId, {
-                id: candidateId,
-                persona: cloneRoomSnapshot(currentPersona!),
-                sourcePersonaKey: currentPersonaKey!,
-                sourceLabel: `帶著目前私訊記憶回到「${room.title}」並取代舊版本`,
-                targetRoomId: room.id,
-                replaceMemberId: linkedMember.id,
-                privateUserTurnCount,
+const openImageFullscreen = (imageUrl: string, altText: string) => {
+    void loadPhotoViewerUi()
+        .then(ui => ui.openImage(imageUrl, altText))
+        .catch(error => console.error('Failed to load Photo Viewer UI', error));
+};
+
+let participantActionUi: import('./features/participantActionUi.js').ParticipantActionHandle | null = null;
+let participantActionUiLoad: Promise<import('./features/participantActionUi.js').ParticipantActionHandle> | null = null;
+
+const loadParticipantActionUi = async () => {
+    if (participantActionUi) return participantActionUi;
+    if (!participantActionUiLoad) {
+        participantActionUiLoad = import('./features/participantActionUi.js')
+            .then(({ createParticipantActionUi }) => {
+                const ui = createParticipantActionUi({
+                    memoryManager,
+                    roomManager,
+                    getCurrentRoom: () => currentRoom,
+                    getCurrentPersona: () => currentPersona,
+                    getCurrentPersonaKey: () => currentPersonaKey,
+                    getCurrentConversationKey: () => currentConversationKey,
+                    hasActiveChatRequest: () => Boolean(activeChatRequest),
+                    maybeSummarizePersonaMemory,
+                    renderPersonaList,
+                    startChat,
+                    resolveRoomMemberAvatarPersona,
+                    hideRoomInfo: () => roomInfoModal.classList.add('hidden'),
+                    hideMoreOptionsMenu: () => moreOptionsMenu.classList.add('hidden'),
+                });
+                participantActionUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                participantActionUiLoad = null;
+                throw error;
             });
-        });
     }
-
-    Object.entries(memoryManager.getAllPersonas()).forEach(([key, persona]) => {
-        const identity = participantIdentityFingerprint(persona);
-        const replaceableMember = currentRoom?.members.find(member => (
-            member.privatePersonaKey === key
-            && participantIdentityFingerprint(member.persona) === identity
-        ));
-        const privateUserTurnCount = replaceableMember
-            ? memoryManager.peekChatHistory(key).filter(message => message.role === 'user').length
-            : 0;
-        const importedUserTurnCount = Number(
-            replaceableMember?.privateContinuityImportedUserMessageCount || 0,
-        );
-        if (
-            replaceableMember
-            && privateUserTurnCount > importedUserTurnCount
-            && key !== VENICE_ASSISTANT_PERSONA_KEY
-            && persona.gender === 'female'
-            && !persona.timelineBranch
-        ) {
-            const candidateId = `replace:${currentRoom!.id}:${replaceableMember.id}:${key}`;
-            candidates.set(candidateId, {
-                id: candidateId,
-                persona: cloneRoomSnapshot(persona),
-                sourcePersonaKey: key,
-                sourceLabel: `私訊版本 · ${privateUserTurnCount} 個對話回合 · 將取代群組舊版本`,
-                replaceMemberId: replaceableMember.id,
-                privateUserTurnCount,
-            });
-            return;
-        }
-        if (
-            key === VENICE_ASSISTANT_PERSONA_KEY
-            || persona.gender !== 'female'
-            || Boolean(persona.timelineBranch)
-            || excludedKeys.has(key)
-            || excludedIdentities.has(identity)
-        ) return;
-        const candidateId = `persona:${key}`;
-        candidates.set(candidateId, {
-            id: candidateId,
-            persona: cloneRoomSnapshot(persona),
-            sourcePersonaKey: key,
-            sourceLabel: memoryManager.peekChatHistory(key).length > 0 ? '來自私人聊天' : '現有角色',
-            privateUserTurnCount: memoryManager.peekChatHistory(key)
-                .filter(message => message.role === 'user').length,
-        });
-    });
-
-    roomManager.getRooms().filter(room => !room.timelineBranch).forEach(room => {
-        room.members.forEach(member => {
-            const sourcePersonaKey = member.privatePersonaKey || member.sourcePersonaKey;
-            const sourcePersona = sourcePersonaKey ? memoryManager.getPersona(sourcePersonaKey) : undefined;
-            const persona = roomMemberToPersona(member, sourcePersona);
-            const identity = participantIdentityFingerprint(persona);
-            const candidateId = `room:${room.id}:${member.id}`;
-            const matchesUnchangedSource = sourcePersonaKey
-                && candidates.has(`persona:${sourcePersonaKey}`)
-                && sourcePersona
-                && participantContinuityFingerprint(persona) === participantContinuityFingerprint(sourcePersona);
-            if (
-                persona.gender !== 'female'
-                || excludedIdentities.has(identity)
-                || (sourcePersonaKey && excludedKeys.has(sourcePersonaKey))
-                || matchesUnchangedSource
-            ) return;
-            candidates.set(candidateId, {
-                id: candidateId,
-                persona,
-                sourcePersonaKey,
-                sourceLabel: `來自群組「${room.title}」`,
-                originRoomId: room.id,
-                originMemberId: member.id,
-            });
-        });
-    });
-
-    return [...candidates.values()].sort((left, right) => (
-        left.persona.name.localeCompare(right.persona.name, 'zh-Hant')
-        || left.sourceLabel.localeCompare(right.sourceLabel, 'zh-Hant')
-    ));
+    return participantActionUiLoad;
 };
 
-const createTransferredRoomMember = (
-    candidate: ParticipantTransferCandidate,
-    fixedMemberId?: string,
-): RoomMember => {
-    const joinedAt = Date.now();
-    const memberId = fixedMemberId || `member_${joinedAt}_${Math.random().toString(36).slice(2, 8)}`;
-    const persona = cloneRoomSnapshot(candidate.persona);
-    const toRoomMemory = (entry: PersonaMemoryEntry, pinned: boolean): RoomMemoryEntry => ({
-        ...cloneRoomSnapshot(entry),
-        participants: [memberId],
-        pinned,
-        roleplayOnly: true,
-    });
-    return {
-        id: memberId,
-        sourcePersonaKey: candidate.sourcePersonaKey,
-        privatePersonaKey: candidate.sourcePersonaKey,
-        privateContinuityImportedUserMessageCount: candidate.privateUserTurnCount,
-        persona,
-        joinedAt,
-        soul: (persona.soul || []).map(entry => toRoomMemory(entry, true)),
-        memories: (persona.memories || []).map(entry => toRoomMemory(entry, false)),
-    };
-};
-
-const appendContextBridge = (conversationKey: string, bridge: ChatContextBridge) => {
-    memoryManager.addMessage(conversationKey, 'system', {
-        text: contextBridgeDisplayText(bridge),
-        contextBridge: bridge,
-    });
-};
-
-const saveBridgeAsPersonaMemory = (personaKey: string, bridge: ChatContextBridge) => {
-    memoryManager.addPersonaMemory(personaKey, 'memory', {
-        kind: 'event',
-        title: `從 ${bridge.sourceTitle} 承接的情境`,
-        summary: bridge.summary,
-    });
-};
-
-const resolveRoomMemberPrivatePersonaKey = async (room: ChatRoom, member: RoomMember) => {
-    const protectedIuArchive = room.id === IU_GROUP_ROOM_ID
-        && member.id === 'iu'
-        && member.sourcePersonaKey === room.legacySourcePersonaKey;
-    const existingKey = member.privatePersonaKey
-        || (!protectedIuArchive ? member.sourcePersonaKey : undefined);
-    if (existingKey && memoryManager.getPersona(existingKey)) {
-        if (member.privatePersonaKey !== existingKey) {
-            const existingUserTurns = memoryManager.peekChatHistory(existingKey)
-                .filter(message => message.role === 'user').length;
-            roomManager.updateMember(room.id, member.id, {
-                privatePersonaKey: existingKey,
-                privateContinuityImportedUserMessageCount: existingUserTurns,
-            });
-        }
-        return existingKey;
-    }
-
-    const sourcePersona = member.sourcePersonaKey
-        ? memoryManager.getPersona(member.sourcePersonaKey)
-        : undefined;
-    const personaKey = await memoryManager.saveCustomPersonaCopy(roomMemberToPersona(member, sourcePersona));
-    roomManager.updateMember(room.id, member.id, {
-        privatePersonaKey: personaKey,
-        privateContinuityImportedUserMessageCount: 0,
-    });
-    return personaKey;
+const openParticipantAction = (mode: import('./features/participantActionUi.js').ParticipantActionMode) => {
+    void loadParticipantActionUi()
+        .then(ui => ui.open(mode))
+        .catch(error => console.error('Failed to load Participant Action UI', error));
 };
 
 const openPrivateChatForRoomMember = async (roomId: string, memberId: string) => {
-    if (activeChatRequest) {
-        alert('請先等待目前回覆完成，再切換到私訊。');
-        return;
-    }
-    const room = roomManager.getRoom(roomId);
-    const member = room?.members.find(item => item.id === memberId);
-    if (!room || !member) throw new Error('找不到這位群組成員。');
-
-    const personaKey = await resolveRoomMemberPrivatePersonaKey(room, member);
-    const bridge = buildContextBridge({
-        kind: 'group_to_private',
-        sourceConversationKey: room.id,
-        sourceTitle: room.title,
-        history: memoryManager.getChatHistory(room.id),
-        room,
-        targetMemberName: member.persona.name,
-    });
-    const transferredPersona = roomMemberToPersona(member, memoryManager.getPersona(personaKey));
-    (transferredPersona.soul || []).forEach(entry => {
-        memoryManager.addPersonaMemory(personaKey, 'soul', {
-            kind: entry.kind,
-            title: entry.title,
-            summary: entry.summary,
-            originalText: entry.originalText,
-            sourceMessageIds: entry.sourceMessageIds,
-            sourceMessageIndexes: entry.sourceMessageIndexes,
-        });
-    });
-    (transferredPersona.memories || []).forEach(entry => {
-        memoryManager.addPersonaMemory(personaKey, 'memory', {
-            kind: entry.kind,
-            title: entry.title,
-            summary: entry.summary,
-            originalText: entry.originalText,
-            sourceMessageIds: entry.sourceMessageIds,
-            sourceMessageIndexes: entry.sourceMessageIndexes,
-        });
-    });
-    saveBridgeAsPersonaMemory(personaKey, bridge);
-    if (!memoryManager.hasChatHistory(personaKey)) memoryManager.setChatHistory(personaKey, []);
-    appendContextBridge(personaKey, bridge);
-
-    participantActionModal.classList.add('hidden');
-    roomInfoModal.classList.add('hidden');
-    renderPersonaList();
-    startChat(personaKey);
+    const ui = await loadParticipantActionUi();
+    await ui.openPrivateChat(roomId, memberId);
 };
 
-const replaceRoomMemberWithPrivateCandidate = async (
-    room: ChatRoom,
-    candidate: ParticipantTransferCandidate,
-) => {
-    if (!candidate.replaceMemberId || !candidate.sourcePersonaKey) return;
-    const oldMember = room.members.find(member => member.id === candidate.replaceMemberId);
-    if (!oldMember) throw new Error('群組中的舊角色版本已不存在。');
-    const wasPresent = room.scene.presentMemberIds.includes(oldMember.id);
-    if (!wasPresent && room.scene.presentMemberIds.length >= ROOM_PRESENT_MEMBER_LIMIT) {
-        alert(`目前已有 ${ROOM_PRESENT_MEMBER_LIMIT} 位角色在場，請先請一位角色離場。`);
-        return;
-    }
-    if (!confirm(
-        `以私訊中的 ${candidate.persona.name} 取代群組內的舊版本？\n\n`
-        + '私訊聊天會完整保留；群組舊訊息也不會刪除，但往後會使用私訊版的人格、soul.md 與 memory.md。',
-    )) return;
-
-    const privatePersonaKey = candidate.sourcePersonaKey;
-    const memoryUpdate = await maybeSummarizePersonaMemory(privatePersonaKey, 'recent');
-    const privatePersona = memoryManager.getPersona(privatePersonaKey);
-    if (!privatePersona) throw new Error('找不到要帶回群組的私訊角色。');
-    const privateHistory = memoryManager.peekChatHistory(privatePersonaKey);
-    const replacement = createTransferredRoomMember({
-        ...candidate,
-        persona: cloneRoomSnapshot(privatePersona),
-    }, oldMember.id);
-    const bridge = buildContextBridge({
-        kind: 'member_returned',
-        sourceConversationKey: privatePersonaKey,
-        sourceTitle: `${privatePersona.name} 的私訊`,
-        history: privateHistory,
-        targetMemberName: privatePersona.name,
-        summaryOverride: [
-            `${privatePersona.name} 的獨立私訊版本已取代群組中的舊版本並回到聊天室。`,
-            '她保留私訊中建立的關係、承諾、經歷與情感發展；群組其他成員只會從現在開始接觸這個版本。',
-            memoryUpdate.status === 'error'
-                ? '自動記憶整理暫時失敗，因此先以現有 memory.md 與近期私訊內容承接。'
-                : '',
-        ].filter(Boolean).join(' '),
-    });
-    replacement.privateContinuityHandoff = cloneRoomSnapshot(bridge);
-
-    roomManager.replaceMember(room.id, oldMember.id, replacement);
-    if (!wasPresent) {
-        roomManager.setPresentMembers(room.id, [...room.scene.presentMemberIds, oldMember.id]);
-    }
-    roomManager.addSoulMemory(room.id, [oldMember.id], {
-        kind: 'core',
-        title: '私訊分支回歸界線',
-        summary: [
-            `${privatePersona.name} 是從獨立私訊回歸的版本。`,
-            '她保留建立私訊時承接的群組背景，以及其後在私訊中親自經歷的事情。',
-            '她不會自動繼承舊群組版本在兩條對話分開後新增的個人經歷；其他成員可在回歸後把需要知道的事情告訴她。',
-        ].join(''),
-        participants: [oldMember.id],
-        roleplayOnly: true,
-    });
-    roomManager.updateRoom(room.id, editableRoom => {
-        editableRoom.scene.summary = (
-            `${editableRoom.scene.summary} 群組中的舊 ${oldMember.persona.name} 已離開，`
-            + `承接獨立私訊經歷的 ${privatePersona.name} 現已回到聊天室。`
-        ).slice(-1500);
-    });
-    roomManager.addEpisodicMemories(room.id, [{
-        kind: 'event',
-        title: `${privatePersona.name} 帶著私訊經歷回到群組`,
-        summary: bridge.summary,
-        participants: [oldMember.id],
-    }]);
-    appendContextBridge(room.id, bridge);
-
-    participantActionModal.classList.add('hidden');
-    roomInfoModal.classList.add('hidden');
-    renderPersonaList();
-    startChat(room.id, null, currentConversationKey === room.id ? 'skip' : 'push');
+const setRoomMemberPresence = async (roomId: string, memberId: string, present: boolean) => {
+    const ui = await loadParticipantActionUi();
+    await ui.setMemberPresence(roomId, memberId, present);
 };
-
-const inviteParticipantCandidate = async (candidate: ParticipantTransferCandidate) => {
-    if (!currentConversationKey || !currentPersona || activeChatRequest) return;
-    const sourceConversationKey = currentConversationKey;
-    const sourceRoom = currentRoom ? roomManager.getRoom(currentRoom.id) || currentRoom : null;
-    const sourceTitle = sourceRoom?.title || currentPersona.name;
-    const sourceHistory = memoryManager.getChatHistory(sourceConversationKey);
-
-    if (candidate.targetRoomId && candidate.replaceMemberId) {
-        const targetRoom = roomManager.getRoom(candidate.targetRoomId);
-        if (!targetRoom) throw new Error('原本的群組已不存在。');
-        await replaceRoomMemberWithPrivateCandidate(targetRoom, candidate);
-        return;
-    }
-
-    if (sourceRoom) {
-        if (candidate.replaceMemberId) {
-            await replaceRoomMemberWithPrivateCandidate(sourceRoom, candidate);
-            return;
-        }
-        if (sourceRoom.members.length >= ROOM_MEMBER_LIMIT) {
-            alert(`每個群組最多 ${ROOM_MEMBER_LIMIT} 位角色。`);
-            return;
-        }
-        if (sourceRoom.scene.presentMemberIds.length >= ROOM_PRESENT_MEMBER_LIMIT) {
-            alert(`目前已有 ${ROOM_PRESENT_MEMBER_LIMIT} 位角色在場，請先請一位角色離場。`);
-            return;
-        }
-        if (sourceRoom.members.some(member => roomMemberMatchesCandidate(member, candidate))) {
-            alert(`${candidate.persona.name} 已經是這個聊天室的成員。`);
-            return;
-        }
-
-        const member = createTransferredRoomMember(candidate);
-        roomManager.addMember(sourceRoom.id, member);
-        roomManager.updateRoom(sourceRoom.id, room => {
-            room.scene.summary = `${room.scene.summary} ${member.persona.name} 剛獲邀加入，已閱讀必要的近期情境。`.slice(-1500);
-        });
-        const updatedRoom = roomManager.getRoom(sourceRoom.id)!;
-        const bridge = buildContextBridge({
-            kind: 'member_invited',
-            sourceConversationKey,
-            sourceTitle,
-            history: sourceHistory,
-            room: updatedRoom,
-            targetMemberName: member.persona.name,
-        });
-        roomManager.addEpisodicMemories(sourceRoom.id, [{
-            kind: 'event',
-            title: `${member.persona.name} 加入聊天室`,
-            summary: bridge.summary,
-            participants: [member.id],
-        }]);
-        appendContextBridge(sourceRoom.id, bridge);
-        participantActionModal.classList.add('hidden');
-        renderPersonaList();
-        startChat(sourceRoom.id, null, 'skip');
-        return;
-    }
-
-    if (!currentPersonaKey || roomManager.getRooms().some(room => room.id === sourceConversationKey)) return;
-    if (participantIdentityFingerprint(currentPersona) === participantIdentityFingerprint(candidate.persona)) {
-        alert('不能邀請目前正在私訊的同一位角色。');
-        return;
-    }
-
-    const room = roomManager.createRoom(
-        `${currentPersona.name}、${candidate.persona.name}`,
-        [
-            { sourcePersonaKey: currentPersonaKey, persona: cloneRoomSnapshot(currentPersona) },
-            { sourcePersonaKey: candidate.sourcePersonaKey, persona: cloneRoomSnapshot(candidate.persona) },
-        ],
-    );
-    const bridge = buildContextBridge({
-        kind: 'private_to_group',
-        sourceConversationKey,
-        sourceTitle,
-        history: sourceHistory,
-        targetMemberName: candidate.persona.name,
-    });
-    roomManager.updateRoom(room.id, editableRoom => {
-        editableRoom.legacySourcePersonaKey = sourceConversationKey;
-        editableRoom.description = `${currentPersona.name} 與 ${candidate.persona.name} 的群組`;
-        editableRoom.scene.location = '由私人聊天延續的群組聊天室';
-        editableRoom.scene.realityLayer = 'texting';
-        editableRoom.scene.summary = `${bridge.summary} ${candidate.persona.name} 已加入並讀取必要的近期情境。`.slice(-1500);
-        editableRoom.scene.unresolved = ['讓新加入的角色自然接上目前話題'];
-    });
-    const createdRoom = roomManager.getRoom(room.id)!;
-    roomManager.addEpisodicMemories(createdRoom.id, [{
-        kind: 'event',
-        title: `${candidate.persona.name} 加入對話`,
-        summary: bridge.summary,
-        participants: createdRoom.members.map(member => member.id),
-    }]);
-    appendContextBridge(createdRoom.id, bridge);
-    participantActionModal.classList.add('hidden');
-    renderPersonaList();
-    startChat(createdRoom.id, null, 'replace');
-};
-
-const setRoomMemberPresence = (roomId: string, memberId: string, present: boolean) => {
-    if (activeChatRequest) {
-        alert('請先等待目前回覆完成，再變更在場角色。');
-        return;
-    }
-    const room = roomManager.getRoom(roomId);
-    const member = room?.members.find(item => item.id === memberId);
-    if (!room || !member) return;
-    const currentIds = [...room.scene.presentMemberIds];
-    if (!present && currentIds.length <= 1) {
-        alert('場景中至少需要 1 位角色在場。');
-        return;
-    }
-    if (present && currentIds.length >= ROOM_PRESENT_MEMBER_LIMIT) {
-        alert(`同一場景最多 ${ROOM_PRESENT_MEMBER_LIMIT} 位角色在場。`);
-        return;
-    }
-    const nextIds = present
-        ? Array.from(new Set([...currentIds, member.id]))
-        : currentIds.filter(id => id !== member.id);
-    roomManager.setPresentMembers(room.id, nextIds);
-    roomManager.updateRoom(room.id, editableRoom => {
-        const event = present
-            ? `${member.persona.name} 已回到目前場景。`
-            : `${member.persona.name} 已離開目前場景，但仍保留為固定成員。`;
-        editableRoom.scene.summary = `${editableRoom.scene.summary} ${event}`.slice(-1500);
-    });
-    const updatedRoom = roomManager.getRoom(room.id)!;
-    const bridge = buildContextBridge({
-        kind: present ? 'member_returned' : 'member_left',
-        sourceConversationKey: room.id,
-        sourceTitle: room.title,
-        history: memoryManager.getChatHistory(room.id),
-        room: updatedRoom,
-        targetMemberName: member.persona.name,
-    });
-    appendContextBridge(room.id, bridge);
-    participantActionModal.classList.add('hidden');
-    if (currentConversationKey === room.id) startChat(room.id, null, 'skip');
-    renderPersonaList();
-};
-
-const closeParticipantAction = () => {
-    participantActionModal.classList.add('hidden');
-    participantActionList.innerHTML = '';
-};
-
-const appendParticipantActionRow = (
-    persona: Persona,
-    detail: string,
-    actionLabel: string,
-    action: () => void | Promise<void>,
-) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'participant-action-row';
-    const avatar = document.createElement('span');
-    avatar.className = 'room-member-avatar';
-    if (persona.avatarUrl && !persona.avatarUrl.startsWith('generating_')) {
-        const image = document.createElement('img');
-        image.src = persona.avatarUrl;
-        image.alt = persona.name;
-        avatar.appendChild(image);
-    } else avatar.textContent = persona.emoji || '●';
-    const copy = document.createElement('span');
-    copy.className = 'participant-action-copy';
-    const name = document.createElement('strong');
-    name.textContent = persona.name;
-    const description = document.createElement('small');
-    description.textContent = `${detail} · ${persona.description}`;
-    copy.append(name, description);
-    const actionText = document.createElement('span');
-    actionText.className = 'participant-action-label';
-    actionText.textContent = actionLabel;
-    button.append(avatar, copy, actionText);
-    button.addEventListener('click', async () => {
-        button.disabled = true;
-        try {
-            await action();
-        } catch (error) {
-            alert(error instanceof Error ? error.message : '未能完成角色操作。');
-        } finally {
-            if (!participantActionModal.classList.contains('hidden')) button.disabled = false;
-        }
-    });
-    participantActionList.appendChild(button);
-};
-
-const openParticipantAction = (mode: 'dm' | 'invite' | 'leave') => {
-    if (activeChatRequest) {
-        alert('請先等待目前回覆完成。');
-        return;
-    }
-    participantActionList.innerHTML = '';
-    moreOptionsMenu.classList.add('hidden');
-
-    if (mode === 'invite') {
-        participantActionTitle.textContent = '邀請角色加入';
-        participantActionSummary.textContent = currentRoom
-            ? '可邀請其他角色；若群組成員已有獨立私訊版本，也可用私訊版安全取代舊版本。'
-            : '可邀請另一位角色建立新群組；若這是由群組分出的私訊，也可帶著新記憶回到原群組。';
-        collectParticipantTransferCandidates().forEach(candidate => {
-            appendParticipantActionRow(
-                candidate.persona,
-                candidate.sourceLabel,
-                candidate.targetRoomId
-                    ? '回到群組'
-                    : candidate.replaceMemberId ? '取代舊版本' : '邀請',
-                () => inviteParticipantCandidate(candidate),
-            );
-        });
-    } else {
-        const room = currentRoom ? roomManager.getRoom(currentRoom.id) || currentRoom : null;
-        if (!room) return;
-        participantActionTitle.textContent = mode === 'dm' ? '私訊群組成員' : '請角色離場';
-        participantActionSummary.textContent = mode === 'dm'
-            ? '私訊會成為獨立聊天，並只承接必要的近期群組情境；原群組保持不變。'
-            : '角色只會離開目前場景，不會刪除人格、soul.md、memory.md 或群組身份。';
-        room.members
-            .filter(member => mode === 'dm' || room.scene.presentMemberIds.includes(member.id))
-            .forEach(member => {
-                appendParticipantActionRow(
-                    resolveRoomMemberAvatarPersona(member),
-                    mode === 'dm'
-                        ? room.scene.presentMemberIds.includes(member.id) ? '目前在場' : '目前不在場'
-                        : '目前在場',
-                    mode === 'dm' ? '私訊' : '離場',
-                    mode === 'dm'
-                        ? () => openPrivateChatForRoomMember(room.id, member.id)
-                        : () => {
-                            if (confirm(`請 ${member.persona.name} 離開目前場景？`)) {
-                                setRoomMemberPresence(room.id, member.id, false);
-                            }
-                        },
-                );
-            });
-    }
-
-    if (!participantActionList.children.length) {
-        const empty = document.createElement('p');
-        empty.className = 'participant-action-empty';
-        empty.textContent = mode === 'invite'
-            ? '暫時沒有其他可邀請的角色。'
-            : mode === 'leave' ? '目前沒有可請離場的角色。' : '這個群組沒有可私訊的角色。';
-        participantActionList.appendChild(empty);
-    }
-    participantActionModal.classList.remove('hidden');
-};
-
 const refreshCurrentRoom = () => {
     if (!currentConversationKey) return null;
     currentRoom = roomManager.getRoom(currentConversationKey) || null;
@@ -15733,950 +8429,230 @@ const selectActiveRoomMember = (memberId: string) => {
     return true;
 };
 
+const getRoomInfoUiDependencies = () => ({
+    getRoom: () => refreshCurrentRoom(),
+    getSourcePersona: (personaKey: string) => memoryManager.getPersona(personaKey),
+    selectMember: selectActiveRoomMember,
+    openPersonaSettingsForMember: (roomId: string, memberId: string) => {
+        openPersonaSettings({ roomId, memberId });
+    },
+    requestMemberAvatar: requestRoomMemberAvatarUpload,
+    openPrivateChat: openPrivateChatForRoomMember,
+    setMemberPresence: setRoomMemberPresence,
+    updateRoom: (roomId: string, updater: (room: ChatRoom) => void) => roomManager.updateRoom(roomId, updater),
+    refreshRoom: () => refreshCurrentRoom(),
+    getActiveMemberId: () => activeRoomMemberId,
+    openPersonaSettingsFallback: () => {
+        openPersonaSettings();
+    },
+    hideMoreOptionsMenu: () => moreOptionsMenu.classList.add('hidden'),
+});
+
 const renderRoomInfo = () => {
-    const room = refreshCurrentRoom();
-    if (!room) return;
-    roomInfoTitle.textContent = room.title;
-    roomInfoSummary.textContent = `${room.members.length} 位固定成員 · ${room.scene.presentMemberIds.length} 位目前在場 · 最多 ${ROOM_MEMBER_LIMIT} 位`;
-    roomMemberList.innerHTML = '';
-
-    room.members.forEach(member => {
-        const row = document.createElement('div');
-        row.className = `room-member-row${member.id === activeRoomMemberId ? ' is-active' : ''}`;
-        const avatar = document.createElement('span');
-        avatar.className = 'room-member-avatar';
-        const sourcePersona = member.persona.avatarUrl
-            ? member.persona
-            : member.sourcePersonaKey
-                ? memoryManager.getPersona(member.sourcePersonaKey) || member.persona
-                : member.persona;
-        if (sourcePersona.avatarUrl && !sourcePersona.avatarUrl.startsWith('generating_')) {
-            const image = document.createElement('img');
-            image.src = sourcePersona.avatarUrl;
-            image.alt = sourcePersona.name;
-            avatar.appendChild(image);
-        } else {
-            avatar.textContent = sourcePersona.emoji || '●';
-        }
-
-        const copy = document.createElement('button');
-        copy.type = 'button';
-        copy.className = 'room-member-copy';
-        const name = document.createElement('strong');
-        name.textContent = member.persona.name;
-        const detail = document.createElement('span');
-        detail.textContent = member.persona.publicIdentityEnabled
-            ? `已確認身份 · ${member.persona.description}`
-            : member.persona.description;
-        copy.append(name, detail);
-        copy.addEventListener('click', () => {
-            selectActiveRoomMember(member.id);
-            personaSettingsRoomTarget = { roomId: room.id, memberId: member.id };
-            openPersonaSettings();
-            renderRoomInfo();
-        });
-
-        const avatarButton = document.createElement('button');
-        avatarButton.type = 'button';
-        avatarButton.className = 'room-member-mini-action';
-        avatarButton.textContent = '頭像';
-        avatarButton.addEventListener('click', () => requestRoomMemberAvatarUpload(room.id, member.id));
-
-        const dmButton = document.createElement('button');
-        dmButton.type = 'button';
-        dmButton.className = 'room-member-mini-action';
-        dmButton.textContent = '私訊';
-        dmButton.addEventListener('click', async () => {
-            dmButton.disabled = true;
-            try {
-                await openPrivateChatForRoomMember(room.id, member.id);
-            } catch (error) {
-                alert(error instanceof Error ? error.message : '未能開啟私人聊天。');
-                dmButton.disabled = false;
-            }
-        });
-
-        const presence = document.createElement('label');
-        presence.className = 'room-presence-toggle';
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.checked = room.scene.presentMemberIds.includes(member.id);
-        const label = document.createElement('span');
-        label.textContent = '在場';
-        presence.append(checkbox, label);
-        checkbox.addEventListener('change', () => {
-            setRoomMemberPresence(room.id, member.id, checkbox.checked);
-            renderRoomInfo();
-        });
-        const actions = document.createElement('div');
-        actions.className = 'room-member-actions';
-        actions.append(dmButton, avatarButton, presence);
-        row.append(avatar, copy, actions);
-        roomMemberList.appendChild(row);
-    });
-
-    roomSceneEditor.innerHTML = '';
-    const locationLabel = document.createElement('label');
-    locationLabel.className = 'wa-field-label';
-    locationLabel.textContent = '位置';
-    const locationInput = document.createElement('input');
-    locationInput.value = room.scene.location;
-    locationLabel.appendChild(locationInput);
-    const realityLabel = document.createElement('label');
-    realityLabel.className = 'wa-field-label';
-    realityLabel.textContent = '對話層';
-    const realitySelect = document.createElement('select');
-    [
-        ['physical', '同一實體場景'],
-        ['texting', '遠端訊息'],
-        ['imagined', '想像／故事中'],
-    ].forEach(([value, labelText]) => {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = labelText;
-        option.selected = room.scene.realityLayer === value;
-        realitySelect.appendChild(option);
-    });
-    realityLabel.appendChild(realitySelect);
-    const summaryLabel = document.createElement('label');
-    summaryLabel.className = 'wa-field-label';
-    summaryLabel.textContent = '場景摘要';
-    const summaryInput = document.createElement('textarea');
-    summaryInput.rows = 4;
-    summaryInput.value = room.scene.summary;
-    summaryLabel.appendChild(summaryInput);
-    const saveScene = document.createElement('button');
-    saveScene.type = 'button';
-    saveScene.className = 'wa-secondary-button';
-    saveScene.textContent = '儲存場景狀態';
-    saveScene.addEventListener('click', () => {
-        roomManager.updateRoom(room.id, editableRoom => {
-            editableRoom.scene.location = locationInput.value.trim() || editableRoom.scene.location;
-            editableRoom.scene.realityLayer = realitySelect.value as RoomSceneState['realityLayer'];
-            editableRoom.scene.summary = summaryInput.value.trim() || editableRoom.scene.summary;
-        });
-        refreshCurrentRoom();
-        saveScene.textContent = '已儲存';
-        window.setTimeout(() => { saveScene.textContent = '儲存場景狀態'; }, 1200);
-    });
-    roomSceneEditor.append(locationLabel, realityLabel, summaryLabel, saveScene);
-
-    roomPhotoPromptEditor.innerHTML = '';
-    const favoritePromptInput = document.createElement('textarea');
-    favoritePromptInput.rows = 4;
-    favoritePromptInput.maxLength = FAVORITE_PHOTO_PROMPT_MAX_LENGTH;
-    favoritePromptInput.value = room.favoritePhotoPrompt || '';
-    favoritePromptInput.placeholder = '例如：自然手機攝影、柔和窗光、保留真實皮膚質感，不要文字或浮水印。';
-    const favoritePromptHint = document.createElement('p');
-    favoritePromptHint.textContent = '角色會先把這段設定與當下衣著、位置、動作及最新拍照要求整合成不矛盾的版本；每次照片草稿仍可取消勾選。';
-    const saveFavoritePrompt = document.createElement('button');
-    saveFavoritePrompt.type = 'button';
-    saveFavoritePrompt.className = 'wa-secondary-button';
-    saveFavoritePrompt.textContent = '儲存常用拍照 Prompt';
-    saveFavoritePrompt.addEventListener('click', () => {
-        roomManager.updateRoom(room.id, editableRoom => {
-            editableRoom.favoritePhotoPrompt = normalizeFavoritePhotoPrompt(favoritePromptInput.value);
-        });
-        refreshCurrentRoom();
-        favoritePromptInput.value = currentRoom?.favoritePhotoPrompt || '';
-        saveFavoritePrompt.textContent = '已儲存';
-        window.setTimeout(() => { saveFavoritePrompt.textContent = '儲存常用拍照 Prompt'; }, 1200);
-    });
-    roomPhotoPromptEditor.append(favoritePromptInput, favoritePromptHint, saveFavoritePrompt);
+    void import('./features/roomInfoUi.js')
+        .then(({ refreshRoomInfo }) => refreshRoomInfo(getRoomInfoUiDependencies()))
+        .catch(error => console.error('Failed to refresh Room Info UI', error));
 };
 
 const openRoomInfo = () => {
-    if (!currentRoom) {
-        personaSettingsRoomTarget = null;
-        openPersonaSettings();
-        return;
-    }
-    renderRoomInfo();
-    roomInfoModal.classList.remove('hidden');
-    moreOptionsMenu.classList.add('hidden');
+    void import('./features/roomInfoUi.js')
+        .then(({ openRoomInfo: openRoomInfoUi }) => openRoomInfoUi(getRoomInfoUiDependencies()))
+        .catch(error => console.error('Failed to load Room Info UI', error));
 };
+const getRoomMemoryUiDependencies = () => ({
+    getContext: () => ({
+        room: refreshCurrentRoom(),
+        personaKey: currentPersonaKey,
+        persona: currentPersona,
+        activeRoomMemberId,
+    }),
+    memoryManager,
+    roomManager,
+    isRoomSummaryInFlight: (roomId: string) => roomSummaryInFlight.has(roomId),
+    isPersonaSummaryInFlight: (personaKey: string) => personaSummaryInFlight.has(personaKey),
+    summarizeRoomMemory: maybeSummarizeRoomMemory,
+    summarizePersonaMemory: maybeSummarizePersonaMemory,
+    handleAuthRequired,
+    authRequiredError: VENICE_AUTH_REQUIRED_ERROR,
+    sanitizeFailureDetail: sanitizeChatFailureDetail,
+    summaryTurnInterval: ROOM_MEMORY_SUMMARY_TURN_INTERVAL,
+    recentMessageLimit: AUTO_MEMORY_RECENT_MESSAGE_LIMIT,
+    getSessionMemories,
+});
 
-const closeRoomInfo = () => roomInfoModal.classList.add('hidden');
-
-const renderRoomMemory = () => {
-    const room = refreshCurrentRoom();
-    const personaKey = room ? null : currentPersonaKey;
-    const persona = room ? null : currentPersona;
-    if (!room && (!personaKey || !persona)) return;
-    roomMemoryTitle.textContent = `${room?.title || persona?.name || '角色'}的靈魂與記憶`;
-    memoryMemberTabs.innerHTML = '';
-    memoryMemberTabs.classList.toggle('hidden', !room);
-    if (room) {
-        if (!selectedMemoryMemberId || !room.members.some(member => member.id === selectedMemoryMemberId)) {
-            selectedMemoryMemberId = activeRoomMemberId || room.leadMemberId;
-        }
-        room.members.forEach(member => {
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = member.id === selectedMemoryMemberId ? 'is-active' : '';
-            button.textContent = member.persona.name;
-            button.addEventListener('click', () => {
-                selectedMemoryMemberId = member.id;
-                renderRoomMemory();
-            });
-            memoryMemberTabs.appendChild(button);
-        });
-    }
-    memorySoulTab.classList.toggle('is-active', selectedMemoryType === 'soul');
-    memoryEventTab.classList.toggle('is-active', selectedMemoryType === 'memory');
-    roomMemoryList.innerHTML = '';
-    const member = room?.members.find(item => item.id === selectedMemoryMemberId);
-    if (room && !member) return;
-
-    if (selectedMemoryType === 'memory') {
-        const conversationKey = room?.id || personaKey || '';
-        const totalUserMessages = memoryManager.peekChatHistory(conversationKey)
-            .filter(message => message.role === 'user').length;
-        const lastSummarized = room
-            ? Number(room.lastSummarizedUserMessageCount || 0)
-            : Number(persona?.lastMemorySummaryUserMessageCount || 0);
-        const summaryVersion = room
-            ? Number(room.memorySummaryVersion || 0)
-            : Number(persona?.memorySummaryVersion || 0);
-        const inFlight = room ? roomSummaryInFlight.has(room.id) : Boolean(personaKey && personaSummaryInFlight.has(personaKey));
-        const needsRecovery = summaryVersion < AUTO_MEMORY_SUMMARY_VERSION
-            && totalUserMessages >= AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES;
-        const remaining = Math.max(0, ROOM_MEMORY_SUMMARY_TURN_INTERVAL - (totalUserMessages - lastSummarized));
-        const status = document.createElement('div');
-        status.className = 'auto-memory-status';
-        const title = document.createElement('strong');
-        title.textContent = inFlight ? '正在自動整理記憶' : '自動記憶運作中';
-        const detail = document.createElement('span');
-        detail.textContent = inFlight
-            ? '完成後會直接寫入 memory.md。'
-            : needsRecovery
-                ? '偵測到舊版漏存的 checkpoint；下一次角色成功回覆後會自動補抓最近重要內容。'
-                : remaining === 0 && totalUserMessages > lastSummarized
-                    ? '已到整理門檻，下一次角色成功回覆後會更新。'
-                    : `已處理至第 ${Math.min(lastSummarized, totalUserMessages)} / ${totalUserMessages} 則使用者訊息；再 ${remaining} 則自動整理。`;
-        const runManualMemoryUpdate = async (mode: MemoryBatchMode) => {
-            if (mode === 'full' && !confirm(
-                '完整重掃會分批讀取這個聊天室的全部文字歷史，可能使用較多 API 額度；原始對話及現有記憶都不會被刪除。繼續？',
-            )) return;
-            manualMemoryUpdateNotice = {
-                conversationKey,
-                tone: 'running',
-                text: mode === 'full'
-                    ? '正在分批重掃全部文字歷史；請保持此頁開啟…'
-                    : `正在讀取最近 ${AUTO_MEMORY_RECENT_MESSAGE_LIMIT} 個使用者回合並更新 memory.md…`,
-            };
-            renderRoomMemory();
-            const result = room
-                ? await maybeSummarizeRoomMemory(room.id, mode)
-                : personaKey
-                    ? await maybeSummarizePersonaMemory(personaKey, mode)
-                    : { status: 'skipped', reason: 'not-found' } as const;
-            if (result.status === 'success') {
-                manualMemoryUpdateNotice = {
-                    conversationKey,
-                    tone: 'success',
-                    text: result.added > 0
-                        ? `${mode === 'full' ? '完整重掃' : '整理'}完成，已新增 ${result.added} 項重要記憶。`
-                        : `${mode === 'full' ? '完整重掃' : '整理'}完成；沒有找到尚未保存的重要內容。`,
-                };
-            } else if (result.status === 'error') {
-                if (result.message === VENICE_AUTH_REQUIRED_ERROR) handleAuthRequired();
-                manualMemoryUpdateNotice = {
-                    conversationKey,
-                    tone: 'error',
-                    text: `整理失敗：${sanitizeChatFailureDetail(result.message).slice(0, 180)}`,
-                };
-            } else {
-                const skippedReason = result.reason === 'busy'
-                    ? '另一個記憶整理工作仍在進行。'
-                    : result.reason === 'no-history'
-                        ? '目前沒有足夠對話可以整理。'
-                        : result.reason === 'threshold'
-                            ? '尚未到自動整理門檻。'
-                            : '目前聊天室已不存在。';
-                manualMemoryUpdateNotice = { conversationKey, tone: 'error', text: skippedReason };
-            }
-            renderRoomMemory();
-        };
-        const manualActions = document.createElement('div');
-        manualActions.className = 'manual-memory-update-actions';
-        const manualButton = document.createElement('button');
-        manualButton.type = 'button';
-        manualButton.className = 'manual-memory-update-button';
-        manualButton.disabled = inFlight || totalUserMessages === 0;
-        manualButton.textContent = inFlight
-            ? '正在整理…'
-            : `整理最近 ${AUTO_MEMORY_RECENT_MESSAGE_LIMIT} 回合`;
-        manualButton.addEventListener('click', () => void runManualMemoryUpdate('recent'));
-        const fullScanButton = document.createElement('button');
-        fullScanButton.type = 'button';
-        fullScanButton.className = 'manual-memory-update-button is-secondary';
-        fullScanButton.disabled = inFlight || totalUserMessages === 0;
-        fullScanButton.textContent = '重新掃描全部歷史';
-        fullScanButton.addEventListener('click', () => void runManualMemoryUpdate('full'));
-        manualActions.append(manualButton, fullScanButton);
-        status.append(title, detail, manualActions);
-        if (manualMemoryUpdateNotice?.conversationKey === conversationKey) {
-            const notice = document.createElement('span');
-            notice.className = `manual-memory-update-notice is-${manualMemoryUpdateNotice.tone}`;
-            notice.textContent = manualMemoryUpdateNotice.text;
-            status.appendChild(notice);
-        }
-        roomMemoryList.appendChild(status);
-    }
-
-    const addButton = document.createElement('button');
-    addButton.type = 'button';
-    addButton.className = 'memory-add-button';
-    addButton.textContent = selectedMemoryType === 'soul' ? '＋ 新增永久記憶' : '＋ 新增重要事件';
-    addButton.addEventListener('click', () => {
-        const title = window.prompt('記憶標題');
-        if (!title?.trim()) return;
-        const summary = window.prompt(selectedMemoryType === 'soul'
-            ? '要讓角色永久記住甚麼？'
-            : '這件重要事件發生了甚麼？');
-        if (!summary?.trim()) return;
-        if (room && member) {
-            if (selectedMemoryType === 'soul') {
-                roomManager.addSoulMemory(room.id, [member.id], {
-                    kind: 'preference',
-                    title: title.trim(),
-                    summary: summary.trim(),
-                    participants: [member.id],
-                    subjectIds: [member.id],
-                    knowerIds: [member.id],
-                    visibility: 'restricted',
-                    importance: 5,
-                    perspectives: [{
-                        memberId: member.id,
-                        salience: 5,
-                        knowledge: 'told',
-                        summary: summary.trim(),
-                    }],
-                });
-            } else {
-                roomManager.addEpisodicMemories(room.id, [{
-                    kind: 'event',
-                    title: title.trim(),
-                    summary: summary.trim(),
-                    participants: [member.id],
-                    subjectIds: [member.id],
-                    knowerIds: [member.id],
-                    visibility: 'restricted',
-                    importance: 5,
-                    perspectives: [{
-                        memberId: member.id,
-                        salience: 5,
-                        knowledge: 'told',
-                        summary: summary.trim(),
-                    }],
-                }]);
-            }
-        } else if (personaKey) {
-            memoryManager.addPersonaMemory(personaKey, selectedMemoryType, {
-                kind: selectedMemoryType === 'soul' ? 'preference' : 'event',
-                title: title.trim(),
-                summary: summary.trim(),
-                importance: 5,
-            });
-        }
-        renderRoomMemory();
-    });
-    roomMemoryList.appendChild(addButton);
-
-    let entries: Array<RoomMemoryEntry | PersonaMemoryEntry> = [];
-    if (room && member) {
-        entries = selectedMemoryType === 'soul' ? member.soul : member.memories;
-    } else if (personaKey && persona) {
-        entries = [...memoryManager.getPersonaMemoryEntries(personaKey, selectedMemoryType)];
-        if (selectedMemoryType === 'soul' && persona.memory?.trim()) {
-            entries.unshift({
-                id: 'legacy-persona-memory',
-                kind: 'core',
-                title: '舊版永久記憶',
-                summary: persona.memory.trim(),
-                createdAt: 0,
-                pinned: true,
-            });
-        }
-    }
-    if (entries.length === 0) {
-        const empty = document.createElement('p');
-        empty.className = 'room-memory-empty';
-        empty.textContent = selectedMemoryType === 'soul'
-            ? '尚未加入永久核心記憶。'
-            : `尚未整理重要事件；系統會每 ${ROOM_MEMORY_SUMMARY_TURN_INTERVAL} 個使用者回合自動更新。`;
-        roomMemoryList.appendChild(empty);
-    }
-    entries.forEach(entry => {
-        const isLegacyPersonaMemory = !room && entry.id === 'legacy-persona-memory';
-        const canonicalEntry = room && selectedMemoryType === 'memory'
-            ? room.sharedMemories.find(item => item.id === entry.id)
-            : undefined;
-        const card = document.createElement('article');
-        card.className = 'room-memory-card';
-        const title = document.createElement('input');
-        title.value = entry.title;
-        title.disabled = isLegacyPersonaMemory;
-        title.setAttribute('aria-label', '記憶標題');
-        const summary = document.createElement('textarea');
-        summary.rows = 4;
-        summary.value = entry.summary;
-        summary.setAttribute('aria-label', '記憶內容');
-        const settings = document.createElement('div');
-        settings.className = 'room-memory-settings';
-        const importanceLabel = document.createElement('label');
-        importanceLabel.textContent = '重要度';
-        const importance = document.createElement('select');
-        importance.disabled = isLegacyPersonaMemory;
-        [
-            [1, '1 · 輕微'],
-            [2, '2 · 次要'],
-            [3, '3 · 有用'],
-            [4, '4 · 重要'],
-            [5, '5 · 核心'],
-        ].forEach(([value, label]) => {
-            const option = document.createElement('option');
-            option.value = String(value);
-            option.textContent = String(label);
-            option.selected = Number(entry.importance || (entry.pinned ? 5 : 3)) === value;
-            importance.appendChild(option);
-        });
-        importanceLabel.appendChild(importance);
-        settings.appendChild(importanceLabel);
-        let unresolved: HTMLInputElement | null = null;
-        if (selectedMemoryType === 'memory') {
-            const unresolvedLabel = document.createElement('label');
-            unresolvedLabel.className = 'room-memory-check';
-            unresolved = document.createElement('input');
-            unresolved.type = 'checkbox';
-            unresolved.checked = Boolean(entry.unresolved);
-            unresolvedLabel.append(unresolved, document.createTextNode('仍待跟進'));
-            settings.appendChild(unresolvedLabel);
-        }
-        let knowerInputs: HTMLInputElement[] = [];
-        let ownership: HTMLDetailsElement | null = null;
-        if (room && canonicalEntry && selectedMemoryType === 'memory') {
-            ownership = document.createElement('details');
-            ownership.className = 'room-memory-ownership';
-            const ownershipSummary = document.createElement('summary');
-            ownershipSummary.textContent = '誰會長期記得這件事';
-            const ownershipOptions = document.createElement('div');
-            ownershipOptions.className = 'room-memory-knowers';
-            const knowerIds = new Set(getRoomMemoryKnowerIds(canonicalEntry));
-            knowerInputs = room.members.map(roomMember => {
-                const label = document.createElement('label');
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.value = roomMember.id;
-                checkbox.checked = knowerIds.has(roomMember.id);
-                label.append(checkbox, document.createTextNode(roomMember.persona.name));
-                ownershipOptions.appendChild(label);
-                return checkbox;
-            });
-            const hint = document.createElement('p');
-            hint.textContent = '只勾真正親歷、目睹或後來被告知，而且會長期記住的人。';
-            ownership.append(ownershipSummary, ownershipOptions, hint);
-        }
-        const meta = document.createElement('p');
-        const perspective = canonicalEntry?.perspectives?.find(item => item.memberId === member?.id);
-        meta.textContent = [
-            entry.pinned ? '永久' : '事件',
-            perspective?.knowledge === 'experienced'
-                ? '親歷'
-                : perspective?.knowledge === 'witnessed'
-                    ? '目睹'
-                    : perspective?.knowledge === 'told'
-                        ? '被告知'
-                        : '',
-            entry.sceneId ? `場景 ${entry.sceneId.slice(0, 12)}` : '',
-            entry.sourceMessageIds?.length ? `可追溯來源 ${entry.sourceMessageIds.length} 則` : '',
-            entry.sourceMessageIndexes?.length ? `來源訊息 ${entry.sourceMessageIndexes.join(', ')}` : '',
-        ].filter(Boolean).join(' · ');
-        if (entry.sourceMessageIds?.length) meta.title = entry.sourceMessageIds.join('\n');
-        const actions = document.createElement('div');
-        actions.className = 'room-memory-actions';
-        const save = document.createElement('button');
-        save.type = 'button';
-        save.textContent = '儲存';
-        save.addEventListener('click', () => {
-            if (room && member) {
-                const selectedKnowers = canonicalEntry && knowerInputs.length
-                    ? knowerInputs.filter(input => input.checked).map(input => input.value)
-                    : [];
-                if (canonicalEntry && knowerInputs.length && selectedKnowers.length === 0) {
-                    alert('至少要保留一位真正記得這件事的角色。');
-                    return;
-                }
-                roomManager.updateMemory(room.id, member.id, entry.id, selectedMemoryType, {
-                    title: title.value,
-                    summary: summary.value,
-                    importance: Number(importance.value),
-                    unresolved: Boolean(unresolved?.checked),
-                });
-                if (canonicalEntry && knowerInputs.length) {
-                    roomManager.setMemoryKnowerIds(room.id, entry.id, selectedKnowers);
-                    renderRoomMemory();
-                    return;
-                }
-            } else if (personaKey) {
-                if (isLegacyPersonaMemory) {
-                    memoryManager.updatePersona(personaKey, { memory: summary.value.trim() });
-                    if (currentPersona) currentPersona.memory = summary.value.trim();
-                } else {
-                    memoryManager.updatePersonaMemory(personaKey, selectedMemoryType, entry.id, {
-                        title: title.value,
-                        summary: summary.value,
-                        importance: Number(importance.value),
-                        unresolved: Boolean(unresolved?.checked),
-                    });
-                }
-            }
-            save.textContent = '已儲存';
-            window.setTimeout(() => { save.textContent = '儲存'; }, 1000);
-        });
-        const remove = document.createElement('button');
-        remove.type = 'button';
-        remove.className = 'is-danger';
-        remove.textContent = '刪除';
-        remove.addEventListener('click', () => {
-            if (!confirm(`刪除「${entry.title}」？`)) return;
-            if (room && member) {
-                roomManager.deleteMemory(room.id, member.id, entry.id, selectedMemoryType);
-            } else if (personaKey) {
-                if (isLegacyPersonaMemory) {
-                    memoryManager.updatePersona(personaKey, { memory: '' });
-                    if (currentPersona) currentPersona.memory = '';
-                } else {
-                    memoryManager.deletePersonaMemory(personaKey, selectedMemoryType, entry.id);
-                }
-            }
-            renderRoomMemory();
-        });
-        actions.append(save, remove);
-        card.append(title, summary, settings);
-        if (ownership) card.appendChild(ownership);
-        card.append(meta, actions);
-        roomMemoryList.appendChild(card);
-    });
-};
-
-const openRoomMemory = () => {
+const openRoomMemory = async () => {
     if (!currentRoom && (!currentPersonaKey || !currentPersona)) return;
-    selectedMemoryMemberId = currentRoom ? activeRoomMemberId || currentRoom.leadMemberId : null;
-    renderRoomMemory();
-    roomInfoModal.classList.add('hidden');
-    roomMemoryModal.classList.remove('hidden');
+    const { openRoomMemory: openRoomMemoryUi } = await import('./features/roomMemoryUi.js');
+    openRoomMemoryUi(getRoomMemoryUiDependencies());
 };
 
-const closeRoomMemory = () => roomMemoryModal.classList.add('hidden');
-
-const renderCreateGroupMembers = () => {
-    createGroupMemberList.innerHTML = '';
-    const targetRoom = groupModalTargetRoomId ? roomManager.getRoom(groupModalTargetRoomId) : null;
-    const existingKeys = new Set(targetRoom?.members.map(member => member.sourcePersonaKey).filter(Boolean));
-    Object.entries(memoryManager.getAllPersonas()).forEach(([key, persona]) => {
-        if (
-            key === VENICE_ASSISTANT_PERSONA_KEY
-            || persona.gender !== 'female'
-            || persona.timelineBranch
-            || existingKeys.has(key)
-        ) return;
-        const label = document.createElement('label');
-        label.className = 'create-group-member-option';
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.value = key;
-        const avatar = document.createElement('span');
-        avatar.className = 'room-member-avatar';
-        if (persona.avatarUrl && !persona.avatarUrl.startsWith('generating_')) {
-            const image = document.createElement('img');
-            image.src = persona.avatarUrl;
-            image.alt = persona.name;
-            avatar.appendChild(image);
-        } else avatar.textContent = persona.emoji || '●';
-        const copy = document.createElement('span');
-        copy.innerHTML = `<strong></strong><small></small>`;
-        copy.querySelector('strong')!.textContent = persona.name;
-        copy.querySelector('small')!.textContent = persona.description;
-        label.append(checkbox, avatar, copy);
-        createGroupMemberList.appendChild(label);
+const refreshRoomMemoryIfOpen = () => {
+    const modal = document.getElementById('room-memory-modal');
+    if (!modal || modal.classList.contains('hidden')) return;
+    void import('./features/roomMemoryUi.js')
+        .then(({ refreshRoomMemory }) => refreshRoomMemory(getRoomMemoryUiDependencies()))
+        .catch(error => console.error('Failed to refresh Room Memory UI', error));
+};
+const openCreateGroup = async (targetRoomId: string | null = null) => {
+    const { openCreateGroup: openCreateGroupUi } = await import('./features/createGroupUi.js');
+    openCreateGroupUi(targetRoomId, {
+        roomManager,
+        memoryManager,
+        hideNewChatMenu: () => newChatMenu.classList.add('hidden'),
+        afterMembersAdded: () => {
+            refreshCurrentRoom();
+            renderRoomInfo();
+            renderPersonaList();
+        },
+        afterRoomCreated: roomId => {
+            renderPersonaList();
+            startChat(roomId);
+        },
     });
 };
+let personaSettingsUiLoad: Promise<import('./features/personaSettingsUi.js').PersonaSettingsUiHandle> | null = null;
 
-const openCreateGroup = (targetRoomId: string | null = null) => {
-    groupModalTargetRoomId = targetRoomId;
-    createGroupName.closest('label')?.classList.toggle('hidden', Boolean(targetRoomId));
-    createGroupName.value = '';
-    confirmCreateGroupBtn.textContent = targetRoomId ? '加入所選角色' : '建立群組';
-    renderCreateGroupMembers();
-    createGroupModal.classList.remove('hidden');
-    newChatMenu.classList.add('hidden');
-};
+const loadPersonaSettingsUi = async () => {
+    if (personaSettingsUi) return personaSettingsUi;
+    if (!personaSettingsUiLoad) {
+        personaSettingsUiLoad = import('./features/personaSettingsUi.js')
+            .then(({ createPersonaSettingsUi }) => {
+                const ui = createPersonaSettingsUi({
+                    getCurrentPersona: () => currentPersona,
+                    getCurrentPersonaKey: () => currentPersonaKey,
+                    resolvePublicIdentity: requestPublicIdentityResolution,
+                    requestAvatar: (target, personaKey) => {
+                        if (target) {
+                            requestRoomMemberAvatarUpload(target.roomId, target.memberId);
+                        } else if (personaKey) {
+                            requestPersonaAvatarUpload(personaKey);
+                        }
+                    },
+                    applySettings: ({
+                        personaKey,
+                        roomTarget,
+                        updates,
+                        previousGreeting,
+                        greeting,
+                        publicIdentityEnabled,
+                    }) => {
+                        if (!currentPersona) return;
+                        if (roomTarget) {
+                            roomManager.updateMember(roomTarget.roomId, roomTarget.memberId, { persona: updates });
+                            if (currentRoom?.id === roomTarget.roomId) {
+                                currentRoom = roomManager.getRoom(roomTarget.roomId) || currentRoom;
+                            }
+                        } else {
+                            memoryManager.updatePersona(personaKey, updates);
+                        }
 
-const closeCreateGroup = () => {
-    createGroupModal.classList.add('hidden');
-    groupModalTargetRoomId = null;
-};
+                        Object.assign(currentPersona, updates);
+                        if (updates.avatarUrl) {
+                            renderChatHeaderAvatar();
+                            personaSettingsUi?.refreshAvatar();
+                        }
 
-const confirmCreateGroup = () => {
-    const selectedKeys = Array.from(createGroupMemberList.querySelectorAll<HTMLInputElement>('input:checked'))
-        .map(input => input.value);
-    if (groupModalTargetRoomId) {
-        const room = roomManager.getRoom(groupModalTargetRoomId);
-        if (!room || selectedKeys.length === 0) {
-            alert('請至少選擇 1 位角色。');
-            return;
-        }
-        if (room.members.length + selectedKeys.length > ROOM_MEMBER_LIMIT) {
-            alert(`每個群組最多 ${ROOM_MEMBER_LIMIT} 位角色。`);
-            return;
-        }
-        selectedKeys.forEach((key, index) => {
-            const persona = memoryManager.getPersona(key);
-            if (!persona) return;
-            roomManager.addMember(room.id, {
-                id: `member_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`,
-                sourcePersonaKey: key,
-                persona: cloneRoomSnapshot(persona),
-                joinedAt: Date.now(),
-                soul: [],
-                memories: [],
+                        if (!roomTarget) {
+                            const history = memoryManager.getChatHistory(personaKey);
+                            if (
+                                history.length === 1 &&
+                                history[0].role === 'model' &&
+                                history[0].content.text === previousGreeting &&
+                                greeting
+                            ) {
+                                history[0].content.text = greeting;
+                                memoryManager.setChatHistory(personaKey, history);
+                            }
+                        }
+
+                        renderPersonaList();
+                        appendMessage({
+                            text: publicIdentityEnabled
+                                ? '[系統] 人格與公開身份設定已更新；角色照片會使用已確認身份進行文字生成。'
+                                : '[系統] 人格設定已更新，後續回覆會依照新設定生成。',
+                        }, 'system');
+                    },
+                });
+                personaSettingsUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                personaSettingsUiLoad = null;
+                throw error;
             });
-        });
-        closeCreateGroup();
-        refreshCurrentRoom();
-        renderRoomInfo();
-        renderPersonaList();
-        return;
     }
-
-    if (selectedKeys.length < 2) {
-        alert('群組至少需要 2 位角色。');
-        return;
-    }
-    const selected = selectedKeys.flatMap(key => {
-        const persona = memoryManager.getPersona(key);
-        return persona ? [{ sourcePersonaKey: key, persona }] : [];
-    });
-    const room = roomManager.createRoom(createGroupName.value, selected);
-    memoryManager.addMessage(room.id, 'system', { text: `${room.title} 已建立。` });
-    closeCreateGroup();
-    renderPersonaList();
-    startChat(room.id);
+    return personaSettingsUiLoad;
 };
 
-const openMemoryEditor = () => {
-    if (currentPersona) {
-        memoryEditor.value = currentPersona.memory || '';
-        memoryModal.classList.remove('hidden');
-    }
+const openPersonaSettings = (
+    roomTarget: import('./features/personaSettingsUi.js').PersonaSettingsRoomTarget = null,
+) => {
+    void loadPersonaSettingsUi()
+        .then(ui => ui.open(roomTarget))
+        .catch(error => console.error('Failed to load Persona Settings UI', error));
 };
 
-const renderPersonaPublicIdentitySettings = () => {
-    const enabled = Boolean(personaPublicIdentityCheckbox.checked);
-    const identity = personaSettingsResolvedIdentity;
-    personaPublicIdentityPanel.classList.toggle('hidden', !enabled);
-    personaPublicIdentitySummary.value = identity?.summary || '';
-    personaPublicIdentityVisual.value = identity
-        ? [identity.visualPrompt, identity.stylePrompt].filter(Boolean).join('\n\n')
-        : '';
-    personaPublicIdentityStatus.textContent = identity
-        ? `${getPublicIdentityKindLabel(identity.kind)} · 已確認 ${identity.canonicalName}`
-        : '尚未辨識；按儲存後開始搜尋。';
-    personaPublicIdentitySource.classList.toggle('hidden', !identity?.sourceUrl);
-    if (identity?.sourceUrl) {
-        personaPublicIdentitySource.href = identity.sourceUrl;
-        personaPublicIdentitySource.textContent = `查看來源：${identity.sourceTitle}`;
-    } else {
-        personaPublicIdentitySource.removeAttribute('href');
-    }
-};
-
-const openPersonaSettings = () => {
-    if (!currentPersona) return;
-
-    personaSettingsSubtitle.textContent = `正在編輯：${currentPersona.name}`;
-    renderPersonaSettingsAvatar();
-    personaDescriptionEditor.value = currentPersona.description || '';
-    personaPromptEditor.value = currentPersona.prompt || '';
-    personaGreetingEditor.value = currentPersona.greeting || '';
-    personaFavoritePhotoPromptField.classList.toggle('hidden', Boolean(personaSettingsRoomTarget));
-    personaFavoritePhotoPrompt.value = currentPersona.favoritePhotoPrompt || '';
-    personaSettingsResolvedIdentity = currentPersona.publicIdentity
-        ? { ...currentPersona.publicIdentity }
-        : null;
-    personaSettingsResolvedAvatarUrl = null;
-    personaPublicIdentityCheckbox.checked = Boolean(currentPersona.publicIdentityEnabled);
-    renderPersonaPublicIdentitySettings();
-    personaSettingsModal.classList.remove('hidden');
-};
-
-const closePersonaSettings = () => {
-    personaSettingsModal.classList.add('hidden');
-    personaSettingsResolvedIdentity = null;
-    personaSettingsResolvedAvatarUrl = null;
-    personaSettingsRoomTarget = null;
-};
-
-const closeMemoryEditor = () => {
-    memoryModal.classList.add('hidden');
-};
-
-const saveMemory = () => {
-    if (currentPersonaKey) {
-        const newMemory = memoryEditor.value.trim();
-        memoryManager.updatePersona(currentPersonaKey, { memory: newMemory });
-        if (currentPersona) {
-            currentPersona.memory = newMemory; // Update in-session persona object as well
-        }
-        closeMemoryEditor();
-    }
-};
-
-const resolvePublicIdentityForPersonaSettings = async () => {
-    if (!currentPersona) return false;
-    const query = [currentPersona.name, personaDescriptionEditor.value.trim()].filter(Boolean).join(' ');
-    const result = await requestPublicIdentityResolution(query);
-    if (!result) return false;
-    personaSettingsResolvedIdentity = result.identity;
-    personaSettingsResolvedAvatarUrl = result.avatarUrl || null;
-    renderPersonaPublicIdentitySettings();
-    return true;
-};
-
-const savePersonaSettings = async () => {
-    if (!currentPersonaKey || !currentPersona) return;
-
-    const description = personaDescriptionEditor.value.trim();
-    const prompt = personaPromptEditor.value.trim();
-    const greeting = personaGreetingEditor.value.trim();
-
-    if (!prompt) {
-        alert('人格主設定不能留空。');
-        return;
-    }
-
-    const publicIdentityEnabled = personaPublicIdentityCheckbox.checked;
-    savePersonaSettingsBtn.disabled = true;
-    const originalButtonText = savePersonaSettingsBtn.textContent;
-    savePersonaSettingsBtn.textContent = publicIdentityEnabled && !personaSettingsResolvedIdentity
-        ? '正在辨識身份...'
-        : '正在儲存...';
-
-    try {
-        if (publicIdentityEnabled && !personaSettingsResolvedIdentity) {
-            const confirmed = await resolvePublicIdentityForPersonaSettings();
-            if (!confirmed) return;
-        }
-
-        const publicIdentity = publicIdentityEnabled && personaSettingsResolvedIdentity
-            ? {
-                ...personaSettingsResolvedIdentity,
-                summary: personaPublicIdentitySummary.value.trim() || personaSettingsResolvedIdentity.summary,
-                visualPrompt: personaPublicIdentityVisual.value.trim() || personaSettingsResolvedIdentity.visualPrompt,
-                stylePrompt: undefined,
-            }
-            : currentPersona.publicIdentity;
-
-        const previousGreeting = currentPersona.greeting || '';
-        const roomTarget = personaSettingsRoomTarget;
-        const updates: Partial<Persona> = {
-            description,
-            prompt,
-            greeting: greeting || previousGreeting,
-            publicIdentityEnabled,
-            publicIdentity,
-        };
-        if (!roomTarget) {
-            updates.favoritePhotoPrompt = normalizeFavoritePhotoPrompt(personaFavoritePhotoPrompt.value);
-        }
-        if (publicIdentityEnabled && publicIdentity) {
-            updates.avatarPrompt = [
-                publicIdentity.visualPrompt,
-                publicIdentity.stylePrompt,
-                'single-character portrait',
-            ].filter(Boolean).join(' ');
-        }
-        if (publicIdentityEnabled && personaSettingsResolvedAvatarUrl) {
-            updates.avatarUrl = personaSettingsResolvedAvatarUrl;
-        }
-        if (roomTarget) {
-            roomManager.updateMember(roomTarget.roomId, roomTarget.memberId, { persona: updates });
-            if (currentRoom?.id === roomTarget.roomId) currentRoom = roomManager.getRoom(roomTarget.roomId) || currentRoom;
-        } else {
-            memoryManager.updatePersona(currentPersonaKey, updates);
-        }
-
-        Object.assign(currentPersona, updates);
-        if (updates.avatarUrl) {
-            renderChatHeaderAvatar();
-            renderPersonaSettingsAvatar();
-        }
-
-        if (!roomTarget) {
-            const history = memoryManager.getChatHistory(currentPersonaKey);
-            if (
-                history.length === 1 &&
-                history[0].role === 'model' &&
-                history[0].content.text === previousGreeting &&
-                greeting
-            ) {
-                history[0].content.text = greeting;
-                memoryManager.setChatHistory(currentPersonaKey, history);
-            }
-        }
-
-        renderPersonaList();
-        closePersonaSettings();
-        appendMessage({
-            text: publicIdentityEnabled
-                ? '[系統] 人格與公開身份設定已更新；角色照片會使用已確認身份進行文字生成。'
-                : '[系統] 人格設定已更新，後續回覆會依照新設定生成。',
-        }, 'system');
-    } finally {
-        savePersonaSettingsBtn.disabled = false;
-        savePersonaSettingsBtn.textContent = originalButtonText || '儲存人格';
-    }
-};
-
+const closePersonaSettings = () => personaSettingsUi?.close();
 const startNewScene = () => {
-    if (!currentConversationKey) return;
-    const completedSceneHistory = selectLatestSceneHistory(
-        memoryManager.peekChatHistory(currentConversationKey),
-    );
-    const transitionBridge = completedSceneHistory.length > 0
-        ? buildContextBridge({
-            kind: 'scene_transition',
-            sourceConversationKey: currentConversationKey,
-            sourceTitle: currentRoom?.title || currentPersona?.name || '目前對話',
-            history: completedSceneHistory,
-            room: currentRoom || undefined,
-            summaryOverride: currentRoom
-                ? [
-                    `已完成位置：${currentRoom.scene.location}`,
-                    `已完成情節：${currentRoom.scene.summary}`,
-                    currentRoom.scene.unresolved.length
-                        ? `結束時尚未處理：${currentRoom.scene.unresolved.join('；')}`
-                        : '',
-                ].filter(Boolean).join('。')
-                : '上一場景已完結；保留已發生的事件、關係變化、承諾與情感發展，新的即時狀態由下一則訊息建立。',
-        })
-        : undefined;
+    void import('./features/newSceneAction.js')
+        .then(({ startNewScene: runNewSceneAction }) => runNewSceneAction({
+            memoryManager,
+            roomManager,
+            getConversationKey: () => currentConversationKey,
+            getPersonaKey: () => currentPersonaKey,
+            getPersona: () => currentPersona,
+            getRoom: () => currentRoom,
+            summarizeRoomMemory: maybeSummarizeRoomMemory,
+            summarizePersonaMemory: maybeSummarizePersonaMemory,
+            appendSceneStart: () => appendMessage({ text: SCENE_START_LABEL }, 'system'),
+            refreshCurrentRoom,
+            hideMoreOptionsMenu: () => moreOptionsMenu.classList.add('hidden'),
+            sceneEndMarker: SCENE_END_MARKER,
+        }))
+        .catch(error => console.error('Failed to start new scene', error));
+};
+let photoPromptUi: import('./features/photoPromptUi.js').PhotoPromptUiHandle | null = null;
+let photoPromptUiLoad: Promise<import('./features/photoPromptUi.js').PhotoPromptUiHandle> | null = null;
 
-    if (currentRoom) void maybeSummarizeRoomMemory(currentRoom.id, 'recent');
-    else if (currentPersonaKey) void maybeSummarizePersonaMemory(currentPersonaKey, 'recent');
-    appendMessage({ text: SCENE_START_LABEL }, 'system');
-    memoryManager.addMessage(currentConversationKey, 'system', {
-        text: SCENE_END_MARKER,
-        contextBridge: transitionBridge,
-    });
-    if (currentRoom) {
-        const previousScene = cloneRoomSnapshot(currentRoom.scene);
-        if (completedSceneHistory.length > 0 && previousScene.presentMemberIds.length > 0) {
-            const sceneSummary = previousScene.summary || `在 ${previousScene.location || '上一幕'} 完成了一段共同經歷。`;
-            const sourceMessageIds = completedSceneHistory
-                .map(message => message.id)
-                .filter((id): id is string => Boolean(id));
-            roomManager.addEpisodicMemories(currentRoom.id, [{
-                kind: 'event',
-                title: `已完成場景：${previousScene.location || '上一幕'}`,
-                summary: sceneSummary,
-                participants: [...previousScene.presentMemberIds],
-                subjectIds: [...previousScene.presentMemberIds],
-                knowerIds: [...previousScene.presentMemberIds],
-                visibility: previousScene.presentMemberIds.length === currentRoom.members.length
-                    ? 'shared'
-                    : 'restricted',
-                perspectives: previousScene.presentMemberIds.map(memberId => ({
-                    memberId,
-                    salience: 3,
-                    knowledge: 'experienced',
-                    summary: sceneSummary,
-                })),
-                importance: 3,
-                sceneId: previousScene.id,
-                unresolved: previousScene.unresolved.length > 0,
-                sourceMessageIds,
-                roleplayOnly: true,
-            }]);
-        }
-        roomManager.updateRoom(currentRoom.id, room => {
-            room.scene.id = crypto.randomUUID?.() || `scene-${Date.now()}`;
-            room.scene.startedAt = Date.now();
-            room.scene.summary = '使用者剛開始一個新場景，等待建立位置、在場人物與事件。';
-            room.scene.unresolved = [];
-            room.scene.wardrobe = emptyWardrobeState();
-        });
-        refreshCurrentRoom();
+const loadPhotoPromptUi = async () => {
+    if (photoPromptUi) return photoPromptUi;
+    if (!photoPromptUiLoad) {
+        photoPromptUiLoad = import('./features/photoPromptUi.js')
+            .then(({ createPhotoPromptUi }) => {
+                const ui = createPhotoPromptUi({
+                    getContext: () => ({
+                        personaKey: currentPersonaKey,
+                        personaName: currentPersona?.name || null,
+                        room: currentRoom,
+                        activeRoomMemberId,
+                        assistantMode: isAssistantPersonaKey(currentPersonaKey),
+                        godMode: isGodModeActive,
+                    }),
+                    selectActiveRoomMember,
+                    sendPhotoRequest: input => sendMessage({
+                        characterPhotoRequest: true,
+                        photoSenderMemberId: input.photoSenderMemberId,
+                        photoSubjectMemberIds: input.photoSubjectMemberIds,
+                        messageText: input.messageText,
+                    }),
+                    hideMoreOptionsMenu: () => moreOptionsMenu.classList.add('hidden'),
+                });
+                photoPromptUi = ui;
+                return ui;
+            })
+            .catch(error => {
+                photoPromptUiLoad = null;
+                throw error;
+            });
     }
-    moreOptionsMenu.classList.add('hidden');
+    return photoPromptUiLoad;
 };
 
 const openPhotoPromptModal = () => {
-    if (!currentPersonaKey || !currentPersona || isAssistantPersonaKey(currentPersonaKey) || isGodModeActive) return;
-    photoPromptInput.value = '';
-    photoSenderSelect.innerHTML = '';
-    photoSubjectsContainer.innerHTML = '';
-    pendingPhotoSenderMemberId = null;
-    pendingPhotoSubjectMemberIds = [];
-    if (currentRoom) {
-        photoRoomMemberControls.classList.remove('hidden');
-        currentRoom.members
-            .filter(member => currentRoom!.scene.presentMemberIds.includes(member.id))
-            .forEach(member => {
-                const option = document.createElement('option');
-                option.value = member.id;
-                option.textContent = member.persona.name;
-                option.selected = member.id === (activeRoomMemberId || currentRoom!.leadMemberId);
-                photoSenderSelect.appendChild(option);
-                const label = document.createElement('label');
-                label.className = 'photo-subject-option';
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.value = member.id;
-                checkbox.checked = option.selected;
-                label.append(checkbox, document.createTextNode(member.persona.name));
-                photoSubjectsContainer.appendChild(label);
-            });
-    } else {
-        photoRoomMemberControls.classList.add('hidden');
-    }
-    photoPromptModal.classList.remove('hidden');
-    moreOptionsMenu.classList.add('hidden');
-    window.setTimeout(() => photoPromptInput.focus(), 0);
+    void loadPhotoPromptUi()
+        .then(ui => ui.open())
+        .catch(error => console.error('Failed to load Photo Prompt UI', error));
 };
-
-const closePhotoPromptModal = () => {
-    photoPromptModal.classList.add('hidden');
-};
-
-const generatePhotoFromPrompt = async () => {
-    const requestText = photoPromptInput.value.trim();
-    if (!requestText) {
-        photoPromptInput.setCustomValidity('請先描述想收到的照片。');
-        photoPromptInput.reportValidity();
-        return;
-    }
-    photoPromptInput.setCustomValidity('');
-    const senderMemberId = currentRoom ? photoSenderSelect.value : undefined;
-    const subjectMemberIds = currentRoom
-        ? Array.from(photoSubjectsContainer.querySelectorAll<HTMLInputElement>('input:checked')).map(input => input.value)
-        : [];
-    if (currentRoom && (!senderMemberId || subjectMemberIds.length === 0)) {
-        alert('請選擇準備照片的人，以及至少 1 位照片中的角色。');
-        return;
-    }
-    if (senderMemberId) selectActiveRoomMember(senderMemberId);
-    closePhotoPromptModal();
-    await sendMessage({
-        characterPhotoRequest: true,
-        photoSenderMemberId: senderMemberId,
-        photoSubjectMemberIds: subjectMemberIds,
-        messageText: requestText,
-    });
-};
-
 // --- Event Listeners ---
 const activateConversationSearch = () => {
     if (!conversationSearchUserActivated && conversationSearchInput.value) {
@@ -16711,20 +8687,6 @@ const setupEventListeners = () => {
     chatAttachmentInput.addEventListener('change', () => void handleChatAttachmentSelection());
     composerCameraButton.addEventListener('click', openPhotoPromptModal);
     chatSearchBtn.addEventListener('click', openChatSearch);
-    chatSearchClose.addEventListener('click', closeChatSearch);
-    chatSearchInput.addEventListener('input', runChatSearch);
-    chatSearchInput.addEventListener('keydown', event => {
-        if (event.key === 'Escape') {
-            closeChatSearch();
-            return;
-        }
-        if (event.key === 'Enter' && chatSearchMatches.length > 0) {
-            event.preventDefault();
-            focusChatSearchMatch(chatSearchMatchIndex + (event.shiftKey ? -1 : 1));
-        }
-    });
-    chatSearchPrev.addEventListener('click', () => focusChatSearchMatch(chatSearchMatchIndex - 1));
-    chatSearchNext.addEventListener('click', () => focusChatSearchMatch(chatSearchMatchIndex + 1));
     homeSearchToggle.addEventListener('click', () => {
         activateConversationSearch();
         conversationSearchInput.focus();
@@ -16739,55 +8701,11 @@ const setupEventListeners = () => {
     });
     homeChatModelSettingsBtn.addEventListener('click', () => openChatModelSettings('global'));
     homeLiveCloudBtn.addEventListener('click', openSupabaseCloud);
-    closeSupabaseCloudBtn.addEventListener('click', closeSupabaseCloud);
-    supabaseCloudModal.addEventListener('click', event => {
-        if (event.target === supabaseCloudModal) closeSupabaseCloud();
-    });
-    supabaseCloudLoginForm.addEventListener('submit', event => {
-        event.preventDefault();
-        void signInSupabaseCloudWithPassword();
-    });
-    supabaseCloudSendLink.addEventListener('click', () => void sendSupabaseMagicLink());
-    supabaseCloudSyncNow.addEventListener('click', () => void syncSupabaseCloudNow());
-    supabaseCloudReload.addEventListener('click', () => void reloadSupabaseCloud());
-    supabaseCloudSetPassword.addEventListener('click', () => void setSupabaseCloudPassword());
-    supabaseCloudNewPasswordConfirm.addEventListener('keydown', event => {
-        if (event.key === 'Enter') void setSupabaseCloudPassword();
-    });
-    supabaseCloudSignOut.addEventListener('click', () => void supabaseCloudSyncManager.signOut());
     homeCloudBackupBtn.addEventListener('click', openCloudBackup);
-    closeCloudBackupBtn.addEventListener('click', closeCloudBackup);
-    cloudBackupModal.addEventListener('click', event => {
-        if (event.target === cloudBackupModal && !cloudBackupBusy) closeCloudBackup();
-    });
-    enableCloudBackupBtn.addEventListener('click', () => void setupCloudBackup());
-    restoreCloudWithPasswordBtn.addEventListener('click', restoreLatestCloudBackupWithPassword);
-    cloudBackupNowBtn.addEventListener('click', () => void backupCloudNow());
-    cloudRestoreLatestBtn.addEventListener('click', () => {
-        const latest = cloudBackupList[0];
-        if (latest) void restoreCloudBackupVersion(latest);
-    });
-    refreshCloudBackupsBtn.addEventListener('click', () => void refreshCloudBackupView(true));
-    scanLocalPhotoVaultBtn.addEventListener('click', () => void scanLocalPhotoVault());
-    cloudBackupAutoToggle.addEventListener('change', () => {
-        cloudBackupManager.setEnabled(cloudBackupAutoToggle.checked);
-        renderCloudBackupState();
-    });
-    deleteCloudBackupsBtn.addEventListener('click', () => void deleteAllCloudBackups());
-    cloudBackupPasswordConfirm.addEventListener('keydown', event => {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            void setupCloudBackup();
-        }
-    });
-    cloudRestorePassword.addEventListener('keydown', event => {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            restoreLatestCloudBackupWithPassword();
-        }
-    });
     homeExportAll.addEventListener('click', () => {
-        void fileManager.saveAllChats();
+        void loadFileManager()
+            .then(manager => manager.saveAllChats())
+            .catch(error => console.error('Failed to export all chats', error));
         homeMenu.classList.add('hidden');
     });
     newChatFab.addEventListener('click', event => {
@@ -16795,9 +8713,7 @@ const setupEventListeners = () => {
         newChatMenu.classList.toggle('hidden');
         homeMenu.classList.add('hidden');
     });
-    createGroupRoomBtn.addEventListener('click', () => openCreateGroup());
-    closeCreateGroupBtn.addEventListener('click', closeCreateGroup);
-    confirmCreateGroupBtn.addEventListener('click', confirmCreateGroup);
+    createGroupRoomBtn.addEventListener('click', () => { void openCreateGroup(); });
     closeSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     cancelSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     confirmSurpriseEventOptionsBtn.addEventListener('click', confirmSurpriseEventOptions);
@@ -16810,171 +8726,19 @@ const setupEventListeners = () => {
     surpriseEventOptionsModal.addEventListener('click', event => {
         if (event.target === surpriseEventOptionsModal) closeSurpriseEventOptions();
     });
-    closeParticipantActionBtn.addEventListener('click', closeParticipantAction);
-    participantActionModal.addEventListener('click', event => {
-        if (event.target === participantActionModal) closeParticipantAction();
-    });
-    assistantModelSelect.addEventListener('change', () => {
-        if (!assistantModelSelect.value || activeChatRequest) return;
-        selectedAssistantModel = assistantModelSelect.value;
-        localStorage.setItem(ASSISTANT_MODEL_STORAGE_KEY, selectedAssistantModel);
-        updateAssistantModelMeta();
-    });
-    refreshAssistantModelsBtn.addEventListener('click', () => {
-        void loadAssistantModels(true);
-    });
     ccModelSettingsBtn.addEventListener('click', () => openChatModelSettings('cc'));
-    closeChatModelSettingsBtn.addEventListener('click', closeChatModelSettings);
-    chatModelSettingsModal.addEventListener('click', event => {
-        if (event.target === chatModelSettingsModal) closeChatModelSettings();
-    });
-    chatModelSelects.forEach(select => select.addEventListener('change', updateChatModelRoutePreviews));
-    refreshChatModelsBtn.addEventListener('click', () => {
-        chatModelSettingsDraft = readChatModelSettingsDraftFromControls();
-        chatModelListStatus.textContent = '正在直接向 Venice 重新抓取模型清單...';
-        void loadAssistantModels(true).then(renderChatModelSettingsOptions);
-    });
-    resetChatModelSettingsBtn.addEventListener('click', () => {
-        chatModelSettingsDraft = chatModelSettingsScope === 'cc'
-            ? { ...chatModelSettingsDraft, ccPrimary: DEFAULT_CHAT_MODEL_SETTINGS.ccPrimary }
-            : { ...DEFAULT_CHAT_MODEL_SETTINGS };
-        renderChatModelSettingsOptions();
-    });
-    saveChatModelSettingsBtn.addEventListener('click', saveChatModelSettings);
     imageStudioEntry.addEventListener('click', () => showImageStudio('push'));
-    imageStudioBack.addEventListener('click', navigateBackFromImageStudio);
-    imageModeGenerateBtn.addEventListener('click', () => setImageStudioMode('generate'));
-    imageModeEditBtn.addEventListener('click', () => setImageStudioMode('edit'));
-    imageModelSelect.addEventListener('change', () => {
-        if (!imageModelSelect.value || isImageRequestRunning) return;
-        selectedImageModels[imageStudioMode] = imageModelSelect.value;
-        localStorage.setItem(
-            imageStudioMode === 'generate' ? IMAGE_GENERATE_MODEL_STORAGE_KEY : IMAGE_EDIT_MODEL_STORAGE_KEY,
-            imageModelSelect.value,
-        );
-        updateImageModelControls();
-    });
-    refreshImageModelsBtn.addEventListener('click', () => {
-        void loadImageModels(imageStudioMode, true);
-    });
-    imagePrompt.addEventListener('input', updateImagePromptCounter);
-    imageAspectRatio.addEventListener('change', updateImageCostEstimate);
-    imageResolution.addEventListener('change', updateImageCostEstimate);
-    imageVariants.addEventListener('change', updateImageCostEstimate);
-    imageSeedLock.addEventListener('change', () => {
-        localStorage.setItem(IMAGE_SEED_LOCK_STORAGE_KEY, String(imageSeedLock.checked));
-        if (imageSeedLock.checked) {
-            const seed = normalizeImageSeed(imageSeed.value) ?? setSeedInputValue(imageSeed, createRandomImageSeed());
-            localStorage.setItem(IMAGE_SEED_STORAGE_KEY, String(seed));
-        }
-    });
-    imageSeedRandom.addEventListener('click', () => {
-        const seed = setSeedInputValue(imageSeed, createRandomImageSeed());
-        localStorage.setItem(IMAGE_SEED_STORAGE_KEY, String(seed));
-    });
-    imageSeed.addEventListener('change', () => {
-        const seed = normalizeImageSeed(imageSeed.value);
-        if (seed === undefined) return;
-        setSeedInputValue(imageSeed, seed);
-        localStorage.setItem(IMAGE_SEED_STORAGE_KEY, String(seed));
-    });
-    imageAdultConfirm.addEventListener('change', () => {
-        sessionStorage.setItem(IMAGE_ADULT_CONFIRM_STORAGE_KEY, String(imageAdultConfirm.checked));
-        updateImageGenerateButton();
-    });
-    imageSourceDropzone.addEventListener('click', () => imageSourceInput.click());
-    imageSourceInput.addEventListener('change', () => {
-        void loadImageSourceFile(imageSourceInput.files?.[0]);
-    });
-    imageSourceDropzone.addEventListener('dragover', event => {
-        event.preventDefault();
-        imageSourceDropzone.classList.add('is-dragging');
-    });
-    imageSourceDropzone.addEventListener('dragleave', () => {
-        imageSourceDropzone.classList.remove('is-dragging');
-    });
-    imageSourceDropzone.addEventListener('drop', event => {
-        event.preventDefault();
-        imageSourceDropzone.classList.remove('is-dragging');
-        void loadImageSourceFile(event.dataTransfer?.files?.[0]);
-    });
-    imageGenerateButton.addEventListener('click', () => {
-        void runImageGeneration();
-    });
-    clearImageResultsBtn.addEventListener('click', clearImageResults);
     videoStudioEntry.addEventListener('click', () => showVideoStudio('push'));
-    videoStudioBack.addEventListener('click', navigateBackFromVideoStudio);
-    videoModeImageBtn.addEventListener('click', () => setVideoStudioMode('image-to-video'));
-    videoModeTextBtn.addEventListener('click', () => setVideoStudioMode('text-to-video'));
-    videoModelSelect.addEventListener('change', () => {
-        if (!videoModelSelect.value || isVideoRequestRunning || isVideoPromptOptimizing || pendingVideoJob) return;
-        selectedVideoModels[videoStudioMode] = videoModelSelect.value;
-        localStorage.setItem(
-            videoStudioMode === 'image-to-video'
-                ? VIDEO_IMAGE_MODEL_STORAGE_KEY
-                : VIDEO_TEXT_MODEL_STORAGE_KEY,
-            videoModelSelect.value,
-        );
-        clearVideoStudioError();
-        clearVideoPromptFeedback();
-        updateVideoModelControls();
+    const flushPendingRoomPersistence = () => {
+        roomManager.flushDeferredPersistence();
+    };
+    window.addEventListener('pagehide', flushPendingRoomPersistence);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') flushPendingRoomPersistence();
     });
-    refreshVideoModelsBtn.addEventListener('click', () => {
-        void loadVideoModels(videoStudioMode, true);
-    });
-    videoPrompt.addEventListener('input', () => {
-        updateVideoPromptCounter();
-        if (!isVideoPromptOptimizing) clearVideoPromptFeedback();
-    });
-    videoPromptOptimizeButton.addEventListener('click', () => {
-        void runVideoPromptOptimization();
-    });
-    [videoDuration, videoResolution, videoAspectRatio].forEach(select => {
-        select.addEventListener('change', () => {
-            clearVideoPromptFeedback();
-            scheduleVideoQuote();
-        });
-    });
-    videoAudio.addEventListener('change', () => {
-        clearVideoPromptFeedback();
-        scheduleVideoQuote();
-    });
-    videoAdultConfirm.addEventListener('change', () => {
-        sessionStorage.setItem(VIDEO_ADULT_CONFIRM_STORAGE_KEY, String(videoAdultConfirm.checked));
-        updateVideoGenerateButton();
-    });
-    videoSourceDropzone.addEventListener('click', () => videoSourceInput.click());
-    videoSourceInput.addEventListener('change', () => {
-        void loadVideoSourceFile(videoSourceInput.files?.[0]);
-    });
-    videoSourceRemove.addEventListener('click', () => {
-        clearVideoSource();
-        videoStudioStatus.textContent = '來源圖片已移除';
-    });
-    videoSourceDropzone.addEventListener('dragover', event => {
-        event.preventDefault();
-        videoSourceDropzone.classList.add('is-dragging');
-    });
-    videoSourceDropzone.addEventListener('dragleave', () => {
-        videoSourceDropzone.classList.remove('is-dragging');
-    });
-    videoSourceDropzone.addEventListener('drop', event => {
-        event.preventDefault();
-        videoSourceDropzone.classList.remove('is-dragging');
-        void loadVideoSourceFile(event.dataTransfer?.files?.[0]);
-    });
-    videoGenerateButton.addEventListener('click', () => {
-        void runVideoGeneration();
-    });
-    videoCancelButton.addEventListener('click', cancelVideoRequest);
-    clearVideoResultsBtn.addEventListener('click', clearVideoResults);
     window.addEventListener('beforeunload', () => {
-        imageResults.forEach(result => URL.revokeObjectURL(result.url));
-        if (imageSource) URL.revokeObjectURL(imageSource.previewUrl);
-        videoResults.forEach(result => {
-            if (result.isObjectUrl) URL.revokeObjectURL(result.url);
-        });
-        if (videoSource) URL.revokeObjectURL(videoSource.previewUrl);
+        flushPendingRoomPersistence();
+        imageStudioUi?.cleanup();
         characterPhotoObjectUrls.forEach(url => URL.revokeObjectURL(url));
         chatAttachmentObjectUrls.forEach(url => URL.revokeObjectURL(url));
     });
@@ -17003,134 +8767,54 @@ const setupEventListeners = () => {
     randomRecruitBtn.addEventListener('click', () => {
         void randomlyRecruitNewPersona();
     });
-    closeCreatorModal.addEventListener('click', hidePersonaCreator);
-    cancelCreatorBtn.addEventListener('click', hidePersonaCreator);
     mimicImportBtn.addEventListener('click', () => openMimicImportModal('transcript'));
-    randomizePersonaBtn.addEventListener('click', randomizePersonaInputs);
 
-    fictionalPersonaCheckbox.addEventListener('change', () => {
-        clubSelectionContainer.classList.toggle('hidden', fictionalPersonaCheckbox.checked);
-    });
-
-    personaClubSelect.addEventListener('change', () => {
-        customClubContainer.classList.toggle('hidden', personaClubSelect.value !== 'other');
-    });
-
-    generatePersonaBtn.addEventListener('click', generatePersonaFromAI);
-    backToStep1Btn.addEventListener('click', () => {
-        creatorStep1.classList.remove('hidden');
-        creatorStep2.classList.add('hidden');
-    });
-    savePersonaBtn.addEventListener('click', saveCustomPersona);
-
-
-    avatarUploadInput.addEventListener('change', handleAvatarUpload);
-    closeAvatarSourceModalBtn.addEventListener('click', closeAvatarSourceModal);
-    avatarSourceModal.addEventListener('click', event => {
-        if (event.target === avatarSourceModal) closeAvatarSourceModal();
-    });
-    avatarSourceLocalBtn.addEventListener('click', chooseLocalAvatarSource);
-    avatarSourceSearchBtn.addEventListener('click', () => {
-        void chooseSearchedAvatarSource();
-    });
-    closePromptModal.addEventListener('click', closeAvatarPromptEditor);
-    cancelPromptEdit.addEventListener('click', closeAvatarPromptEditor);
-    savePromptEdit.addEventListener('click', saveAvatarPrompt);
 
     downloadChatBtn.addEventListener('click', () => {
         if (currentConversationKey && currentPersona) {
-            fileManager.saveCurrentChat(currentConversationKey, currentRoom?.title || currentPersona.name);
+            const conversationKey = currentConversationKey;
+            const title = currentRoom?.title || currentPersona.name;
+            void loadFileManager()
+                .then(manager => manager.saveCurrentChat(conversationKey, title))
+                .catch(error => {
+                    console.error('Failed to export chat', error);
+                    alert(`匯出聊天失敗：${error instanceof Error ? error.message : String(error)}`);
+                });
         }
         moreOptionsMenu.classList.add('hidden');
     });
 
     downloadAllChatsBtn.addEventListener('click', () => {
-        fileManager.saveAllChats();
+        void loadFileManager()
+            .then(manager => manager.saveAllChats())
+            .catch(error => console.error('Failed to export all chats', error));
         moreOptionsMenu.classList.add('hidden');
     });
     downloadImagesBtn.addEventListener('click', () => {
          if (currentConversationKey && currentPersona) {
-            fileManager.downloadImages(currentConversationKey, currentRoom?.title || currentPersona.name);
+            const conversationKey = currentConversationKey;
+            const title = currentRoom?.title || currentPersona.name;
+            void loadFileManager()
+                .then(manager => manager.downloadImages(conversationKey, title))
+                .catch(error => console.error('Failed to download images', error));
         }
         moreOptionsMenu.classList.add('hidden');
     });
 
     uploadZipBtn.addEventListener('click', () => zipUploadInput.click());
-    zipUploadInput.addEventListener('change', (e) => fileManager.handleZipUpload(e));
-    mimicModeTranscriptBtn.addEventListener('click', () => setMimicBuildMode('transcript'));
-    mimicModePublicBtn.addEventListener('click', () => setMimicBuildMode('public'));
-    mimicModeManualBtn.addEventListener('click', () => setMimicBuildMode('manual'));
-    mimicRandomCompleteBtn.addEventListener('click', () => {
-        hideMimicImportModalView();
-        void randomlyRecruitNewPersona();
+    zipUploadInput.addEventListener('change', e => {
+        void loadFileManager()
+            .then(manager => manager.handleZipUpload(e))
+            .catch(error => console.error('Failed to import archive', error));
     });
-    mimicManualRandomBtn.addEventListener('click', fillRandomManualFields);
-    pickMimicTranscriptBtn.addEventListener('click', () => mimicTranscriptInput.click());
-    pickMimicAvatarBtn.addEventListener('click', () => mimicAvatarInput.click());
-    mimicTranscriptInput.addEventListener('change', handleMimicTranscriptUpload);
-    mimicAvatarInput.addEventListener('change', handleMimicAvatarUpload);
-    mimicNameInput.addEventListener('input', () => {
-        if (
-            mimicBuildMode !== 'public'
-            || !mimicPublicIdentityResolution
-            || mimicNameInput.value.trim() === mimicPublicIdentityQuery
-        ) {
-            return;
-        }
-        mimicPublicIdentityResolution = null;
-        mimicPublicIdentityQuery = '';
-        mimicDraftPersona = null;
-        mimicPublicSourceSummary.textContent = '名字已變更；請重新搜尋並確認正確身份。';
-        resetMimicDraftEditors();
-        renderMimicAvatarPreview();
-        saveMimicPersonaBtn.disabled = true;
-        setMimicAnalysisStatus('名字已變更，請重新搜尋並產生人格草稿。');
-    });
-    mimicNameInput.addEventListener('keydown', event => {
-        if (event.key === 'Enter' && mimicBuildMode === 'public' && !isMimicAnalysisRunning) {
-            event.preventDefault();
-            void runMimicAnalysisFromModal();
-        }
-    });
-    closeMimicImportModal.addEventListener('click', hideMimicImportModalView);
-    cancelMimicImportBtn.addEventListener('click', hideMimicImportModalView);
-    runMimicAnalysisBtn.addEventListener('click', () => {
-        void runMimicAnalysisFromModal();
-    });
-    saveMimicPersonaBtn.addEventListener('click', () => {
-        void saveMimicPersonaFromModal();
-    });
-    mimicPublicIdentityCheckbox.addEventListener('change', () => {
-        mimicPublicIdentityHint.textContent = mimicPublicIdentityCheckbox.checked
-            ? '儲存時會先開啟身份確認；請選擇正確 Wikipedia 條目後才會建立角色。'
-            : '儲存新角色前會先搜尋並讓你確認身份，也可為虛構角色選擇代表圖片。';
-    });
-    
-    giftButton.addEventListener('click', () => showDisabledFeatureNotice('送禮功能'));
-    giftUploadInput.addEventListener('change', handleGiftSelection);
-    removeGiftBtn.addEventListener('click', removeGift);
 
-    clearChatBtn.addEventListener('click', async () => {
-        if (currentConversationKey && currentPersona) {
-            const conversationKey = currentConversationKey;
-            if (confirm(`確定要清除 ${currentRoom?.title || currentPersona.name} 的對話記錄嗎？`)) {
-                if (shouldCancelActiveRequestForConversation(activeChatRequest?.conversationKey, conversationKey)) {
-                    cancelActiveChatRequest();
-                }
-                if (characterPhotoRequestController) characterPhotoRequestController.abort();
-                const history = memoryManager.getChatHistory(conversationKey);
-                await Promise.all([
-                    deleteCharacterPhotoAssetsForHistory(history, conversationKey),
-                    deleteChatAttachmentAssetsForHistory(history, conversationKey),
-                ]);
-                memoryManager.clearChatHistory(conversationKey);
-                startChat(conversationKey);
-            }
-        }
+    clearChatBtn.addEventListener('click', () => {
+        void loadConversationActions()
+            .then(actions => actions.clearCurrentChat())
+            .catch(error => console.error('Failed to clear chat', error));
         moreOptionsMenu.classList.add('hidden');
     });
     
-    suggestionButton.addEventListener('click', () => showDisabledFeatureNotice('建議功能'));
     newSceneBtn.addEventListener('click', startNewScene);
     surpriseEventBtn.addEventListener('click', () => {
         openSurpriseEventOptions();
@@ -17139,25 +8823,16 @@ const setupEventListeners = () => {
         openPhotoPromptModal();
     });
 
-    // Photo prompt modal listeners
-    closePhotoPromptModalBtn.addEventListener('click', closePhotoPromptModal);
-    cancelPhotoGeneration.addEventListener('click', closePhotoPromptModal);
-    generatePhotoBtn.addEventListener('click', () => void generatePhotoFromPrompt());
-
-    // Date proposal modal listeners
-    acceptDateBtn.addEventListener('click', handleAcceptDate);
-    declineDateBtn.addEventListener('click', handleDeclineDate);
-    
     // Memory modal listeners
     memoryBtn.addEventListener('click', () => {
-        openRoomMemory();
+        void openRoomMemory();
         moreOptionsMenu.classList.add('hidden');
     });
     personaSettingsBtn.addEventListener('click', () => {
-        personaSettingsRoomTarget = currentRoom && activeRoomMemberId
+        const target = currentRoom && activeRoomMemberId
             ? { roomId: currentRoom.id, memberId: activeRoomMemberId }
             : null;
-        openPersonaSettings();
+        openPersonaSettings(target);
         moreOptionsMenu.classList.add('hidden');
     });
     changeAvatarBtn.addEventListener('click', () => {
@@ -17165,196 +8840,31 @@ const setupEventListeners = () => {
         else if (currentPersonaKey) requestPersonaAvatarUpload(currentPersonaKey);
         moreOptionsMenu.classList.add('hidden');
     });
-    personaSettingsAvatarBtn.addEventListener('click', () => {
-        if (personaSettingsRoomTarget) {
-            requestRoomMemberAvatarUpload(personaSettingsRoomTarget.roomId, personaSettingsRoomTarget.memberId);
-        } else if (currentPersonaKey) requestPersonaAvatarUpload(currentPersonaKey);
-    });
     roomInfoBtn.addEventListener('click', openRoomInfo);
     dmRoomMemberBtn.addEventListener('click', () => openParticipantAction('dm'));
     inviteCharacterBtn.addEventListener('click', () => openParticipantAction('invite'));
     leaveRoomMemberBtn.addEventListener('click', () => openParticipantAction('leave'));
-    closeRoomInfoBtn.addEventListener('click', closeRoomInfo);
     addRoomMemberBtn.addEventListener('click', () => {
-        if (currentRoom) openCreateGroup(currentRoom.id);
+        if (currentRoom) void openCreateGroup(currentRoom.id);
     });
-    openRoomMemoryBtn.addEventListener('click', openRoomMemory);
+    openRoomMemoryBtn.addEventListener('click', () => { void openRoomMemory(); });
     exportRoomBtn.addEventListener('click', () => {
         if (currentConversationKey && currentRoom) {
-            void fileManager.saveCurrentChat(currentConversationKey, currentRoom.title);
+            const conversationKey = currentConversationKey;
+            const title = currentRoom.title;
+            void loadFileManager()
+                .then(manager => manager.saveCurrentChat(conversationKey, title))
+                .catch(error => {
+                    console.error('Failed to export room', error);
+                    alert(`匯出群組失敗：${error instanceof Error ? error.message : String(error)}`);
+                });
         }
     });
-    closeRoomMemoryBtn.addEventListener('click', closeRoomMemory);
-    memorySoulTab.addEventListener('click', () => {
-        selectedMemoryType = 'soul';
-        renderRoomMemory();
-    });
-    memoryEventTab.addEventListener('click', () => {
-        selectedMemoryType = 'memory';
-        renderRoomMemory();
-    });
-    personaPublicIdentityCheckbox.addEventListener('change', renderPersonaPublicIdentitySettings);
-    recheckPublicIdentityBtn.addEventListener('click', () => {
-        if (!currentPersona || !personaPublicIdentityCheckbox.checked) return;
-        recheckPublicIdentityBtn.disabled = true;
-        void resolvePublicIdentityForPersonaSettings().finally(() => {
-            recheckPublicIdentityBtn.disabled = false;
-        });
-    });
-    closePublicIdentityModalBtn.addEventListener('click', () => closePublicIdentityResolution());
-    cancelPublicIdentityBtn.addEventListener('click', () => closePublicIdentityResolution());
-    searchPublicIdentityBtn.addEventListener('click', () => {
-        void searchForPublicIdentity(publicIdentityQuery.value);
-    });
-    publicIdentityQuery.addEventListener('keydown', event => {
-        if (event.key !== 'Enter') return;
-        event.preventDefault();
-        void searchForPublicIdentity(publicIdentityQuery.value);
-    });
-    confirmPublicIdentityBtn.addEventListener('click', () => {
-        void confirmSelectedPublicIdentity();
-    });
-    closeMemoryModal.addEventListener('click', closeMemoryEditor);
-    cancelMemoryEdit.addEventListener('click', closeMemoryEditor);
-    saveMemoryEdit.addEventListener('click', saveMemory);
-    closePersonaSettingsModal.addEventListener('click', closePersonaSettings);
-    cancelPersonaSettingsBtn.addEventListener('click', closePersonaSettings);
-    savePersonaSettingsBtn.addEventListener('click', () => {
-        void savePersonaSettings();
-    });
-
-    // Interests modal listeners
-    interestsBtn.addEventListener('click', () => {
-        showDisabledFeatureNotice('興趣技能');
-        moreOptionsMenu.classList.add('hidden');
-    });
-    // FIX: Use the renamed button variable 'closeInterestsModalBtn' to prevent type errors.
-    closeInterestsModalBtn.addEventListener('click', closeInterestsModal);
-    
     // Album modal listeners
     albumBtn.addEventListener('click', () => {
         openAlbumModal();
         moreOptionsMenu.classList.add('hidden');
     });
-    // FIX: Use the renamed button variable 'closeAlbumModalBtn' to prevent type errors.
-    closeAlbumModalBtn.addEventListener('click', closeAlbumModal);
-    albumSelectAll.addEventListener('change', toggleSelectAllPhotos);
-    albumDownloadBtn.addEventListener('click', downloadSelectedPhotos);
-    albumDeleteBtn.addEventListener('click', showDeleteConfirmation);
-    cancelDeleteBtn.addEventListener('click', showMainAlbumButtons);
-    confirmDeleteBtn.addEventListener('click', deleteSelectedPhotos);
-    closePhotoViewer.addEventListener('click', closePhotoViewerModal);
-    togglePhotoViewerEditor.addEventListener('click', () => {
-        setPhotoViewerEditorCollapsed(!isPhotoViewerEditorCollapsed);
-    });
-    openPhotoFullscreen.addEventListener('click', openPhotoFullscreenModal);
-    photoViewerModal.addEventListener('click', event => {
-        if (event.target === photoViewerModal) closePhotoViewerModal();
-    });
-    photoViewerPrompt.addEventListener('input', updatePhotoViewerRegenerateButton);
-    photoViewerModel.addEventListener('change', updatePhotoViewerModelControls);
-    photoViewerAspectRatio.addEventListener('change', updatePhotoViewerRegenerateButton);
-    photoViewerResolution.addEventListener('change', updatePhotoViewerModelControls);
-    photoViewerSeedLock.addEventListener('change', () => {
-        localStorage.setItem(IMAGE_SEED_LOCK_STORAGE_KEY, String(photoViewerSeedLock.checked));
-        imageSeedLock.checked = photoViewerSeedLock.checked;
-        if (photoViewerSeedLock.checked) {
-            const seed = normalizeImageSeed(photoViewerSeed.value)
-                ?? setSeedInputValue(photoViewerSeed, createRandomImageSeed());
-            localStorage.setItem(IMAGE_SEED_STORAGE_KEY, String(seed));
-            setSeedInputValue(imageSeed, seed);
-        }
-    });
-    photoViewerSeed.addEventListener('change', () => {
-        const seed = normalizeImageSeed(photoViewerSeed.value);
-        if (seed === undefined) return;
-        setSeedInputValue(photoViewerSeed, seed);
-        localStorage.setItem(IMAGE_SEED_STORAGE_KEY, String(seed));
-        if (photoViewerSeedLock.checked) setSeedInputValue(imageSeed, seed);
-    });
-    photoViewerRegenerate.addEventListener('click', () => {
-        void runPhotoViewerRegeneration();
-    });
-    closePhotoFullscreen.addEventListener('click', closePhotoFullscreenModal);
-    photoFullscreenModal.addEventListener('click', event => {
-        if (event.target === photoFullscreenModal) closePhotoFullscreenModal();
-    });
-    photoFullscreenZoomIn.addEventListener('click', () => setPhotoFullscreenScale(photoFullscreenScale + 0.25));
-    photoFullscreenZoomOut.addEventListener('click', () => setPhotoFullscreenScale(photoFullscreenScale - 0.25));
-    photoFullscreenReset.addEventListener('click', resetPhotoFullscreenTransform);
-    photoFullscreenStage.addEventListener('dblclick', () => {
-        setPhotoFullscreenScale(photoFullscreenScale > 1 ? 1 : 2);
-    });
-    photoFullscreenStage.addEventListener('wheel', event => {
-        event.preventDefault();
-        setPhotoFullscreenScale(photoFullscreenScale + (event.deltaY < 0 ? 0.18 : -0.18));
-    }, { passive: false });
-    photoFullscreenStage.addEventListener('pointerdown', event => {
-        photoFullscreenPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-        photoFullscreenStage.setPointerCapture(event.pointerId);
-        if (photoFullscreenPointers.size === 1) {
-            photoFullscreenDrag = {
-                pointerId: event.pointerId,
-                x: event.clientX,
-                y: event.clientY,
-                panX: photoFullscreenPan.x,
-                panY: photoFullscreenPan.y,
-            };
-        } else if (photoFullscreenPointers.size === 2) {
-            photoFullscreenPinch = {
-                distance: getPhotoFullscreenPointerDistance(),
-                scale: photoFullscreenScale,
-            };
-            photoFullscreenDrag = null;
-        }
-    });
-    photoFullscreenStage.addEventListener('pointermove', event => {
-        if (!photoFullscreenPointers.has(event.pointerId)) return;
-        photoFullscreenPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-        if (photoFullscreenPointers.size >= 2 && photoFullscreenPinch) {
-            const distance = getPhotoFullscreenPointerDistance();
-            if (photoFullscreenPinch.distance > 0) {
-                setPhotoFullscreenScale(photoFullscreenPinch.scale * (distance / photoFullscreenPinch.distance));
-            }
-            return;
-        }
-        if (!photoFullscreenDrag || photoFullscreenDrag.pointerId !== event.pointerId || photoFullscreenScale <= 1) return;
-        photoFullscreenPan = {
-            x: photoFullscreenDrag.panX + event.clientX - photoFullscreenDrag.x,
-            y: photoFullscreenDrag.panY + event.clientY - photoFullscreenDrag.y,
-        };
-        photoFullscreenStage.classList.add('is-dragging');
-        renderPhotoFullscreenTransform();
-    });
-    const finishPhotoFullscreenPointer = (event: PointerEvent) => {
-        photoFullscreenPointers.delete(event.pointerId);
-        if (photoFullscreenStage.hasPointerCapture(event.pointerId)) {
-            photoFullscreenStage.releasePointerCapture(event.pointerId);
-        }
-        photoFullscreenStage.classList.remove('is-dragging');
-        photoFullscreenPinch = null;
-        const remainingPointer = [...photoFullscreenPointers.entries()][0];
-        photoFullscreenDrag = remainingPointer
-            ? {
-                pointerId: remainingPointer[0],
-                x: remainingPointer[1].x,
-                y: remainingPointer[1].y,
-                panX: photoFullscreenPan.x,
-                panY: photoFullscreenPan.y,
-            }
-            : null;
-    };
-    photoFullscreenStage.addEventListener('pointerup', finishPhotoFullscreenPointer);
-    photoFullscreenStage.addEventListener('pointercancel', finishPhotoFullscreenPointer);
-    document.addEventListener('keydown', event => {
-        if (event.key !== 'Escape') return;
-        if (!photoFullscreenModal.classList.contains('hidden')) {
-            closePhotoFullscreenModal();
-        } else if (!photoViewerModal.classList.contains('hidden')) {
-            closePhotoViewerModal();
-        }
-    });
-
     // More options menu toggle
     moreOptionsBtn.addEventListener('click', () => {
         moreOptionsMenu.classList.toggle('hidden');
@@ -17371,15 +8881,21 @@ const setupEventListeners = () => {
         if (!newChatFab.contains(e.target as Node) && !newChatMenu.contains(e.target as Node)) {
             newChatMenu.classList.add('hidden');
         }
-        if (!suggestionButton.contains(e.target as Node) && !suggestionContainer.contains(e.target as Node)) {
-            hideSuggestionContainer();
-        }
     });
 
     // Save before exit modal
-    saveAndExitBtn.addEventListener('click', () => {
+    saveAndExitBtn.addEventListener('click', async () => {
         if (currentConversationKey && currentPersona) {
-            fileManager.saveCurrentChat(currentConversationKey, currentRoom?.title || currentPersona.name);
+            const conversationKey = currentConversationKey;
+            const title = currentRoom?.title || currentPersona.name;
+            try {
+                const manager = await loadFileManager();
+                await manager.saveCurrentChat(conversationKey, title);
+            } catch (error) {
+                console.error('Failed to save chat before exit', error);
+                alert(`儲存聊天失敗：${error instanceof Error ? error.message : String(error)}`);
+                return;
+            }
         }
         saveExitModal.classList.add('hidden');
         showSelectionView('replace');
@@ -17396,6 +8912,8 @@ const setupEventListeners = () => {
 // --- Initialization ---
 const init = async () => {
     await memoryManager.restoreChatRecovery();
+    await memoryManager.restorePersonaRecovery();
+    await roomManager.restoreRoomRecovery();
     syncBrowserViewState(HOME_HISTORY_STATE, 'replace');
     conversationSearchInput.value = '';
     guardConversationSearchFromAutofill();
@@ -17411,26 +8929,34 @@ const init = async () => {
     }
     renderPersonaList();
     setupEventListeners();
-    cloudBackupManager.startAutoBackup();
+    if (cloudBackupStartupState.enabled) {
+        void loadCloudBackupManager().catch(error => {
+            console.error('Failed to start Cloud Backup manager', error);
+        });
+    }
     setAuthSubmitting(false);
     applyChatRuntimeState('idle');
-    pendingVideoJob = readPersistedVideoJob();
-    if (pendingVideoJob) {
-        setVideoProgressState('paused');
-        videoStudioStatus.textContent = `找到未完成工作 · ${pendingVideoJob.modelName} · 登入後自動恢復`;
-    } else {
-        setVideoProgressState('idle');
-    }
-    setVideoStudioBusy(false);
     const unlocked = await refreshAuthSession();
     if (unlocked) {
-        await supabaseCloudSyncManager.start();
-        if (pendingVideoJob) void resumePendingVideoJob('auto');
+        await startSupabaseCloudSync();
+        void resumePendingVideoJobIfAny();
     }
+};
+
+let chatExperienceUiLoad: Promise<typeof import('./features/chatExperienceUi.js')> | null = null;
+
+const loadChatExperienceUi = () => {
+    chatExperienceUiLoad ??= import('./features/chatExperienceUi.js');
+    return chatExperienceUiLoad;
 };
 
 const openExperienceDraft = async (direct = false) => {
     if (!currentPersona || !currentPersonaKey || !currentConversationKey || activeChatRequest || isGodModeActive || isAssistantPersonaKey(currentPersonaKey)) return;
+    const {
+        experienceButton,
+        experienceDialog,
+        generateExperienceDraft,
+    } = await loadChatExperienceUi();
     const key = currentConversationKey;
     const history = memoryManager.peekChatHistory(key);
     const last = history.at(-1);
@@ -17448,51 +8974,62 @@ const openExperienceDraft = async (direct = false) => {
         const controls = Array.from(dialog.querySelectorAll('button')).filter(button => button.textContent !== '關閉');
         controls.forEach(button => { button.disabled = true; });
         try {
+            const groupPromptModule = direct && request.room
+                ? await loadGroupChatPromptModule()
+                : null;
             const context = history.slice(-16).map(message => ({
                 role: message.role === 'model' ? 'assistant' as const : message.role,
                 content: request.room ? contentToGroupHistoryText(message.content, request.room) : message.content.text || '',
             })).filter(message => message.content);
-            const result = await generateChatTextWithTimeout({
+            const generated = await generateExperienceDraft({
+                direct,
+                isGroup: Boolean(request.room),
                 model: buildCharacterModelRoute(chatModelSettings, request.personaKey === 'cc')[0],
-                messages: [
-                    { role: 'system', content: [
-                        direct
-                            ? [
-                                request.room
-                                    ? buildGroupSystemPrompt(request.room)
-                                    : buildChatSystemPrompt(request.personaKey, request.persona, '', request.wardrobeState),
-                                'Editing task: rewrite only the last assistant reply. Preserve every event, fact, outfit, participant and outcome. Change presentation only. Return the same chat envelope for a group, or plain prose for a single chat.',
-                            ].join('\n\n')
-                            : [
-                                'You suggest the next message for the USER in an ongoing private roleplay conversation.',
-                                request.room
-                                    ? 'This is a group conversation. Respect the existing participants and scene supplied in the history.'
-                                    : 'This is a one-to-one conversation. Respect the existing character and scene supplied in the history.',
-                                'Return only valid JSON: {"suggestions":["...","...","..."]}. Give exactly three distinct short messages the USER could send next: dialogue, action, or gentle development. Match the user language. Respect current scene and do not invent past facts. Do not continue as a character. Never return <chat>, <scene>, <npc_candidate>, XML, or prose outside the JSON object.',
-                            ].join('\n\n'),
-                    ].join('\n\n') },
-                    ...context,
-                    { role: 'user', content: instruction },
-                ],
-                temperature: 0.7,
+                context,
+                instruction,
+                rewriteSystemPrompt: direct
+                    ? request.room
+                        ? groupPromptModule!.buildGroupSystemPrompt(
+                            request.room,
+                            '',
+                            formatSessionMemoryPrompt(request.conversationKey),
+                        )
+                        : buildChatSystemPrompt(
+                            request.personaKey,
+                            request.persona,
+                            '',
+                            request.wardrobeState,
+                            undefined,
+                            false,
+                            request.conversationKey,
+                        )
+                    : undefined,
                 signal: request.controller.signal,
+                runModel: async modelRequest => (
+                    await generateChatTextWithTimeout({
+                        model: modelRequest.model,
+                        messages: modelRequest.messages,
+                        temperature: modelRequest.temperature,
+                        signal: modelRequest.signal,
+                    })
+                ).text,
             });
             if (!dialog.open || currentConversationKey !== key) return;
             output.replaceChildren();
             if (!direct) {
-                const data = { suggestions: parseExperienceSuggestions(result.text) };
-                if (!Array.isArray(data.suggestions) || data.suggestions.length !== 3 || data.suggestions.some((v: unknown) => typeof v !== 'string' || !v.trim())) throw new Error('未能整理建議，請再試一次。');
-                data.suggestions.forEach((suggestion: string) => output.append(experienceButton(suggestion, () => {
+                if (generated.kind !== 'suggestions') throw new Error('未能整理建議，請再試一次。');
+                generated.suggestions.forEach((suggestion: string) => output.append(experienceButton(suggestion, () => {
                     messageInput.value = suggestion;
                     messageInput.dispatchEvent(new Event('input', { bubbles: true }));
                     dialog.close();
                     messageInput.focus();
                 })));
             } else {
-                const parsed = request.room ? parseGroupGeneration(result.text, request.room) : null;
+                if (generated.kind !== 'rewrite') throw new Error('修改草稿是空白，原回覆已保留。');
+                const parsed = request.room ? parseGroupGeneration(generated.text, request.room) : null;
                 const replacement: Content = {
                     ...last!.content,
-                    text: parsed?.text || cleanVeniceChatReply(result.text),
+                    text: parsed?.text || cleanVeniceChatReply(generated.text),
                     segments: parsed?.segments,
                     previousVersions: [...(last!.content.previousVersions || []), { ...last!.content, previousVersions: undefined }],
                 };
@@ -17537,228 +9074,23 @@ const openExperienceDraft = async (direct = false) => {
     if (!direct) void generate('請提供三個可直接放進輸入框的接戲建議。');
 };
 
-const formatJevNumber = (value: number | undefined, fractionDigits = 0) => value === undefined ? '—' : value.toFixed(fractionDigits);
-const formatJevCost = (value: number | undefined) => value === undefined ? '—' : value < 0.01 ? value.toFixed(6) : value.toFixed(4);
-
 const openJevShadowDiagnostics = () => {
-    const dialog = experienceDialog('Jev Shadow');
-    dialog.classList.add('jev-shadow-dialog');
-    moreOptionsMenu.classList.add('hidden');
+    void import('./features/jevShadowDiagnostics.js')
+        .then(({ openJevShadowDiagnostics: open }) => open())
+        .catch(error => console.error('Failed to load Jev Shadow diagnostics', error));
+};
 
-    const subtitle = document.createElement('p');
-    subtitle.className = 'jev-shadow-subtitle';
-    subtitle.textContent = 'V3 signals + wardrobe wording A/B shadow · safe metadata kept locally across reloads · Gemma remains authoritative';
-    const controls = document.createElement('div');
-    controls.className = 'jev-shadow-controls';
-    const refresh = document.createElement('button');
-    refresh.type = 'button';
-    refresh.textContent = '重新整理';
-    const copy = document.createElement('button');
-    copy.type = 'button';
-    copy.textContent = '複製 JSON';
-    const clear = document.createElement('button');
-    clear.type = 'button';
-    clear.textContent = '清除本頁記錄';
-    controls.append(refresh, copy, clear);
-    const status = document.createElement('p');
-    status.className = 'jev-shadow-action-status';
-    const content = document.createElement('div');
-    content.className = 'jev-shadow-content';
-
-    const render = () => {
-        const records = getJevShadowRecords();
-        const summary = summarizeJevShadowRecords(records);
-        content.replaceChildren();
-        const stats = document.createElement('div');
-        stats.className = 'jev-shadow-summary';
-        const addStat = (label: string, value: string, note?: string) => {
-            const card = document.createElement('div');
-            card.className = 'jev-shadow-stat';
-            const title = document.createElement('small');
-            title.textContent = label;
-            const number = document.createElement('strong');
-            number.textContent = value;
-            card.append(title, number);
-            if (note) {
-                const detail = document.createElement('small');
-                detail.textContent = note;
-                card.append(detail);
-            }
-            stats.append(card);
-        };
-        addStat('Records', String(summary.totalRecords));
-        addStat('OK / unavailable', `${summary.status.ok} / ${summary.status.unavailable}`);
-        addStat('Gemma keep / revise', `${summary.gemma.keep} / ${summary.gemma.revise}`);
-        addStat('Avg Jev latency', `${summary.performance.averageLatencyMs} ms`);
-        addStat('Avg Jev input', String(summary.usage.averageInputTokens));
-        addStat('Total Jev cost', `$${formatJevCost(summary.usage.totalCost)}`);
-        addStat(
-            'Wardrobe A/B paired',
-            String(summary.wardrobeTrial.pairedCount),
-            `prod ${formatJevNumber(summary.wardrobeTrial.productionAverage, 2)} → trial ${formatJevNumber(summary.wardrobeTrial.trialAverage, 2)} · Δ ${formatJevNumber(summary.wardrobeTrial.averageDelta, 2)}`,
-        );
-        addStat(
-            'Wardrobe trial latency',
-            `${summary.wardrobeTrial.averageLatencyMs} ms`,
-            `trial cost $${formatJevCost(summary.wardrobeTrial.totalCost)}`,
-        );
-        content.append(stats);
-
-        if (summary.wardrobeTrial.pairedCount) {
-            const comparison = document.createElement('div');
-            comparison.className = 'jev-shadow-reasons';
-            const title = document.createElement('strong');
-            title.textContent = 'Wardrobe wording shadow';
-            const list = document.createElement('p');
-            const withIssue = summary.wardrobeTrial.withGemmaWardrobeIssue;
-            const withoutIssue = summary.wardrobeTrial.withoutGemmaWardrobeIssue;
-            list.textContent = [
-                `paired ${summary.wardrobeTrial.pairedCount}`,
-                `Gemma wardrobe issue n=${withIssue.count}: ${formatJevNumber(withIssue.productionAverage, 2)} → ${formatJevNumber(withIssue.trialAverage, 2)}`,
-                `no Gemma wardrobe issue n=${withoutIssue.count}: ${formatJevNumber(withoutIssue.productionAverage, 2)} → ${formatJevNumber(withoutIssue.trialAverage, 2)}`,
-            ].join(' · ');
-            comparison.append(title, list);
-            content.append(comparison);
-        }
-
-        const nonZeroGemmaIssues = Object.entries(summary.gemmaIssues).filter(([, count]) => count > 0);
-        if (nonZeroGemmaIssues.length) {
-            const reasons = document.createElement('div');
-            reasons.className = 'jev-shadow-reasons';
-            const title = document.createElement('strong');
-            title.textContent = 'Gemma revise reasons';
-            const list = document.createElement('p');
-            list.textContent = nonZeroGemmaIssues.map(([code, count]) => `${code} ${count}`).join(' · ');
-            reasons.append(title, list);
-            content.append(reasons);
-        }
-
-        const nonZeroAnomalies = Object.entries(summary.gemmaIssueAnomalies).filter(([, count]) => count > 0);
-        if (nonZeroAnomalies.length) {
-            const anomalies = document.createElement('div');
-            anomalies.className = 'jev-shadow-reasons';
-            const title = document.createElement('strong');
-            title.textContent = 'Gemma inapplicable labels';
-            const list = document.createElement('p');
-            list.textContent = nonZeroAnomalies.map(([code, count]) => `${code} ${count}`).join(' · ');
-            anomalies.append(title, list);
-            content.append(anomalies);
-        }
-
-        const signalAverages = Object.entries(summary.signalAverages)
-            .filter(([, value]) => value > 0)
-            .map(([signal, value]) => `${signal} ${formatJevNumber(value, 2)}`);
-        if (signalAverages.length) {
-            const averages = document.createElement('div');
-            averages.className = 'jev-shadow-reasons';
-            const title = document.createElement('strong');
-            title.textContent = 'V3 signal averages';
-            const list = document.createElement('p');
-            list.textContent = signalAverages.join(' · ');
-            averages.append(title, list);
-            content.append(averages);
-        }
-
-        if (!records.length) {
-            const empty = document.createElement('p');
-            empty.className = 'jev-shadow-empty';
-            empty.textContent = 'No Jev shadow observations yet. Safe metadata is kept locally across reloads until you clear it.';
-            content.append(empty);
-            return;
-        }
-
-        const tableWrap = document.createElement('div');
-        tableWrap.className = 'jev-shadow-table-wrap';
-        const table = document.createElement('table');
-        table.className = 'jev-shadow-table';
-        const head = document.createElement('thead');
-        const headerRow = document.createElement('tr');
-        ['Request', 'Mode', 'Status', 'Gemma', 'Latency', 'Tokens', 'Cost'].forEach(label => {
-            const cell = document.createElement('th');
-            cell.textContent = label;
-            headerRow.append(cell);
-        });
-        head.append(headerRow);
-        const body = document.createElement('tbody');
-        records.slice().reverse().forEach(record => {
-            const row = document.createElement('tr');
-            const addCell = (text: string) => {
-                const cell = document.createElement('td');
-                cell.textContent = text;
-                row.append(cell);
-            };
-            addCell(record.requestId);
-            addCell(`${record.mode} · Cc ${record.ccMode ? 'yes' : 'no'}`);
-            addCell(record.reasonCode ? `${record.status} · ${record.reasonCode}${record.networkCode ? ` · ${record.networkCode}` : ''}` : record.status);
-            addCell(`${record.gemmaDecision || '—'}${record.gemmaIssueCodes?.length ? ` · ${record.gemmaIssueCodes.join(', ')}` : ''}${record.gemmaIssueAnomalies?.length ? ` · anomaly: ${record.gemmaIssueAnomalies.join(', ')}` : ''}`);
-            addCell(`${record.latencyMs} ms`);
-            addCell(`${formatJevNumber(record.usageInputTokens)} / ${formatJevNumber(record.usageOutputTokens)}`);
-            addCell(`$${formatJevCost(record.usageCost)}`);
-            body.append(row);
-
-            const detailRow = document.createElement('tr');
-            detailRow.className = 'jev-shadow-detail-row';
-            const detail = document.createElement('td');
-            detail.colSpan = 7;
-            const signals = record.signals;
-            const trial = record.wardrobeTrial;
-            const wardrobeDelta = signals && trial?.wardrobeConflict !== undefined
-                ? trial.wardrobeConflict - signals.wardrobeConflict
-                : undefined;
-            detail.textContent = [
-                `model: ${record.servedModel || '—'}`,
-                `taxonomy: ${record.taxonomyVersion}`,
-                `wardrobe A/B prod/trial/delta: ${signals && trial?.wardrobeConflict !== undefined
-                    ? `${formatJevNumber(signals.wardrobeConflict, 2)} / ${formatJevNumber(trial.wardrobeConflict, 2)} / ${formatJevNumber(wardrobeDelta, 2)}`
-                    : '—'}`,
-                `wardrobe trial: ${trial ? `${trial.profile} · ${trial.status} · ${trial.latencyMs} ms · model ${trial.servedModel || '—'} · $${formatJevCost(trial.usageCost)}` : 'pending'}`,
-                `signals request/identity/speaker/continuity/reality/wardrobe/state/replay/persona/third-party/agency/ending/group/other: ${signals ? [
-                    signals.requestMismatch,
-                    signals.identityConflict,
-                    signals.speakerOwnershipViolation,
-                    signals.continuityViolation,
-                    signals.realityLayerViolation,
-                    signals.wardrobeConflict,
-                    signals.stateConflict,
-                    signals.replayedBeat,
-                    signals.personaVoiceViolation,
-                    signals.thirdPartySpeechViolation,
-                    signals.userAgencyViolation,
-                    signals.incompleteEnding,
-                    signals.groupNarrationViolation,
-                    signals.otherDefect,
-                ].map(value => formatJevNumber(value, 2)).join(' / ') : '—'}`,
-            ].join(' · ');
-            detailRow.append(detail);
-            body.append(detailRow);
-        });
-        table.append(head, body);
-        tableWrap.append(table);
-        content.append(tableWrap);
-    };
-
-    refresh.onclick = () => { status.textContent = ''; render(); };
-    copy.onclick = async () => {
-        try {
-            await navigator.clipboard.writeText(JSON.stringify(createJevShadowDiagnosticsExport(getJevShadowRecords())));
-            status.textContent = '已複製目前頁面 session 的安全診斷 metadata。';
-        } catch {
-            status.textContent = '未能複製 JSON；請確認瀏覽器允許剪貼簿存取。';
-        }
-    };
-    clear.onclick = () => {
-        if (!confirm('清除這個頁面 session 的 Jev shadow 診斷記錄？此操作不會影響聊天或雲端資料。')) return;
-        clearJevShadowRecords();
-        status.textContent = '已清除本頁記錄。';
-        render();
-    };
-    dialog.append(subtitle, controls, status, content);
-    render();
+const openChatPerformanceDiagnostics = () => {
+    void import('./features/chatPerformanceDiagnostics.js')
+        .then(({ openChatPerformanceDiagnostics: open }) => open())
+        .catch(error => console.error('Failed to load Performance diagnostics', error));
 };
 
 [
     ['Jev Shadow', openJevShadowDiagnostics],
-    ['最近文字用量', () => {
+    ['Performance 診斷', openChatPerformanceDiagnostics],
+    ['最近文字用量', async () => {
+        const { experienceDialog } = await loadChatExperienceUi();
         const dialog = experienceDialog('最近文字用量（這部裝置）');
         moreOptionsMenu.classList.add('hidden');
         let rows: Array<{ at: number; model: string; input: number; output: number }> = [];
@@ -17773,7 +9105,8 @@ const openJevShadowDiagnostics = () => {
             dialog.append(line);
         });
     }],
-    ['目前場景與衣著', () => {
+    ['目前場景與衣著', async () => {
+        const { experienceButton, experienceDialog } = await loadChatExperienceUi();
         if (!currentPersona || !currentConversationKey || activeChatRequest) return;
         const key = currentConversationKey;
         const room = currentRoom;
@@ -17816,7 +9149,8 @@ const openJevShadowDiagnostics = () => {
     }],
     ['幫我接戲', () => { void openExperienceDraft(); }],
     ['導演一下', () => { void openExperienceDraft(true); }],
-    ['互動偏好', () => {
+    ['互動偏好', async () => {
+        const { editChatPreferences } = await loadChatExperienceUi();
         if (!currentPersona || !currentPersonaKey || activeChatRequest) return;
         moreOptionsMenu.classList.add('hidden');
         const key = currentConversationKey;
@@ -17842,7 +9176,11 @@ window.addEventListener('wetapp-storage-failed', () => {
 window.addEventListener('wetapp-storage-recovered', () => {
     showError('訊息已寫入本機備援儲存。請完成雲端同步；聊天室資料容量仍需整理。');
 });
+window.addEventListener('wetapp-room-storage-recovered', () => {
+    showError('群組場景已寫入本機備援儲存。請保持此頁開啟，完成雲端同步或稍後再試本機儲存。');
+});
+window.addEventListener('wetapp-persona-storage-recovered', () => {
+    showError('角色設定與長期記憶已寫入本機備援儲存。請保持此頁開啟，完成雲端同步或稍後再試本機儲存。');
+});
 
 void init();
-
-

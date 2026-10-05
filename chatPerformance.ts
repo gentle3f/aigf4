@@ -15,6 +15,7 @@ const MAX_RECORDED_TURNS = 24;
 const PERF_STORAGE_KEY = 'wetappPerfEnabled';
 let activeTurn: ChatPerformanceTurn | null = null;
 const completedTurns: ChatPerformanceTurn[] = [];
+let summaryModuleLoad: Promise<typeof import('./chatPerformanceSummary.js')> | null = null;
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
@@ -30,14 +31,76 @@ const isEnabled = () => {
 
 export const isChatPerformanceEnabled = () => isEnabled();
 
+const cloneTurn = (turn: ChatPerformanceTurn): ChatPerformanceTurn => ({
+    ...turn,
+    events: turn.events.map(event => ({ ...event })),
+});
+
+export const getChatPerformanceSnapshot = () => ({
+    enabled: isEnabled(),
+    active: activeTurn ? cloneTurn(activeTurn) : null,
+    completed: completedTurns.map(cloneTurn),
+});
+
+export const setChatPerformanceEnabled = (enabled: boolean) => {
+    if (typeof window === 'undefined') return false;
+    try {
+        if (enabled) window.localStorage.setItem(PERF_STORAGE_KEY, '1');
+        else window.localStorage.removeItem(PERF_STORAGE_KEY);
+    } catch {
+        return isEnabled();
+    }
+
+    if (!enabled && !isEnabled()) {
+        activeTurn = null;
+        const target = window as Window & { __aigf4Perf?: unknown };
+        delete target.__aigf4Perf;
+    } else if (enabled) {
+        expose();
+    }
+    return isEnabled();
+};
+
+export const clearChatPerformanceTurns = () => {
+    activeTurn = null;
+    completedTurns.splice(0);
+    expose();
+};
+
 const expose = () => {
     if (typeof window === 'undefined' || !isEnabled()) return;
-    Object.assign(window as Window & { __aigf4Perf?: unknown }, {
+    const target = window as Window & { __aigf4Perf?: unknown };
+
+    Object.assign(target, {
         __aigf4Perf: {
             active: activeTurn,
             completed: completedTurns,
         },
     });
+
+    if (!summaryModuleLoad) {
+        summaryModuleLoad = import('./chatPerformanceSummary.js')
+            .catch(error => {
+                summaryModuleLoad = null;
+                throw error;
+            });
+    }
+
+    void summaryModuleLoad
+        .then(({ summarizeChatPerformanceTurn }) => {
+            if (!isEnabled()) return;
+            Object.assign(target, {
+                __aigf4Perf: {
+                    active: activeTurn,
+                    activeSummary: activeTurn ? summarizeChatPerformanceTurn(activeTurn) : null,
+                    completed: completedTurns,
+                    summaries: completedTurns.map(summarizeChatPerformanceTurn),
+                },
+            });
+        })
+        .catch(() => {
+            // Raw timing events remain available even if optional summary code cannot load.
+        });
 };
 
 export const startChatPerformanceTurn = () => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { evaluateJevShadow, evaluateJevWardrobeShadowTrial, normalizeJevShadowResult } from '../engine/review/jevDecisionProvider.js';
+import { evaluateJevGroupGateShadowTrial, evaluateJevShadow, evaluateJevWardrobeShadowTrial, normalizeJevShadowResult } from '../engine/review/jevDecisionProvider.js';
 
 const state = { mode: 'single' as const, ccMode: false, latestUserText: 'latest', participants: [], relevantMemories: [], candidateText: 'candidate' };
 const valid = { status: 'ok', model: 'typesafe/jev-1.13', signals: {
@@ -34,6 +34,20 @@ test('wardrobe shadow trial provider uses the existing same-origin endpoint with
     assert.equal(received?.credentials, 'same-origin');
     assert.equal(received?.signal, controller.signal);
     assert.deepEqual(JSON.parse(String(received?.body)), { state, profile: 'wardrobe-v4' });
+    assert.equal(result.status, 'ok');
+});
+
+test('Group gate shadow trial provider uses the existing same-origin endpoint with one fixed profile', async () => {
+    const controller = new AbortController();
+    let received: RequestInit | undefined;
+    const result = await evaluateJevGroupGateShadowTrial(state, controller.signal, async (url, options) => {
+        assert.equal(url, '/api/openrouter-decisions');
+        received = options;
+        return { ok: true, json: async () => valid } as Response;
+    });
+    assert.equal(received?.credentials, 'same-origin');
+    assert.equal(received?.signal, controller.signal);
+    assert.deepEqual(JSON.parse(String(received?.body)), { state, profile: 'group-gate-v2' });
     assert.equal(result.status, 'ok');
 });
 

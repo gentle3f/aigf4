@@ -31,19 +31,19 @@ test('completed replies render only in their original visible conversation', () 
 
 test('production navigation never cancels a request, while history replacement and destructive mutation do', () => {
     const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
+    const conversationActionsSource = readFileSync(new URL('../features/conversationActions.ts', import.meta.url), 'utf8');
     const fileManagerSource = readFileSync(new URL('../fileManager.ts', import.meta.url), 'utf8');
-    const legacyChat = source.slice(source.indexOf('const startLegacyChat ='), source.indexOf('const startChat ='));
     const standardChat = source.slice(source.indexOf('const startChat ='), source.indexOf('const showSelectionView ='));
     assert.match(source, /const startChat = \([^]*?\) => \{\s*closeChatSearch\(\);/u);
-    assert.match(source, /const startLegacyChat = \([^]*?\) => \{\s*const selectedPersona/u);
-    assert.match(legacyChat, /if \(restoredHistory\) \{\s*if \(shouldCancelActiveRequestForConversation\(activeChatRequest\?\.conversationKey, key\)\) \{\s*cancelActiveChatRequest\(\);\s*\}\s*memoryManager\.setChatHistory\(key, restoredHistory\);/u);
+    assert.doesNotMatch(source, /const startLegacyChat =/u);
     assert.match(standardChat, /if \(restoredHistory\) \{\s*if \(shouldCancelActiveRequestForConversation\(activeChatRequest\?\.conversationKey, key\)\) \{\s*cancelActiveChatRequest\(\);\s*\}\s*memoryManager\.setChatHistory\(key, restoredHistory\);/u);
-    assert.doesNotMatch(source.slice(source.indexOf('const showSelectionView'), source.indexOf('const deleteCharacterPhotoAssetsForHistory')), /cancelActiveChatRequest\(\)/u);
-    assert.match(source, /const deleteConversationFromList =[^]*shouldCancelActiveRequestForConversation\(activeChatRequest\?\.conversationKey, key\)[^]*memoryManager\.clearChatHistory\(key\)/u);
-    assert.match(source, /const deleteCustomPersona =[^]*shouldCancelActiveRequestForConversation\(activeChatRequest\?\.conversationKey, key\)[^]*memoryManager\.deleteCustomPersona\(key\)/u);
-    assert.match(source, /clearChatBtn\.addEventListener\('click', async \(\) => \{[^]*shouldCancelActiveRequestForConversation\(activeChatRequest\?\.conversationKey, conversationKey\)[^]*memoryManager\.clearChatHistory\(conversationKey\)/u);
-    assert.match(source, /async function deleteSelectedPhotos\(\) \{[^]*shouldCancelActiveRequestForConversation\(activeChatRequest\?\.conversationKey, conversationKey\)[^]*memoryManager\.setChatHistory\(conversationKey, newHistory\)/u);
-    assert.match(source, /const fileManager = new FileManager\([^]*beforeAllDataRestore: \(\) => \{\s*if \(activeChatRequest\) cancelActiveChatRequest\(\);/u);
+    assert.doesNotMatch(source.slice(source.indexOf('const showSelectionView'), source.indexOf('const appendAssistantInlineFormatting')), /cancelActiveChatRequest\(\)/u);
+    assert.match(conversationActionsSource, /const deleteConversation =[^]*deps\.cancelRequestForConversation\(key\)[^]*deps\.memoryManager\.clearChatHistory\(key\)/u);
+    assert.match(conversationActionsSource, /const deleteCustomPersona =[^]*deps\.cancelRequestForConversation\(key\)[^]*deps\.memoryManager\.deleteCustomPersona\(key\)/u);
+    assert.match(conversationActionsSource, /const clearCurrentChat =[^]*deps\.cancelRequestForConversation\(conversationKey\)[^]*deps\.memoryManager\.clearChatHistory\(conversationKey\)/u);
+    assert.match(source, /clearChatBtn\.addEventListener\('click', \(\) => \{[^]*loadConversationActions\(\)[^]*actions\.clearCurrentChat\(\)/u);
+    assert.match(source, /setHistoryWithoutIndices: \(conversationKey, indices\) => \{[^]*shouldCancelActiveRequestForConversation\(activeChatRequest\?\.conversationKey, conversationKey\)[^]*memoryManager\.setChatHistory\(conversationKey, history\.filter\(\(_, index\) => !removed\.has\(index\)\)\)/u);
+    assert.match(source, /const loadFileManager = async \(\) => \{[^]*import\('\.\/fileManager\.js'\)[^]*beforeAllDataRestore: \(\) => \{\s*if \(activeChatRequest\) cancelActiveChatRequest\(\);/u);
     assert.match(fileManagerSource, /this\.callbacks\.beforeAllDataRestore\?\.\(\);\s*this\.memoryManager\.loadAllData/u);
     assert.match(source, /shouldRenderCompletedReplyInConversation\(currentConversationKey, request\.conversationKey\)[^]*appendMessage\(botContent, 'bot'\)[^]*scheduleReplyVisibleHaptic\(\)/u);
     assert.match(source, /if \(activeChatRequest\) \{\s*throw new Error\('CHAT_REQUEST_IN_PROGRESS'\);\s*\}/u);

@@ -1,28 +1,35 @@
 // fileManager.ts
 import { MemoryManager, ChatMessage, Interest } from './managers.js';
+import type { MemoryImportSnapshot } from './managers.js';
 import {
+    deleteCharacterPhotoAsset,
+    getCharacterPhotoAsset,
     getCharacterPhotoBlob,
     listCharacterPhotoAssets,
     saveCharacterPhotoAsset,
 } from './photoStore.js';
-import { RoomManager } from './roomManager.js';
-import { getChatAttachmentBlob, saveChatAttachment } from './chatMediaStore.js';
-
-declare var JSZip: any;
-
-const EXPORTED_APP_SETTING_KEYS = [
-    'veniceAssistantModel',
-    'aigf4ChatModelSettingsV1',
-    'veniceImageGenerateModel',
-    'veniceImageEditModel',
-    'veniceImageAdultConfirmed',
-    'veniceImageSeed',
-    'veniceImageSeedLocked',
-    'veniceVideoImageModel',
-    'veniceVideoTextModel',
-    'veniceVideoAdultConfirmed',
-    'aigf4RandomPersonaVariationsV2',
-];
+import type { CharacterPhotoAsset } from './photoStore.js';
+import { RoomManager, roomAvatarStorageKey } from './roomManager.js';
+import type { RoomImportSnapshot } from './roomManager.js';
+import {
+    deleteChatAttachment,
+    getChatAttachment,
+    getChatAttachmentBlob,
+    saveChatAttachment,
+} from './chatMediaStore.js';
+import type { StoredChatAttachment } from './chatMediaStore.js';
+import {
+    deletePersonaAvatar,
+    getPersonaAvatarAsset,
+    savePersonaAvatarBlob,
+} from './avatarStore.js';
+import type { StoredPersonaAvatar } from './avatarStore.js';
+import { beginLocalCloudChangeBatch } from './cloudSyncEvents.js';
+import { loadJsZip } from './jsZipLoader.js';
+import {
+    PERSISTED_APP_SETTING_KEYS,
+    restorePersistedAppSettings,
+} from './appSettings.js';
 
 interface FileManagerCallbacks {
     beforeAllDataRestore?: () => void;
@@ -40,7 +47,18 @@ interface PreparedImport {
     data: any;
     keyMap: Map<string, string>;
     skippedSourceKeys: Set<string>;
+    photoAssetIdMap: Map<string, string>;
+    attachmentAssetIdMap: Map<string, string>;
     summary: ImportSummary;
+}
+
+interface ImportTransactionSnapshot {
+    memory: MemoryImportSnapshot;
+    rooms?: RoomImportSnapshot;
+    appSettings: Record<string, string | null>;
+    avatarAssets: Map<string, StoredPersonaAvatar | null>;
+    photoAssets: Map<string, CharacterPhotoAsset | null>;
+    attachmentAssets: Map<string, StoredChatAttachment | null>;
 }
 
 interface UIElements {
@@ -244,6 +262,79 @@ export class FileManager {
             }
             : rawData?.rooms;
         const mappedHistories = remapRecord(importedHistories);
+        const currentPhotoAssetIds = new Set<string>();
+        const currentAttachmentAssetIds = new Set<string>();
+        Object.values(currentHistories).forEach(history => {
+            history.forEach(message => {
+                const photoAssetId = message.content.imageAssetId?.trim();
+                if (photoAssetId) currentPhotoAssetIds.add(photoAssetId);
+                message.content.attachments?.forEach(attachment => {
+                    if (attachment.assetId) currentAttachmentAssetIds.add(attachment.assetId);
+                });
+            });
+        });
+
+        const usedPhotoAssetIds = new Set(currentPhotoAssetIds);
+        const usedAttachmentAssetIds = new Set(currentAttachmentAssetIds);
+        Object.values(mappedHistories).forEach(history => {
+            if (!Array.isArray(history)) return;
+            history.forEach(message => {
+                const photoAssetId = message?.content?.imageAssetId?.trim();
+                if (photoAssetId) usedPhotoAssetIds.add(photoAssetId);
+                message?.content?.attachments?.forEach((attachment: any) => {
+                    if (attachment?.assetId) usedAttachmentAssetIds.add(attachment.assetId);
+                });
+            });
+        });
+
+        let importedMediaSequence = 0;
+        const createImportedMediaId = (
+            prefix: 'photo' | 'attachment',
+            originalId: string,
+            usedIds: Set<string>,
+        ) => {
+            const safeId = originalId.replace(/[^a-zA-Z0-9_-]+/gu, '_').slice(0, 48) || 'asset';
+            let candidate = '';
+            do {
+                importedMediaSequence += 1;
+                candidate = `${prefix}_import_${timestamp}_${importedMediaSequence}_${safeId}`;
+            } while (usedIds.has(candidate));
+            usedIds.add(candidate);
+            return candidate;
+        };
+
+        const photoAssetIdMap = new Map<string, string>();
+        const attachmentAssetIdMap = new Map<string, string>();
+        Object.values(mappedHistories).forEach(history => {
+            if (!Array.isArray(history)) return;
+            history.forEach(message => {
+                const photoAssetId = message?.content?.imageAssetId?.trim();
+                if (photoAssetId && currentPhotoAssetIds.has(photoAssetId)) {
+                    let mappedId = photoAssetIdMap.get(photoAssetId);
+                    if (!mappedId) {
+                        mappedId = createImportedMediaId('photo', photoAssetId, usedPhotoAssetIds);
+                        photoAssetIdMap.set(photoAssetId, mappedId);
+                    }
+                    message.content.imageAssetId = mappedId;
+                }
+
+                message?.content?.attachments?.forEach((attachment: any) => {
+                    const attachmentAssetId = attachment?.assetId?.trim();
+                    if (!attachmentAssetId || !currentAttachmentAssetIds.has(attachmentAssetId)) return;
+                    let mappedId = attachmentAssetIdMap.get(attachmentAssetId);
+                    if (!mappedId) {
+                        mappedId = createImportedMediaId(
+                            'attachment',
+                            attachmentAssetId,
+                            usedAttachmentAssetIds,
+                        );
+                        attachmentAssetIdMap.set(attachmentAssetId, mappedId);
+                    }
+                    attachment.assetId = mappedId;
+                });
+            });
+        });
+
         const importedMessages = Object.values(mappedHistories)
             .reduce((total: number, history: any) => total + (Array.isArray(history) ? history.length : 0), 0);
 
@@ -258,6 +349,8 @@ export class FileManager {
             },
             keyMap,
             skippedSourceKeys,
+            photoAssetIdMap,
+            attachmentAssetIdMap,
             summary: { importedMessages, renamedConflicts, skippedDuplicates },
         };
     }
@@ -278,6 +371,8 @@ export class FileManager {
             data: rawData,
             keyMap: new Map([...sourceKeys].map(key => [key, key])),
             skippedSourceKeys: new Set(),
+            photoAssetIdMap: new Map(),
+            attachmentAssetIdMap: new Map(),
             summary: {
                 importedMessages: Object.values(histories)
                     .reduce((total, history) => total + (Array.isArray(history) ? history.length : 0), 0),
@@ -326,18 +421,130 @@ export class FileManager {
     }
 
     private getExportedAppSettings() {
-        return Object.fromEntries(EXPORTED_APP_SETTING_KEYS.flatMap(key => {
+        return Object.fromEntries(PERSISTED_APP_SETTING_KEYS.flatMap(key => {
             const value = localStorage.getItem(key);
             return value === null ? [] : [[key, value]];
         }));
     }
 
     private restoreAppSettings(value: unknown) {
-        if (!value || typeof value !== 'object') return;
-        const settings = value as Record<string, unknown>;
-        EXPORTED_APP_SETTING_KEYS.forEach(key => {
-            if (typeof settings[key] === 'string') localStorage.setItem(key, settings[key]);
+        restorePersistedAppSettings(value);
+    }
+
+    private captureAppSettingsSnapshot() {
+        return Object.fromEntries(
+            PERSISTED_APP_SETTING_KEYS.map(key => [key, localStorage.getItem(key)]),
+        ) as Record<string, string | null>;
+    }
+
+    private restoreAppSettingsSnapshot(snapshot: Record<string, string | null>) {
+        PERSISTED_APP_SETTING_KEYS.forEach(key => {
+            const value = snapshot[key];
+            if (value === null || value === undefined) localStorage.removeItem(key);
+            else localStorage.setItem(key, value);
         });
+    }
+
+    private createImportTransactionSnapshot(): ImportTransactionSnapshot {
+        return {
+            memory: this.memoryManager.createImportSnapshot(),
+            rooms: this.roomManager?.createImportSnapshot(),
+            appSettings: this.captureAppSettingsSnapshot(),
+            avatarAssets: new Map(),
+            photoAssets: new Map(),
+            attachmentAssets: new Map(),
+        };
+    }
+
+    private async rememberAvatarAsset(snapshot: ImportTransactionSnapshot, key: string) {
+        if (snapshot.avatarAssets.has(key)) return;
+        snapshot.avatarAssets.set(key, await getPersonaAvatarAsset(key) || null);
+    }
+
+    private async rememberPhotoAsset(snapshot: ImportTransactionSnapshot, id: string) {
+        if (snapshot.photoAssets.has(id)) return;
+        snapshot.photoAssets.set(id, await getCharacterPhotoAsset(id) || null);
+    }
+
+    private async rememberAttachmentAsset(snapshot: ImportTransactionSnapshot, id: string) {
+        if (snapshot.attachmentAssets.has(id)) return;
+        snapshot.attachmentAssets.set(id, await getChatAttachment(id) || null);
+    }
+
+    private async rollbackImportTransaction(snapshot: ImportTransactionSnapshot) {
+        const rollbackErrors: unknown[] = [];
+        const attempt = async (operation: () => Promise<void> | void) => {
+            try {
+                await operation();
+            } catch (error) {
+                rollbackErrors.push(error);
+            }
+        };
+
+        for (const [key, asset] of snapshot.avatarAssets) {
+            await attempt(async () => {
+                if (asset) await savePersonaAvatarBlob(key, asset.blob, asset.updatedAt);
+                else await deletePersonaAvatar(key);
+            });
+        }
+        for (const [id, asset] of snapshot.photoAssets) {
+            await attempt(async () => {
+                if (asset) await saveCharacterPhotoAsset(asset);
+                else await deleteCharacterPhotoAsset(id);
+            });
+        }
+        for (const [id, asset] of snapshot.attachmentAssets) {
+            await attempt(async () => {
+                if (asset) await saveChatAttachment(asset);
+                else await deleteChatAttachment(id);
+            });
+        }
+
+        if (snapshot.rooms && this.roomManager) {
+            await attempt(() => this.roomManager!.restoreImportSnapshot(snapshot.rooms!));
+        }
+        await attempt(() => this.memoryManager.restoreImportSnapshot(snapshot.memory));
+        await attempt(() => this.restoreAppSettingsSnapshot(snapshot.appSettings));
+
+        if (rollbackErrors.length) {
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('wetapp-storage-failed'));
+            }
+            throw new AggregateError(rollbackErrors, 'Import rollback was incomplete.');
+        }
+    }
+
+    private async awaitImportTasks(tasks: Promise<void>[]) {
+        const results = await Promise.allSettled(tasks);
+        const failed = results.find(
+            (result): result is PromiseRejectedResult => result.status === 'rejected',
+        );
+        if (failed) throw failed.reason;
+    }
+
+    private async runImportTransaction<T>(
+        operation: (snapshot: ImportTransactionSnapshot) => Promise<T>,
+    ): Promise<T> {
+        const snapshot = this.createImportTransactionSnapshot();
+        const cloudBatch = beginLocalCloudChangeBatch();
+        try {
+            const result = await operation(snapshot);
+            cloudBatch.close(true);
+            return result;
+        } catch (error) {
+            try {
+                await this.rollbackImportTransaction(snapshot);
+                cloudBatch.close(false);
+            } catch (rollbackError) {
+                cloudBatch.close(false);
+                console.error('Import rollback failed:', rollbackError);
+                throw new AggregateError(
+                    [error, rollbackError],
+                    '匯入失敗，而且部分原有資料無法自動回復。請保持此頁開啟並立即匯出備份。',
+                );
+            }
+            throw error;
+        }
     }
 
     private async addRoomAvatarsToZip(zip: any, roomId?: string) {
@@ -363,6 +570,7 @@ export class FileManager {
         zip: any,
         keyMap: Map<string, string> = new Map(),
         skippedSourceKeys: Set<string> = new Set(),
+        transaction?: ImportTransactionSnapshot,
     ) {
         if (!this.roomManager) return;
         const folder = zip.folder('room-avatars');
@@ -389,6 +597,9 @@ export class FileManager {
             } as Record<string, string>)[extension || ''] || 'image/jpeg';
             tasks.push(fileEntry.async('base64').then(async (base64: string) => {
                 if (!this.roomManager?.getMember(roomId, memberId)) return;
+                if (transaction) {
+                    await this.rememberAvatarAsset(transaction, roomAvatarStorageKey(roomId, memberId));
+                }
                 await this.roomManager.setMemberAvatar(
                     roomId,
                     memberId,
@@ -396,7 +607,7 @@ export class FileManager {
                 );
             }));
         });
-        await Promise.all(tasks);
+        await this.awaitImportTasks(tasks);
     }
 
     private async addCharacterPhotosToZip(
@@ -516,15 +727,21 @@ export class FileManager {
     private async restoreCharacterPhotosFromZip(
         zip: any,
         keyMap: Map<string, string> = new Map(),
+        assetIdMap: Map<string, string> = new Map(),
+        skippedSourceKeys: Set<string> = new Set(),
+        transaction?: ImportTransactionSnapshot,
     ) {
         const folder = zip.folder('photos');
         if (!folder) return;
 
-        const promptByAssetId = new Map<string, string>();
-        Object.values(this.memoryManager.getAllChatHistories()).forEach(history => {
+        const photoMetaByAssetId = new Map<string, { personaKey: string; prompt: string }>();
+        Object.entries(this.memoryManager.getAllChatHistories()).forEach(([personaKey, history]) => {
             history.forEach(message => {
                 if (message.content.imageAssetId) {
-                    promptByAssetId.set(message.content.imageAssetId, message.content.imagePrompt || '');
+                    photoMetaByAssetId.set(message.content.imageAssetId, {
+                        personaKey,
+                        prompt: message.content.imagePrompt || '',
+                    });
                 }
             });
         });
@@ -540,18 +757,24 @@ export class FileManager {
             } catch {
                 // Older archives used the raw conversation key.
             }
-            const personaKey = keyMap.get(archivedPersonaKey) || archivedPersonaKey;
             const fileName = pathParts[pathParts.length - 1];
-            const assetId = fileName.replace(/\.[^.]+$/u, '');
-            tasks.push(fileEntry.async('blob').then((blob: Blob) => saveCharacterPhotoAsset({
-                id: assetId,
-                personaKey,
-                blob,
-                prompt: promptByAssetId.get(assetId) || '',
-                createdAt: Date.now(),
-            })).then(() => undefined));
+            const archivedAssetId = fileName.replace(/\.[^.]+$/u, '');
+            const assetId = assetIdMap.get(archivedAssetId) || archivedAssetId;
+            if (skippedSourceKeys.has(archivedPersonaKey) && !assetIdMap.has(archivedAssetId)) return;
+            const meta = photoMetaByAssetId.get(assetId);
+            const personaKey = meta?.personaKey || keyMap.get(archivedPersonaKey) || archivedPersonaKey;
+            tasks.push(fileEntry.async('blob').then(async (blob: Blob) => {
+                if (transaction) await this.rememberPhotoAsset(transaction, assetId);
+                await saveCharacterPhotoAsset({
+                    id: assetId,
+                    personaKey,
+                    blob,
+                    prompt: meta?.prompt || '',
+                    createdAt: Date.now(),
+                });
+            }));
         });
-        await Promise.all(tasks);
+        await this.awaitImportTasks(tasks);
     }
 
     private async addChatAttachmentsToZip(
@@ -584,6 +807,9 @@ export class FileManager {
     private async restoreChatAttachmentsFromZip(
         zip: any,
         keyMap: Map<string, string> = new Map(),
+        assetIdMap: Map<string, string> = new Map(),
+        skippedSourceKeys: Set<string> = new Set(),
+        transaction?: ImportTransactionSnapshot,
     ) {
         const folder = zip.folder('attachments');
         if (!folder) return;
@@ -602,19 +828,28 @@ export class FileManager {
             if (fileEntry.dir) return;
             const parts = relativePath.split('/').filter(Boolean);
             if (parts.length < 2) return;
-            const conversationKey = keyMap.get(parts[0]) || parts[0];
-            const assetId = parts.at(-1)!.replace(/\.[^.]+$/u, '');
+            const archivedConversationKey = parts[0];
+            const archivedAssetId = parts.at(-1)!.replace(/\.[^.]+$/u, '');
+            const assetId = assetIdMap.get(archivedAssetId) || archivedAssetId;
+            if (
+                skippedSourceKeys.has(archivedConversationKey)
+                && !assetIdMap.has(archivedAssetId)
+            ) return;
+            const conversationKey = keyMap.get(archivedConversationKey) || archivedConversationKey;
             const meta = attachmentMeta.get(assetId);
-            tasks.push(fileEntry.async('blob').then((blob: Blob) => saveChatAttachment({
-                id: assetId,
-                conversationKey: meta?.conversationKey || conversationKey,
-                blob,
-                name: meta?.name || fileEntry.name.split('/').at(-1) || assetId,
-                mimeType: meta?.mimeType || blob.type || 'application/octet-stream',
-                createdAt: Date.now(),
-            })).then(() => undefined));
+            tasks.push(fileEntry.async('blob').then(async (blob: Blob) => {
+                if (transaction) await this.rememberAttachmentAsset(transaction, assetId);
+                await saveChatAttachment({
+                    id: assetId,
+                    conversationKey: meta?.conversationKey || conversationKey,
+                    blob,
+                    name: meta?.name || fileEntry.name.split('/').at(-1) || assetId,
+                    mimeType: meta?.mimeType || blob.type || 'application/octet-stream',
+                    createdAt: Date.now(),
+                });
+            }));
         });
-        await Promise.all(tasks);
+        await this.awaitImportTasks(tasks);
     }
 
     private addMemoryMarkdownToZip(zip: any, roomId?: string, personaKey?: string) {
@@ -643,6 +878,7 @@ export class FileManager {
             return;
         }
 
+        const JSZip = await loadJsZip();
         const zip = new JSZip();
         const saveData: { [key: string]: any } = {
             backupFormatVersion: 4,
@@ -672,19 +908,20 @@ export class FileManager {
         this.addMemoryMarkdownToZip(zip, room?.id, room ? undefined : personaKey);
         zip.file("all_data.json", JSON.stringify({ ...saveData, mediaSummary }, null, 2));
 
-        zip.generateAsync({
+        const content = await zip.generateAsync({
             type: "blob",
             compression: "DEFLATE",
             compressionOptions: { level: 6 },
-        }).then((content: Blob) => {
-            const link = document.createElement('a');
-            link.href = URL.createObjectURL(content);
-            const timestamp = new Date().getTime();
-            link.download = `${personaName}_${timestamp}.zip`;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        });
+        }) as Blob;
+        const url = URL.createObjectURL(content);
+        const link = document.createElement('a');
+        link.href = url;
+        const timestamp = new Date().getTime();
+        link.download = `${personaName}_${timestamp}.zip`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
     async createAllDataArchive() {
@@ -698,6 +935,7 @@ export class FileManager {
             throw new Error('沒有任何對話或自訂/修改過的角色可以備份。');
         }
 
+        const JSZip = await loadJsZip();
         const zip = new JSZip();
         const exportSafePersonas = Object.fromEntries(
             Object.entries(personasToSave).map(([key, persona]) => [key, this.createExportSafePersona(persona)]),
@@ -761,13 +999,15 @@ export class FileManager {
 
         try {
             const content = await this.createAllDataArchive();
+            const url = URL.createObjectURL(content);
             const link = document.createElement('a');
-            link.href = URL.createObjectURL(content);
+            link.href = url;
             const timestamp = new Date().getTime();
             link.download = `all_chats_${timestamp}.zip`;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
         } catch (error) {
             console.error("儲存所有對話錯誤:", error);
             alert(`儲存失敗: ${error}`);
@@ -791,36 +1031,107 @@ export class FileManager {
         this.ui.downloadImagesBtn.textContent = '打包中...';
 
         try {
-            const zip = new JSZip();
+            const JSZip = await loadJsZip();
+        const zip = new JSZip();
 
             await Promise.all(imageMessages.map(async (msg, index) => {
-                const blob = msg.content.imageAssetId
-                    ? await getCharacterPhotoBlob(msg.content.imageAssetId)
-                    : await fetch(msg.content.imageUrl!).then(response => response.blob());
-                if (!blob) return;
+                let blob: Blob | null = null;
+                if (msg.content.imageAssetId) {
+                    blob = await getCharacterPhotoBlob(msg.content.imageAssetId);
+                } else if (msg.content.imageUrl) {
+                    const response = await fetch(msg.content.imageUrl);
+                    if (!response.ok) throw new Error(`Image download failed with HTTP ${response.status}.`);
+                    blob = await response.blob();
+                }
+                if (!blob) throw new Error('A selected image is no longer available.');
                 const extension = blob.type.split('/')[1] || 'png';
                 zip.file(`image_${index + 1}.${extension}`, blob);
             }));
 
-            zip.generateAsync({
+            const content = await zip.generateAsync({
                 type: "blob",
                 compression: "DEFLATE",
                 compressionOptions: { level: 6 },
-            }).then((content: Blob) => {
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(content);
-                const timestamp = new Date().getTime();
-                link.download = `${personaName}_images_${timestamp}.zip`;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-            });
+            }) as Blob;
+            const url = URL.createObjectURL(content);
+            const link = document.createElement('a');
+            link.href = url;
+            const timestamp = new Date().getTime();
+            link.download = `${personaName}_images_${timestamp}.zip`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
         } catch (error) {
             console.error("圖片下載錯誤:", error);
             alert(`圖片打包失敗: ${error}`);
         } finally {
             this.ui.downloadImagesBtn.disabled = false;
             this.ui.downloadImagesBtn.textContent = originalText;
+        }
+    }
+
+    private collectReferencedHistoryMedia(chatHistories: Record<string, ChatMessage[]>) {
+        const photos = new Set<string>();
+        const attachments = new Set<string>();
+        Object.values(chatHistories).forEach(history => {
+            history.forEach(message => {
+                const photoId = message?.content?.imageAssetId?.trim();
+                if (photoId) photos.add(photoId);
+                message?.content?.attachments?.forEach(attachment => {
+                    const assetId = attachment?.assetId?.trim();
+                    if (assetId) attachments.add(assetId);
+                });
+            });
+        });
+        return { photos, attachments };
+    }
+
+    private async cleanupUnusedReplacementHistoryMedia(snapshot: MemoryImportSnapshot) {
+        const before = this.collectReferencedHistoryMedia(snapshot.chatHistories);
+        const after = this.collectReferencedHistoryMedia(this.memoryManager.getAllChatHistories());
+        const tasks: Array<Promise<void>> = [];
+
+        before.photos.forEach(id => {
+            if (after.photos.has(id)) return;
+            tasks.push((async () => {
+                try {
+                    if (await getCharacterPhotoAsset(id)) await deleteCharacterPhotoAsset(id);
+                } catch (error) {
+                    console.warn(`Failed to remove unused replaced character photo ${id}:`, error);
+                }
+            })());
+        });
+
+        before.attachments.forEach(id => {
+            if (after.attachments.has(id)) return;
+            tasks.push((async () => {
+                try {
+                    if (await getChatAttachment(id)) await deleteChatAttachment(id);
+                } catch (error) {
+                    console.warn(`Failed to remove unused replaced chat attachment ${id}:`, error);
+                }
+            })());
+        });
+
+        await Promise.all(tasks);
+    }
+
+    private async preflightArchiveMedia(zip: any) {
+        const entries: any[] = [];
+        const standaloneAvatar = zip.file("avatar.png");
+        if (standaloneAvatar && !standaloneAvatar.dir) entries.push(standaloneAvatar);
+
+        ['avatars', 'room-avatars', 'photos', 'attachments'].forEach(folderName => {
+            const folder = zip.folder(folderName);
+            if (!folder) return;
+            folder.forEach((_relativePath: string, fileEntry: any) => {
+                if (!fileEntry.dir) entries.push(fileEntry);
+            });
+        });
+
+        for (const fileEntry of entries) {
+            await fileEntry.async('uint8array');
         }
     }
 
@@ -845,32 +1156,78 @@ export class FileManager {
                 ? this.prepareReplacementImport(rawAllData)
                 : this.prepareMergeSafeImport(rawAllData);
             const allData = prepared.data;
-            this.callbacks.beforeAllDataRestore?.();
-            this.memoryManager.loadAllData(allData, replaceExisting);
-            this.roomManager?.importData(allData.rooms, replaceExisting);
+            await this.preflightArchiveMedia(zip);
+            const commitBatch = beginLocalCloudChangeBatch();
+            let committedSnapshot!: {
+                memory: MemoryImportSnapshot;
+                rooms?: RoomImportSnapshot;
+            };
+            try {
+                committedSnapshot = await this.runImportTransaction(async transaction => {
+                    this.callbacks.beforeAllDataRestore?.();
+                    this.memoryManager.loadAllData(allData, replaceExisting);
+                    this.roomManager?.importData(allData.rooms, replaceExisting, false, true);
 
-            const avatarFolder = zip.folder("avatars");
-            if (avatarFolder) {
-                const avatarPromises: Promise<void>[] = [];
-                avatarFolder.forEach((relativePath: string, fileEntry: any) => {
-                    const sourceKey = relativePath.split('.')[0];
-                    if (prepared.skippedSourceKeys.has(sourceKey)) return;
-                    const key = prepared.keyMap.get(sourceKey) || sourceKey;
-                    if (this.memoryManager.getPersona(key) && !fileEntry.dir) {
-                        avatarPromises.push(fileEntry.async("base64").then(async (base64: string) => {
-                            const mimeType = fileEntry.name.endsWith('png') ? 'image/png' : 'image/jpeg';
-                            await this.memoryManager.setPersonaAvatar(key, `data:${mimeType};base64,${base64}`);
-                        }));
+                    const avatarFolder = zip.folder("avatars");
+                    if (avatarFolder) {
+                        const avatarPromises: Promise<void>[] = [];
+                        avatarFolder.forEach((relativePath: string, fileEntry: any) => {
+                            const sourceKey = relativePath.split('.')[0];
+                            if (prepared.skippedSourceKeys.has(sourceKey)) return;
+                            const key = prepared.keyMap.get(sourceKey) || sourceKey;
+                            if (this.memoryManager.getPersona(key) && !fileEntry.dir) {
+                                avatarPromises.push(fileEntry.async("base64").then(async (base64: string) => {
+                                    const mimeType = fileEntry.name.endsWith('png') ? 'image/png' : 'image/jpeg';
+                                    await this.rememberAvatarAsset(transaction, key);
+                                    await this.memoryManager.setPersonaAvatar(key, `data:${mimeType};base64,${base64}`);
+                                }));
+                            }
+                        });
+                        await this.awaitImportTasks(avatarPromises);
                     }
-                });
-                await Promise.all(avatarPromises);
-            }
 
-            await this.restoreRoomAvatarsFromZip(zip, prepared.keyMap, prepared.skippedSourceKeys);
-            await this.restoreCharacterPhotosFromZip(zip, prepared.keyMap);
-            await this.restoreChatAttachmentsFromZip(zip, prepared.keyMap);
-            this.restoreAppSettings(rawAllData.appSettings);
-            this.callbacks.onAllDataRestored(prepared.summary);
+                    await this.restoreRoomAvatarsFromZip(
+                        zip,
+                        prepared.keyMap,
+                        prepared.skippedSourceKeys,
+                        transaction,
+                    );
+                    await this.restoreCharacterPhotosFromZip(
+                        zip,
+                        prepared.keyMap,
+                        prepared.photoAssetIdMap,
+                        prepared.skippedSourceKeys,
+                        transaction,
+                    );
+                    await this.restoreChatAttachmentsFromZip(
+                        zip,
+                        prepared.keyMap,
+                        prepared.attachmentAssetIdMap,
+                        prepared.skippedSourceKeys,
+                        transaction,
+                    );
+                    this.restoreAppSettings(rawAllData.appSettings);
+                    return {
+                        memory: transaction.memory,
+                        rooms: transaction.rooms,
+                    };
+                });
+
+                await this.memoryManager.cleanupUnusedImportSnapshotAvatars(committedSnapshot.memory);
+                if (committedSnapshot.rooms && this.roomManager) {
+                    await this.roomManager.cleanupUnusedImportSnapshotAvatars(committedSnapshot.rooms);
+                }
+                if (replaceExisting) {
+                    await this.cleanupUnusedReplacementHistoryMedia(committedSnapshot.memory);
+                }
+            } finally {
+                commitBatch.close(true);
+            }
+            try {
+                this.callbacks.onAllDataRestored(prepared.summary);
+            } catch (error) {
+                console.error('All-data restore completion UI failed:', error);
+            }
             return;
         }
 
@@ -881,6 +1238,10 @@ export class FileManager {
 
             const historyData = JSON.parse(historyString);
             const { personaKey, history, personaData } = historyData;
+            if (typeof personaKey !== 'string' || !personaKey.trim()) {
+                throw new Error("無效的角色鍵值或角色資料遺失");
+            }
+            if (!Array.isArray(history)) throw new Error("對話歷史格式錯誤");
             const dataToLoad: any = {
                 customPersonas: personaData ? { [personaKey]: personaData } : {},
                 chatHistories: { [personaKey]: history },
@@ -891,23 +1252,51 @@ export class FileManager {
             const mappedPersonaKey = prepared.keyMap.get(personaKey) || personaKey;
             const mappedHistory = prepared.data.chatHistories[mappedPersonaKey]
                 || this.memoryManager.peekChatHistory(mappedPersonaKey);
-            this.memoryManager.loadAllData(prepared.data);
-
-            if (!mappedPersonaKey || !this.memoryManager.getPersona(mappedPersonaKey)) {
+            const mappedPersona = prepared.data.customPersonas?.[mappedPersonaKey]
+                || this.memoryManager.getPersona(mappedPersonaKey);
+            if (!mappedPersonaKey || !mappedPersona) {
                 throw new Error("無效的角色鍵值或角色資料遺失");
             }
-            if (!Array.isArray(history)) throw new Error("對話歷史格式錯誤");
+            await this.preflightArchiveMedia(zip);
+            await this.runImportTransaction(async transaction => {
+                this.memoryManager.loadAllData(prepared.data);
 
-            const avatarFile = zip.file("avatar.png");
-            if (avatarFile && !prepared.skippedSourceKeys.has(personaKey)) {
-                const base64 = await avatarFile.async("base64");
-                this.memoryManager.updatePersona(mappedPersonaKey, { avatarUrl: `data:image/png;base64,${base64}` });
+                const avatarFile = zip.file("avatar.png");
+                if (avatarFile && !prepared.skippedSourceKeys.has(personaKey)) {
+                    const base64 = await avatarFile.async("base64");
+                    await this.rememberAvatarAsset(transaction, mappedPersonaKey);
+                    await this.memoryManager.setPersonaAvatar(
+                        mappedPersonaKey,
+                        `data:image/png;base64,${base64}`,
+                    );
+                }
+
+                await this.restoreRoomAvatarsFromZip(
+                    zip,
+                    prepared.keyMap,
+                    prepared.skippedSourceKeys,
+                    transaction,
+                );
+                await this.restoreCharacterPhotosFromZip(
+                    zip,
+                    prepared.keyMap,
+                    prepared.photoAssetIdMap,
+                    prepared.skippedSourceKeys,
+                    transaction,
+                );
+                await this.restoreChatAttachmentsFromZip(
+                    zip,
+                    prepared.keyMap,
+                    prepared.attachmentAssetIdMap,
+                    prepared.skippedSourceKeys,
+                    transaction,
+                );
+            });
+            try {
+                this.callbacks.onSingleChatRestored(mappedPersonaKey, mappedHistory);
+            } catch (error) {
+                console.error('Single-chat restore completion UI failed:', error);
             }
-
-            await this.restoreRoomAvatarsFromZip(zip, prepared.keyMap, prepared.skippedSourceKeys);
-            await this.restoreCharacterPhotosFromZip(zip, prepared.keyMap);
-            await this.restoreChatAttachmentsFromZip(zip, prepared.keyMap);
-            this.callbacks.onSingleChatRestored(mappedPersonaKey, mappedHistory);
             return;
         }
 
@@ -919,6 +1308,7 @@ export class FileManager {
             '將以安全合併方式匯入：不會刪除現有聊天室；若同一角色已有不同內容，匯入資料會另存為備份副本。要繼續嗎？',
         )) return false;
 
+        const JSZip = await loadJsZip();
         const zip = await JSZip.loadAsync(blob);
         await this.restoreLoadedZip(zip, replaceExisting);
         return true;

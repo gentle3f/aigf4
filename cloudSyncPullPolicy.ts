@@ -21,3 +21,25 @@ export const shouldSkipRedundantCloudPull = ({
     && cloudSourceDeviceId === localDeviceId
     && syncedUserId === sessionUserId
 );
+
+
+export interface PendingCloudConflictInput {
+    deviceHasSynced: boolean;
+    hasPendingChanges: boolean;
+    cloudStateExists: boolean;
+    cloudSourceDeviceId?: string | null;
+    localDeviceId: string;
+}
+
+export const shouldRecoverPendingCloudConflict = ({
+    deviceHasSynced,
+    hasPendingChanges,
+    cloudStateExists,
+    cloudSourceDeviceId,
+    localDeviceId,
+}: PendingCloudConflictInput) => (
+    deviceHasSynced
+    && hasPendingChanges
+    && cloudStateExists
+    && cloudSourceDeviceId !== localDeviceId
+);

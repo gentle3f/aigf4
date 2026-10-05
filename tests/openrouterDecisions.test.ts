@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import handler, { parseDecisionRequest } from '../api/openrouter-decisions.js';
 import {
+    JEV_GROUP_GATE_SHADOW_QUESTIONS,
     JEV_MODEL,
     JEV_QUESTIONS,
     JEV_WARDROBE_SHADOW_QUESTIONS,
@@ -196,6 +197,28 @@ test('wardrobe production shadow set changes exactly one frozen proposition and 
     });
     assert.equal(response.status, 'ok');
     assert.deepEqual(body.questions, JEV_WARDROBE_SHADOW_QUESTIONS);
+});
+
+test('Group gate production shadow set changes only the repurposed narration slot and keeps V2 calibration wording', async () => {
+    const changed = Object.keys(JEV_QUESTIONS).filter(key => (
+        JEV_QUESTIONS[key as keyof typeof JEV_QUESTIONS].instructions
+        !== JEV_GROUP_GATE_SHADOW_QUESTIONS[key as keyof typeof JEV_GROUP_GATE_SHADOW_QUESTIONS].instructions
+    ));
+    assert.deepEqual(changed, ['group_narration_violation']);
+    assert.match(JEV_GROUP_GATE_SHADOW_QUESTIONS.group_narration_violation.instructions, /revision REQUIRED/i);
+    assert.match(JEV_GROUP_GATE_SHADOW_QUESTIONS.group_narration_violation.instructions, /candidate can be KEPT/i);
+
+    let body: any;
+    const response = await runOpenRouterDecision(state, {
+        env: { OPENROUTER_API: 'server-secret' },
+        useGroupGateShadowQuestions: true,
+        transportImpl: async ({ requestBody }) => {
+            body = JSON.parse(requestBody);
+            return success(upstreamBody());
+        },
+    });
+    assert.equal(response.status, 'ok');
+    assert.deepEqual(body.questions, JEV_GROUP_GATE_SHADOW_QUESTIONS);
 });
 
 test('Jev V3 questions are fourteen short proposition-only NOULs with no route decision', () => {
@@ -408,13 +431,17 @@ test('authenticated endpoint rejects arbitrary browser model and question contro
     }
 });
 
-test('request parser allows only the production envelope or the fixed wardrobe shadow profile', () => {
+test('request parser allows only production and the two fixed shadow profiles', () => {
     assert.deepEqual(parseDecisionRequest({ state }), { state, profile: 'production' });
     assert.deepEqual(parseDecisionRequest({ state, profile: 'wardrobe-v4' }), { state, profile: 'wardrobe-v4' });
+    assert.deepEqual(parseDecisionRequest({ state, profile: 'group-gate-v2' }), { state, profile: 'group-gate-v2' });
     for (const invalid of [
         { state, profile: 'group-v4' },
+        { state, profile: 'group-gate-v1' },
         { state, profile: 'wardrobe-v4', model: 'attacker-model' },
+        { state, profile: 'group-gate-v2', questions: JEV_GROUP_GATE_SHADOW_QUESTIONS },
         { state, questions: JEV_EXPERIMENTAL_QUESTIONS_V4 },
         { profile: 'wardrobe-v4' },
+        { profile: 'group-gate-v2' },
     ]) assert.equal(parseDecisionRequest(invalid), null);
 });

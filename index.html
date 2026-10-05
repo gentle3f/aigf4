@@ -3,8 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <title>Wetapp</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/tailwind.css">
     <link rel="stylesheet" href="/index.css">
@@ -131,9 +133,6 @@
                             <button id="persona-settings-btn" class="dropdown-item">人格設定</button>
                             <button id="cc-model-settings-btn" class="dropdown-item hidden">Cc 模型設定</button>
                             <button id="change-avatar-btn" class="dropdown-item">更換角色頭像</button>
-                            <button id="interests-btn" class="dropdown-item hidden">興趣技能</button>
-                            <button id="date-btn" class="dropdown-item hidden">安排約會</button>
-                            <button id="manual-generate-diary-btn" class="dropdown-item hidden">戀愛日記</button>
                             <button id="album-btn" class="dropdown-item">媒體、連結與文件</button>
                             <button id="attach-file-menu-btn" class="dropdown-item">附加檔案</button>
                             <button id="take-photo-btn" class="dropdown-item">請角色拍照</button>
@@ -193,28 +192,11 @@
             
             <div id="error-message" class="hidden text-red-400 text-sm p-2 text-center bg-gray-800"></div>
             
-            <div id="suggestion-container" class="hidden flex flex-wrap justify-center gap-2 px-4 pb-2">
-                <!-- Suggestion buttons will be appended here -->
-            </div>
-
             <footer class="chat-view-footer">
-                <div id="gift-preview-container" class="hidden relative w-20 h-20 mb-2 p-1 border-2 border-dashed border-yellow-400 rounded-md">
-                    <img id="gift-preview-image" class="w-full h-full object-cover rounded-md">
-                    <button id="remove-gift-btn" class="absolute -top-2 -right-2 bg-red-600 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold hover:bg-red-700 transition-colors">&times;</button>
-                </div>
                 <div id="chat-attachment-preview" class="chat-attachment-preview hidden"></div>
                 <div class="composer-shell">
                 <div class="composer-frame relative flex items-end">
                     <input id="chat-attachment-input" type="file" class="hidden" multiple accept="image/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.markdown,.json,.log,.js,.ts,.py,.yaml,.yml,.sql,video/*">
-                    <button id="suggestion-button" title="建議" class="hidden h-12 w-12 items-center justify-center text-gray-400 hover:text-yellow-300 transition duration-200 flex-shrink-0" aria-label="Get suggestions">
-                       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-6 h-6"><path fill-rule="evenodd" d="M17.884 6.236a.75.75 0 00-1.06-1.06L15.34 6.66l-1.015-1.015a.75.75 0 10-1.06 1.06l1.015 1.015-1.48 1.48a.75.75 0 101.06 1.06l1.48-1.48 1.015 1.015a.75.75 0 101.06-1.06L16.4 7.72l1.484-1.484zM4 14a1 1 0 100 2h8a1 1 0 100-2H4zM4 9a1 1 0 100 2h12a1 1 0 100-2H4zM4 4a1 1 0 000 2h8a1 1 0 100-2H4z" clip-rule="evenodd" /></svg>
-                    </button>
-                    <button id="gift-button" class="hidden h-12 w-12 items-center justify-center text-gray-400 hover:text-yellow-300 transition duration-200 flex-shrink-0" aria-label="Send a gift">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-6 h-6">
-                          <path d="M3.375 3C2.339 3 1.5 3.84 1.5 4.875v.75c0 1.036.84 1.875 1.875 1.875h17.25c1.035 0 1.875-.84 1.875-1.875v-.75C22.5 3.839 21.66 3 20.625 3H3.375Z" />
-                          <path fill-rule="evenodd" d="M3.087 9l.54 9.176A3 3 0 0 0 6.62 21h10.757a3 3 0 0 0 2.995-2.824L20.914 9H3.087Zm6.163 3.75A.75.75 0 0 1 10 12h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1-.75-.75Z" clip-rule="evenodd" />
-                        </svg>
-                    </button>
                     <div class="composer-input-shell">
                         <textarea id="message-input" placeholder="輸入訊息" autocomplete="off" rows="1"></textarea>
                         <button id="composer-camera-button" type="button" class="composer-icon-button" aria-label="請角色拍照" title="請角色拍照">
@@ -524,233 +506,8 @@
 
     <input type="file" id="avatar-upload-input" class="hidden" accept="image/*">
     <input type="file" id="zip-upload-input" class="hidden" accept=".zip">
-    <input type="file" id="gift-upload-input" class="hidden" accept="image/*">
     <input type="file" id="mimic-transcript-input" class="hidden" accept=".txt,.md,.markdown,.json,.log,.csv,.zip,application/json,text/plain,application/zip">
     <input type="file" id="mimic-avatar-input" class="hidden" accept="image/*">
-
-    <!-- Persona Creator Modal -->
-    <div id="persona-creator-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
-        <div class="bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
-            <div class="p-6">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-2xl font-bold text-white">招募社員</h2>
-                     <div class="flex items-center space-x-2">
-                        <button id="randomize-persona-btn" title="隨機生成" class="p-2 rounded-full hover:bg-gray-700 transition-colors">
-                            <svg id="dice-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-6 h-6 text-yellow-300">
-                              <path fill-rule="evenodd" d="M4.5 3A1.5 1.5 0 0 0 3 4.5v15A1.5 1.5 0 0 0 4.5 21h15a1.5 1.5 0 0 0 1.5-1.5v-15A1.5 1.5 0 0 0 19.5 3h-15Zm7.5 3a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm-4.5 6a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3Zm12-3a1.5 1.5 0 1 0-3 0 1.5 1.5 0 0 0 3 0Zm-4.5 6a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3Zm4.5-3a1.5 1.5 0 1 0-3 0 1.5 1.5 0 0 0 3 0Z" clip-rule="evenodd"></path>
-                            </svg>
-                            <svg id="dice-loading-icon" class="animate-spin h-6 w-6 text-yellow-300 hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                        </button>
-                        <button id="close-creator-modal" class="text-gray-400 hover:text-gray-200">
-                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                        </button>
-                    </div>
-                </div>
-                
-                <div id="creator-step-1" class="space-y-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-300 mb-2">同學姓名</label>
-                        <input type="text" id="persona-name" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white placeholder-gray-400 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400" placeholder="例如：美奈子 (Minako)">
-                    </div>
-                    <div class="my-3">
-                        <label class="flex items-center text-gray-300 cursor-pointer w-fit">
-                            <input type="checkbox" id="fictional-persona-checkbox" class="form-checkbox h-4 w-4 text-yellow-500 bg-gray-700 border-gray-600 focus:ring-yellow-400 rounded">
-                            <span class="ml-2 text-sm">虛構人物與社團</span>
-                        </label>
-                    </div>
-                    <div id="club-selection-container">
-                        <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-2">社團</label>
-                            <select id="persona-club" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400">
-                                <option value="健身社">健身社</option>
-                                <option value="寵物社">寵物社</option>
-                                <option value="熱舞社">熱舞社</option>
-                                <option value="登山社">登山社</option>
-                                <option value="心靈社">心靈社</option>
-                                <option value="團康社">團康社</option>
-                                <option value="校刊社">校刊社</option>
-                                <option value="電腦社">電腦社</option>
-                                <option value="電影社">電影社</option>
-                                <option value="動漫社">動漫社</option>
-                                <option value="家政社">家政社</option>
-                                <option value="美妝社">美妝社</option>
-                                <option value="other">其他 (請輸入)</option>
-                            </select>
-                        </div>
-                        <div id="custom-club-container" class="hidden mt-4">
-                            <label class="block text-sm font-medium text-gray-300 mb-2">自訂社團名稱</label>
-                            <input type="text" id="persona-custom-club" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white placeholder-gray-400 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400" placeholder="請輸入社團名稱">
-                        </div>
-                    </div>
-                    <p class="rounded-lg border border-rose-400/20 bg-rose-400/10 px-3 py-2 text-sm text-rose-100">目前角色庫固定建立成年女性角色。</p>
-                    <div class="flex justify-end space-x-3 mt-6">
-                        <button id="cancel-creator" class="px-4 py-2 text-gray-300 border border-gray-600 rounded-md hover:bg-gray-700">取消</button>
-                        <button id="generate-persona" class="px-4 py-2 bg-yellow-400 text-gray-900 font-bold rounded-md hover:bg-yellow-500">生成角色</button>
-                    </div>
-                </div>
-
-                <div id="creator-step-2" class="hidden space-y-4">
-                    <h3 class="text-lg font-semibold mb-4 text-white">角色預覽與編輯</h3>
-                    <div id="generated-persona-preview" class="bg-gray-900/50 p-4 rounded-lg">
-                        <!-- Generated content will be inserted here -->
-                    </div>
-                    <div class="flex justify-end space-x-3 mt-6">
-                        <button id="back-to-step1" class="px-4 py-2 text-gray-300 border border-gray-600 rounded-md hover:bg-gray-700">返回修改</button>
-                        <button id="save-persona" class="px-4 py-2 bg-fuchsia-500 text-white rounded-md hover:bg-fuchsia-600">儲存角色</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Edit Avatar Prompt Modal -->
-    <div id="edit-avatar-prompt-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
-        <div class="bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-full max-w-xl mx-4">
-            <div class="p-6">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-2xl font-bold text-white">編輯頭像提示詞</h2>
-                    <button id="close-prompt-modal" class="text-gray-400 hover:text-gray-200">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                    </button>
-                </div>
-                <div class="space-y-4">
-                    <p class="text-sm text-gray-400">在這裡修改用於生成AI頭像的英文提示詞。更詳細、自然的描述會產生更好的效果。</p>
-                    <textarea id="avatar-prompt-editor" class="w-full h-40 px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400"></textarea>
-                    <div class="flex justify-end space-x-3">
-                        <button id="cancel-prompt-edit" class="px-4 py-2 text-gray-300 border border-gray-600 rounded-md hover:bg-gray-700">取消</button>
-                        <button id="save-prompt-edit" class="px-4 py-2 bg-yellow-400 text-gray-900 font-bold rounded-md hover:bg-yellow-500">儲存並關閉</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Diary Modal -->
-    <div id="diary-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
-        <div class="bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col">
-            <div class="p-4 border-b border-gray-700 flex justify-between items-center flex-shrink-0">
-                <h2 class="text-2xl font-bold text-white">戀愛日記</h2>
-                <button id="close-diary-modal" class="text-gray-400 hover:text-gray-200">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                </button>
-            </div>
-            <div class="p-4 bg-gray-900/50 flex-shrink-0 border-b border-gray-700 space-y-3">
-                <div>
-                    <label for="diary-entry-select" class="block text-sm font-medium text-gray-400 mb-1">日記章節</label>
-                    <select id="diary-entry-select" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400"></select>
-                </div>
-                <div class="flex items-center justify-end">
-                    <div class="flex items-center space-x-2">
-                         <label for="diary-turn-interval-input" class="text-sm text-gray-400">手動建立：每</label>
-                         <input type="number" id="diary-turn-interval-input" class="w-20 px-2 py-1 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400 text-center" min="5" max="50" value="15">
-                         <span class="text-sm text-gray-400">輪</span>
-                    </div>
-                </div>
-            </div>
-            <div id="story-content-container" class="p-6 overflow-y-auto flex-grow">
-                <div id="diary-loading" class="hidden flex flex-col items-center justify-center text-center text-gray-400">
-                    <svg class="animate-spin h-8 w-8 text-yellow-300 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    <p id="diary-loading-text">AI 正在為你們寫下新的日記...</p>
-                </div>
-                <div id="diary-text" class="text-gray-300 whitespace-pre-wrap leading-relaxed"></div>
-            </div>
-            <div class="p-4 border-t border-gray-700 flex-shrink-0 flex justify-between items-center">
-                 <p id="diary-status-text" class="text-sm text-gray-400"></p>
-                 <div class="flex items-center space-x-2">
-                    <button id="generate-diary-btn" class="px-4 py-2 bg-fuchsia-500 text-white font-bold rounded-md hover:bg-fuchsia-600 disabled:bg-gray-600 disabled:cursor-not-allowed">寫新日記</button>
-                    <button id="download-diary-btn" disabled class="px-4 py-2 bg-yellow-400 text-gray-900 font-bold rounded-md hover:bg-yellow-500 disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center space-x-2">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
-                            <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.614L6.295 8.235a.75.75 0 10-1.09 1.03l4.25 4.5a.75.75 0 001.09 0l4.25-4.5a.75.75 0 00-1.09-1.03l-2.955 3.129V2.75z" />
-                            <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
-                        </svg>
-                        <span>儲存日記</span>
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Dating Modal -->
-    <div id="dating-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
-        <div class="bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-full max-w-2xl mx-4">
-            <div class="p-6">
-                <div class="flex justify-between items-center mb-6">
-                    <h2 class="text-2xl font-bold text-white">約會計畫</h2>
-                    <button id="close-dating-modal" class="text-gray-400 hover:text-gray-200">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                    </button>
-                </div>
-                <div class="space-y-6">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-300 mb-2">選擇地點</label>
-                        <div id="location-options" class="grid grid-cols-5 gap-3">
-                            <!-- Location options will be injected by JS -->
-                        </div>
-                        <div class="flex items-center gap-2 mt-3">
-                            <input type="text" id="custom-location-input" class="flex-grow px-3 py-2 border border-gray-600 bg-gray-700 text-white placeholder-gray-400 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400" placeholder="或輸入自訂地點...">
-                            <button id="random-location-btn" class="p-2 rounded-full hover:bg-gray-700 transition-colors" title="隨機地點">
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5 text-yellow-300"><path fill-rule="evenodd" d="M15.312 11.342a1.25 1.25 0 11-2.205-1.175L14.28 8.99a.75.75 0 00-1.06-1.06l-1.176 1.175a1.25 1.25 0 11-1.591-1.59l1.176-1.176a.75.75 0 00-1.06-1.06l-1.175 1.175a1.25 1.25 0 11-2.205-1.175L8.99 4.688a.75.75 0 00-1.06-1.06l-1.176 1.175a1.25 1.25 0 11-1.59-1.591l1.176-1.176a.75.75 0 00-1.06-1.06L4.688 2.12a1.25 1.25 0 11-1.175-2.205L2.12 1.312a.75.75 0 00-1.06 1.06l1.175 1.176a1.25 1.25 0 111.59 1.59L2.65 4.024a.75.75 0 001.06 1.06l1.175-1.175a1.25 1.25 0 112.205 1.175L5.719 6.26a.75.75 0 001.06 1.06l1.176-1.175a1.25 1.25 0 111.591 1.59L8.37 8.91a.75.75 0 001.06 1.06l1.175-1.176a1.25 1.25 0 112.205 1.175L11.01 11.312a.75.75 0 001.06 1.06l1.176-1.175a1.25 1.25 0 111.59 1.59l-1.176 1.176a.75.75 0 001.06 1.06l1.175-1.175a1.25 1.25 0 111.175 2.205l-1.401 1.4a.75.75 0 00-1.06-1.06l1.175-1.176z" clip-rule="evenodd" /></svg>
-                            </button>
-                        </div>
-                    </div>
-                    <div>
-                        <label for="date-duration" class="block text-sm font-medium text-gray-300 mb-2">約會時長 (1-6 小時)</label>
-                        <input type="number" id="date-duration" class="w-full px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400" min="1" max="6" value="3">
-                    </div>
-                    <div class="flex justify-end space-x-3 mt-6">
-                        <button id="cancel-dating" class="px-4 py-2 text-gray-300 border border-gray-600 rounded-md hover:bg-gray-700">取消</button>
-                        <button id="start-date-btn" class="px-4 py-2 bg-fuchsia-500 text-white font-bold rounded-md hover:bg-fuchsia-600 flex items-center justify-center">
-                            <span id="start-date-text">開始約會</span>
-                            <svg id="start-date-loading" class="animate-spin h-5 w-5 text-white hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <!-- AI Date Proposal Modal -->
-    <div id="date-proposal-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
-        <div class="bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-full max-w-md mx-4">
-            <div id="date-proposal-content" class="p-6 text-center space-y-4">
-                <div id="date-proposal-avatar" class="mx-auto w-20 h-20 rounded-full bg-gray-700"></div>
-                <h3 id="date-proposal-name" class="text-xl font-bold text-white"></h3>
-                <p id="date-proposal-text" class="text-gray-300"></p>
-                <div class="bg-gray-900/50 p-3 rounded-lg">
-                    <p class="text-sm text-gray-400">約會提案</p>
-                    <p class="text-lg text-white font-semibold"><span id="date-proposal-location"></span> (<span id="date-proposal-duration"></span> 小時)</p>
-                </div>
-                <div class="flex justify-center space-x-4 pt-4">
-                    <button id="decline-date-btn" class="px-6 py-2 text-gray-300 border border-gray-600 rounded-md hover:bg-gray-700">下次再說</button>
-                    <button id="accept-date-btn" class="px-6 py-2 bg-fuchsia-500 text-white font-bold rounded-md hover:bg-fuchsia-600">好啊，走吧！</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Interests Modal -->
-    <div id="interests-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
-        <div class="bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-full max-w-3xl mx-4 max-h-[90vh] flex flex-col">
-            <div class="p-4 border-b border-gray-700 flex justify-between items-center flex-shrink-0">
-                <h2 id="interests-modal-title" class="text-2xl font-bold text-white">興趣技能</h2>
-                <button id="close-interests-modal" class="text-gray-400 hover:text-gray-200">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                </button>
-            </div>
-            <div id="interests-grid-container" class="p-6 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-4">
-                <!-- Interest cards will be injected here by JS -->
-            </div>
-        </div>
-    </div>
 
     <!-- Photo Album Modal -->
     <div id="album-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
@@ -914,28 +671,6 @@
                     <button id="save-and-exit-btn" class="w-full px-6 py-3 bg-yellow-400 text-gray-900 font-bold rounded-md hover:bg-yellow-500 transition-colors">儲存並離開</button>
                     <button id="exit-without-saving-btn" class="w-full px-6 py-3 bg-gray-600 text-gray-200 rounded-md hover:bg-gray-700 transition-colors">直接離開</button>
                     <button id="cancel-exit-btn" class="w-full px-6 py-2 text-gray-400 hover:bg-gray-700/50 rounded-md mt-2 transition-colors">取消</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Memory Modal -->
-    <div id="memory-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
-        <div class="bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-full max-w-xl mx-4">
-            <div class="p-6">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-2xl font-bold text-white">角色記憶</h2>
-                    <button id="close-memory-modal" class="text-gray-400 hover:text-gray-200">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                    </button>
-                </div>
-                <div class="space-y-4">
-                    <p class="text-sm text-gray-400">在這裡輸入你希望角色永遠記住的事情，例如「不要使用粗體字」或「我們的紀念日是10月25日」。這些記憶會影響角色的回應方式。</p>
-                    <textarea id="memory-editor" class="w-full h-40 px-3 py-2 border border-gray-600 bg-gray-700 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-400" placeholder="輸入永久記憶..."></textarea>
-                    <div class="flex justify-end space-x-3">
-                        <button id="cancel-memory-edit" class="px-4 py-2 text-gray-300 border border-gray-600 rounded-md hover:bg-gray-700">取消</button>
-                        <button id="save-memory-edit" class="px-4 py-2 bg-yellow-400 text-gray-900 font-bold rounded-md hover:bg-yellow-500">儲存記憶</button>
-                    </div>
                 </div>
             </div>
         </div>

@@ -1,8 +1,6 @@
 import {
     ChatContextBridge,
     ChatMessage,
-    Persona,
-    PersonaMemoryEntry,
 } from './managers.js';
 import { ChatRoom, RoomMember } from './roomManager.js';
 
@@ -213,47 +211,4 @@ export const contextBridgeDisplayText = (bridge: ChatContextBridge) => {
         return `${bridge.targetMemberName || '角色'} 已回到目前場景，並已取得必要的情境摘要。`;
     }
     return `已把「${bridge.sourceTitle}」的近期情境承接到新群組。`;
-};
-
-const roomMemoryToPersonaMemory = (member: RoomMember, type: 'soul' | 'memory'): PersonaMemoryEntry[] => {
-    const entries = type === 'soul' ? member.soul : member.memories;
-    return entries.map(entry => ({
-        id: entry.id,
-        kind: entry.kind,
-        title: entry.title,
-        summary: entry.summary,
-        originalText: entry.originalText,
-        sourceMessageIds: entry.sourceMessageIds,
-        sourceMessageIndexes: entry.sourceMessageIndexes,
-        createdAt: entry.createdAt,
-        pinned: type === 'soul' || entry.pinned,
-    }));
-};
-
-const mergeMemoryEntries = (entries: PersonaMemoryEntry[]) => {
-    const seen = new Set<string>();
-    return entries.filter(entry => {
-        const fingerprint = `${entry.kind}:${entry.summary}`.replace(/\s+/gu, ' ').trim().toLocaleLowerCase();
-        if (!fingerprint || seen.has(fingerprint)) return false;
-        seen.add(fingerprint);
-        return true;
-    });
-};
-
-export const roomMemberToPersona = (member: RoomMember, sourcePersona?: Persona): Persona => {
-    const base = clone(sourcePersona || member.persona);
-    const roomPersona = clone(member.persona);
-    return {
-        ...base,
-        ...roomPersona,
-        avatarUrl: roomPersona.avatarUrl || base.avatarUrl || null,
-        soul: mergeMemoryEntries([
-            ...(base.soul || []),
-            ...roomMemoryToPersonaMemory(member, 'soul'),
-        ]),
-        memories: mergeMemoryEntries([
-            ...(base.memories || []),
-            ...roomMemoryToPersonaMemory(member, 'memory'),
-        ]),
-    };
 };

@@ -5,10 +5,10 @@ import {
     contextBridgeToSystemPrompt,
     ensureLatestSceneTransitionBridge,
     findLatestPrivateReturnHandoff,
-    roomMemberToPersona,
     selectLatestSceneHistory,
     selectTransferContext,
 } from '../conversationTransfer.js';
+import { roomMemberToPersona } from '../conversationTransferPersona.js';
 import { ChatMessage, MemoryManager, Persona } from '../managers.js';
 import { ChatRoom, RoomMember } from '../roomManager.js';
 

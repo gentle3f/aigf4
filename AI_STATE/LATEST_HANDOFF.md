@@ -1,17 +1,45 @@
 # Latest AIGF Handoff
 
-Authoritative handoff:
-- `AI_STATE/HANDOFF_20260927_AIGF_JEV_PERSISTENCE_CLEANUP_INDEX_NEXT.md`
+Authoritative current handoff:
+- `AI_STATE/HANDOFF_20261005_AIGF_RECOVERED_AUTHORITATIVE.md`
 
-Read it before continuing AIGF work.
+Recovered production runtime baseline:
+- Vercel deployment `dpl_4xLXbtKfgnvHseC2NWGYsBQAYkqb`
+- deployed runtime content corresponding to lost local-only commit `eb20be4187aa531c9b9c8ce80e54c1b39051a8ff Add production favicon`
 
-Current branch at handoff:
+Reconstructed final production E2E documentation:
+- `AI_STATE/HANDOFF_20260929_AIGF_PRODUCTION_E2E_REGRESSION.md`
+- `AI_STATE/PRODUCTION_E2E_REGRESSION_MATRIX_20260929.md`
+
+Important late surviving handoffs:
+- `AI_STATE/HANDOFF_20260929_AIGF_BROAD_RELIABILITY_AUDIT.md`
+- `AI_STATE/HANDOFF_20260929_AIGF_PERFORMANCE_DIAGNOSTICS_EXPORT.md`
+- `AI_STATE/HANDOFF_20260929_AIGF_MEMORY_V5_DIAGNOSTICS.md`
+- `AI_STATE/HANDOFF_20260929_AIGF_MESSAGE_RECALL_HARDENED.md`
+- `AI_STATE/HANDOFF_20260929_AIGF_MEMORY_V5_DEEP_RECALL.md`
+- `AI_STATE/HANDOFF_20260929_AIGF_PHOTO_FALLBACK_LADDER.md`
+
+Branch:
 - `perf/cleanup-send-latency-20260923`
 
-Current code HEAD before the handoff-doc commit:
-- `d06b102c0d10f0640525849cad721d4684ecec02`
+Recovery validation on 2026-10-05:
+- full suite **650/650 PASS**
+- typecheck PASS
+- production build PASS
+- main JS ~360.60 kB minified / ~125.87 kB gzip
+- npm production audit: 0 vulnerabilities
+- Vercel recovery manifest: 534/534 files downloaded, 0 failed
+
+Git lineage warning:
+- GitHub history survived only through `19fc7d5`.
+- Later runtime content was recovered from Vercel, not from the lost Git objects.
+- Do not pretend the new recovery commit is the original `eb20be4` object.
+- The final pre-loss local HEAD was known as `7cf4c89`, with post-`eb20be4` changes being documentation-only.
 
 Mandatory:
-- Use GEN-FUJI Local MCP for all local/repo work.
-- Do not use Codex quota.
-- Do not use Remote Desktop Commander.
+- GEN-FUJI Local MCP only.
+- No Codex quota.
+- No Remote Desktop Commander.
+- Do not weaken MCP safety.
+- Do not redo completed Memory V5, recall, photo fallback, Jev shadow, decomposition, performance diagnostics, or reliability work without evidence.
+- Prioritize real user-observed failures.

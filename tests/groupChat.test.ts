@@ -1,16 +1,20 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
-    buildGroupSystemPromptWithAccounting,
-    buildGroupSystemPrompt,
     contentToGroupHistoryText,
     getGroupDisplaySegments,
     groupNarrationUsesFirstPerson,
     parseGroupGeneration,
     selectGroupHistorySinceCurrentRealityLayer,
     selectLegacyGroupHistory,
+    stripGroupTransportResidue,
     trimTrailingUnansweredUserMessages,
 } from '../groupChat.js';
+import {
+    buildGroupSystemPrompt,
+    buildGroupSystemPromptWithAccounting,
+} from '../groupChatPrompt.js';
 import { summarizePromptComponents } from '../promptAccounting.js';
 import { ChatMessage, Content, MemoryManager } from '../managers.js';
 import {
@@ -350,6 +354,134 @@ test('group prompt pins returned private context to its owner', () => {
     assert.match(prompt, /海邊的事不要忘記/u);
     assert.match(prompt, /Only Jennie and the user initially know/u);
     assert.match(prompt, /never ask the user to repeat/u);
+});
+
+test('group parser keeps visible prose before an empty chat tag without leaking transport metadata', () => {
+    const raw = [
+        '（IU 輕輕笑了一下。）好啦，我知道了，返去再慢慢傾。',
+        '<chat> </chat>',
+        '<scene>{"location":"酒店路上","reality_layer":"physical","present_member_ids":["iu","jennie"],"summary":"眾人正在返回酒店。","unresolved":[],"wardrobe_updates":{"user":"KEEP","members":[{"member_id":"iu","outfit":"KEEP"},{"member_id":"jennie","outfit":"KEEP"}]}}</scene>',
+        '<npc_candidate>null</npc_candidate>',
+    ].join(' ');
+
+    const parsed = parseGroupGeneration(raw, createRoom(), 'iu');
+
+    assert.match(parsed.text, /返去再慢慢傾/u);
+    assert.equal(parsed.text.includes('<chat>'), false);
+    assert.equal(parsed.text.includes('<scene>'), false);
+    assert.equal(parsed.text.includes('present_member_ids'), false);
+    assert.equal(parsed.text.includes('<npc_candidate>'), false);
+    assert.equal(parsed.scene.location, '酒店路上');
+    assert.equal(parsed.scene.summary, '眾人正在返回酒店。');
+    assert.equal(parsed.npcCandidate, undefined);
+});
+
+test('legacy display repair strips a trailing empty group envelope from visible prose', () => {
+    const room = createRoom();
+    const content: Content = {
+        text: '（IU 抬起眼。）我哋走啦。'
+            + '<chat></chat>'
+            + '<scene>{"location":"門外","reality_layer":"physical","present_member_ids":["iu","jennie"],"summary":"準備離開。","unresolved":[]}</scene>'
+            + '<npc_candidate>null</npc_candidate>',
+    };
+
+    const display = getGroupDisplaySegments(content, room, 'iu');
+    const visible = display.map(segment => segment.text).join(' ');
+
+    assert.match(visible, /我哋走啦/u);
+    assert.equal(visible.includes('<scene>'), false);
+    assert.equal(visible.includes('present_member_ids'), false);
+});
+
+
+test('group parser strips transport residue embedded inside an otherwise valid dialogue segment', () => {
+    const parsed = parseGroupGeneration(JSON.stringify({
+        segments: [
+            {
+                type: 'dialogue',
+                speaker_id: 'iu',
+                text: '我哋返去啦。</chat><scene>{"location":"酒店大堂","summary":"transport only"}</scene><npc_candidate>null</npc_candidate>',
+            },
+        ],
+        scene: {
+            location: '酒店大堂',
+            reality_layer: 'physical',
+            present_member_ids: ['iu', 'jennie'],
+            summary: '準備返房。',
+            unresolved: [],
+        },
+        npc_candidate: null,
+    }), createRoom(), 'iu');
+
+    assert.equal(parsed.segments[0]?.text, '我哋返去啦。');
+    assert.equal(parsed.text.includes('<scene>'), false);
+    assert.equal(parsed.text.includes('transport only'), false);
+    assert.equal(parsed.text.includes('<npc_candidate>'), false);
+});
+
+test('group parser truncates malformed trailing transport residue without requiring closing tags', () => {
+    const parsed = parseGroupGeneration(JSON.stringify({
+        segments: [
+            {
+                type: 'dialogue',
+                speaker_id: 'jennie',
+                text: '我等你。</chat><scene>{"location":"門外"',
+            },
+        ],
+        scene: {
+            location: '門外',
+            reality_layer: 'physical',
+            present_member_ids: ['iu', 'jennie'],
+            summary: 'Jennie 在門外等候。',
+            unresolved: [],
+        },
+        npc_candidate: null,
+    }), createRoom(), 'jennie');
+
+    assert.equal(parsed.segments[0]?.text, '我等你。');
+    assert.equal(parsed.text.includes('<scene'), false);
+    assert.equal(parsed.text.includes('"location"'), false);
+});
+
+test('legacy group display and history strip transport residue stored inside segment text', () => {
+    const room = createRoom();
+    const content: Content = {
+        text: 'legacy visible text',
+        segments: [
+            {
+                type: 'dialogue',
+                speakerId: 'iu',
+                speakerName: 'IU',
+                text: '我記住喇。</chat><scene>{"location":"客廳"}</scene><npc_candidate>null</npc_candidate>',
+            },
+        ],
+    };
+
+    const display = getGroupDisplaySegments(content, room, 'iu');
+    const history = contentToGroupHistoryText(content, room);
+
+    assert.equal(display[0]?.text, '我記住喇。');
+    assert.equal(history.includes('<scene>'), false);
+    assert.equal(history.includes('npc_candidate'), false);
+    assert.equal(history.includes('"location"'), false);
+});
+
+test('Group sidebar preview uses the shared transport sanitizer for room conversations only', () => {
+    assert.equal(
+        stripGroupTransportResidue('Jennie：「返酒店啦。」 </chat><scene>{"location":"車上"}</scene><npc_candidate>null</npc_candidate>'),
+        'Jennie：「返酒店啦。」',
+    );
+
+    const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
+    assert.match(source, /const visiblePreview = roomManager\.getRoom\(key\)\s*\? stripGroupTransportResidue\(rawPreview\)\s*: rawPreview;/s);
+    assert.match(source, /return visiblePreview\.replace\(\/\\s\+\/gu, ' '\)\.trim\(\)/);
+});
+
+test('Group bot rendering never falls through to raw content text when safe segments are empty', () => {
+    const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
+
+    assert.match(source, /else if \(sender === 'bot' && currentRoom\) \{/);
+    assert.doesNotMatch(source, /sender === 'bot' && currentRoom && groupDisplaySegments\.length/);
 });
 
 test('group parser accepts the reliable transcript envelope and scene metadata', () => {
@@ -912,4 +1044,42 @@ test('curated IU group links the richest legacy room without copying or changing
     assert.equal(room.legacySourcePersonaKey, 'custom_iu_archive');
     assert.equal(chatHistories.get('custom_iu_archive'), longHistory);
     assert.equal(chatHistories.get(room.id)?.length, 1);
+});
+
+
+test('Memory V5 deep recall expands present-member memory without leaking absent-member private memory', () => {
+    const room = createRoom();
+    const iu = room.members.find(item => item.id === 'iu')!;
+    const irene = room.members.find(item => item.id === 'irene')!;
+
+    const makePrivateMemory = (id: string, ownerId: string, label: string) => ({
+        id,
+        kind: 'event' as const,
+        title: label,
+        summary: '一段只屬於該角色的旅行細節。',
+        participants: [ownerId],
+        subjectIds: [ownerId],
+        knowerIds: [ownerId],
+        visibility: 'restricted' as const,
+        importance: 3,
+        sourceMessageIds: [`source-${id}`],
+        searchTags: ['旅行', label],
+        createdAt: Number(id.match(/\d+/)?.[0] || 1),
+        pinned: false,
+    });
+
+    iu.memories = Array.from({ length: 10 }, (_, index) => (
+        makePrivateMemory(`iu-${index + 1}`, 'iu', `IU記憶-${index + 1}`)
+    ));
+    irene.memories = Array.from({ length: 10 }, (_, index) => (
+        makePrivateMemory(`irene-${index + 1}`, 'irene', `IRENE私密-${index + 1}`)
+    ));
+
+    const ordinary = buildGroupSystemPrompt(room, '旅行計劃點？');
+    const deep = buildGroupSystemPrompt(room, '你仲記唔記得以前旅行嘅細節？');
+
+    assert.equal(ordinary.match(/IU記憶-/gu)?.length, 7);
+    assert.equal(deep.match(/IU記憶-/gu)?.length, 10);
+    assert.equal(ordinary.match(/IRENE私密-/gu)?.length || 0, 0);
+    assert.equal(deep.match(/IRENE私密-/gu)?.length || 0, 0);
 });

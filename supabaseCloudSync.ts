@@ -1,13 +1,35 @@
 import { createClient, RealtimeChannel, Session, SupabaseClient } from '@supabase/supabase-js';
-import { listPersonaAvatarAssets, savePersonaAvatarBlob } from './avatarStore.js';
-import { listChatAttachments, saveChatAttachment } from './chatMediaStore.js';
-import { mergeChatHistoryMaps } from './cloudMessageMerge.js';
+import {
+    deletePersonaAvatar,
+    getPersonaAvatarAsset,
+    listPersonaAvatarAssets,
+    savePersonaAvatarBlob,
+} from './avatarStore.js';
+import type { StoredPersonaAvatar } from './avatarStore.js';
+import {
+    deleteChatAttachment,
+    getChatAttachment,
+    listChatAttachments,
+    saveChatAttachment,
+} from './chatMediaStore.js';
+import type { StoredChatAttachment } from './chatMediaStore.js';
+import { filterRemoteStateEntities, findLocallyDeletedIndexedKeys, mergeChatHistoryMaps } from './cloudMessageMerge.js';
 import { readCloudSyncIndex, writeCloudSyncIndex } from './cloudSyncIndexStore.js';
-import { LOCAL_CLOUD_CHANGE_EVENT, LocalCloudChangeScope } from './cloudSyncEvents.js';
-import { shouldSkipRedundantCloudPull } from './cloudSyncPullPolicy.js';
+import { isLocalCloudChangeBatchActive, LOCAL_CLOUD_CHANGE_EVENT, LocalCloudChangeScope } from './cloudSyncEvents.js';
+import { isPersistedAppSettingKey, PERSISTED_APP_SETTING_KEYS } from './appSettings.js';
+import { shouldRecoverPendingCloudConflict, shouldSkipRedundantCloudPull } from './cloudSyncPullPolicy.js';
+import { isCloudStateRevisionConflict, normalizeCloudStateRevision } from './cloudStateRevision.js';
 import { ChatMessage, MemoryManager, Persona } from './managers.js';
-import { listCharacterPhotoAssets, saveCharacterPhotoAsset } from './photoStore.js';
+import type { MemoryImportSnapshot } from './managers.js';
+import {
+    deleteCharacterPhotoAsset,
+    getCharacterPhotoAsset,
+    listCharacterPhotoAssets,
+    saveCharacterPhotoAsset,
+} from './photoStore.js';
+import type { CharacterPhotoAsset } from './photoStore.js';
 import { ChatRoom, resolveRoomAvatarStorageKey, RoomManager } from './roomManager.js';
+import type { RoomImportSnapshot } from './roomManager.js';
 
 const OWNER_EMAIL = 'gentle3f@gmail.com';
 const STORAGE_BUCKET = 'wetapp-private';
@@ -15,31 +37,40 @@ const DEVICE_ID_KEY = 'wetappCloudDeviceIdV1';
 const MESSAGE_INDEX_KEY = 'wetappCloudMessageIndexV1';
 const CONVERSATION_INDEX_KEY = 'wetappCloudConversationIndexV1';
 const MEDIA_INDEX_KEY = 'wetappCloudMediaIndexV1';
+const STATE_ENTITY_INDEX_KEY = 'wetappCloudStateEntityIndexV1';
 const PENDING_KEY = 'wetappCloudPendingV1';
 const LAST_SYNC_KEY = 'wetappCloudLastSyncAtV1';
 const SYNCED_USER_ID_KEY = 'wetappCloudSyncedUserIdV1';
 const PULL_RECOVERY_KEY = 'wetappCloudPullRecoveryV1';
 const SAFE_MERGE_VERSION_KEY = 'wetappCloudSafeMergeV1';
-const APP_SETTING_KEYS = [
-    'veniceAssistantModel',
-    'aigf4ChatModelSettingsV1',
-    'veniceImageGenerateModel',
-    'veniceImageEditModel',
-    'veniceImageAdultConfirmed',
-    'veniceImageSeed',
-    'veniceImageSeedLocked',
-    'veniceVideoImageModel',
-    'veniceVideoTextModel',
-    'veniceVideoAdultConfirmed',
-    'aigf4RandomPersonaVariationsV2',
-];
-
-const SUPABASE_URL = String(import.meta.env.VITE_SUPABASE_URL || '').trim();
+const CLOUD_RETRY_BASE_DELAY_MS = 1_500;
+const CLOUD_RETRY_MAX_DELAY_MS = 30_000;
+const SUPABASE_URL = String(import.meta.env?.VITE_SUPABASE_URL || '').trim();
 const SUPABASE_KEY = String(
-    import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
-    || import.meta.env.VITE_SUPABASE_ANON_KEY
+    import.meta.env?.VITE_SUPABASE_PUBLISHABLE_KEY
+    || import.meta.env?.VITE_SUPABASE_ANON_KEY
     || '',
 ).trim();
+
+class CloudSessionSupersededError extends Error {
+    constructor() {
+        super('Cloud session changed while an operation was in flight.');
+        this.name = 'CloudSessionSupersededError';
+    }
+}
+
+const authErrorMessage = (error: unknown, fallback: string) => {
+    if (error instanceof Error && error.message) return error.message;
+    if (
+        error
+        && typeof error === 'object'
+        && 'message' in error
+        && typeof (error as { message?: unknown }).message === 'string'
+    ) {
+        return (error as { message: string }).message;
+    }
+    return String(error || fallback);
+};
 
 export type SupabaseCloudSyncPhase =
     | 'unconfigured'
@@ -106,6 +137,18 @@ interface LocalCloudMedia extends CloudMediaRow {
     blob: Blob;
 }
 
+interface CloudMessagePushPlan {
+    hashes: Record<string, string>;
+    conversationIndex: Record<string, string>;
+    removedByConversation: Array<[string, string[]]>;
+    removedConversations: string[];
+}
+
+interface CloudMediaPushPlan {
+    nextIndex: Record<string, string>;
+    removedIds: string[];
+}
+
 interface CloudStatePayload {
     schemaVersion: 1;
     customPersonas: Record<string, Persona>;
@@ -113,6 +156,21 @@ interface CloudStatePayload {
     interests: ReturnType<MemoryManager['getAllInterests']>;
     rooms: ReturnType<RoomManager['exportData']>;
     appSettings: Record<string, string>;
+}
+
+interface CloudPullTransactionSnapshot {
+    memory: MemoryImportSnapshot;
+    rooms: RoomImportSnapshot;
+    appSettings: Record<string, string | null>;
+    avatarAssets: Map<string, StoredPersonaAvatar | null>;
+    photoAssets: Map<string, CharacterPhotoAsset | null>;
+    attachmentAssets: Map<string, StoredChatAttachment | null>;
+    indexes: {
+        messages: Record<string, string>;
+        conversations: Record<string, string>;
+        media: Record<string, string>;
+        stateEntities: Record<string, string>;
+    };
 }
 
 const clone = <T>(value: T): T => {
@@ -179,6 +237,17 @@ export class SupabaseCloudSyncManager {
     private pullRecoveryRequired = localStorage.getItem(PULL_RECOVERY_KEY) === 'true';
     private pushTimer: number | null = null;
     private pullTimer: number | null = null;
+    private cloudRetryAttempt = 0;
+    private authRetryAttempt = 0;
+    private authRetryTimer: number | null = null;
+    private authStateChangeEpoch = 0;
+    private authRefreshEpoch = 0;
+    private sessionGeneration = 0;
+    private realtimeRetryAttempt = 0;
+    private realtimeRetryTimer: number | null = null;
+    private lastObservedCloudStateRevision: number | null = null;
+    private remoteStateChangeEpoch = 0;
+    private reconciledRemoteStateChangeEpoch = 0;
     private started = false;
 
     constructor(memoryManager: MemoryManager, roomManager: RoomManager, callbacks: CloudSyncCallbacks) {
@@ -224,35 +293,56 @@ export class SupabaseCloudSyncManager {
         document.addEventListener('visibilitychange', this.handleVisibilityChange);
 
         this.client.auth.onAuthStateChange((_event, session) => {
-            window.setTimeout(() => void this.applySession(session), 0);
+            const authStateChangeEpoch = ++this.authStateChangeEpoch;
+            this.clearAuthRetryState();
+            window.setTimeout(() => {
+                if (this.authStateChangeEpoch !== authStateChangeEpoch) return;
+                void this.applySession(session).catch(error => {
+                    if (this.authStateChangeEpoch !== authStateChangeEpoch) return;
+                    this.handleSyncError(error, '雲端登入狀態更新失敗');
+                    this.scheduleAuthSessionRetry();
+                });
+            }, 0);
         });
 
         this.setState('connecting', '正在檢查雲端登入…');
-        const { data, error } = await this.client.auth.getSession();
-        if (error) {
-            this.setState('error', error.message);
-            return;
-        }
-        await this.applySession(data.session);
+        await this.refreshAuthSession();
     }
 
     async sendMagicLink(email: string) {
         if (!this.client) throw new Error('Supabase 尚未設定。');
         const normalized = email.trim().toLocaleLowerCase();
         if (normalized !== OWNER_EMAIL) throw new Error('這個雲端空間只接受已設定的擁有人帳戶。');
+        const authStateChangeEpoch = this.authStateChangeEpoch;
+        const sessionGeneration = this.sessionGeneration;
+        const magicLinkTargetIsCurrent = () => (
+            this.authStateChangeEpoch === authStateChangeEpoch
+            && this.sessionGeneration === sessionGeneration
+        );
         this.setState('sending_link', '正在寄出安全登入連結…');
-        const { error } = await this.client.auth.signInWithOtp({
-            email: normalized,
-            options: {
-                emailRedirectTo: `${window.location.origin}${window.location.pathname}`,
-                shouldCreateUser: true,
-            },
-        });
-        if (error) {
-            this.setState('error', error.message);
-            throw error;
+        try {
+            const { error } = await this.client.auth.signInWithOtp({
+                email: normalized,
+                options: {
+                    emailRedirectTo: `${window.location.origin}${window.location.pathname}`,
+                    shouldCreateUser: true,
+                },
+            });
+            if (error) {
+                const message = authErrorMessage(error, '未能傳送登入連結。');
+                if (!magicLinkTargetIsCurrent()) throw new Error(message);
+                this.setState('error', message);
+                throw new Error(message);
+            }
+            if (!magicLinkTargetIsCurrent()) return;
+            this.setState('signed_out', `登入連結已寄到 ${OWNER_EMAIL}，請在同一裝置開啟。`);
+        } catch (error) {
+            if (!magicLinkTargetIsCurrent()) throw error;
+            if (this.state.phase === 'error') throw error;
+            const message = authErrorMessage(error, '未能傳送登入連結。');
+            this.setState('error', message);
+            throw new Error(message);
         }
-        this.setState('signed_out', `登入連結已寄到 ${OWNER_EMAIL}，請在同一裝置開啟。`);
     }
 
     async signInWithPassword(email: string, password: string) {
@@ -260,58 +350,202 @@ export class SupabaseCloudSyncManager {
         const normalized = email.trim().toLocaleLowerCase();
         if (normalized !== OWNER_EMAIL) throw new Error('這個雲端空間只接受已設定的擁有人帳戶。');
         if (!password) throw new Error('請輸入雲端密碼。');
+        const authStateChangeEpoch = this.authStateChangeEpoch;
+        const sessionGeneration = this.sessionGeneration;
+        const loginTargetIsCurrent = () => (
+            this.authStateChangeEpoch === authStateChangeEpoch
+            && this.sessionGeneration === sessionGeneration
+        );
         this.setState('connecting', '正在以密碼登入…');
-        const { data, error } = await this.client.auth.signInWithPassword({
-            email: normalized,
-            password,
-        });
-        if (error) {
-            const message = /invalid login credentials/iu.test(error.message)
-                ? '電郵或雲端密碼不正確。'
-                : error.message;
-            this.setState('signed_out', message);
+        try {
+            const { data, error } = await this.client.auth.signInWithPassword({
+                email: normalized,
+                password,
+            });
+            if (error) {
+                const rawMessage = authErrorMessage(error, '密碼登入失敗。');
+                const message = /invalid login credentials/iu.test(rawMessage)
+                    ? '電郵或雲端密碼不正確。'
+                    : rawMessage;
+                if (!loginTargetIsCurrent()) throw new Error(message);
+                this.setState('signed_out', message);
+                throw new Error(message);
+            }
+            if (!loginTargetIsCurrent()) return;
+            await this.applySession(data.session);
+        } catch (error) {
+            if (!loginTargetIsCurrent()) throw error;
+            if (this.state.phase === 'signed_out') throw error;
+            const message = authErrorMessage(error, '密碼登入失敗。');
+            this.setState('error', message);
             throw new Error(message);
         }
-        await this.applySession(data.session);
     }
 
     async setPassword(password: string) {
         if (!this.client || !this.session) throw new Error('請先登入 Supabase 雲端。');
         if (password.length < 8) throw new Error('雲端密碼至少需要 8 個字元。');
+        const sessionUserId = this.session.user.id;
+        const sessionGeneration = this.sessionGeneration;
         this.setState('connecting', '正在設定雲端密碼…');
-        const { error } = await this.client.auth.updateUser({ password });
-        if (error) {
-            this.setState('error', error.message);
-            throw error;
+        try {
+            const { error } = await this.client.auth.updateUser({ password });
+            if (!this.isCurrentSession(sessionUserId, sessionGeneration)) {
+                if (error) throw new Error(authErrorMessage(error, '未能設定雲端密碼。'));
+                return;
+            }
+            if (error) {
+                const message = authErrorMessage(error, '未能設定雲端密碼。');
+                this.setState('error', message);
+                throw new Error(message);
+            }
+            this.setState('synced', '雲端密碼已設定；新裝置可直接用密碼登入。', {
+                lastSyncAt: this.state.lastSyncAt,
+                progress: 100,
+            });
+        } catch (error) {
+            if (!this.isCurrentSession(sessionUserId, sessionGeneration)) throw error;
+            if (this.state.phase === 'error') throw error;
+            const message = authErrorMessage(error, '未能設定雲端密碼。');
+            this.setState('error', message);
+            throw new Error(message);
         }
-        this.setState('synced', '雲端密碼已設定；新裝置可直接用密碼登入。', {
-            lastSyncAt: this.state.lastSyncAt,
-            progress: 100,
-        });
     }
 
     async signOut() {
         if (!this.client) return;
-        await this.client.auth.signOut();
+        const sessionUserId = this.session?.user.id || '';
+        const sessionGeneration = this.sessionGeneration;
+        const signOutTargetIsCurrent = () => (
+            this.sessionGeneration === sessionGeneration
+            && (sessionUserId ? this.session?.user.id === sessionUserId : this.session === null)
+        );
+        try {
+            const { error } = await this.client.auth.signOut();
+            if (!signOutTargetIsCurrent()) {
+                if (error) throw new Error(authErrorMessage(error, '登出失敗。'));
+                return;
+            }
+            if (error) {
+                const message = authErrorMessage(error, '登出失敗。');
+                this.setState('error', message);
+                throw new Error(message);
+            }
+        } catch (error) {
+            if (!signOutTargetIsCurrent()) throw error;
+            if (this.state.phase === 'error') throw error;
+            const message = authErrorMessage(error, '登出失敗。');
+            this.setState('error', message);
+            throw new Error(message);
+        }
+        this.clearScheduledCloudWork();
         await this.stopRealtime();
-        this.session = null;
+        if (!signOutTargetIsCurrent()) return;
+        this.replaceSession(null);
         this.initializedUserId = '';
         this.setState('signed_out', '已登出；本機資料仍完整保留。');
     }
 
     async syncNow() {
         if (!this.session) throw new Error('請先登入 Supabase 雲端。');
-        if (this.pullRecoveryRequired || localStorage.getItem(SAFE_MERGE_VERSION_KEY) !== '1') {
-            await this.recoverCloudSafely();
-            return;
-        }
         localStorage.setItem(PENDING_KEY, 'true');
-        await this.pushLocalToCloud();
+        const completed = await this.pushPendingChangesSafely();
+        if (!completed) {
+            throw new Error(
+                this.state.phase === 'error' || this.state.phase === 'offline'
+                    ? this.state.detail
+                    : '同步尚未完成；本機變更已保留，系統會自動重試。',
+            );
+        }
     }
 
     async reloadFromCloud() {
         if (!this.session) throw new Error('請先登入 Supabase 雲端。');
-        await this.recoverCloudSafely();
+        const completed = await this.recoverCloudSafely();
+        if (!completed) {
+            throw new Error(
+                this.state.phase === 'error' || this.state.phase === 'offline'
+                    ? this.state.detail
+                    : '重新載入尚未完成；本機資料仍保留，系統會自動重試。',
+            );
+        }
+    }
+
+    private clearAuthRetryState() {
+        if (this.authRetryTimer !== null) {
+            window.clearTimeout(this.authRetryTimer);
+            this.authRetryTimer = null;
+        }
+        this.authRetryAttempt = 0;
+    }
+
+    private scheduleAuthSessionRetry(delayOverride?: number) {
+        if (
+            !this.started
+            || !this.client
+            || !navigator.onLine
+            || this.authRetryTimer !== null
+        ) return;
+
+        const delay = delayOverride ?? Math.min(
+            CLOUD_RETRY_MAX_DELAY_MS,
+            CLOUD_RETRY_BASE_DELAY_MS * (2 ** Math.min(this.authRetryAttempt, 5)),
+        );
+        if (delayOverride === undefined) this.authRetryAttempt += 1;
+
+        this.authRetryTimer = window.setTimeout(() => {
+            this.authRetryTimer = null;
+            void this.refreshAuthSession();
+        }, delay);
+    }
+
+    private async refreshAuthSession() {
+        if (!this.client) return false;
+        const observedAuthStateChangeEpoch = this.authStateChangeEpoch;
+        const refreshEpoch = ++this.authRefreshEpoch;
+        const isSuperseded = () => (
+            this.authStateChangeEpoch !== observedAuthStateChangeEpoch
+            || this.authRefreshEpoch !== refreshEpoch
+        );
+        try {
+            const { data, error } = await this.client.auth.getSession();
+            if (isSuperseded()) return true;
+            if (error) {
+                const message = authErrorMessage(error, '檢查雲端登入失敗。');
+                this.setState(
+                    navigator.onLine ? 'error' : 'offline',
+                    `檢查雲端登入失敗：${message}`,
+                );
+                this.scheduleAuthSessionRetry();
+                return false;
+            }
+
+            this.clearAuthRetryState();
+            await this.applySession(data.session);
+            return true;
+        } catch (error) {
+            if (isSuperseded()) return true;
+            const message = authErrorMessage(error, '檢查雲端登入失敗。');
+            this.setState(
+                navigator.onLine ? 'error' : 'offline',
+                `檢查雲端登入失敗：${message}`,
+            );
+            this.scheduleAuthSessionRetry();
+            return false;
+        }
+    }
+
+    private clearScheduledCloudWork() {
+        this.clearAuthRetryState();
+        if (this.pushTimer !== null) {
+            window.clearTimeout(this.pushTimer);
+            this.pushTimer = null;
+        }
+        if (this.pullTimer !== null) {
+            window.clearTimeout(this.pullTimer);
+            this.pullTimer = null;
+        }
+        this.cloudRetryAttempt = 0;
     }
 
     private readonly handleLocalChange = (event: CustomEvent<{ scope?: LocalCloudChangeScope }>) => {
@@ -322,18 +556,48 @@ export class SupabaseCloudSyncManager {
     };
 
     private readonly handleOnline = () => {
-        if (!this.session) return;
-        if (this.pullRecoveryRequired) this.schedulePull(250);
-        else if (localStorage.getItem(PENDING_KEY) === 'true') this.schedulePush(250);
-        else this.schedulePull(500);
+        if (!this.session) {
+            this.scheduleAuthSessionRetry(0);
+            return;
+        }
+        if (this.pullTimer !== null) {
+            window.clearTimeout(this.pullTimer);
+            this.pullTimer = null;
+        }
+        this.cloudRetryAttempt = 0;
+        this.realtimeRetryAttempt = 0;
+        this.scheduleRealtimeRestart();
+        if (localStorage.getItem(PENDING_KEY) === 'true') {
+            this.setPullRecoveryRequired(true);
+            this.schedulePull(250);
+        } else if (this.pullRecoveryRequired) {
+            this.schedulePull(250);
+        } else {
+            this.schedulePull(500);
+        }
     };
 
     private readonly handleOffline = () => {
+        if (this.authRetryTimer !== null) {
+            window.clearTimeout(this.authRetryTimer);
+            this.authRetryTimer = null;
+        }
+        if (this.pullTimer !== null) {
+            window.clearTimeout(this.pullTimer);
+            this.pullTimer = null;
+        }
+        if (this.realtimeRetryTimer !== null) {
+            window.clearTimeout(this.realtimeRetryTimer);
+            this.realtimeRetryTimer = null;
+        }
         if (this.session) this.setState('offline', '目前離線；變更會保留在本機，連線後自動補傳。');
     };
 
     private readonly handleVisibilityChange = () => {
-        if (!this.session) return;
+        if (!this.session) {
+            if (document.visibilityState === 'visible') this.scheduleAuthSessionRetry(0);
+            return;
+        }
         if (document.visibilityState === 'hidden' && localStorage.getItem(PENDING_KEY) === 'true') {
             this.schedulePush(0);
         } else if (document.visibilityState === 'visible') {
@@ -369,29 +633,75 @@ export class SupabaseCloudSyncManager {
         this.callbacks.onStateChange({ ...this.state });
     }
 
-    private async applySession(session: Session | null) {
+    private replaceSession(session: Session | null) {
+        const previousUserId = this.session?.user.id || '';
+        const nextUserId = session?.user.id || '';
+        if (previousUserId !== nextUserId) this.sessionGeneration += 1;
         this.session = session;
+        return this.sessionGeneration;
+    }
+
+    private isCurrentSession(userId: string, generation: number) {
+        return this.session?.user.id === userId
+            && this.sessionGeneration === generation;
+    }
+
+    private async applySession(session: Session | null) {
+        const sessionGeneration = this.replaceSession(session);
         if (!session) {
+            this.clearScheduledCloudWork();
             this.initializedUserId = '';
             await this.stopRealtime();
+            if (this.session !== null || this.sessionGeneration !== sessionGeneration) return;
             this.setState('signed_out', '登入後會自動同步所有對話與私人媒體。');
             return;
         }
         if (session.user.email?.toLocaleLowerCase() !== OWNER_EMAIL) {
-            await this.client?.auth.signOut();
-            this.session = null;
-            this.setState('error', '此帳戶沒有 Wetapp 雲端資料權限。');
+            const sessionUserId = session.user.id;
+            this.clearScheduledCloudWork();
+            await this.stopRealtime();
+            if (!this.isCurrentSession(sessionUserId, sessionGeneration)) return;
+            let signOutError: unknown = null;
+            try {
+                const result = await this.client?.auth.signOut();
+                signOutError = result?.error || null;
+            } catch (error) {
+                signOutError = error;
+            }
+            if (!this.isCurrentSession(sessionUserId, sessionGeneration)) return;
+            this.replaceSession(null);
+            this.initializedUserId = '';
+            this.setState(
+                'error',
+                signOutError
+                    ? `此帳戶沒有 Wetapp 雲端資料權限，而且自動登出失敗：${authErrorMessage(signOutError, '未知錯誤')}`
+                    : '此帳戶沒有 Wetapp 雲端資料權限。',
+            );
             return;
         }
-        if (this.initializedUserId === session.user.id) return;
-        this.initializedUserId = session.user.id;
+        const sessionUserId = session.user.id;
+        if (this.initializedUserId === sessionUserId) return;
+        this.clearScheduledCloudWork();
+        await this.stopRealtime();
+        if (!this.isCurrentSession(sessionUserId, sessionGeneration)) return;
+        this.initializedUserId = sessionUserId;
         this.setState('connecting', '正在連接私人雲端空間…');
-        await this.initialSync();
-        await this.startRealtime();
+        await this.initialSync(sessionUserId, sessionGeneration);
+        if (!this.isCurrentSession(sessionUserId, sessionGeneration)) return;
+        try {
+            await this.startRealtime();
+        } catch (error) {
+            if (!this.isCurrentSession(sessionUserId, sessionGeneration)) return;
+            this.handleSyncError(error, '即時更新連線失敗');
+            this.scheduleRealtimeRestart();
+        }
     }
 
-    private async initialSync() {
-        if (!this.client || !this.session) return;
+    private async initialSync(
+        sessionUserId: string,
+        sessionGeneration = this.sessionGeneration,
+    ) {
+        if (!this.client || !this.isCurrentSession(sessionUserId, sessionGeneration)) return;
         try {
             const [{ data: remoteState, error: stateError }, { count, error: countError }] = await Promise.all([
                 this.client.from('wetapp_state').select('revision,updated_at,source_device_id').maybeSingle(),
@@ -399,22 +709,37 @@ export class SupabaseCloudSyncManager {
             ]);
             if (stateError) throw stateError;
             if (countError) throw countError;
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            this.lastObservedCloudStateRevision = normalizeCloudStateRevision(remoteState?.revision);
             const cloudIsEmpty = !remoteState && !count;
-            const deviceHasSynced = localStorage.getItem(SYNCED_USER_ID_KEY) === this.session.user.id
+            const deviceHasSynced = localStorage.getItem(SYNCED_USER_ID_KEY) === sessionUserId
                 || remoteState?.source_device_id === this.deviceId;
             const hasPendingChanges = localStorage.getItem(PENDING_KEY) === 'true';
             const safeMergeRequired = localStorage.getItem(SAFE_MERGE_VERSION_KEY) !== '1';
-            if (deviceHasSynced && (this.pullRecoveryRequired || safeMergeRequired)) {
+            const pendingCloudConflict = shouldRecoverPendingCloudConflict({
+                deviceHasSynced,
+                hasPendingChanges,
+                cloudStateExists: Boolean(remoteState),
+                cloudSourceDeviceId: remoteState?.source_device_id,
+                localDeviceId: this.deviceId,
+            });
+            if (deviceHasSynced && !hasPendingChanges) {
+                await this.ensureStateEntityIndexBaseline();
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            }
+            if (deviceHasSynced && (this.pullRecoveryRequired || safeMergeRequired || pendingCloudConflict)) {
                 await this.recoverCloudSafely();
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             } else if (cloudIsEmpty || (deviceHasSynced && hasPendingChanges)) {
                 localStorage.setItem(PENDING_KEY, 'true');
-                await this.pushLocalToCloud(true);
+                await this.pushLocalToCloud(true, false, this.lastObservedCloudStateRevision ?? 0);
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             } else if (shouldSkipRedundantCloudPull({
                 force: false,
                 cloudSourceDeviceId: remoteState?.source_device_id,
                 localDeviceId: this.deviceId,
                 syncedUserId: localStorage.getItem(SYNCED_USER_ID_KEY),
-                sessionUserId: this.session.user.id,
+                sessionUserId,
                 hasPendingChanges,
             })) {
                 this.setPullRecoveryRequired(false);
@@ -423,99 +748,294 @@ export class SupabaseCloudSyncManager {
                 // An unknown device must accept the established cloud copy before it can upload.
                 localStorage.removeItem(PENDING_KEY);
                 await this.pullCloudToLocal();
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             }
         } catch (error) {
+            if (error instanceof CloudSessionSupersededError) return;
             this.handleSyncError(error, '首次雲端同步失敗');
         }
     }
 
     private schedulePush(delay: number) {
+        const sessionUserId = this.session?.user.id;
+        const sessionGeneration = this.sessionGeneration;
+        if (!sessionUserId) return;
         if (this.pushTimer !== null) window.clearTimeout(this.pushTimer);
         this.pushTimer = window.setTimeout(() => {
             this.pushTimer = null;
-            void this.pushLocalToCloud();
+            if (!this.isCurrentSession(sessionUserId, sessionGeneration)) return;
+            void this.pushPendingChangesSafely();
         }, delay);
     }
 
     private schedulePull(delay: number) {
-        if (this.pullTimer !== null || this.pushing || this.pulling) return;
+        const sessionUserId = this.session?.user.id;
+        const sessionGeneration = this.sessionGeneration;
+        if (!sessionUserId || this.pullTimer !== null) return;
         this.pullTimer = window.setTimeout(() => {
             this.pullTimer = null;
+            if (!this.isCurrentSession(sessionUserId, sessionGeneration)) return;
+            if (this.pushing || this.pulling) {
+                this.schedulePull(100);
+                return;
+            }
             if (this.pullRecoveryRequired) void this.recoverCloudSafely();
-            else if (localStorage.getItem(PENDING_KEY) === 'true') void this.pushLocalToCloud();
+            else if (localStorage.getItem(PENDING_KEY) === 'true') void this.pushPendingChangesSafely();
             else void this.pullCloudToLocal();
         }, delay);
     }
 
-    private async recoverCloudSafely() {
-        if (!this.client || !this.session || this.pushing || this.pulling) return false;
-        localStorage.setItem(PENDING_KEY, 'true');
-        const pushed = await this.pushLocalToCloud(false, true);
-        if (!pushed) return false;
-        const pulled = await this.pullCloudToLocal(true, true);
-        if (!pulled) return false;
-        localStorage.setItem(SAFE_MERGE_VERSION_KEY, '1');
-        localStorage.setItem(PENDING_KEY, 'true');
-        return this.pushLocalToCloud();
+    private scheduleCloudRetry() {
+        if (!this.session || !navigator.onLine || this.pullTimer !== null) return;
+        const exponent = Math.min(this.cloudRetryAttempt, 5);
+        const delay = Math.min(
+            CLOUD_RETRY_MAX_DELAY_MS,
+            CLOUD_RETRY_BASE_DELAY_MS * (2 ** exponent),
+        );
+        this.cloudRetryAttempt += 1;
+        this.schedulePull(delay);
     }
 
-    private async pushLocalToCloud(initial = false, preserveRemote = false): Promise<boolean> {
+    private clearRealtimeRetryState() {
+        if (this.realtimeRetryTimer !== null) {
+            window.clearTimeout(this.realtimeRetryTimer);
+            this.realtimeRetryTimer = null;
+        }
+        this.realtimeRetryAttempt = 0;
+    }
+
+    private scheduleRealtimeRestart() {
+        const sessionUserId = this.session?.user.id;
+        const sessionGeneration = this.sessionGeneration;
+        if (
+            !sessionUserId
+            || !navigator.onLine
+            || this.realtimeRetryTimer !== null
+        ) return;
+
+        const exponent = Math.min(this.realtimeRetryAttempt, 5);
+        const delay = Math.min(
+            CLOUD_RETRY_MAX_DELAY_MS,
+            CLOUD_RETRY_BASE_DELAY_MS * (2 ** exponent),
+        );
+        this.realtimeRetryAttempt += 1;
+        this.realtimeRetryTimer = window.setTimeout(() => {
+            this.realtimeRetryTimer = null;
+            if (!this.isCurrentSession(sessionUserId, sessionGeneration) || !navigator.onLine) return;
+            void this.startRealtime().catch(error => {
+                if (!this.isCurrentSession(sessionUserId, sessionGeneration)) return;
+                this.handleSyncError(error, '即時更新重新連線失敗');
+                this.scheduleRealtimeRestart();
+            });
+        }, delay);
+    }
+
+    private async readCloudStateHead(
+        sessionUserId = this.session?.user.id || '',
+        sessionGeneration = this.sessionGeneration,
+    ) {
+        if (!this.client) return { revision: 0, sourceDeviceId: '' };
+        if (!sessionUserId || !this.isCurrentSession(sessionUserId, sessionGeneration)) {
+            throw new CloudSessionSupersededError();
+        }
+        const { data, error } = await this.client
+            .from('wetapp_state')
+            .select('revision,source_device_id')
+            .maybeSingle();
+        if (error) throw error;
+        this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+        const revision = normalizeCloudStateRevision(data?.revision);
+        this.lastObservedCloudStateRevision = revision;
+        return {
+            revision,
+            sourceDeviceId: String(data?.source_device_id || ''),
+        };
+    }
+
+    private async pushPendingChangesSafely(): Promise<boolean> {
         if (!this.client || !this.session || this.pushing || this.pulling) return false;
+        const sessionUserId = this.session.user.id;
+        const sessionGeneration = this.sessionGeneration;
+        if (isLocalCloudChangeBatchActive()) {
+            this.schedulePush(250);
+            return false;
+        }
+        if (this.pullRecoveryRequired || localStorage.getItem(SAFE_MERGE_VERSION_KEY) !== '1') {
+            return this.recoverCloudSafely();
+        }
+        if (localStorage.getItem(PENDING_KEY) !== 'true') return true;
+        if (!navigator.onLine) {
+            this.setState('offline', '目前離線；變更會保留在本機，連線後自動補傳。');
+            return false;
+        }
+
+        try {
+            const remoteState = await this.readCloudStateHead(sessionUserId, sessionGeneration);
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            const pendingCloudConflict = shouldRecoverPendingCloudConflict({
+                deviceHasSynced: localStorage.getItem(SYNCED_USER_ID_KEY) === sessionUserId
+                    || remoteState.sourceDeviceId === this.deviceId,
+                hasPendingChanges: true,
+                cloudStateExists: remoteState.revision > 0,
+                cloudSourceDeviceId: remoteState.sourceDeviceId,
+                localDeviceId: this.deviceId,
+            });
+            if (pendingCloudConflict) {
+                return this.recoverCloudSafely();
+            }
+            return this.pushLocalToCloud(false, false, remoteState.revision);
+        } catch (error) {
+            if (error instanceof CloudSessionSupersededError) return false;
+            this.setPullRecoveryRequired(true);
+            this.handleSyncError(error, '檢查雲端衝突失敗');
+            return false;
+        }
+    }
+
+    private async recoverCloudSafely() {
+        if (!this.client || !this.session || this.pushing || this.pulling) return false;
+        const sessionUserId = this.session.user.id;
+        const sessionGeneration = this.sessionGeneration;
+        localStorage.setItem(PENDING_KEY, 'true');
+        const pushed = await this.pushLocalToCloud(false, true);
+        if (!pushed || !this.isCurrentSession(sessionUserId, sessionGeneration)) return false;
+        const pulled = await this.pullCloudToLocal(true, true);
+        if (!pulled || !this.isCurrentSession(sessionUserId, sessionGeneration)) return false;
+        localStorage.setItem(SAFE_MERGE_VERSION_KEY, '1');
+        localStorage.setItem(PENDING_KEY, 'true');
+        return this.pushLocalToCloud(
+            false,
+            false,
+            this.lastObservedCloudStateRevision ?? 0,
+        );
+    }
+
+    private async pushLocalToCloud(initial = false, preserveRemote = false, expectedStateRevision?: number): Promise<boolean> {
+        if (!this.client || !this.session || this.pushing || this.pulling) return false;
+        const sessionUserId = this.session.user.id;
+        const sessionGeneration = this.sessionGeneration;
+        if (isLocalCloudChangeBatchActive()) {
+            localStorage.setItem(PENDING_KEY, 'true');
+            this.schedulePush(250);
+            return false;
+        }
         if (!navigator.onLine) {
             this.setState('offline', '目前離線；變更會保留在本機，連線後自動補傳。');
             return false;
         }
         this.pushing = true;
+        let revisionConflict = false;
         try {
+            if (!preserveRemote && typeof expectedStateRevision !== 'number') {
+                throw new Error('Missing expected cloud state revision.');
+            }
+            const stateRevision = preserveRemote ? undefined : expectedStateRevision;
             this.setState('pushing', initial ? '正在建立第一份完整雲端資料…' : '正在同步本機變更…', { progress: 5 });
             const payload = await this.buildStatePayload();
-            const media = await this.collectLocalMedia(payload.rooms.rooms);
-            await this.pushMedia(media, preserveRemote);
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            const media = await this.collectLocalMedia(payload.rooms.rooms, sessionUserId);
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            const mediaPlan = await this.pushMedia(media, preserveRemote, sessionUserId, sessionGeneration);
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             this.setState('pushing', '正在同步對話訊息…', { progress: 55 });
-            await this.pushMessages(preserveRemote);
+            const messagePlan = await this.pushMessages(preserveRemote, sessionUserId, sessionGeneration);
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             if (preserveRemote) {
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
                 this.setState('connecting', '本機訊息已安全保留，正在合併雲端資料…', { progress: 94 });
             } else {
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
                 this.setState('pushing', '正在提交角色、記憶與聊天室設定…', { progress: 88 });
-                const { error } = await this.client.rpc('wetapp_save_state', {
+                const { data: savedRevision, error } = await this.client.rpc('wetapp_save_state_if_revision', {
                     new_payload: payload,
                     new_device_id: this.deviceId,
+                    expected_revision: stateRevision ?? 0,
                 });
                 if (error) throw error;
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+                this.lastObservedCloudStateRevision = normalizeCloudStateRevision(savedRevision);
+                await this.applyRemoteDeletionPlan(mediaPlan, messagePlan, sessionUserId, sessionGeneration);
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+                await Promise.all([
+                    writeCloudSyncIndex(MEDIA_INDEX_KEY, mediaPlan.nextIndex),
+                    writeCloudSyncIndex(MESSAGE_INDEX_KEY, messagePlan.hashes),
+                    writeCloudSyncIndex(CONVERSATION_INDEX_KEY, messagePlan.conversationIndex),
+                    writeCloudSyncIndex(STATE_ENTITY_INDEX_KEY, this.stateEntityIndex(payload)),
+                ]);
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
                 localStorage.removeItem(PENDING_KEY);
                 this.setPullRecoveryRequired(false);
                 this.markSynced(initial ? '第一份完整雲端資料已建立。' : '所有變更已同步。');
             }
             return true;
         } catch (error) {
+            if (
+                error instanceof CloudSessionSupersededError
+                || !this.isCurrentSession(sessionUserId, sessionGeneration)
+            ) return false;
             localStorage.setItem(PENDING_KEY, 'true');
-            this.handleSyncError(error, '上傳雲端失敗');
+            if (isCloudStateRevisionConflict(error)) {
+                revisionConflict = true;
+                this.setPullRecoveryRequired(true);
+                this.setState('connecting', '偵測到另一部裝置剛更新雲端，正在安全合併…', { progress: 94 });
+            } else {
+                this.handleSyncError(error, '上傳雲端失敗');
+            }
             return false;
         } finally {
             this.pushing = false;
+            const supersededByActiveSession = Boolean(
+                this.session
+                && !this.isCurrentSession(sessionUserId, sessionGeneration)
+            );
+            if (revisionConflict || supersededByActiveSession) this.schedulePull(0);
+        }
+    }
+
+    private assertCurrentSessionUser(
+        userId: string,
+        generation = this.sessionGeneration,
+    ) {
+        if (!this.isCurrentSession(userId, generation)) {
+            throw new CloudSessionSupersededError();
         }
     }
 
     private async pullCloudToLocal(force = false, mergeLocal = false): Promise<boolean> {
         if (!this.client || !this.session || this.pulling || this.pushing) return false;
+        const sessionUserId = this.session.user.id;
+        const sessionGeneration = this.sessionGeneration;
+        if (isLocalCloudChangeBatchActive()) {
+            this.setPullRecoveryRequired(true);
+            this.schedulePull(250);
+            return false;
+        }
         if (!navigator.onLine) {
             this.setState('offline', '目前離線；正在使用這部裝置的最近資料。');
             return false;
         }
         this.pulling = true;
         this.applyingRemote = true;
+        const reconcileEpoch = this.remoteStateChangeEpoch;
+        let pullCompleted = false;
         try {
             this.setState('pulling', '正在下載雲端變更…', { progress: 8 });
             const stateResponse = await this.client.from('wetapp_state').select('payload,revision,updated_at,source_device_id').maybeSingle();
             if (stateResponse.error) throw stateResponse.error;
-            if (shouldSkipRedundantCloudPull({
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            this.lastObservedCloudStateRevision = normalizeCloudStateRevision(stateResponse.data?.revision);
+            const hasOutstandingRemoteChange = (
+                this.remoteStateChangeEpoch > this.reconciledRemoteStateChangeEpoch
+            );
+            if (!hasOutstandingRemoteChange && shouldSkipRedundantCloudPull({
                 force,
                 cloudSourceDeviceId: stateResponse.data?.source_device_id,
                 localDeviceId: this.deviceId,
                 syncedUserId: localStorage.getItem(SYNCED_USER_ID_KEY),
-                sessionUserId: this.session.user.id,
+                sessionUserId,
                 hasPendingChanges: localStorage.getItem(PENDING_KEY) === 'true',
             })) {
+                pullCompleted = true;
                 this.setPullRecoveryRequired(false);
                 this.markSynced('本機已是雲端最新版本，毋須重複下載。');
                 return true;
@@ -527,15 +1047,42 @@ export class SupabaseCloudSyncManager {
                 ]),
                 this.fetchAllRows<CloudMediaRow>('wetapp_media', [['created_at_ms', true]]),
             ]);
-            this.setState('pulling', `正在還原 ${mediaRows.length} 個私人媒體檔案…`, { progress: 35 });
-            await this.pullMedia(mediaRows);
-            this.setState('pulling', `正在整理 ${messageRows.length.toLocaleString('zh-HK')} 則訊息…`, { progress: 72 });
-            await this.applyRemoteData(
-                (stateResponse.data?.payload || {}) as Partial<CloudStatePayload>,
-                messageRows,
-                mergeLocal,
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            const localTransaction = await this.createCloudPullTransactionSnapshot();
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            try {
+                this.setState('pulling', `正在還原 ${mediaRows.length} 個私人媒體檔案…`, { progress: 35 });
+                await this.pullMedia(mediaRows, mergeLocal, localTransaction);
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+                this.setState('pulling', `正在整理 ${messageRows.length.toLocaleString('zh-HK')} 則訊息…`, { progress: 72 });
+                await this.applyRemoteData(
+                    (stateResponse.data?.payload || {}) as Partial<CloudStatePayload>,
+                    messageRows,
+                    mergeLocal,
+                );
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+                await this.refreshLocalIndexes(
+                    messageRows,
+                    mediaRows,
+                    (stateResponse.data?.payload || {}) as Partial<CloudStatePayload>,
+                );
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            } catch (error) {
+                try {
+                    await this.rollbackCloudPullTransaction(localTransaction);
+                } catch (rollbackError) {
+                    throw new AggregateError(
+                        [error, rollbackError],
+                        '下載雲端資料失敗，而且本機狀態無法完整回復。',
+                    );
+                }
+                throw error;
+            }
+            this.reconciledRemoteStateChangeEpoch = Math.max(
+                this.reconciledRemoteStateChangeEpoch,
+                reconcileEpoch,
             );
-            await this.refreshLocalIndexes(messageRows, mediaRows);
+            pullCompleted = true;
             localStorage.removeItem(PENDING_KEY);
             this.setPullRecoveryRequired(false);
             localStorage.setItem(SAFE_MERGE_VERSION_KEY, '1');
@@ -543,6 +1090,10 @@ export class SupabaseCloudSyncManager {
             this.markSynced('已載入雲端最新資料。');
             return true;
         } catch (error) {
+            if (
+                error instanceof CloudSessionSupersededError
+                || !this.isCurrentSession(sessionUserId, sessionGeneration)
+            ) return false;
             localStorage.setItem(PENDING_KEY, 'true');
             this.setPullRecoveryRequired(true);
             this.handleSyncError(error, '下載雲端資料失敗');
@@ -550,6 +1101,19 @@ export class SupabaseCloudSyncManager {
         } finally {
             this.applyingRemote = false;
             this.pulling = false;
+            const supersededByActiveSession = Boolean(
+                this.session
+                && !this.isCurrentSession(sessionUserId, sessionGeneration)
+            );
+            if (
+                supersededByActiveSession
+                || (
+                    pullCompleted
+                    && this.remoteStateChangeEpoch > this.reconciledRemoteStateChangeEpoch
+                )
+            ) {
+                this.schedulePull(0);
+            }
         }
     }
 
@@ -583,7 +1147,7 @@ export class SupabaseCloudSyncManager {
         }
 
         const appSettings = Object.fromEntries(
-            APP_SETTING_KEYS.flatMap(key => {
+            PERSISTED_APP_SETTING_KEYS.flatMap(key => {
                 const value = localStorage.getItem(key);
                 return value === null ? [] : [[key, value]];
             }),
@@ -598,10 +1162,16 @@ export class SupabaseCloudSyncManager {
         };
     }
 
-    private async pushMessages(preserveRemote = false) {
-        if (!this.client || !this.session) return;
-        const { conversations, messages, hashes } = this.collectLocalMessages();
+    private async pushMessages(
+        preserveRemote = false,
+        sessionUserId = this.session?.user.id || '',
+        sessionGeneration = this.sessionGeneration,
+    ): Promise<CloudMessagePushPlan> {
+        if (!this.client || !sessionUserId) throw new Error('Cloud sync session unavailable.');
+        this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+        const { conversations, messages, hashes } = this.collectLocalMessages(sessionUserId);
         const previousHashes = await readCloudSyncIndex(MESSAGE_INDEX_KEY);
+        this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
         const changed = messages.filter(row => previousHashes[this.messageIndexKey(row)] !== hashes[this.messageIndexKey(row)]);
         const removedKeys = Object.keys(previousHashes).filter(key => !hashes[key]);
 
@@ -610,19 +1180,21 @@ export class SupabaseCloudSyncManager {
                 onConflict: 'user_id,conversation_key',
             });
             if (error) throw error;
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
         }
         for (const [index, batch] of batches(changed, 100).entries()) {
             const { error } = await this.client.from('wetapp_messages').upsert(batch, {
                 onConflict: 'user_id,conversation_key,message_id',
             });
             if (error) throw error;
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             const denominator = Math.max(1, Math.ceil(changed.length / 100));
             this.setState('pushing', `正在同步對話訊息 ${index + 1}/${denominator}…`, {
                 progress: 55 + Math.round(((index + 1) / denominator) * 27),
             });
         }
+        const removedByConversation = new Map<string, string[]>();
         if (!preserveRemote) {
-            const removedByConversation = new Map<string, string[]>();
             removedKeys.forEach(key => {
                 const splitAt = key.indexOf('\u0000');
                 if (splitAt < 0) return;
@@ -632,32 +1204,70 @@ export class SupabaseCloudSyncManager {
                 ids.push(messageId);
                 removedByConversation.set(conversationKey, ids);
             });
-            for (const [conversationKey, ids] of removedByConversation) {
-                for (const batch of batches(ids, 50)) {
-                    const { error } = await this.client.from('wetapp_messages')
-                        .delete()
-                        .eq('conversation_key', conversationKey)
-                        .in('message_id', batch);
-                    if (error) throw error;
-                }
-            }
         }
 
         const previousConversations = await readCloudSyncIndex(CONVERSATION_INDEX_KEY);
+        this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
         const conversationIndex = Object.fromEntries(conversations.map(row => [row.conversation_key, '1']));
-        if (!preserveRemote) {
-            const removedConversations = Object.keys(previousConversations).filter(key => !conversationIndex[key]);
-            for (const batch of batches(removedConversations, 50)) {
-                const { error } = await this.client.from('wetapp_conversations').delete().in('conversation_key', batch);
-                if (error) throw error;
-            }
-        }
-        await writeCloudSyncIndex(MESSAGE_INDEX_KEY, hashes);
-        await writeCloudSyncIndex(CONVERSATION_INDEX_KEY, conversationIndex);
+        const removedConversations = preserveRemote
+            ? []
+            : Object.keys(previousConversations).filter(key => !conversationIndex[key]);
+        return {
+            hashes,
+            conversationIndex,
+            removedByConversation: Array.from(removedByConversation.entries()),
+            removedConversations,
+        } satisfies CloudMessagePushPlan;
     }
 
-    private collectLocalMessages() {
-        if (!this.session) return { conversations: [], messages: [], hashes: {} } as {
+    private async applyRemoteDeletionPlan(
+        mediaPlan: CloudMediaPushPlan,
+        messagePlan: CloudMessagePushPlan,
+        sessionUserId: string,
+        sessionGeneration = this.sessionGeneration,
+    ) {
+        if (!this.client) throw new Error('Cloud sync client unavailable.');
+        this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+
+        for (const [conversationKey, ids] of messagePlan.removedByConversation) {
+            for (const batch of batches(ids, 50)) {
+                const { error } = await this.client.from('wetapp_messages')
+                    .delete()
+                    .eq('conversation_key', conversationKey)
+                    .in('message_id', batch);
+                if (error) throw error;
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            }
+        }
+
+        for (const batch of batches(messagePlan.removedConversations, 50)) {
+            const { error } = await this.client.from('wetapp_conversations')
+                .delete()
+                .in('conversation_key', batch);
+            if (error) throw error;
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+        }
+
+        for (const batch of batches(mediaPlan.removedIds, 50)) {
+            const existing = await this.client.from('wetapp_media')
+                .select('asset_id,storage_path')
+                .in('asset_id', batch);
+            if (existing.error) throw existing.error;
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            const paths = (existing.data || []).map(row => row.storage_path);
+            if (paths.length) {
+                const removal = await this.client.storage.from(STORAGE_BUCKET).remove(paths);
+                if (removal.error) throw removal.error;
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            }
+            const deletion = await this.client.from('wetapp_media').delete().in('asset_id', batch);
+            if (deletion.error) throw deletion.error;
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+        }
+    }
+
+    private collectLocalMessages(sessionUserId = this.session?.user.id || '') {
+        if (!sessionUserId) return { conversations: [], messages: [], hashes: {} } as {
             conversations: CloudConversationRow[];
             messages: CloudMessageRow[];
             hashes: Record<string, string>;
@@ -681,7 +1291,7 @@ export class SupabaseCloudSyncManager {
             const title = room?.title || persona?.name || conversationKey;
             const lastMessageAt = history.reduce((latest, message) => Math.max(latest, Number(message.createdAt || 0)), 0);
             conversations.push({
-                user_id: this.session!.user.id,
+                user_id: sessionUserId,
                 conversation_key: conversationKey,
                 title,
                 kind,
@@ -700,7 +1310,7 @@ export class SupabaseCloudSyncManager {
                     content: stableContent,
                 }))}`;
                 const row: CloudMessageRow = {
-                    user_id: this.session!.user.id,
+                    user_id: sessionUserId,
                     conversation_key: conversationKey,
                     message_id: message.id || fallbackId,
                     position,
@@ -724,8 +1334,11 @@ export class SupabaseCloudSyncManager {
         return { conversations, messages, hashes };
     }
 
-    private async collectLocalMedia(rooms: ChatRoom[]): Promise<LocalCloudMedia[]> {
-        if (!this.session) return [];
+    private async collectLocalMedia(
+        rooms: ChatRoom[],
+        sessionUserId = this.session?.user.id || '',
+    ): Promise<LocalCloudMedia[]> {
+        if (!sessionUserId) return [];
         const [avatarAssets, photoAssets, attachmentAssets] = await Promise.all([
             listPersonaAvatarAssets(),
             listCharacterPhotoAssets(),
@@ -739,7 +1352,7 @@ export class SupabaseCloudSyncManager {
                 memberId: member.id,
             });
         }));
-        const userId = this.session.user.id;
+        const userId = sessionUserId;
         const result: LocalCloudMedia[] = [];
 
         avatarAssets.forEach(asset => {
@@ -807,9 +1420,16 @@ export class SupabaseCloudSyncManager {
         return result;
     }
 
-    private async pushMedia(media: LocalCloudMedia[], preserveRemote = false) {
-        if (!this.client) return;
+    private async pushMedia(
+        media: LocalCloudMedia[],
+        preserveRemote = false,
+        sessionUserId = this.session?.user.id || '',
+        sessionGeneration = this.sessionGeneration,
+    ): Promise<CloudMediaPushPlan> {
+        if (!this.client || !sessionUserId) throw new Error('Cloud sync client unavailable.');
+        this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
         const previousIndex = await readCloudSyncIndex(MEDIA_INDEX_KEY);
+        this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
         const nextIndex = Object.fromEntries(media.map(asset => [asset.asset_id, asset.signature]));
         const changed = media.filter(asset => previousIndex[asset.asset_id] !== asset.signature);
         for (const [index, asset] of changed.entries()) {
@@ -819,36 +1439,135 @@ export class SupabaseCloudSyncManager {
                 cacheControl: '3600',
             });
             if (upload.error) throw upload.error;
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             const { blob: _blob, ...row } = asset;
             const metadata = await this.client.from('wetapp_media').upsert(row, {
                 onConflict: 'user_id,asset_id',
             });
             if (metadata.error) throw metadata.error;
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             this.setState('pushing', `正在同步私人媒體 ${index + 1}/${changed.length}…`, {
                 progress: 8 + Math.round(((index + 1) / Math.max(1, changed.length)) * 42),
             });
         }
 
-        if (!preserveRemote) {
-            const removedIds = Object.keys(previousIndex).filter(assetId => !nextIndex[assetId]);
-            for (const batch of batches(removedIds, 50)) {
-                const existing = await this.client.from('wetapp_media').select('asset_id,storage_path').in('asset_id', batch);
-                if (existing.error) throw existing.error;
-                const paths = (existing.data || []).map(row => row.storage_path);
-                if (paths.length) {
-                    const removal = await this.client.storage.from(STORAGE_BUCKET).remove(paths);
-                    if (removal.error) throw removal.error;
-                }
-                const deletion = await this.client.from('wetapp_media').delete().in('asset_id', batch);
-                if (deletion.error) throw deletion.error;
-            }
-        }
-        await writeCloudSyncIndex(MEDIA_INDEX_KEY, nextIndex);
+        const removedIds = preserveRemote
+            ? []
+            : Object.keys(previousIndex).filter(assetId => !nextIndex[assetId]);
+        return { nextIndex, removedIds } satisfies CloudMediaPushPlan;
     }
 
-    private async pullMedia(rows: CloudMediaRow[]) {
+    private async createCloudPullTransactionSnapshot(): Promise<CloudPullTransactionSnapshot> {
+        const [messages, conversations, media, stateEntities] = await Promise.all([
+            readCloudSyncIndex(MESSAGE_INDEX_KEY),
+            readCloudSyncIndex(CONVERSATION_INDEX_KEY),
+            readCloudSyncIndex(MEDIA_INDEX_KEY),
+            readCloudSyncIndex(STATE_ENTITY_INDEX_KEY),
+        ]);
+        return {
+            memory: this.memoryManager.createImportSnapshot(),
+            rooms: this.roomManager.createImportSnapshot(),
+            appSettings: Object.fromEntries(
+                PERSISTED_APP_SETTING_KEYS.map(key => [key, localStorage.getItem(key)]),
+            ),
+            avatarAssets: new Map(),
+            photoAssets: new Map(),
+            attachmentAssets: new Map(),
+            indexes: { messages, conversations, media, stateEntities },
+        };
+    }
+
+    private async rememberCloudPullAvatar(
+        snapshot: CloudPullTransactionSnapshot,
+        key: string,
+    ) {
+        if (snapshot.avatarAssets.has(key)) return;
+        snapshot.avatarAssets.set(key, await getPersonaAvatarAsset(key) || null);
+    }
+
+    private async rememberCloudPullPhoto(
+        snapshot: CloudPullTransactionSnapshot,
+        id: string,
+    ) {
+        if (snapshot.photoAssets.has(id)) return;
+        snapshot.photoAssets.set(id, await getCharacterPhotoAsset(id) || null);
+    }
+
+    private async rememberCloudPullAttachment(
+        snapshot: CloudPullTransactionSnapshot,
+        id: string,
+    ) {
+        if (snapshot.attachmentAssets.has(id)) return;
+        snapshot.attachmentAssets.set(id, await getChatAttachment(id) || null);
+    }
+
+    private async rollbackCloudPullTransaction(snapshot: CloudPullTransactionSnapshot) {
+        const rollbackErrors: unknown[] = [];
+        const attempt = async (operation: () => Promise<void> | void) => {
+            try {
+                await operation();
+            } catch (error) {
+                rollbackErrors.push(error);
+            }
+        };
+
+        for (const [key, asset] of snapshot.avatarAssets) {
+            await attempt(async () => {
+                if (asset) await savePersonaAvatarBlob(key, asset.blob, asset.updatedAt);
+                else await deletePersonaAvatar(key);
+            });
+        }
+        for (const [id, asset] of snapshot.photoAssets) {
+            await attempt(async () => {
+                if (asset) await saveCharacterPhotoAsset(asset);
+                else await deleteCharacterPhotoAsset(id);
+            });
+        }
+        for (const [id, asset] of snapshot.attachmentAssets) {
+            await attempt(async () => {
+                if (asset) await saveChatAttachment(asset);
+                else await deleteChatAttachment(id);
+            });
+        }
+
+        await attempt(() => this.roomManager.restoreImportSnapshot(snapshot.rooms));
+        await attempt(() => this.memoryManager.restoreImportSnapshot(snapshot.memory));
+        await attempt(() => {
+            PERSISTED_APP_SETTING_KEYS.forEach(key => {
+                const value = snapshot.appSettings[key];
+                if (value === null || value === undefined) localStorage.removeItem(key);
+                else localStorage.setItem(key, value);
+            });
+        });
+        await attempt(() => writeCloudSyncIndex(MESSAGE_INDEX_KEY, snapshot.indexes.messages));
+        await attempt(() => writeCloudSyncIndex(CONVERSATION_INDEX_KEY, snapshot.indexes.conversations));
+        await attempt(() => writeCloudSyncIndex(MEDIA_INDEX_KEY, snapshot.indexes.media));
+        await attempt(() => writeCloudSyncIndex(STATE_ENTITY_INDEX_KEY, snapshot.indexes.stateEntities));
+
+        if (rollbackErrors.length) {
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('wetapp-storage-failed'));
+            }
+            throw new AggregateError(
+                rollbackErrors,
+                'Cloud pull rollback was incomplete.',
+            );
+        }
+    }
+
+    private async pullMedia(
+        rows: CloudMediaRow[],
+        mergeLocal = false,
+        transaction?: CloudPullTransactionSnapshot,
+    ) {
         if (!this.client) return;
         const previousIndex = await readCloudSyncIndex(MEDIA_INDEX_KEY);
+        if (mergeLocal) {
+            const localMedia = await this.collectLocalMedia(this.roomManager.exportData().rooms);
+            const currentIds = localMedia.map(asset => asset.asset_id);
+            const locallyDeletedIds = findLocallyDeletedIndexedKeys(previousIndex, currentIds);
+            rows = rows.filter(row => !locallyDeletedIds.has(row.asset_id));
+        }
         const [avatarAssets, photoAssets, attachmentAssets] = await Promise.all([
             listPersonaAvatarAssets(),
             listCharacterPhotoAssets(),
@@ -873,18 +1592,24 @@ export class SupabaseCloudSyncManager {
             if (download.error || !download.data) throw download.error || new Error(`無法下載 ${row.asset_id}`);
             const metadata = row.metadata || {};
             if (row.kind === 'persona_avatar' || row.kind === 'room_avatar') {
-                await savePersonaAvatarBlob(String(metadata.localKey || ''), download.data, row.created_at_ms);
+                const localKey = String(metadata.localKey || '');
+                if (transaction) await this.rememberCloudPullAvatar(transaction, localKey);
+                await savePersonaAvatarBlob(localKey, download.data, row.created_at_ms);
             } else if (row.kind === 'character_photo') {
+                const id = String(metadata.id || row.asset_id.replace(/^character-photo:/u, ''));
+                if (transaction) await this.rememberCloudPullPhoto(transaction, id);
                 await saveCharacterPhotoAsset({
-                    id: String(metadata.id || row.asset_id.replace(/^character-photo:/u, '')),
+                    id,
                     personaKey: String(metadata.personaKey || row.conversation_key || ''),
                     prompt: String(metadata.prompt || ''),
                     createdAt: row.created_at_ms,
                     blob: download.data,
                 });
             } else {
+                const id = String(metadata.id || row.asset_id.replace(/^attachment:/u, ''));
+                if (transaction) await this.rememberCloudPullAttachment(transaction, id);
                 await saveChatAttachment({
-                    id: String(metadata.id || row.asset_id.replace(/^attachment:/u, '')),
+                    id,
                     conversationKey: String(metadata.conversationKey || row.conversation_key || ''),
                     name: String(metadata.name || 'attachment'),
                     mimeType: row.mime_type,
@@ -913,12 +1638,51 @@ export class SupabaseCloudSyncManager {
                 content: clone(row.content || {}),
             });
         });
+        const localChatHistories = clone(this.memoryManager.getAllChatHistories());
+        const [previousMessageIndex, previousConversationIndex, previousStateEntityIndex] = mergeLocal
+            ? await Promise.all([
+                readCloudSyncIndex(MESSAGE_INDEX_KEY),
+                readCloudSyncIndex(CONVERSATION_INDEX_KEY),
+                readCloudSyncIndex(STATE_ENTITY_INDEX_KEY),
+            ])
+            : [{}, {}, {}];
+        const locallyDeletedConversations = mergeLocal
+            ? findLocallyDeletedIndexedKeys(previousConversationIndex, Object.keys(localChatHistories))
+            : new Set<string>();
+        const currentStateEntityKeys = mergeLocal
+            ? [
+                ...Object.keys(this.memoryManager.getModifiedAndCustomPersonas()).map(key => `persona:${key}`),
+                ...this.roomManager.exportData().rooms.map(room => `room:${room.id}`),
+            ]
+            : [];
+        const locallyDeletedStateEntities = mergeLocal
+            ? findLocallyDeletedIndexedKeys(previousStateEntityIndex, currentStateEntityKeys)
+            : new Set<string>();
         const chatHistories = mergeLocal
-            ? mergeChatHistoryMaps(clone(this.memoryManager.getAllChatHistories()), cloudChatHistories)
+            ? mergeChatHistoryMaps(localChatHistories, cloudChatHistories, {
+                previousMessageIndex,
+                previousConversationIndex,
+            })
             : cloudChatHistories;
+
+        const remoteState = mergeLocal
+            ? filterRemoteStateEntities(
+                clone(payload.customPersonas || {}),
+                clone(payload.rooms?.rooms || []),
+                {
+                    locallyDeletedStateEntities,
+                    locallyDeletedConversations,
+                    localPersonas: this.memoryManager.getAllPersonas(),
+                    deletedRoomIds: this.roomManager.getDeletedRoomIds(),
+                },
+            )
+            : {
+                customPersonas: clone(payload.customPersonas || {}),
+                rooms: clone(payload.rooms?.rooms || []),
+            };
         const customPersonas = mergeLocal
-            ? { ...clone(payload.customPersonas || {}), ...clone(this.memoryManager.getModifiedAndCustomPersonas()) }
-            : clone(payload.customPersonas || {});
+            ? { ...remoteState.customPersonas, ...clone(this.memoryManager.getModifiedAndCustomPersonas()) }
+            : remoteState.customPersonas;
         const diaries = mergeLocal
             ? { ...clone(payload.diaries || {}), ...clone(this.memoryManager.getAllDiaryEntries()) }
             : clone(payload.diaries || {});
@@ -932,16 +1696,18 @@ export class SupabaseCloudSyncManager {
             chatHistories,
         }, true);
 
-        const remoteRooms = clone(payload.rooms || { version: 2, rooms: [] });
         const rooms = mergeLocal
             ? {
                 version: 2 as const,
                 rooms: [...new Map([
-                    ...remoteRooms.rooms.map(room => [room.id, room] as const),
+                    ...remoteState.rooms.map(room => [room.id, room] as const),
                     ...this.roomManager.exportData().rooms.map(room => [room.id, room] as const),
                 ]).values()],
             }
-            : remoteRooms;
+            : {
+                version: 2 as const,
+                rooms: remoteState.rooms,
+            };
         const avatarAssets = await listPersonaAvatarAssets();
         const avatarUrls = new Map<string, string>();
         for (const asset of avatarAssets) avatarUrls.set(asset.personaKey, await blobToDataUrl(asset.blob));
@@ -954,21 +1720,21 @@ export class SupabaseCloudSyncManager {
             }
             else if (member.persona.avatarUrl?.startsWith('private-avatar:')) member.persona.avatarUrl = null;
         }));
-        this.roomManager.importData(rooms, true);
+        this.roomManager.importData(rooms, true, mergeLocal);
         await Promise.all([
             this.memoryManager.restorePrivateAvatars(),
             this.roomManager.restorePrivateAvatars(),
         ]);
         Object.entries(payload.appSettings || {}).forEach(([key, value]) => {
             if (
-                APP_SETTING_KEYS.includes(key)
+                isPersistedAppSettingKey(key)
                 && typeof value === 'string'
                 && (!mergeLocal || localStorage.getItem(key) === null)
             ) localStorage.setItem(key, value);
         });
     }
 
-    private async refreshLocalIndexes(messageRows: CloudMessageRow[], mediaRows: CloudMediaRow[]) {
+    private async refreshLocalIndexes(messageRows: CloudMessageRow[], mediaRows: CloudMediaRow[], payload: Partial<CloudStatePayload>) {
         const messageIndex: Record<string, string> = {};
         const conversationIndex: Record<string, string> = {};
         messageRows.forEach(row => {
@@ -985,6 +1751,10 @@ export class SupabaseCloudSyncManager {
             writeCloudSyncIndex(MESSAGE_INDEX_KEY, messageIndex),
             writeCloudSyncIndex(CONVERSATION_INDEX_KEY, conversationIndex),
             writeCloudSyncIndex(MEDIA_INDEX_KEY, Object.fromEntries(mediaRows.map(row => [row.asset_id, row.signature]))),
+            writeCloudSyncIndex(STATE_ENTITY_INDEX_KEY, this.stateEntityIndex({
+                customPersonas: payload.customPersonas || {},
+                rooms: payload.rooms || { version: 2, rooms: [] },
+            })),
         ]);
     }
 
@@ -1008,37 +1778,69 @@ export class SupabaseCloudSyncManager {
 
     private async startRealtime() {
         if (!this.client || !this.session) return;
-        await this.stopRealtime();
         const userId = this.session.user.id;
-        this.channel = this.client.channel(`wetapp-sync-${userId}`);
+        const sessionGeneration = this.sessionGeneration;
+        await this.stopRealtime(false);
+        if (!this.isCurrentSession(userId, sessionGeneration)) return;
+        const channel = this.client.channel(`wetapp-sync-${userId}`);
+        this.channel = channel;
         ['wetapp_state', 'wetapp_conversations', 'wetapp_messages', 'wetapp_media'].forEach(table => {
-            this.channel!.on('postgres_changes', {
+            channel.on('postgres_changes', {
                 event: '*',
                 schema: 'public',
                 table,
                 filter: `user_id=eq.${userId}`,
             }, payload => {
+                if (
+                    this.channel !== channel
+                    || !this.isCurrentSession(userId, sessionGeneration)
+                ) return;
                 const sourceDeviceId = String(
                     (payload.new as Record<string, unknown>)?.source_device_id
                     || (payload.old as Record<string, unknown>)?.source_device_id
                     || '',
                 );
-                if (sourceDeviceId === this.deviceId || this.applyingRemote || this.pushing) return;
+                if (sourceDeviceId === this.deviceId) return;
+                this.remoteStateChangeEpoch += 1;
+                if (localStorage.getItem(PENDING_KEY) === 'true') {
+                    this.setPullRecoveryRequired(true);
+                }
                 this.schedulePull(900);
             });
         });
-        this.channel.subscribe(status => {
-            if (status === 'CHANNEL_ERROR') this.setState('error', '即時更新連線暫時中斷，稍後會自動重試。');
+        channel.subscribe(status => {
+            if (
+                this.channel !== channel
+                || !this.isCurrentSession(userId, sessionGeneration)
+            ) return;
+            if (status === 'SUBSCRIBED') {
+                const recoveredRealtime = this.realtimeRetryAttempt > 0;
+                this.clearRealtimeRetryState();
+                if (recoveredRealtime) this.schedulePull(0);
+                return;
+            }
+            if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+                this.setState('error', '即時更新連線暫時中斷，正在重新連接並補回雲端變更。');
+                this.schedulePull(250);
+                this.scheduleRealtimeRestart();
+            }
         });
     }
 
-    private async stopRealtime() {
-        if (!this.client || !this.channel) return;
-        await this.client.removeChannel(this.channel);
+    private async stopRealtime(resetRetryState = true) {
+        if (resetRetryState) this.clearRealtimeRetryState();
+        const channel = this.channel;
         this.channel = null;
+        if (!this.client || !channel) return;
+        try {
+            await this.client.removeChannel(channel);
+        } catch (error) {
+            console.warn('Failed to remove stale realtime channel:', error);
+        }
     }
 
     private markSynced(detail: string) {
+        this.cloudRetryAttempt = 0;
         const lastSyncAt = Date.now();
         localStorage.setItem(LAST_SYNC_KEY, String(lastSyncAt));
         if (this.session) localStorage.setItem(SYNCED_USER_ID_KEY, this.session.user.id);
@@ -1055,6 +1857,29 @@ export class SupabaseCloudSyncManager {
         const detail = error instanceof Error ? error.message : String(error || '未知錯誤');
         console.error(prefix, error);
         this.setState(navigator.onLine ? 'error' : 'offline', `${prefix}：${detail}`, { progress: undefined });
+        this.scheduleCloudRetry();
+    }
+
+    private stateEntityIndex(payload: Pick<CloudStatePayload, 'customPersonas' | 'rooms'>) {
+        return Object.fromEntries([
+            ...Object.keys(payload.customPersonas || {}).map(key => [`persona:${key}`, '1'] as const),
+            ...(payload.rooms?.rooms || []).map(room => [`room:${room.id}`, '1'] as const),
+        ]);
+    }
+
+    private localStateEntityIndex() {
+        return this.stateEntityIndex({
+            customPersonas: this.memoryManager.getModifiedAndCustomPersonas(),
+            rooms: this.roomManager.exportData(),
+        });
+    }
+
+    private async ensureStateEntityIndexBaseline() {
+        const existing = await readCloudSyncIndex(STATE_ENTITY_INDEX_KEY);
+        if (Object.keys(existing).length > 0) return;
+        const local = this.localStateEntityIndex();
+        if (Object.keys(local).length === 0) return;
+        await writeCloudSyncIndex(STATE_ENTITY_INDEX_KEY, local);
     }
 
     private messageIndexKey(row: Pick<CloudMessageRow, 'conversation_key' | 'message_id'>) {

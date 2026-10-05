@@ -43,6 +43,8 @@ const createFileManager = (currentHistory = existingHistory) => {
             data: { customPersonas: Record<string, Persona>; chatHistories: Record<string, ChatMessage[]> };
             keyMap: Map<string, string>;
             skippedSourceKeys: Set<string>;
+            photoAssetIdMap: Map<string, string>;
+            attachmentAssetIdMap: Map<string, string>;
             summary: { importedMessages: number; renamedConflicts: number; skippedDuplicates: number };
         };
     };
@@ -137,4 +139,94 @@ test('storage failure rolls back the whole import instead of leaving partial dat
     assert.equal(manager.getPersona('custom_imported'), undefined);
     assert.deepEqual(manager.peekChatHistory('keep-room').map(message => message.id), ['keep-message']);
     assert.equal(manager.peekChatHistory('custom_imported').length, 0);
+});
+
+
+test('safe import remaps colliding photo and attachment IDs without touching existing history', () => {
+    const currentHistory: ChatMessage[] = [
+        {
+            id: 'local-media',
+            role: 'model',
+            content: {
+                text: 'local media',
+                imageAssetId: 'shared-photo-id',
+                attachments: [{
+                    assetId: 'shared-attachment-id',
+                    kind: 'image',
+                    name: 'local.png',
+                    mimeType: 'image/png',
+                    size: 10,
+                }],
+            },
+        },
+    ];
+    const importedHistory: ChatMessage[] = [
+        {
+            id: 'imported-media',
+            role: 'model',
+            content: {
+                text: 'different imported media',
+                imageAssetId: 'shared-photo-id',
+                attachments: [{
+                    assetId: 'shared-attachment-id',
+                    kind: 'image',
+                    name: 'imported.png',
+                    mimeType: 'image/png',
+                    size: 20,
+                }],
+            },
+        },
+    ];
+    const prepared = createFileManager(currentHistory).prepareMergeSafeImport({
+        customPersonas: { custom_iu: { ...persona, avatarUrl: null } },
+        chatHistories: { custom_iu: importedHistory },
+        diaries: {},
+        interests: {},
+    });
+    const targetKey = prepared.keyMap.get('custom_iu')!;
+
+    assert.notEqual(targetKey, 'custom_iu');
+    const importedContent = prepared.data.chatHistories[targetKey][0].content;
+    const mappedPhotoId = prepared.photoAssetIdMap.get('shared-photo-id');
+    const mappedAttachmentId = prepared.attachmentAssetIdMap.get('shared-attachment-id');
+
+    assert.ok(mappedPhotoId);
+    assert.ok(mappedAttachmentId);
+    assert.notEqual(mappedPhotoId, 'shared-photo-id');
+    assert.notEqual(mappedAttachmentId, 'shared-attachment-id');
+    assert.equal(importedContent.imageAssetId, mappedPhotoId);
+    assert.equal(importedContent.attachments?.[0].assetId, mappedAttachmentId);
+
+    assert.equal(currentHistory[0].content.imageAssetId, 'shared-photo-id');
+    assert.equal(currentHistory[0].content.attachments?.[0].assetId, 'shared-attachment-id');
+});
+
+test('portable photo upgrade keeps its archive asset ID when no local asset ID exists', () => {
+    const currentHistory: ChatMessage[] = [
+        {
+            id: 'portable-photo',
+            role: 'model',
+            content: { text: 'photo', imageUrl: 'https://expired.example/photo.webp' },
+        },
+    ];
+    const importedHistory: ChatMessage[] = [
+        {
+            id: 'portable-photo',
+            role: 'model',
+            content: { text: 'photo', imageAssetId: 'portable-photo-asset' },
+        },
+    ];
+    const prepared = createFileManager(currentHistory).prepareMergeSafeImport({
+        customPersonas: { custom_iu: { ...persona, avatarUrl: null } },
+        chatHistories: { custom_iu: importedHistory },
+        diaries: {},
+        interests: {},
+    });
+
+    assert.equal(prepared.keyMap.get('custom_iu'), 'custom_iu');
+    assert.equal(prepared.photoAssetIdMap.size, 0);
+    assert.equal(
+        prepared.data.chatHistories.custom_iu[0].content.imageAssetId,
+        'portable-photo-asset',
+    );
 });

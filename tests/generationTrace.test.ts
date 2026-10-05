@@ -256,7 +256,7 @@ test('production single-generation source records an invalid response once befor
     const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
     const singleGeneration = source.slice(
         source.indexOf('const runConversationGeneration'),
-        source.indexOf('type CharacterPhotoProposalDraft'),
+        source.indexOf('const trimPhotoPromptSection'),
     );
 
     assert.match(singleGeneration, /let attemptRecorded = false;/);
@@ -273,7 +273,7 @@ test('production continuation source increments the trace index before each requ
     );
     const singleGeneration = source.slice(
         source.indexOf('const runConversationGeneration'),
-        source.indexOf('type CharacterPhotoProposalDraft'),
+        source.indexOf('const trimPhotoPromptSection'),
     );
 
     assert.equal((continuation.match(/await generateChatTextWithTimeout\(/g) || []).length, 1);

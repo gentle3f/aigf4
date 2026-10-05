@@ -1,7 +1,7 @@
 // managers.ts
 import { personas as initialPersonas, ccV3Persona } from "./personas.tsx";
 import { deletePersonaAvatar, loadPersonaAvatars, savePersonaAvatar } from './avatarStore.js';
-import { AUTO_MEMORY_SUMMARY_VERSION } from './autoMemory.js';
+import { AUTO_MEMORY_SUMMARY_VERSION } from './autoMemoryPolicy.js';
 import {
     decodeChatHistoryStorage,
     encodeChatHistoryJson,
@@ -9,8 +9,10 @@ import {
 } from './chatHistoryStorage.js';
 import { notifyLocalCloudChange } from './cloudSyncEvents.js';
 import { readChatRecovery, saveChatRecovery } from './chatRecoveryStore.js';
+import { readPersonaRecovery, savePersonaRecovery } from './personaRecoveryStore.js';
 import { hasUndurableHistorySnapshot, LatestHistoryPersistence, type HistoryCompressionResult } from './chatHistoryPersistence.js';
 import { isChatPerformanceEnabled, markChatPerformance } from './chatPerformance.js';
+import { buildMemorySearchTags, mergeMemorySearchTags } from './memoryIndex.js';
 
 // --- Constants ---
 export const DIARY_CHECKPOINT = '[DIARY_CHECKPOINT]';
@@ -146,6 +148,7 @@ export interface CharacterPhotoProposal {
     createdAt: number;
     useAvatarReference: boolean;
     identityMode?: 'avatar_reference' | 'persona_description' | 'public_identity';
+    contentMode?: 'general' | 'nsfw';
     modelId?: string;
     modelName?: string;
     resolution?: string;
@@ -178,6 +181,7 @@ export interface MemoryProposal {
     id: string;
     targetMemberIds: string[];
     originalText: string;
+    sourceMessageId?: string;
     summary: string;
     status: 'pending' | 'saved' | 'session-only' | 'declined';
     createdAt: number;
@@ -350,6 +354,7 @@ export interface PersonaMemoryEntry {
     originalText?: string;
     sourceMessageIds?: string[];
     sourceMessageIndexes?: number[];
+    searchTags?: string[];
     importance?: number;
     sceneId?: string;
     unresolved?: boolean;
@@ -409,6 +414,15 @@ export interface AllData {
     interests?: { [key: string]: Interest[] };
 }
 
+export interface MemoryImportSnapshot {
+    personas: { [key: string]: Persona };
+    chatHistories: { [key: string]: ChatMessage[] };
+    diaries: { [key: string]: DiaryEntry[] };
+    interests: { [key: string]: Interest[] };
+    privateAvatarKeys: string[];
+    customPersonaCounter: number;
+}
+
 const SEEDED_CUSTOM_PERSONAS: { [key: string]: Persona } = {
     [LEGACY_CC_SEED_KEY]: { ...ccV3Persona },
 };
@@ -464,8 +478,15 @@ export class MemoryManager {
     private chatHistoryLastDurableVersion = 0;
     private chatHistoryWorkerUnavailable = false;
     private asyncHistoryPersistence: LatestHistoryPersistence<{ [key: string]: ChatMessage[] }> | null = null;
+    private personaRecoveryPending = false;
+    private personaRecoveryBaseline: string | null = null;
 
     constructor() {
+        try {
+            this.personaRecoveryBaseline = localStorage.getItem('customPersonas');
+        } catch {
+            this.personaRecoveryBaseline = null;
+        }
         // Persona objects must not share references with the immutable defaults.
         // Otherwise editing a built-in persona also edits the comparison baseline,
         // making the change look unmodified and disappear after a reload.
@@ -509,7 +530,10 @@ export class MemoryManager {
             if (originalPersona) {
                 const currentPersona = this.personas[key];
                 // Check for modifications. God mode changes 'prompt'. Users can change avatarPrompt, avatarUrl, and memory.
-                if (currentPersona.prompt !== originalPersona.prompt || 
+                if (currentPersona.name !== originalPersona.name ||
+                    currentPersona.emoji !== originalPersona.emoji ||
+                    currentPersona.gender !== originalPersona.gender ||
+                    currentPersona.prompt !== originalPersona.prompt ||
                     currentPersona.description !== originalPersona.description ||
                     currentPersona.greeting !== originalPersona.greeting ||
                     currentPersona.avatarPrompt !== originalPersona.avatarPrompt ||
@@ -522,7 +546,10 @@ export class MemoryManager {
                     currentPersona.favoritePhotoPrompt !== originalPersona.favoritePhotoPrompt ||
                     JSON.stringify(currentPersona.chatPreferences || null) !== JSON.stringify(originalPersona.chatPreferences || null) ||
                     Boolean(currentPersona.publicIdentityEnabled) !== Boolean(originalPersona.publicIdentityEnabled) ||
-                    JSON.stringify(currentPersona.publicIdentity || null) !== JSON.stringify(originalPersona.publicIdentity || null)
+                    JSON.stringify(currentPersona.publicIdentity || null) !== JSON.stringify(originalPersona.publicIdentity || null) ||
+                    JSON.stringify(currentPersona.relationshipState || null) !== JSON.stringify(originalPersona.relationshipState || null) ||
+                    currentPersona.conversationLabel !== originalPersona.conversationLabel ||
+                    JSON.stringify(currentPersona.timelineBranch || null) !== JSON.stringify(originalPersona.timelineBranch || null)
                 ) 
                 {
                     personasToSave[key] = currentPersona;
@@ -687,20 +714,178 @@ export class MemoryManager {
         }
     }
 
-    private persistModifiedPersonas(throwOnError = false) {
+    private getPersistablePersonaSnapshot() {
+        return Object.fromEntries(
+            Object.entries(this.getModifiedAndCustomPersonas()).map(([key, persona]) => [
+                key,
+                this.privateAvatarKeys.has(key)
+                    ? { ...persona, avatarUrl: `${PRIVATE_AVATAR_MARKER_PREFIX}${key}` }
+                    : persona,
+            ]),
+        ) as Record<string, Persona>;
+    }
+
+    private recalculateCustomPersonaCounter() {
+        const customKeys = Object.keys(this.personas).filter(key => key.startsWith('custom_'));
+        this.customPersonaCounter = customKeys.length
+            ? Math.max(...customKeys.map(key => {
+                const match = key.match(/custom_(\d+)_/);
+                return match ? Number.parseInt(match[1], 10) : 0;
+            }))
+            : 0;
+    }
+
+    private savePersonaRecoverySnapshot(data: string) {
+        let baseline: string | null = null;
         try {
-            const persistablePersonas = Object.fromEntries(
-                Object.entries(this.getModifiedAndCustomPersonas()).map(([key, persona]) => [
-                    key,
-                    this.privateAvatarKeys.has(key)
-                        ? { ...persona, avatarUrl: `${PRIVATE_AVATAR_MARKER_PREFIX}${key}` }
-                        : persona,
-                ]),
-            );
-            localStorage.setItem('customPersonas', JSON.stringify(persistablePersonas));
+            baseline = localStorage.getItem('customPersonas');
+        } catch (error) {
+            console.error('Failed to read persona recovery baseline:', error);
+            return;
+        }
+
+        const shouldNotify = !this.personaRecoveryPending;
+        this.personaRecoveryPending = true;
+        void savePersonaRecovery({ baseline, data })
+            .then(() => {
+                if (
+                    shouldNotify
+                    && this.personaRecoveryPending
+                    && typeof window !== 'undefined'
+                ) {
+                    window.dispatchEvent(new CustomEvent('wetapp-persona-storage-recovered'));
+                }
+            })
+            .catch(error => console.error('Failed to save persona recovery:', error));
+    }
+
+    async restorePersonaRecovery() {
+        try {
+            const saved = await readPersonaRecovery();
+            if (!saved) return false;
+
+            if (this.personaRecoveryBaseline !== saved.baseline) {
+                await savePersonaRecovery(null);
+                return false;
+            }
+
+            const recovered = JSON.parse(saved.data) as Record<string, Persona>;
+            if (!recovered || typeof recovered !== 'object' || Array.isArray(recovered)) {
+                await savePersonaRecovery(null);
+                return false;
+            }
+
+            let baselineOverlay: Record<string, Persona> = {};
+            if (saved.baseline) {
+                try {
+                    const parsed = JSON.parse(saved.baseline);
+                    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                        baselineOverlay = parsed as Record<string, Persona>;
+                    }
+                } catch {
+                    // An invalid historical primary snapshot cannot contribute field-level deltas.
+                }
+            }
+
+            Object.keys(baselineOverlay).forEach(key => {
+                if (Object.prototype.hasOwnProperty.call(recovered, key)) return;
+                this.privateAvatarKeys.delete(key);
+                if (initialPersonas[key]) {
+                    this.personas[key] = structuredClone(initialPersonas[key]);
+                } else {
+                    delete this.personas[key];
+                }
+            });
+
+            Object.entries(recovered).forEach(([key, recoveredPersona]) => {
+                const baselinePersona = baselineOverlay[key];
+                if (!baselinePersona) {
+                    const restored = structuredClone(recoveredPersona);
+                    if (restored?.avatarUrl === `${PRIVATE_AVATAR_MARKER_PREFIX}${key}`) {
+                        this.privateAvatarKeys.add(key);
+                        restored.avatarUrl = initialPersonas[key]?.avatarUrl ?? null;
+                    } else {
+                        this.privateAvatarKeys.delete(key);
+                    }
+                    this.personas[key] = restored;
+                    return;
+                }
+
+                const current = structuredClone(
+                    this.personas[key]
+                    || initialPersonas[key]
+                    || recoveredPersona,
+                ) as Persona;
+                const currentRecord = current as unknown as Record<string, unknown>;
+                const baselineRecord = baselinePersona as unknown as Record<string, unknown>;
+                const recoveredRecord = recoveredPersona as unknown as Record<string, unknown>;
+                const fields = new Set([
+                    ...Object.keys(baselineRecord),
+                    ...Object.keys(recoveredRecord),
+                ]);
+
+                fields.forEach(field => {
+                    const before = JSON.stringify(baselineRecord[field]);
+                    const after = JSON.stringify(recoveredRecord[field]);
+                    if (before === after) return;
+                    if (Object.prototype.hasOwnProperty.call(recoveredRecord, field)) {
+                        currentRecord[field] = structuredClone(recoveredRecord[field]);
+                    } else {
+                        delete currentRecord[field];
+                    }
+                });
+
+                const recoveredAvatar = recoveredRecord.avatarUrl;
+                const baselineAvatar = baselineRecord.avatarUrl;
+                if (JSON.stringify(recoveredAvatar) !== JSON.stringify(baselineAvatar)) {
+                    if (recoveredAvatar === `${PRIVATE_AVATAR_MARKER_PREFIX}${key}`) {
+                        this.privateAvatarKeys.add(key);
+                        current.avatarUrl = initialPersonas[key]?.avatarUrl ?? null;
+                    } else {
+                        this.privateAvatarKeys.delete(key);
+                    }
+                }
+                this.personas[key] = current;
+            });
+            this.recalculateCustomPersonaCounter();
+
+            this.personaRecoveryPending = true;
+            try {
+                this.persistModifiedPersonas(true);
+            } catch (error) {
+                console.warn('Recovered persona state remains on backup storage:', error);
+                if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('wetapp-storage-failed'));
+                }
+            }
+            return true;
+        } catch (error) {
+            console.warn('Persona recovery unavailable:', error);
+            return false;
+        }
+    }
+
+    private persistModifiedPersonas(throwOnError = false) {
+        let encoded: string | undefined;
+        try {
+            encoded = JSON.stringify(this.getPersistablePersonaSnapshot());
+            localStorage.setItem('customPersonas', encoded);
+            if (this.personaRecoveryPending) {
+                this.personaRecoveryPending = false;
+                void savePersonaRecovery(null).catch(error => {
+                    this.personaRecoveryPending = true;
+                    console.warn('Failed to clear persona recovery:', error);
+                });
+            }
             notifyLocalCloudChange('state');
         } catch (error) {
             console.error('Failed to save custom personas:', error);
+            if (!throwOnError && encoded) {
+                this.savePersonaRecoverySnapshot(encoded);
+                if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('wetapp-storage-failed'));
+                }
+            }
             if (throwOnError) throw error;
         }
     }
@@ -898,15 +1083,41 @@ export class MemoryManager {
         return changed;
     }
     
-    loadAllData(data: AllData, replaceExisting = false) {
-        const snapshot = {
-            personas: JSON.parse(JSON.stringify(this.personas)) as { [key: string]: Persona },
-            chatHistories: JSON.parse(JSON.stringify(this.chatHistories)) as { [key: string]: ChatMessage[] },
-            diaries: JSON.parse(JSON.stringify(this.diaries)) as { [key: string]: DiaryEntry[] },
-            interests: JSON.parse(JSON.stringify(this.interests)) as { [key: string]: Interest[] },
-            privateAvatarKeys: new Set(this.privateAvatarKeys),
+    createImportSnapshot(): MemoryImportSnapshot {
+        return {
+            personas: structuredClone(this.personas),
+            chatHistories: structuredClone(this.chatHistories),
+            diaries: structuredClone(this.diaries),
+            interests: structuredClone(this.interests),
+            privateAvatarKeys: Array.from(this.privateAvatarKeys),
             customPersonaCounter: this.customPersonaCounter,
         };
+    }
+
+    restoreImportSnapshot(snapshot: MemoryImportSnapshot) {
+        this.personas = structuredClone(snapshot.personas);
+        this.chatHistories = structuredClone(snapshot.chatHistories);
+        this.diaries = structuredClone(snapshot.diaries);
+        this.interests = structuredClone(snapshot.interests);
+        this.privateAvatarKeys = new Set(snapshot.privateAvatarKeys);
+        this.customPersonaCounter = snapshot.customPersonaCounter;
+        this.persistModifiedPersonas(true);
+        this.persistChatHistories(true, true);
+    }
+
+    async cleanupUnusedImportSnapshotAvatars(snapshot: MemoryImportSnapshot) {
+        await Promise.all(snapshot.privateAvatarKeys.map(async key => {
+            if (this.privateAvatarKeys.has(key)) return;
+            try {
+                await deletePersonaAvatar(key);
+            } catch (error) {
+                console.warn(`Failed to remove unused persona avatar asset ${key}:`, error);
+            }
+        }));
+    }
+
+    loadAllData(data: AllData, replaceExisting = false) {
+        const snapshot = this.createImportSnapshot();
         try {
             if (replaceExisting) {
                 this.personas = structuredClone(initialPersonas);
@@ -933,14 +1144,11 @@ export class MemoryManager {
             this.persistModifiedPersonas(true);
             this.persistChatHistories(true);
         } catch (error) {
-            this.personas = snapshot.personas;
-            this.chatHistories = snapshot.chatHistories;
-            this.diaries = snapshot.diaries;
-            this.interests = snapshot.interests;
-            this.privateAvatarKeys = snapshot.privateAvatarKeys;
-            this.customPersonaCounter = snapshot.customPersonaCounter;
-            this.persistModifiedPersonas();
-            this.persistChatHistories();
+            try {
+                this.restoreImportSnapshot(snapshot);
+            } catch (rollbackError) {
+                console.error('Failed to restore MemoryManager after import failure:', rollbackError);
+            }
             throw new Error('瀏覽器儲存空間不足或資料無法完整寫入；本次匯入已取消，原有資料保持不變。');
         }
     }
@@ -1131,6 +1339,7 @@ export class MemoryManager {
             summary: entry.summary.trim(),
             importance: Math.max(1, Math.min(5, Math.round(Number(entry.importance) || (type === 'soul' ? 5 : 3)))),
             sourceMessageIds: Array.from(new Set((entry.sourceMessageIds || []).filter(Boolean))),
+            searchTags: buildMemorySearchTags(entry.title, entry.summary, entry.kind, entry.searchTags || []),
             createdAt: Date.now(),
             pinned: type === 'soul',
         };
@@ -1169,6 +1378,7 @@ export class MemoryManager {
                 summary: entry.summary.trim(),
                 importance: Math.max(1, Math.min(5, Math.round(Number(entry.importance) || 3))),
                 sourceMessageIds: Array.from(new Set((entry.sourceMessageIds || []).filter(Boolean))),
+                searchTags: buildMemorySearchTags(entry.title, entry.summary, entry.kind, entry.searchTags || []),
                 createdAt: Date.now(),
                 pinned: false,
             };
@@ -1183,6 +1393,12 @@ export class MemoryManager {
                     ...(duplicate.sourceMessageIds || []),
                     ...(created.sourceMessageIds || []),
                 ]));
+                duplicate.searchTags = mergeMemorySearchTags(
+                    duplicate.searchTags,
+                    created.searchTags,
+                    buildMemorySearchTags(duplicate.title, duplicate.summary, duplicate.kind),
+                    buildMemorySearchTags(created.title, created.summary, created.kind),
+                );
                 duplicate.importance = Math.max(duplicate.importance || 1, created.importance || 1);
                 duplicate.unresolved = Boolean(duplicate.unresolved || created.unresolved);
                 if (!duplicate.sceneId && created.sceneId) duplicate.sceneId = created.sceneId;
@@ -1219,6 +1435,7 @@ export class MemoryManager {
             entry.importance = Math.max(1, Math.min(5, Math.round(updates.importance)));
         }
         if (typeof updates.unresolved === 'boolean') entry.unresolved = updates.unresolved;
+        entry.searchTags = buildMemorySearchTags(entry.title, entry.summary, entry.kind);
         this.persistModifiedPersonas();
         return entry;
     }
@@ -1235,16 +1452,18 @@ export class MemoryManager {
         const persona = this.personas[key];
         if (!persona || sourceMessageIds.length === 0) return 0;
         const removedIds = new Set(sourceMessageIds);
-        const before = (persona.memories || []).length;
-        persona.memories = (persona.memories || []).filter(entry => (
-            !(entry.sourceMessageIds || []).some(id => removedIds.has(id))
-        ));
+        const shouldRemove = (entry: PersonaMemoryEntry) => (
+            (entry.sourceMessageIds || []).some(id => removedIds.has(id))
+        );
+        const before = (persona.soul || []).length + (persona.memories || []).length;
+        persona.soul = (persona.soul || []).filter(entry => !shouldRemove(entry));
+        persona.memories = (persona.memories || []).filter(entry => !shouldRemove(entry));
         persona.lastMemorySummaryUserMessageCount = Math.min(
             Number(persona.lastMemorySummaryUserMessageCount || 0),
             Math.max(0, userMessageCount),
         );
         this.persistModifiedPersonas();
-        return before - persona.memories.length;
+        return before - (persona.soul || []).length - (persona.memories || []).length;
     }
 
     buildPersonaMarkdownFiles(key?: string) {

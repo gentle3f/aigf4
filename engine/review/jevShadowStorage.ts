@@ -1,6 +1,11 @@
 import { sanitizeStrictReviewIssueCodes } from '../../strictReview.js';
 import { normalizeJevShadowResult } from './jevDecisionProvider.js';
-import type { JevShadowRecord, JevWardrobeShadowTrialRecord } from './jevShadow.js';
+import type {
+    JevGroupGateSemanticSignals,
+    JevGroupGateShadowTrialRecord,
+    JevShadowRecord,
+    JevWardrobeShadowTrialRecord,
+} from './jevShadow.js';
 
 export const JEV_SHADOW_STORAGE_KEY = 'wetappJevShadowMetadataV1';
 export const MAX_PERSISTED_JEV_SHADOW_RECORDS = 200;
@@ -76,6 +81,67 @@ const sanitizeWardrobeTrial = (value: unknown): JevWardrobeShadowTrialRecord | u
     return trial;
 };
 
+const GROUP_GATE_SEMANTIC_SIGNAL_KEYS = [
+    'requestMismatch',
+    'identityConflict',
+    'speakerOwnershipViolation',
+    'continuityViolation',
+    'realityLayerViolation',
+    'wardrobeConflict',
+    'stateConflict',
+    'replayedBeat',
+    'personaVoiceViolation',
+    'thirdPartySpeechViolation',
+    'userAgencyViolation',
+    'incompleteEnding',
+    'otherDefect',
+] as const satisfies readonly (keyof JevGroupGateSemanticSignals)[];
+
+const sanitizeGroupGateSemanticSignals = (value: unknown): JevGroupGateSemanticSignals | undefined => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const source = value as Record<string, unknown>;
+    const allowed = new Set<string>(GROUP_GATE_SEMANTIC_SIGNAL_KEYS);
+    if (Object.keys(source).length !== GROUP_GATE_SEMANTIC_SIGNAL_KEYS.length) return undefined;
+    if (Object.keys(source).some(key => !allowed.has(key))) return undefined;
+
+    const entries = GROUP_GATE_SEMANTIC_SIGNAL_KEYS.map(key => {
+        const probability = safeProbability(source[key]);
+        return probability === undefined ? undefined : [key, probability] as const;
+    });
+    if (entries.some(entry => entry === undefined)) return undefined;
+    return Object.fromEntries(entries as readonly (readonly [keyof JevGroupGateSemanticSignals, number])[]) as JevGroupGateSemanticSignals;
+};
+
+const sanitizeGroupGateTrial = (value: unknown): JevGroupGateShadowTrialRecord | undefined => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const source = value as Record<string, unknown>;
+    if (source.profile !== 'group-gate-v2') return undefined;
+    if (source.status !== 'ok' && source.status !== 'unavailable' && source.status !== 'aborted') return undefined;
+    const latencyMs = safeNonNegativeNumber(source.latencyMs);
+    if (latencyMs === undefined) return undefined;
+
+    const trial: JevGroupGateShadowTrialRecord = {
+        profile: 'group-gate-v2',
+        status: source.status,
+        latencyMs,
+    };
+    if (source.status === 'unavailable') Object.assign(trial, sanitizeUnavailableMetadata(source));
+    if (source.status === 'ok') {
+        const servedModel = safeString(source.servedModel, 160);
+        const requiresRevision = safeProbability(source.requiresRevision);
+        if (!servedModel || requiresRevision === undefined) return undefined;
+        trial.servedModel = servedModel;
+        trial.requiresRevision = requiresRevision;
+        if (source.semanticSignals !== undefined) {
+            const semanticSignals = sanitizeGroupGateSemanticSignals(source.semanticSignals);
+            if (!semanticSignals) return undefined;
+            trial.semanticSignals = semanticSignals;
+        }
+        Object.assign(trial, sanitizeUsage(source));
+    }
+    return trial;
+};
+
 const sanitizeSignals = (source: Record<string, unknown>) => {
     const servedModel = safeString(source.servedModel, 160);
     if (!servedModel || !source.signals || typeof source.signals !== 'object' || Array.isArray(source.signals)) return undefined;
@@ -113,19 +179,28 @@ export const sanitizePersistedJevShadowRecord = (value: unknown): JevShadowRecor
         status: source.status,
         latencyMs,
     };
-
-    if (source.status === 'unavailable') Object.assign(record, sanitizeUnavailableMetadata(source));
-    if (source.status === 'ok') {
-        const normalized = sanitizeSignals(source);
-        if (!normalized?.signals || !normalized.model) return null;
-        record.servedModel = normalized.model;
-        record.signals = { ...normalized.signals };
-        record.usageInputTokens = normalized.usage?.inputTokens;
-        record.usageOutputTokens = normalized.usage?.outputTokens;
-        record.usageCost = normalized.usage?.cost;
+    if (source.calibrationCohort === 'group-deterministic-v1') record.calibrationCohort = 'group-deterministic-v1';
+    if (source.mode === 'group' && typeof source.deterministicGroupNarrationViolation === 'boolean') {
+        record.deterministicGroupNarrationViolation = source.deterministicGroupNarrationViolation;
     }
 
     record.wardrobeTrial = sanitizeWardrobeTrial(source.wardrobeTrial);
+    if (source.mode === 'group') record.groupGateTrial = sanitizeGroupGateTrial(source.groupGateTrial);
+
+    if (source.status === 'unavailable') Object.assign(record, sanitizeUnavailableMetadata(source));
+    if (source.status === 'ok') {
+        if (source.signals !== undefined || source.servedModel !== undefined) {
+            const normalized = sanitizeSignals(source);
+            if (!normalized?.signals || !normalized.model) return null;
+            record.servedModel = normalized.model;
+            record.signals = { ...normalized.signals };
+            record.usageInputTokens = normalized.usage?.inputTokens;
+            record.usageOutputTokens = normalized.usage?.outputTokens;
+            record.usageCost = normalized.usage?.cost;
+        } else if (source.mode !== 'group' || record.groupGateTrial?.status !== 'ok') {
+            return null;
+        }
+    }
 
     if (source.gemmaDecision === 'keep' || source.gemmaDecision === 'revise' || source.gemmaDecision === 'unavailable') {
         record.gemmaDecision = source.gemmaDecision;
