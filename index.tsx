@@ -19,7 +19,7 @@ import {
 } from "./managers.js";
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
-import { setPersistedAppSetting } from './appSettings.js';
+import { RESEARCH_CAPTURE_SETTING_KEY, setPersistedAppSetting } from './appSettings.js';
 import type { SupabaseCloudSyncState } from './supabaseCloudSync.js';
 import { coreInstruction, VENICE_ASSISTANT_PERSONA_KEY } from "./personas.tsx";
 import {
@@ -142,7 +142,7 @@ import type { ReviewPipelineAttemptContext } from "./engine/review/reviewPipelin
 import { runPreparedStrictReviewAttempt } from "./engine/review/reviewAttemptCoordinator.js";
 import { buildJevRecentHistoryText, buildReviewState } from "./engine/review/reviewState.js";
 import { serializeGroupGenerationForReview } from "./engine/review/groupCandidateSerialization.js";
-import { startJevShadowEvaluation } from "./engine/review/jevShadow.js";
+import { startJevShadowEvaluation, type JevShadowRecord } from "./engine/review/jevShadow.js";
 import { runGroupTurnAdapter } from "./engine/groupTurnAdapter.js";
 import { runSingleTurnAdapter } from "./engine/singleTurnAdapter.js";
 import {
@@ -221,6 +221,17 @@ const loadGroupChatPromptModule = () => {
     groupChatPromptModuleLoad ??= import('./groupChatPrompt.js');
     return groupChatPromptModuleLoad;
 };
+
+let researchCaptureModuleLoad: Promise<typeof import('./researchCapture.js')> | null = null;
+
+const loadResearchCaptureModule = () => {
+    researchCaptureModuleLoad ??= import('./researchCapture.js');
+    return researchCaptureModuleLoad;
+};
+
+const isResearchCaptureEnabledForTurn = () => (
+    localStorage.getItem(RESEARCH_CAPTURE_SETTING_KEY) === 'true'
+);
 
 let photoStoreModuleLoad: Promise<typeof import('./photoStore.js')> | null = null;
 let chatMediaStoreModuleLoad: Promise<typeof import('./chatMediaStore.js')> | null = null;
@@ -6335,6 +6346,7 @@ const startStrictReviewShadow = (
     mode: 'single' | 'group',
     proposedScene?: RoomSceneState,
     deterministicGroupNarrationViolation?: boolean,
+    onRecordUpdate?: (record: JevShadowRecord) => void,
 ) => startJevShadowEvaluation({
     requestId: String(request.id),
     mode,
@@ -6356,6 +6368,7 @@ const startStrictReviewShadow = (
             latestUserMessage,
         ),
     }),
+    onRecordUpdate,
 });
 
 const strictReviewSingleReply = async (
@@ -6471,6 +6484,75 @@ const strictReviewGroupReply = async (
             : '',
         'STRICT REVISION FORMAT: revised_response must contain one complete <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate> envelope.',
     ].join('\n\n');
+
+    let researchRecordId = '';
+    let researchModule: Awaited<ReturnType<typeof loadResearchCaptureModule>> | null = null;
+    let researchBaseSave: Promise<boolean> | null = null;
+    const queueResearchPatch = (
+        buildPatch: (module: Awaited<ReturnType<typeof loadResearchCaptureModule>>) => unknown,
+    ) => {
+        if (!researchRecordId || !researchModule) return;
+        const module = researchModule;
+        const recordId = researchRecordId;
+        void (researchBaseSave || Promise.resolve(true))
+            .then(() => module.patchResearchTurnRecord(
+                recordId,
+                buildPatch(module) as Parameters<typeof module.patchResearchTurnRecord>[1],
+            ))
+            .catch(error => {
+                console.warn('[aigf4 research capture patch]', {
+                    requestId: request.id,
+                    message: error instanceof Error ? error.message : String(error),
+                });
+            });
+    };
+
+    if (isResearchCaptureEnabledForTurn()) {
+        try {
+            researchModule = await loadResearchCaptureModule();
+            researchRecordId = researchModule.createResearchRecordId();
+            const reviewState = buildReviewState({
+                latestUserText: latestUserMessage,
+                candidateText: serializedCandidate,
+                mode: 'group',
+                ccMode: false,
+                personaKey: request.personaKey,
+                persona: request.persona,
+                room: request.room,
+                wardrobe: request.pendingWardrobeState || request.wardrobeState,
+                proposedScene: candidate.scene,
+                recentHistoryText: buildJevRecentHistoryText(
+                    getStrictReviewHistory(request, latestUserMessage),
+                    latestUserMessage,
+                ),
+            });
+            const researchRecord = researchModule.buildResearchGroupTurnRecord({
+                recordId: researchRecordId,
+                requestId: String(request.id),
+                conversationKey: request.conversationKey,
+                userMessage: latestUserMessage,
+                reviewState,
+                candidate,
+            });
+            researchBaseSave = researchModule.saveResearchTurnRecord(researchRecord)
+                .catch(error => {
+                    console.warn('[aigf4 research capture save]', {
+                        requestId: request.id,
+                        message: error instanceof Error ? error.message : String(error),
+                    });
+                    return false;
+                });
+        } catch (error) {
+            researchModule = null;
+            researchRecordId = '';
+            researchBaseSave = null;
+            console.warn('[aigf4 research capture init]', {
+                requestId: request.id,
+                message: error instanceof Error ? error.message : String(error),
+            });
+        }
+    }
+
     const shadow = startStrictReviewShadow(
         request,
         latestUserMessage,
@@ -6478,6 +6560,9 @@ const strictReviewGroupReply = async (
         'group',
         candidate.scene,
         groupNarrationUsesFirstPerson(candidate),
+        researchRecordId ? (record: JevShadowRecord) => {
+            queueResearchPatch(module => module.buildJevResearchPatch(record));
+        } : undefined,
     );
     let decision;
     try {
@@ -6490,10 +6575,11 @@ const strictReviewGroupReply = async (
         );
     } catch (error) {
         shadow.recordGemmaDecision('unavailable');
+        queueResearchPatch(module => module.buildFailedResearchPatch('strict-review', error));
         throw error;
     }
     shadow.recordGemmaDecision(decision?.decision || 'unavailable', decision?.issues);
-    return applyGroupStrictReview(candidate, decision, revisedResponse => {
+    const reviewed = applyGroupStrictReview(candidate, decision, revisedResponse => {
         try {
             const revision = normalizeGroupGenerationTraditional(
                 parseGroupGeneration(
@@ -6526,6 +6612,18 @@ const strictReviewGroupReply = async (
             return null;
         }
     });
+
+    queueResearchPatch(module => module.buildCompletedResearchPatch({
+        final: reviewed,
+        gemma: {
+            decision: decision?.decision || 'unavailable',
+            issueCodes: decision?.issues || [],
+            revisedResponse: decision?.decision === 'revise' ? decision.revisedResponse : undefined,
+            revisionAccepted: decision?.decision === 'revise' ? reviewed !== candidate : undefined,
+        },
+    }));
+
+    return reviewed;
 };
 
 const runCharacterChatGeneration = async (

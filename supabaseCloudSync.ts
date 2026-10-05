@@ -17,6 +17,12 @@ import { filterRemoteStateEntities, findLocallyDeletedIndexedKeys, mergeChatHist
 import { readCloudSyncIndex, writeCloudSyncIndex } from './cloudSyncIndexStore.js';
 import { isLocalCloudChangeBatchActive, LOCAL_CLOUD_CHANGE_EVENT, LocalCloudChangeScope } from './cloudSyncEvents.js';
 import { isPersistedAppSettingKey, PERSISTED_APP_SETTING_KEYS } from './appSettings.js';
+import {
+    buildResearchCloudProjection,
+    listPendingResearchTurnRecords,
+    markResearchTurnsSynced,
+    RESEARCH_CAPTURE_PENDING_EVENT,
+} from './researchCapture.js';
 import { shouldRecoverPendingCloudConflict, shouldSkipRedundantCloudPull } from './cloudSyncPullPolicy.js';
 import { isCloudStateRevisionConflict, normalizeCloudStateRevision } from './cloudStateRevision.js';
 import { ChatMessage, MemoryManager, Persona } from './managers.js';
@@ -45,6 +51,9 @@ const PULL_RECOVERY_KEY = 'wetappCloudPullRecoveryV1';
 const SAFE_MERGE_VERSION_KEY = 'wetappCloudSafeMergeV1';
 const CLOUD_RETRY_BASE_DELAY_MS = 1_500;
 const CLOUD_RETRY_MAX_DELAY_MS = 30_000;
+const RESEARCH_CLOUD_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+const RESEARCH_CLOUD_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const RESEARCH_CLOUD_LAST_PRUNE_KEY = 'aigf4ResearchCloudLastPruneAtV1';
 const SUPABASE_URL = String(import.meta.env?.VITE_SUPABASE_URL || '').trim();
 const SUPABASE_KEY = String(
     import.meta.env?.VITE_SUPABASE_PUBLISHABLE_KEY
@@ -237,6 +246,8 @@ export class SupabaseCloudSyncManager {
     private pullRecoveryRequired = localStorage.getItem(PULL_RECOVERY_KEY) === 'true';
     private pushTimer: number | null = null;
     private pullTimer: number | null = null;
+    private researchPushTimer: number | null = null;
+    private researchPushing = false;
     private cloudRetryAttempt = 0;
     private authRetryAttempt = 0;
     private authRetryTimer: number | null = null;
@@ -288,6 +299,7 @@ export class SupabaseCloudSyncManager {
         }
         this.started = true;
         window.addEventListener(LOCAL_CLOUD_CHANGE_EVENT, this.handleLocalChange as EventListener);
+        window.addEventListener(RESEARCH_CAPTURE_PENDING_EVENT, this.handleResearchPending as EventListener);
         window.addEventListener('online', this.handleOnline);
         window.addEventListener('offline', this.handleOffline);
         document.addEventListener('visibilitychange', this.handleVisibilityChange);
@@ -545,6 +557,10 @@ export class SupabaseCloudSyncManager {
             window.clearTimeout(this.pullTimer);
             this.pullTimer = null;
         }
+        if (this.researchPushTimer !== null) {
+            window.clearTimeout(this.researchPushTimer);
+            this.researchPushTimer = null;
+        }
         this.cloudRetryAttempt = 0;
     }
 
@@ -553,6 +569,11 @@ export class SupabaseCloudSyncManager {
         localStorage.setItem(PENDING_KEY, 'true');
         if (!this.session || !this.initializedUserId || this.pullRecoveryRequired) return;
         this.schedulePush(event.detail?.scope === 'media' ? 400 : 1200);
+    };
+
+    private readonly handleResearchPending = () => {
+        if (!this.session || !this.initializedUserId || !navigator.onLine) return;
+        this.scheduleResearchPush(500);
     };
 
     private readonly handleOnline = () => {
@@ -567,6 +588,7 @@ export class SupabaseCloudSyncManager {
         this.cloudRetryAttempt = 0;
         this.realtimeRetryAttempt = 0;
         this.scheduleRealtimeRestart();
+        this.scheduleResearchPush(250);
         if (localStorage.getItem(PENDING_KEY) === 'true') {
             this.setPullRecoveryRequired(true);
             this.schedulePull(250);
@@ -598,9 +620,11 @@ export class SupabaseCloudSyncManager {
             if (document.visibilityState === 'visible') this.scheduleAuthSessionRetry(0);
             return;
         }
-        if (document.visibilityState === 'hidden' && localStorage.getItem(PENDING_KEY) === 'true') {
-            this.schedulePush(0);
+        if (document.visibilityState === 'hidden') {
+            if (localStorage.getItem(PENDING_KEY) === 'true') this.schedulePush(0);
+            this.scheduleResearchPush(0);
         } else if (document.visibilityState === 'visible') {
+            this.scheduleResearchPush(250);
             this.schedulePull(500);
         }
     };
@@ -688,6 +712,7 @@ export class SupabaseCloudSyncManager {
         this.setState('connecting', '正在連接私人雲端空間…');
         await this.initialSync(sessionUserId, sessionGeneration);
         if (!this.isCurrentSession(sessionUserId, sessionGeneration)) return;
+        this.scheduleResearchPush(0);
         try {
             await this.startRealtime();
         } catch (error) {
@@ -766,6 +791,100 @@ export class SupabaseCloudSyncManager {
             if (!this.isCurrentSession(sessionUserId, sessionGeneration)) return;
             void this.pushPendingChangesSafely();
         }, delay);
+    }
+
+    private scheduleResearchPush(delay: number) {
+        const sessionUserId = this.session?.user.id;
+        const sessionGeneration = this.sessionGeneration;
+        if (!sessionUserId) return;
+        if (this.researchPushTimer !== null) window.clearTimeout(this.researchPushTimer);
+        this.researchPushTimer = window.setTimeout(() => {
+            this.researchPushTimer = null;
+            if (!this.isCurrentSession(sessionUserId, sessionGeneration)) return;
+            void this.pushPendingResearchTurns();
+        }, delay);
+    }
+
+    private async pruneResearchCloudRowsIfDue(
+        sessionUserId: string,
+        sessionGeneration: number,
+    ) {
+        if (!this.client) return;
+        const now = Date.now();
+        const lastPrunedAt = Number(localStorage.getItem(RESEARCH_CLOUD_LAST_PRUNE_KEY) || 0) || 0;
+        if (now - lastPrunedAt < RESEARCH_CLOUD_PRUNE_INTERVAL_MS) return;
+        try {
+            const cutoff = now - RESEARCH_CLOUD_RETENTION_MS;
+            const { error } = await this.client
+                .from('wetapp_research_turns')
+                .delete()
+                .eq('user_id', sessionUserId)
+                .lt('created_at_ms', cutoff);
+            if (error) throw error;
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            localStorage.setItem(RESEARCH_CLOUD_LAST_PRUNE_KEY, String(now));
+        } catch (error) {
+            if (error instanceof CloudSessionSupersededError) return;
+            console.warn('[aigf4 research retention]', {
+                message: authErrorMessage(error, 'Research archive retention cleanup failed'),
+            });
+        }
+    }
+
+    private async pushPendingResearchTurns(): Promise<boolean> {
+        if (!this.client || !this.session || this.researchPushing || !navigator.onLine) return false;
+        const sessionUserId = this.session.user.id;
+        const sessionGeneration = this.sessionGeneration;
+        this.researchPushing = true;
+        try {
+            await this.pruneResearchCloudRowsIfDue(sessionUserId, sessionGeneration);
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            for (let batchIndex = 0; batchIndex < 20; batchIndex += 1) {
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+                const pending = await listPendingResearchTurnRecords(20);
+                if (!pending.length) return true;
+                const rows = pending.map(record => {
+                    const projection = buildResearchCloudProjection(record);
+                    return {
+                        user_id: sessionUserId,
+                        record_id: record.recordId,
+                        schema_version: record.schemaVersion,
+                        conversation_key: record.conversationKey,
+                        request_id: record.requestId,
+                        mode: record.mode,
+                        created_at_ms: record.createdAtMs,
+                        metadata: projection.metadata,
+                        sample_payload: projection.samplePayload || null,
+                        source_device_id: this.deviceId,
+                    };
+                });
+                const { error } = await this.client
+                    .from('wetapp_research_turns')
+                    .upsert(rows, { onConflict: 'user_id,record_id' });
+                if (error) throw error;
+                this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+                await markResearchTurnsSynced(
+                    pending.map(record => ({
+                        recordId: record.recordId,
+                        updatedAtMs: record.updatedAtMs,
+                    })),
+                );
+                if (pending.length < 20) return true;
+            }
+            this.scheduleResearchPush(100);
+            return true;
+        } catch (error) {
+            if (error instanceof CloudSessionSupersededError) return false;
+            console.warn('[aigf4 research sync]', {
+                message: authErrorMessage(error, 'Research capture sync failed'),
+            });
+            if (this.isCurrentSession(sessionUserId, sessionGeneration) && navigator.onLine) {
+                this.scheduleResearchPush(15_000);
+            }
+            return false;
+        } finally {
+            this.researchPushing = false;
+        }
     }
 
     private schedulePull(delay: number) {
@@ -1038,6 +1157,9 @@ export class SupabaseCloudSyncManager {
             );
             this.lastObservedCloudStateRevision = currentRevision;
 
+            // Mobile foreground/online checks are intentionally cheap. If the cloud
+            // revision is unchanged since the last successful observation, do not
+            // download the large state payload or re-enumerate every message/media row.
             if (
                 !force
                 && !hasOutstandingRemoteChange
@@ -1810,12 +1932,11 @@ export class SupabaseCloudSyncManager {
 
     private async startRealtime() {
         if (!this.client || !this.session) return;
-        // Do not subscribe to row-level Postgres Changes here. Supabase counts
-        // Realtime egress before the client can discard same-device events, so a
-        // single device can otherwise echo its own large message/state payloads
-        // back to itself. We retain multi-device safety through lightweight
-        // revision-head checks on startup, reconnect, visibility changes and
-        // explicit/manual sync.
+        // Postgres Changes previously subscribed to state/conversation/message/media rows.
+        // Supabase charges egress before the client can discard same-device events, so a
+        // single device could echo its own large message/state payloads back through
+        // Realtime. Keep Realtime disabled and use lightweight revision-head checks on
+        // startup, reconnect, visibility changes and manual sync instead.
         await this.stopRealtime(false);
         this.clearRealtimeRetryState();
     }

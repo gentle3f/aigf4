@@ -1,5 +1,7 @@
 import { notifyLocalCloudChange } from './cloudSyncEvents.js';
 
+export const RESEARCH_CAPTURE_SETTING_KEY = 'aigf4ResearchCaptureEnabledV1';
+
 export const PERSISTED_APP_SETTING_KEYS = [
     'veniceAssistantModel',
     'aigf4ChatModelSettingsV1',
@@ -10,6 +12,7 @@ export const PERSISTED_APP_SETTING_KEYS = [
     'veniceVideoImageModel',
     'veniceVideoTextModel',
     'aigf4RandomPersonaVariationsV2',
+    RESEARCH_CAPTURE_SETTING_KEY,
 ] as const;
 
 export type PersistedAppSettingKey = typeof PERSISTED_APP_SETTING_KEYS[number];

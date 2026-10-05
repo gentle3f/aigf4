@@ -1,4 +1,10 @@
 import { experienceDialog } from './chatExperienceUi.js';
+import {
+    createResearchCaptureExport,
+    getResearchCaptureStats,
+    isResearchCaptureEnabled,
+    setResearchCaptureEnabled,
+} from '../researchCapture.js';
 import { clearJevShadowRecords, getJevShadowRecords } from '../engine/review/jevShadow.js';
 import {
     createJevShadowDiagnosticsExport,
@@ -20,6 +26,11 @@ export const openJevShadowDiagnostics = () => {
     subtitle.textContent = 'V3 signals + Group gate V2 + wardrobe wording A/B shadow · safe metadata kept locally across reloads · Gemma remains authoritative';
     const controls = document.createElement('div');
     controls.className = 'jev-shadow-controls';
+    const researchToggle = document.createElement('button');
+    researchToggle.type = 'button';
+    const researchExport = document.createElement('button');
+    researchExport.type = 'button';
+    researchExport.textContent = '分享 Research JSON';
     const refresh = document.createElement('button');
     refresh.type = 'button';
     refresh.textContent = '重新整理';
@@ -32,11 +43,28 @@ export const openJevShadowDiagnostics = () => {
     const clear = document.createElement('button');
     clear.type = 'button';
     clear.textContent = '清除本頁記錄';
-    controls.append(refresh, copy, shareOrDownload, clear);
+    controls.append(researchToggle, researchExport, refresh, copy, shareOrDownload, clear);
+    const researchStatus = document.createElement('p');
+    researchStatus.className = 'jev-shadow-action-status';
     const status = document.createElement('p');
     status.className = 'jev-shadow-action-status';
     const content = document.createElement('div');
     content.className = 'jev-shadow-content';
+
+    const renderResearchState = async () => {
+        const enabled = isResearchCaptureEnabled();
+        researchToggle.textContent = `Research Capture: ${enabled ? 'ON' : 'OFF'}`;
+        try {
+            const stats = await getResearchCaptureStats();
+            researchStatus.textContent = enabled
+                ? `Research Capture ON · local full-content archive ${stats.total} turns · pending compact cloud sync ${stats.pending}. Full chat/context stays on this device by default; cloud receives compact metadata for completed turns and full content only for selected high-value samples. Never credentials.`
+                : `Research Capture OFF · local archive ${stats.total} turns · pending cloud sync ${stats.pending}. Turn it on to collect Group content for Jev calibration and reply-structure A/B research.`;
+        } catch {
+            researchStatus.textContent = enabled
+                ? 'Full Group research capture ON · local archive status unavailable.'
+                : 'Full Group research capture OFF.';
+        }
+    };
 
     const render = () => {
         const records = getJevShadowRecords();
@@ -303,7 +331,59 @@ export const openJevShadowDiagnostics = () => {
         content.append(tableWrap);
     };
 
-    refresh.onclick = () => { status.textContent = ''; render(); };
+    researchToggle.onclick = () => {
+        const next = !isResearchCaptureEnabled();
+        setResearchCaptureEnabled(next);
+        status.textContent = next
+            ? 'Research Capture 已開啟；Group turns 會完整保存喺手機本機。雲端只同步 compact metadata，同埋精選高價值完整樣本。'
+            : 'Research Capture 已關閉；已保存的 research archive 不會因此刪除。';
+        void renderResearchState();
+    };
+    researchExport.onclick = async () => {
+        try {
+            const exportData = await createResearchCaptureExport();
+            const json = JSON.stringify(exportData, null, 2);
+            const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
+            const filename = `aigf-research-capture-${stamp}.json`;
+            const file = new File([json], filename, { type: 'application/json' });
+            if (
+                typeof navigator.share === 'function'
+                && typeof navigator.canShare === 'function'
+                && navigator.canShare({ files: [file] })
+            ) {
+                await navigator.share({
+                    files: [file],
+                    title: 'AIGF Research Capture',
+                });
+                status.textContent = '已開啟分享選單。Research JSON 包含實際聊天內容，請只保存到你信任的位置。';
+                return;
+            }
+            const url = URL.createObjectURL(file);
+            try {
+                const anchor = document.createElement('a');
+                anchor.href = url;
+                anchor.download = filename;
+                document.body.appendChild(anchor);
+                anchor.click();
+                anchor.remove();
+                status.textContent = '已下載 Research JSON。此檔包含實際聊天內容，請妥善保存。';
+            } finally {
+                window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }
+        } catch (error) {
+            if (error instanceof DOMException && error.name === 'AbortError') {
+                status.textContent = '已取消分享。';
+                return;
+            }
+            status.textContent = '未能匯出 Research JSON。';
+        }
+    };
+
+    refresh.onclick = () => {
+        status.textContent = '';
+        render();
+        void renderResearchState();
+    };
     copy.onclick = async () => {
         try {
             await navigator.clipboard.writeText(JSON.stringify(createJevShadowDiagnosticsExport(getJevShadowRecords())));
@@ -356,7 +436,8 @@ export const openJevShadowDiagnostics = () => {
         status.textContent = '已清除本頁記錄。';
         render();
     };
-    dialog.append(subtitle, controls, status, content);
+    dialog.append(subtitle, researchStatus, controls, status, content);
     render();
+    void renderResearchState();
 };
 

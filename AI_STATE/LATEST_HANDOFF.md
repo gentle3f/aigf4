@@ -1,6 +1,10 @@
 # Latest AIGF Handoff
 
-Authoritative current handoff:
+Authoritative current development handoff:
+- `AI_STATE/HANDOFF_20261006_AIGF_RESEARCH_CAPTURE_LOW_EGRESS.md`
+- Research Capture is locally complete/validated but not deployed until the Supabase migration is applied.
+
+Recovered authoritative baseline:
 - `AI_STATE/HANDOFF_20261005_AIGF_RECOVERED_AUTHORITATIVE.md`
 
 Recovered production runtime baseline:
@@ -31,10 +35,11 @@ Important late surviving handoffs:
 Branch:
 - `perf/cleanup-send-latency-20260923`
 
-Recovery validation on 2026-10-05:
-- full suite **650/650 PASS**
+Latest local validation:
+- full suite **661/661 PASS**
 - typecheck PASS
 - production build PASS
+- Research Capture remains undeployed pending Supabase migration
 - main JS ~360.60 kB minified / ~125.87 kB gzip
 - npm production audit: 0 vulnerabilities
 - Vercel recovery manifest: 534/534 files downloaded, 0 failed

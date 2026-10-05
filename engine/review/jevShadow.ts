@@ -181,6 +181,7 @@ export const startJevShadowEvaluation = ({
     evaluate = evaluateJevShadow,
     evaluateWardrobeTrial = evaluateJevWardrobeShadowTrial,
     evaluateGroupGateTrial = evaluateJevGroupGateShadowTrial,
+    onRecordUpdate,
     now = () => performance.now(),
 }: {
     requestId: string;
@@ -192,6 +193,7 @@ export const startJevShadowEvaluation = ({
     evaluate?: typeof evaluateJevShadow;
     evaluateWardrobeTrial?: typeof evaluateJevWardrobeShadowTrial;
     evaluateGroupGateTrial?: typeof evaluateJevGroupGateShadowTrial;
+    onRecordUpdate?: (record: JevShadowRecord) => void;
     now?: () => number;
 }): JevShadowTracker => {
     const startedAt = now();
@@ -202,6 +204,15 @@ export const startJevShadowEvaluation = ({
     let storedRecord: JevShadowRecord | undefined;
     let wardrobeTrial: JevWardrobeShadowTrialRecord | undefined;
     let groupGateTrial: JevGroupGateShadowTrialRecord | undefined;
+
+    const publishStoredRecord = () => {
+        if (!storedRecord || !onRecordUpdate) return;
+        try {
+            onRecordUpdate(cloneRecord(storedRecord));
+        } catch {
+            // Research/diagnostic observers must never affect chat or review.
+        }
+    };
 
     const setWardrobeTrial = (result: JevShadowResult) => {
         const trial: JevWardrobeShadowTrialRecord = {
@@ -231,6 +242,7 @@ export const startJevShadowEvaluation = ({
         if (storedRecord) {
             storedRecord.wardrobeTrial = cloneWardrobeTrial(trial);
             persistRecentRecords();
+            publishStoredRecord();
         }
     };
 
@@ -264,6 +276,7 @@ export const startJevShadowEvaluation = ({
         if (storedRecord) {
             storedRecord.groupGateTrial = cloneGroupGateTrial(trial);
             persistRecentRecords();
+            publishStoredRecord();
         }
     };
 
@@ -287,6 +300,7 @@ export const startJevShadowEvaluation = ({
             storedRecord.gemmaComparableIssueCodes = gemmaComparableIssueCodes ? [...gemmaComparableIssueCodes] : undefined;
             storedRecord.gemmaIssueAnomalies = gemmaIssueAnomalies ? [...gemmaIssueAnomalies] : undefined;
             persistRecentRecords();
+            publishStoredRecord();
         }
     };
 
@@ -342,6 +356,7 @@ export const startJevShadowEvaluation = ({
             applyUnavailableMetadata(record, result);
             storedRecord = record;
             store(record);
+            publishStoredRecord();
         };
         void Promise.resolve(evaluateGroupGateTrial(state, signal))
             .then(storeGroupGateResult)
@@ -363,6 +378,7 @@ export const startJevShadowEvaluation = ({
             }
             storedRecord = record;
             store(record);
+            publishStoredRecord();
         }).catch(() => {
             const record = createBaseRecord(
                 'unavailable',
@@ -370,6 +386,7 @@ export const startJevShadowEvaluation = ({
             );
             storedRecord = record;
             store(record);
+            publishStoredRecord();
         });
     }
 
