@@ -67,43 +67,37 @@ const fakeChannel = () => {
     };
 };
 
-test('realtime channel failure schedules catch-up pull and reconnect, while stale CLOSED is ignored', async () => {
+test('realtime startup removes a stale channel but does not create a new Postgres Changes subscription', async () => {
     installBrowserState();
-    const { internal, states } = createManager();
-    const first = fakeChannel();
+    const { internal } = createManager();
+    const stale = fakeChannel();
     const removed: unknown[] = [];
+    let created = 0;
     internal.client = {
-        channel: () => first.channel,
+        channel: () => {
+            created += 1;
+            return fakeChannel().channel;
+        },
         removeChannel: async (channel: unknown) => { removed.push(channel); },
     };
     internal.session = { user: { id: 'realtime-user', email: 'test@example.com' } };
+    internal.channel = stale.channel;
 
     const pulls: number[] = [];
-    let restarts = 0;
     internal.schedulePull = (delay: number) => { pulls.push(delay); };
-    internal.scheduleRealtimeRestart = () => { restarts += 1; };
 
     await internal.startRealtime();
-    first.emitStatus('CHANNEL_ERROR');
 
-    assert.equal(states.at(-1), 'error');
-    assert.deepEqual(pulls, [250]);
-    assert.equal(restarts, 1);
-
-    await internal.stopRealtime();
-    assert.deepEqual(removed, [first.channel]);
-
-    first.emitStatus('CLOSED');
-    assert.deepEqual(pulls, [250]);
-    assert.equal(restarts, 1);
+    assert.deepEqual(removed, [stale.channel]);
+    assert.equal(created, 0);
+    assert.equal(internal.channel, null);
+    assert.deepEqual(pulls, []);
 });
 
-test('successful realtime resubscribe resets retry state and immediately reconciles missed changes', async () => {
+test('realtime-disabled startup clears retry state without scheduling a catch-up pull', async () => {
     installBrowserState();
     const { internal } = createManager();
-    const channel = fakeChannel();
     internal.client = {
-        channel: () => channel.channel,
         removeChannel: async () => undefined,
     };
     internal.session = { user: { id: 'realtime-user', email: 'test@example.com' } };
@@ -113,11 +107,10 @@ test('successful realtime resubscribe resets retry state and immediately reconci
     internal.schedulePull = (delay: number) => { pulls.push(delay); };
 
     await internal.startRealtime();
-    channel.emitStatus('SUBSCRIBED');
 
     assert.equal(internal.realtimeRetryAttempt, 0);
     assert.equal(internal.realtimeRetryTimer, null);
-    assert.deepEqual(pulls, [0]);
+    assert.deepEqual(pulls, []);
 });
 
 test('realtime reconnect uses bounded exponential backoff and avoids duplicate timers', async () => {

@@ -12,6 +12,10 @@ Reconstructed final production E2E documentation:
 - `AI_STATE/HANDOFF_20260929_AIGF_PRODUCTION_E2E_REGRESSION.md`
 - `AI_STATE/PRODUCTION_E2E_REGRESSION_MATRIX_20260929.md`
 
+Latest production hotfix:
+- `AI_STATE/HANDOFF_20261005_AIGF_SUPABASE_EGRESS_HOTFIX.md`
+- Supabase row-level Realtime self-echo disabled after a 13.71 GB egress incident; lightweight revision-head polling retains cloud catch-up without normal same-device payload echo.
+
 Latest Jev real-production evidence:
 - `AI_STATE/HANDOFF_20261005_AIGF_JEV_REAL_PROD_200.md`
 - 200-record Group Gate V2 cohort analyzed; Gemma remains authoritative and no skip-Gemma threshold is approved.

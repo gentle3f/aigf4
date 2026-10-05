@@ -1019,27 +1019,59 @@ export class SupabaseCloudSyncManager {
         const reconcileEpoch = this.remoteStateChangeEpoch;
         let pullCompleted = false;
         try {
-            this.setState('pulling', '正在下載雲端變更…', { progress: 8 });
-            const stateResponse = await this.client.from('wetapp_state').select('payload,revision,updated_at,source_device_id').maybeSingle();
-            if (stateResponse.error) throw stateResponse.error;
+            this.setState('pulling', '正在檢查雲端變更…', { progress: 8 });
+            const previouslyObservedRevision = this.lastObservedCloudStateRevision;
+            const headResponse = await this.client
+                .from('wetapp_state')
+                .select('revision,updated_at,source_device_id')
+                .maybeSingle();
+            if (headResponse.error) throw headResponse.error;
             this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
-            this.lastObservedCloudStateRevision = normalizeCloudStateRevision(stateResponse.data?.revision);
+            const currentRevision = normalizeCloudStateRevision(headResponse.data?.revision);
             const hasOutstandingRemoteChange = (
                 this.remoteStateChangeEpoch > this.reconciledRemoteStateChangeEpoch
             );
+            const hasPendingChanges = localStorage.getItem(PENDING_KEY) === 'true';
+            const sameKnownRevision = (
+                previouslyObservedRevision !== null
+                && currentRevision === previouslyObservedRevision
+            );
+            this.lastObservedCloudStateRevision = currentRevision;
+
+            if (
+                !force
+                && !hasOutstandingRemoteChange
+                && !hasPendingChanges
+                && localStorage.getItem(SYNCED_USER_ID_KEY) === sessionUserId
+                && sameKnownRevision
+            ) {
+                pullCompleted = true;
+                this.setPullRecoveryRequired(false);
+                this.markSynced('雲端版本沒有變更，毋須重複下載。');
+                return true;
+            }
             if (!hasOutstandingRemoteChange && shouldSkipRedundantCloudPull({
                 force,
-                cloudSourceDeviceId: stateResponse.data?.source_device_id,
+                cloudSourceDeviceId: headResponse.data?.source_device_id,
                 localDeviceId: this.deviceId,
                 syncedUserId: localStorage.getItem(SYNCED_USER_ID_KEY),
                 sessionUserId,
-                hasPendingChanges: localStorage.getItem(PENDING_KEY) === 'true',
+                hasPendingChanges,
             })) {
                 pullCompleted = true;
                 this.setPullRecoveryRequired(false);
                 this.markSynced('本機已是雲端最新版本，毋須重複下載。');
                 return true;
             }
+
+            this.setState('pulling', '正在下載雲端變更…', { progress: 16 });
+            const stateResponse = await this.client
+                .from('wetapp_state')
+                .select('payload,revision,updated_at,source_device_id')
+                .maybeSingle();
+            if (stateResponse.error) throw stateResponse.error;
+            this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            this.lastObservedCloudStateRevision = normalizeCloudStateRevision(stateResponse.data?.revision);
             const [messageRows, mediaRows] = await Promise.all([
                 this.fetchAllRows<CloudMessageRow>('wetapp_messages', [
                     ['conversation_key', true],
@@ -1778,53 +1810,14 @@ export class SupabaseCloudSyncManager {
 
     private async startRealtime() {
         if (!this.client || !this.session) return;
-        const userId = this.session.user.id;
-        const sessionGeneration = this.sessionGeneration;
+        // Do not subscribe to row-level Postgres Changes here. Supabase counts
+        // Realtime egress before the client can discard same-device events, so a
+        // single device can otherwise echo its own large message/state payloads
+        // back to itself. We retain multi-device safety through lightweight
+        // revision-head checks on startup, reconnect, visibility changes and
+        // explicit/manual sync.
         await this.stopRealtime(false);
-        if (!this.isCurrentSession(userId, sessionGeneration)) return;
-        const channel = this.client.channel(`wetapp-sync-${userId}`);
-        this.channel = channel;
-        ['wetapp_state', 'wetapp_conversations', 'wetapp_messages', 'wetapp_media'].forEach(table => {
-            channel.on('postgres_changes', {
-                event: '*',
-                schema: 'public',
-                table,
-                filter: `user_id=eq.${userId}`,
-            }, payload => {
-                if (
-                    this.channel !== channel
-                    || !this.isCurrentSession(userId, sessionGeneration)
-                ) return;
-                const sourceDeviceId = String(
-                    (payload.new as Record<string, unknown>)?.source_device_id
-                    || (payload.old as Record<string, unknown>)?.source_device_id
-                    || '',
-                );
-                if (sourceDeviceId === this.deviceId) return;
-                this.remoteStateChangeEpoch += 1;
-                if (localStorage.getItem(PENDING_KEY) === 'true') {
-                    this.setPullRecoveryRequired(true);
-                }
-                this.schedulePull(900);
-            });
-        });
-        channel.subscribe(status => {
-            if (
-                this.channel !== channel
-                || !this.isCurrentSession(userId, sessionGeneration)
-            ) return;
-            if (status === 'SUBSCRIBED') {
-                const recoveredRealtime = this.realtimeRetryAttempt > 0;
-                this.clearRealtimeRetryState();
-                if (recoveredRealtime) this.schedulePull(0);
-                return;
-            }
-            if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-                this.setState('error', '即時更新連線暫時中斷，正在重新連接並補回雲端變更。');
-                this.schedulePull(250);
-                this.scheduleRealtimeRestart();
-            }
-        });
+        this.clearRealtimeRetryState();
     }
 
     private async stopRealtime(resetRetryState = true) {

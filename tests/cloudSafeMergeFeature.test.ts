@@ -89,15 +89,15 @@ test('runtime pending pushes probe cloud ownership before uploading', () => {
     assert.doesNotMatch(syncNowSource, /await this\.pushLocalToCloud\(\);/);
 });
 
-test('realtime remote changes force safe recovery when local edits are pending', () => {
+test('cloud sync does not subscribe to row-level Postgres Changes that echo same-device payloads', () => {
     const realtimeStart = source.indexOf('private async startRealtime() {');
     const stopRealtimeStart = source.indexOf('private async stopRealtime()', realtimeStart);
     const realtimeSource = source.slice(realtimeStart, stopRealtimeStart);
 
-    assert.match(realtimeSource, /sourceDeviceId === this\.deviceId/);
-    assert.match(realtimeSource, /localStorage\.getItem\(PENDING_KEY\) === 'true'/);
-    assert.match(realtimeSource, /this\.setPullRecoveryRequired\(true\);/);
-    assert.match(realtimeSource, /this\.schedulePull\(900\);/);
+    assert.doesNotMatch(realtimeSource, /postgres_changes/);
+    assert.doesNotMatch(realtimeSource, /\.channel\(/);
+    assert.match(realtimeSource, /await this\.stopRealtime\(false\);/);
+    assert.match(realtimeSource, /this\.clearRealtimeRetryState\(\);/);
 });
 
 
@@ -113,15 +113,18 @@ test('reconnect with pending local changes enters safe recovery before any uploa
 });
 
 
-test('realtime changes are never dropped while a cloud operation is busy', () => {
-    const realtimeStart = source.indexOf('private async startRealtime() {');
-    const stopRealtimeStart = source.indexOf('private async stopRealtime()', realtimeStart);
-    const realtimeSource = source.slice(realtimeStart, stopRealtimeStart);
+test('foreground pulls probe the small state revision before downloading full cloud payloads', () => {
+    const pullStart = source.indexOf('private async pullCloudToLocal');
+    const buildStateStart = source.indexOf('private async buildStatePayload()', pullStart);
+    const pullSource = source.slice(pullStart, buildStateStart);
 
-    assert.match(realtimeSource, /if \(sourceDeviceId === this\.deviceId\) return;/);
-    assert.match(realtimeSource, /this\.remoteStateChangeEpoch \+= 1;/);
-    assert.doesNotMatch(realtimeSource, /this\.applyingRemote \|\| this\.pushing/);
-    assert.match(realtimeSource, /this\.schedulePull\(900\);/);
+    const headSelect = pullSource.indexOf(".select('revision,updated_at,source_device_id')");
+    const payloadSelect = pullSource.indexOf(".select('payload,revision,updated_at,source_device_id')");
+    assert.ok(headSelect >= 0);
+    assert.ok(payloadSelect > headSelect);
+    assert.match(pullSource, /const sameKnownRevision =/);
+    assert.match(pullSource, /currentRevision === previouslyObservedRevision/);
+    assert.match(pullSource, /雲端版本沒有變更，毋須重複下載/);
 });
 
 test('pull scheduling waits for active cloud work instead of dropping the request', () => {
