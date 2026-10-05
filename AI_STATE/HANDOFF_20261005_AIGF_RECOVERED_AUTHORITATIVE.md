@@ -12,6 +12,9 @@ Branch:
 
 ## Recovery lineage
 
+Recovery source commit created after validation:
+`d45359c Recover latest AIGF runtime from Vercel eb20be4`
+
 The restored GitHub clone initially stopped at:
 
 `19fc7d5d0f78b4fdb87aa0af92fc4d810a0b65d1 Add AIGF persistence cleanup handoff`

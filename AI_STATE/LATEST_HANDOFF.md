@@ -4,6 +4,7 @@ Authoritative current handoff:
 - `AI_STATE/HANDOFF_20261005_AIGF_RECOVERED_AUTHORITATIVE.md`
 
 Recovered production runtime baseline:
+- recovery source commit `d45359c Recover latest AIGF runtime from Vercel eb20be4`
 - Vercel deployment `dpl_4xLXbtKfgnvHseC2NWGYsBQAYkqb`
 - deployed runtime content corresponding to lost local-only commit `eb20be4187aa531c9b9c8ce80e54c1b39051a8ff Add production favicon`
 
