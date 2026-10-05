@@ -8,7 +8,7 @@ Production remains the Supabase egress hotfix:
 - commit `7d2b21c Stop Supabase Realtime self-echo egress`
 - production deployment `dpl_3zmLPykSwT5jsFq2tUe7cayWrae8`
 
-Deployment of Research Capture is intentionally blocked until the Supabase migration creating `wetapp_research_turns` is applied.
+Research Capture can now be deployed safely **before** the Supabase research-table migration. Full content remains in the phone's IndexedDB. If `wetapp_research_turns` is missing, the app detects the missing-table response, disables Research cloud retries for that app session, and preserves pending records locally. After the migration is applied, a reload/new app session retries and uploads the backlog.
 
 ## Purpose
 
@@ -157,28 +157,32 @@ Expected cloud growth is therefore MB-scale per hundreds of turns rather than GB
 
 ## Validation
 
-Latest local validation after low-egress changes:
-- targeted Research/Cloud/Jev tests: PASS
+Latest local validation after low-egress changes and missing-table fallback:
+- targeted Research/Cloud/Jev tests: **25/25 PASS**
 - TypeScript typecheck: PASS
-- full suite: **661/661 PASS**
+- full suite: **662/662 PASS**
 - production build: PASS
 - git diff --check: PASS
 
 Latest build keeps Research Capture cold/lazy:
-- `researchCapture-*.js` ~7.8 kB minified / ~3.1 kB gzip
+- `researchCapture-*.js` ~8.2 kB minified / ~3.2 kB gzip
 - main bundle remains ~362 kB minified / ~126 kB gzip
 
-## Deployment blocker
+## Deployment plan
 
-Do not deploy/enable the Research Capture cloud sync before applying the Supabase migration.
+Research Capture may be deployed before the Supabase migration because a missing research table no longer creates a retry loop:
+- the first missing-table response disables Research cloud attempts for the current app session;
+- pending records remain local in IndexedDB;
+- the next reload/new app session may retry, so after the migration is applied the backlog can upload automatically.
 
-A Supabase ChatGPT connector is available and is the preferred way to apply/verify the migration without sharing service credentials in chat.
+The Supabase migration is still required for automatic cloud collection. A Supabase ChatGPT connector has been suggested separately and is the preferred way to apply/verify it without sharing service credentials in chat.
 
-After migration:
-1. verify table + RLS + no Realtime publication;
-2. commit and deploy the Research Capture code;
-3. smoke-test on phone with Research Capture ON;
-4. confirm a normal turn uploads metadata with `sample_payload = null`;
-5. confirm a selected sample can carry full content;
-6. confirm Supabase Realtime egress remains near zero;
-7. then begin Current Group V1 baseline collection before Dynamic Group Reply V2.
+Deployment sequence:
+1. deploy the validated local-capture build;
+2. enable Research Capture on the phone and begin Current Group V1 baseline collection locally;
+3. apply and verify the Supabase migration when connector access is available;
+4. reload the phone app so pending records can upload;
+5. confirm a normal turn uploads metadata with `sample_payload = null`;
+6. confirm a selected sample can carry full content;
+7. confirm Supabase Realtime egress remains near zero;
+8. collect enough Group V1 baseline before starting Dynamic Group Reply V2.

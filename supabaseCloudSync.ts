@@ -68,6 +68,19 @@ class CloudSessionSupersededError extends Error {
     }
 }
 
+const isMissingResearchTableError = (error: unknown) => {
+    if (!error || typeof error !== 'object') return false;
+    const code = 'code' in error && typeof (error as { code?: unknown }).code === 'string'
+        ? (error as { code: string }).code
+        : '';
+    const message = 'message' in error && typeof (error as { message?: unknown }).message === 'string'
+        ? (error as { message: string }).message
+        : '';
+    return code === '42P01'
+        || code === 'PGRST205'
+        || /wetapp_research_turns/iu.test(message) && /does not exist|schema cache|could not find/iu.test(message);
+};
+
 const authErrorMessage = (error: unknown, fallback: string) => {
     if (error instanceof Error && error.message) return error.message;
     if (
@@ -248,6 +261,7 @@ export class SupabaseCloudSyncManager {
     private pullTimer: number | null = null;
     private researchPushTimer: number | null = null;
     private researchPushing = false;
+    private researchCloudUnavailable = false;
     private cloudRetryAttempt = 0;
     private authRetryAttempt = 0;
     private authRetryTimer: number | null = null;
@@ -796,7 +810,7 @@ export class SupabaseCloudSyncManager {
     private scheduleResearchPush(delay: number) {
         const sessionUserId = this.session?.user.id;
         const sessionGeneration = this.sessionGeneration;
-        if (!sessionUserId) return;
+        if (!sessionUserId || this.researchCloudUnavailable) return;
         if (this.researchPushTimer !== null) window.clearTimeout(this.researchPushTimer);
         this.researchPushTimer = window.setTimeout(() => {
             this.researchPushTimer = null;
@@ -875,6 +889,11 @@ export class SupabaseCloudSyncManager {
             return true;
         } catch (error) {
             if (error instanceof CloudSessionSupersededError) return false;
+            if (isMissingResearchTableError(error)) {
+                this.researchCloudUnavailable = true;
+                console.info('[aigf4 research sync] cloud archive table unavailable; keeping research records local until the next app session.');
+                return false;
+            }
             console.warn('[aigf4 research sync]', {
                 message: authErrorMessage(error, 'Research capture sync failed'),
             });

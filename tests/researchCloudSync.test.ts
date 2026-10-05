@@ -35,3 +35,12 @@ test('research migration stores metadata separately from nullable sampled conten
     assert.doesNotMatch(migration, /payload jsonb not null/);
     assert.match(migration, /not added to Supabase Realtime publications/);
 });
+
+
+test('missing research table disables further research cloud retries for the current app session', () => {
+    assert.match(syncSource, /private researchCloudUnavailable = false;/);
+    assert.match(syncSource, /if \(!sessionUserId \|\| this\.researchCloudUnavailable\) return;/);
+    assert.match(syncSource, /isMissingResearchTableError\(error\)/);
+    assert.match(syncSource, /this\.researchCloudUnavailable = true;/);
+    assert.match(syncSource, /keeping research records local until the next app session/);
+});
