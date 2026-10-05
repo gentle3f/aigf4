@@ -12,6 +12,10 @@ Reconstructed final production E2E documentation:
 - `AI_STATE/HANDOFF_20260929_AIGF_PRODUCTION_E2E_REGRESSION.md`
 - `AI_STATE/PRODUCTION_E2E_REGRESSION_MATRIX_20260929.md`
 
+Latest Jev real-production evidence:
+- `AI_STATE/HANDOFF_20261005_AIGF_JEV_REAL_PROD_200.md`
+- 200-record Group Gate V2 cohort analyzed; Gemma remains authoritative and no skip-Gemma threshold is approved.
+
 Important late surviving handoffs:
 - `AI_STATE/HANDOFF_20260929_AIGF_BROAD_RELIABILITY_AUDIT.md`
 - `AI_STATE/HANDOFF_20260929_AIGF_PERFORMANCE_DIAGNOSTICS_EXPORT.md`
