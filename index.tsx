@@ -3749,8 +3749,12 @@ const appendMessage = (
         messageWrapper.className = 'system-chat-message';
         messageWrapper.textContent = content.text || '';
     } else {
+        const isCharacterConversationReply = sender === 'bot'
+            && Boolean(currentPersona)
+            && !currentRoom
+            && !isAssistantPersonaKey(currentPersonaKey);
         messageWrapper = document.createElement('div');
-        messageWrapper.className = `flex items-start p-1 space-x-2 ${sender === 'user' ? 'justify-end' : ''}`;
+        messageWrapper.className = `flex items-start p-1 space-x-2 ${sender === 'user' ? 'justify-end' : ''}${isCharacterConversationReply ? ' character-chat-turn' : ''}`;
 
         if (sender === 'bot' && currentPersona) {
             const speakerMember = currentRoom?.members.find(member => member.id === messageMeta?.speakerId);
@@ -3778,9 +3782,16 @@ const appendMessage = (
         const bubble = document.createElement('div');
         bubble.className = `chat-bubble p-3 rounded-lg ${
             sender === 'user' ? 'user-bubble' : 
-            sender === 'bot' ? 'bot-bubble' : 
+            sender === 'bot' ? `bot-bubble${isCharacterConversationReply ? ' character-message-surface' : ''}` : 
             'god-mode-bubble'
         }`;
+
+        if (isCharacterConversationReply && currentPersona) {
+            const speakerLabel = document.createElement('span');
+            speakerLabel.className = 'character-message-speaker';
+            speakerLabel.textContent = currentPersona.name;
+            bubble.appendChild(speakerLabel);
+        }
 
         if (content.text) {
             if (sender === 'bot' && isAssistantPersonaKey(currentPersonaKey)) {

@@ -84,3 +84,13 @@ test('UI v2 home separates creative tools from the conversation list', () => {
     assert.match(css, /\.v2-home-quick-grid[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
     assert.match(css, /\.is-group-conversation \.conversation-line strong::after[\s\S]*content: "群組"/);
 });
+
+test('UI v2 gives one-on-one character replies an open conversational surface', () => {
+    assert.match(appSource, /const isCharacterConversationReply = sender === 'bot'/);
+    assert.match(appSource, /character-chat-turn/);
+    assert.match(appSource, /character-message-surface/);
+    assert.match(appSource, /character-message-speaker/);
+    assert.match(css, /\.character-message-surface[\s\S]*background: transparent !important/);
+    assert.match(css, /\.character-message-surface[\s\S]*box-shadow: none !important/);
+    assert.match(css, /\.character-message-speaker[\s\S]*color: var\(--v2-accent\) !important/);
+});
