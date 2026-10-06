@@ -982,7 +982,18 @@ const renderPersonaList = () => {
     conversations
         .filter(item => !query || `${item.title} ${item.preview}`.toLocaleLowerCase().includes(query))
         .sort((left, right) => right.timestamp - left.timestamp || left.title.localeCompare(right.title, 'zh-Hant'))
-        .forEach(item => femalePersonaList.appendChild(createRow(item)));
+        .forEach((item, index) => {
+            const shell = createRow(item);
+            if (
+                index === 0
+                && !query
+                && document.documentElement.dataset.wetappUi === 'v2'
+            ) {
+                shell.classList.add('v2-featured-conversation-shell');
+                shell.querySelector('.conversation-row')?.classList.add('v2-featured-conversation');
+            }
+            femalePersonaList.appendChild(shell);
+        });
 
     if (!femalePersonaList.childElementCount) {
         const empty = document.createElement('p');
@@ -1904,6 +1915,31 @@ const restoreRoomPrivateContinuityHandoffs = (room: ChatRoom, history: ChatMessa
     }) || room;
 };
 
+const UI_V2_ACCENT_PALETTES = [
+    { accent: '#98584f', aura1: '152, 88, 79', aura2: '126, 148, 143' },
+    { accent: '#765d8e', aura1: '118, 93, 142', aura2: '146, 127, 161' },
+    { accent: '#52746c', aura1: '82, 116, 108', aura2: '124, 151, 139' },
+    { accent: '#9a6a43', aura1: '154, 106, 67', aura2: '161, 136, 104' },
+    { accent: '#8b586d', aura1: '139, 88, 109', aura2: '163, 125, 139' },
+    { accent: '#566f8c', aura1: '86, 111, 140', aura2: '123, 143, 163' },
+] as const;
+
+const applyUiV2ConversationTheme = (identity: string | null) => {
+    if (document.documentElement.dataset.wetappUi !== 'v2') return;
+    if (!identity) {
+        document.documentElement.style.removeProperty('--v2-accent');
+        document.documentElement.style.removeProperty('--v2-aura-1');
+        document.documentElement.style.removeProperty('--v2-aura-2');
+        return;
+    }
+    let hash = 0;
+    for (const char of identity) hash = ((hash << 5) - hash + char.codePointAt(0)!) | 0;
+    const palette = UI_V2_ACCENT_PALETTES[Math.abs(hash) % UI_V2_ACCENT_PALETTES.length];
+    document.documentElement.style.setProperty('--v2-accent', palette.accent);
+    document.documentElement.style.setProperty('--v2-aura-1', palette.aura1);
+    document.documentElement.style.setProperty('--v2-aura-2', palette.aura2);
+};
+
 const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
     closeChatSearch();
     const storedRoom = roomManager.getRoom(key) || null;
@@ -1953,6 +1989,7 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
 
     isGodModeActive = false;
     godModeHistory = [];
+    applyUiV2ConversationTheme(room?.title || currentPersona?.name || key);
     updateChatModeControls(currentPersonaKey);
     renderChatHeaderAvatar();
 
@@ -1985,6 +2022,15 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
     videoStudioUi?.hide();
     chatView.classList.remove('hidden');
     chatView.classList.add('flex');
+    if (
+        document.documentElement.dataset.wetappUi === 'v2'
+        && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
+        chatView.classList.remove('v2-view-enter');
+        void chatView.offsetWidth;
+        chatView.classList.add('v2-view-enter');
+        chatView.addEventListener('animationend', () => chatView.classList.remove('v2-view-enter'), { once: true });
+    }
     saveExitModal.classList.add('hidden');
     messageInput.value = '';
     pendingChatAttachments.forEach(item => item.previewUrl && URL.revokeObjectURL(item.previewUrl));
@@ -2023,6 +2069,7 @@ const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
     currentPersonaKey = null;
     currentConversationKey = null;
     currentRoom = null;
+    applyUiV2ConversationTheme(null);
     activeRoomMemberId = null;
     isGodModeActive = false;
     closePersonaSettings();
@@ -3884,6 +3931,15 @@ const appendMessage = (
     target.appendChild(messageWrapper);
 
     if (target === chatContainer) {
+        if (
+            document.documentElement.dataset.wetappUi === 'v2'
+            && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        ) {
+            messageWrapper.classList.add('v2-message-enter');
+            messageWrapper.addEventListener('animationend', () => {
+                messageWrapper.classList.remove('v2-message-enter');
+            }, { once: true });
+        }
         scheduleMessageScroll(messageWrapper, sender, scrollMode);
     }
 
@@ -8835,6 +8891,48 @@ const setupEventListeners = () => {
     };
     ensureUiV2HomeStructure();
 
+    const ensureUiV2ThemeControl = () => {
+        if (document.documentElement.dataset.wetappUi !== 'v2') return;
+        if (document.getElementById('ui-v2-theme-toggle')) return;
+
+        const storageKey = 'wetappUiV2Theme';
+        const applyTheme = (theme: 'light' | 'dark') => {
+            document.documentElement.dataset.wetappTheme = theme;
+            try {
+                localStorage.setItem(storageKey, theme);
+            } catch {
+                // Theme preference is optional; keep the in-memory choice if storage is unavailable.
+            }
+            const button = document.getElementById('ui-v2-theme-toggle');
+            if (button) {
+                button.textContent = theme === 'dark' ? '切換淺色模式' : '切換深色模式';
+                button.setAttribute('aria-pressed', String(theme === 'dark'));
+            }
+        };
+
+        let initialTheme: 'light' | 'dark' = 'light';
+        try {
+            initialTheme = localStorage.getItem(storageKey) === 'dark' ? 'dark' : 'light';
+        } catch {
+            initialTheme = 'light';
+        }
+        document.documentElement.dataset.wetappTheme = initialTheme;
+
+        const button = document.createElement('button');
+        button.id = 'ui-v2-theme-toggle';
+        button.type = 'button';
+        button.className = 'wa-popover-item ui-v2-theme-toggle';
+        button.addEventListener('click', event => {
+            event.stopPropagation();
+            const next = document.documentElement.dataset.wetappTheme === 'dark' ? 'light' : 'dark';
+            applyTheme(next);
+            homeMenu.classList.add('hidden');
+        });
+        homeMenu.appendChild(button);
+        applyTheme(initialTheme);
+    };
+    ensureUiV2ThemeControl();
+
     const ensureUiV2MoreOptionsGroups = () => {
         if (document.documentElement.dataset.wetappUi !== 'v2') return;
         if (moreOptionsMenu.querySelector('.v2-more-options-layout')) return;
@@ -9060,6 +9158,18 @@ const setupEventListeners = () => {
     backButton.addEventListener('click', navigateBackToSelectionView);
     window.addEventListener('popstate', handleBrowserPopState);
     sendButton.addEventListener('click', () => {
+        if (
+            document.documentElement.dataset.wetappUi === 'v2'
+            && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        ) {
+            const composer = sendButton.closest('.composer-frame');
+            composer?.classList.remove('v2-composer-send');
+            if (composer) {
+                void (composer as HTMLElement).offsetWidth;
+                composer.classList.add('v2-composer-send');
+                composer.addEventListener('animationend', () => composer.classList.remove('v2-composer-send'), { once: true });
+            }
+        }
         dispatchSendMessage();
     });
     messageInput.addEventListener('keydown', (e) => {

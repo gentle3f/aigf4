@@ -23,8 +23,9 @@ test('UI v2 stylesheet is gated and does not redefine unscoped production surfac
         && !selector.startsWith('0%')
         && !selector.startsWith('30%')
         && !selector.startsWith('60%')
-        && !selector.startsWith('100%')
+        && !/^\d+%$/.test(selector)
         && !selector.startsWith('@media')
+        && !selector.startsWith('@keyframes')
     );
     assert.deepEqual(unsafe, []);
 });
@@ -93,4 +94,36 @@ test('UI v2 gives one-on-one character replies an open conversational surface', 
     assert.match(css, /\.character-message-surface[\s\S]*background: transparent !important/);
     assert.match(css, /\.character-message-surface[\s\S]*box-shadow: none !important/);
     assert.match(css, /\.character-message-speaker[\s\S]*color: var\(--v2-accent\) !important/);
+});
+
+test('UI v2 uses stable persona-driven accents without touching Group reply logic', () => {
+    assert.match(appSource, /UI_V2_ACCENT_PALETTES/);
+    assert.match(appSource, /applyUiV2ConversationTheme/);
+    assert.match(appSource, /room\?\.title \|\| currentPersona\?\.name \|\| key/);
+    assert.match(css, /rgba\(var\(--v2-aura-1/);
+    assert.match(css, /rgba\(var\(--v2-aura-2/);
+});
+
+test('UI v2 adds native-feel motion only to new UI events', () => {
+    assert.match(appSource, /v2-message-enter/);
+    assert.match(appSource, /v2-view-enter/);
+    assert.match(appSource, /v2-composer-send/);
+    assert.match(css, /wetappV2MessageIn/);
+    assert.match(css, /wetappV2ViewIn/);
+    assert.match(css, /wetappV2BottomSheetIn/);
+    assert.match(css, /prefers-reduced-motion: reduce/);
+});
+
+test('UI v2 supports a persisted warm dark mode', () => {
+    assert.match(html, /wetappUiV2Theme/);
+    assert.match(appSource, /ui-v2-theme-toggle/);
+    assert.match(appSource, /wetappUiV2Theme/);
+    assert.match(css, /data-wetapp-theme="dark"/);
+    assert.match(css, /Warm dark, deliberately not cyber-black/);
+});
+
+test('UI v2 Home gives the latest conversation a featured identity card', () => {
+    assert.match(appSource, /v2-featured-conversation-shell/);
+    assert.match(appSource, /v2-featured-conversation/);
+    assert.match(css, /\.v2-featured-conversation[\s\S]*min-height: 88px !important/);
 });

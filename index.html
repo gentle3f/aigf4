@@ -13,6 +13,12 @@
             const params = new URLSearchParams(window.location.search);
             if (params.get('ui') === 'v2') {
                 document.documentElement.dataset.wetappUi = 'v2';
+                try {
+                    document.documentElement.dataset.wetappTheme =
+                        localStorage.getItem('wetappUiV2Theme') === 'dark' ? 'dark' : 'light';
+                } catch {
+                    document.documentElement.dataset.wetappTheme = 'light';
+                }
             }
         })();
     </script>

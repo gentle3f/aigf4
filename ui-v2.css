@@ -375,8 +375,8 @@ html[data-wetapp-ui="v2"] #chat-view {
     position: relative !important;
     color: var(--v2-ink) !important;
     background:
-        radial-gradient(circle at 82% 10%, rgba(170, 113, 102, 0.10), transparent 34%),
-        radial-gradient(circle at 25% 78%, rgba(126, 148, 143, 0.075), transparent 30%),
+        radial-gradient(circle at 82% 10%, rgba(var(--v2-aura-1, 170, 113, 102), 0.10), transparent 34%),
+        radial-gradient(circle at 25% 78%, rgba(var(--v2-aura-2, 126, 148, 143), 0.075), transparent 30%),
         var(--v2-paper-2) !important;
 }
 
@@ -1108,5 +1108,341 @@ html[data-wetapp-ui="v2"] body::after {
 @media (prefers-reduced-motion: reduce) {
     html[data-wetapp-ui="v2"] * {
         scroll-behavior: auto !important;
+    }
+}
+
+
+/* UI 2.0 motion language */
+html[data-wetapp-ui="v2"] #chat-view.v2-view-enter {
+    animation: wetappV2ViewIn 210ms cubic-bezier(.2,.8,.2,1) both;
+}
+
+html[data-wetapp-ui="v2"] .v2-message-enter {
+    animation: wetappV2MessageIn 190ms cubic-bezier(.2,.8,.2,1) both;
+}
+
+html[data-wetapp-ui="v2"] .composer-frame.v2-composer-send {
+    animation: wetappV2ComposerPulse 180ms cubic-bezier(.2,.8,.2,1);
+}
+
+html[data-wetapp-ui="v2"] #more-options-menu:not(.hidden) {
+    transform-origin: top right !important;
+    animation: wetappV2MenuIn 190ms cubic-bezier(.16,.84,.32,1) both;
+}
+
+html[data-wetapp-ui="v2"] .wa-modal-backdrop:not(.hidden) .wa-sheet {
+    animation: wetappV2SheetIn 220ms cubic-bezier(.16,.84,.32,1) both;
+}
+
+html[data-wetapp-ui="v2"] .chat-topbar,
+html[data-wetapp-ui="v2"] #chat-header-avatar-container,
+html[data-wetapp-ui="v2"] #chat-header-name,
+html[data-wetapp-ui="v2"] #chat-status {
+    transition:
+        background-color 180ms ease,
+        color 180ms ease,
+        border-color 180ms ease,
+        transform 180ms ease,
+        opacity 180ms ease !important;
+}
+
+html[data-wetapp-ui="v2"] #send-button {
+    transition: transform 140ms ease, background-color 160ms ease, color 160ms ease !important;
+}
+
+html[data-wetapp-ui="v2"] #send-button:active:not(:disabled) {
+    transform: scale(.92) !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-row,
+html[data-wetapp-ui="v2"] .v2-home-quick-action,
+html[data-wetapp-ui="v2"] .v2-more-options-grid .dropdown-item {
+    transition:
+        transform 160ms ease,
+        background-color 160ms ease,
+        box-shadow 160ms ease,
+        border-color 160ms ease !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-row:active,
+html[data-wetapp-ui="v2"] .v2-home-quick-action:active,
+html[data-wetapp-ui="v2"] .v2-more-options-grid .dropdown-item:active {
+    transform: scale(.985) !important;
+}
+
+@keyframes wetappV2ViewIn {
+    0% { opacity: 0; transform: translateX(10px) scale(.997); }
+    100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+@keyframes wetappV2MessageIn {
+    0% { opacity: 0; transform: translateY(7px) scale(.992); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes wetappV2ComposerPulse {
+    0% { transform: scale(1); }
+    45% { transform: scale(.992); }
+    100% { transform: scale(1); }
+}
+
+@keyframes wetappV2MenuIn {
+    0% { opacity: 0; transform: translateY(-5px) scale(.985); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes wetappV2SheetIn {
+    0% { opacity: 0; transform: translateY(14px) scale(.99); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* UI 2.0 theme switcher */
+html[data-wetapp-ui="v2"] #ui-v2-theme-toggle {
+    width: 100% !important;
+    padding: 10px 12px !important;
+    border-radius: 12px !important;
+    color: inherit !important;
+    text-align: left !important;
+}
+
+html[data-wetapp-ui="v2"] #ui-v2-theme-toggle:hover {
+    background: rgba(127, 111, 98, .08) !important;
+}
+
+/* Optional dark theme. Warm dark, deliberately not cyber-black. */
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] {
+    --v2-paper: #1f1d1a;
+    --v2-paper-2: #24211e;
+    --v2-panel: rgba(39, 36, 32, 0.94);
+    --v2-panel-solid: #28241f;
+    --v2-ink: #f0ece6;
+    --v2-muted: #aaa198;
+    --v2-faint: #817970;
+    --v2-line: rgba(255,255,255,.08);
+    --v2-dark: #ede8e2;
+    --v2-shadow: 0 18px 55px rgba(0,0,0,.24);
+    --v2-shadow-soft: 0 8px 28px rgba(0,0,0,.18);
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"],
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] body,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] body.app-body {
+    background:
+        radial-gradient(circle at 82% 10%, rgba(var(--v2-aura-1, 152, 88, 79), .10), transparent 28rem),
+        radial-gradient(circle at 15% 85%, rgba(var(--v2-aura-2, 126, 148, 143), .07), transparent 26rem),
+        var(--v2-paper) !important;
+    color: var(--v2-ink) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #app-shell,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .conversation-sidebar,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #chat-view {
+    background-color: var(--v2-paper-2) !important;
+    color: var(--v2-ink) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .conversation-sidebar {
+    background: rgba(35, 32, 29, .94) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .conversation-sidebar-title,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .conversation-line strong,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #chat-header-name,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .character-message-surface > p,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-more-options-heading strong {
+    color: var(--v2-ink) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .conversation-search-wrap,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .wa-icon-button:hover,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .icon-button:hover {
+    background: #312d28 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .conversation-search-wrap input,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .chat-search-bar input {
+    color: var(--v2-ink) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .conversation-row:hover,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .conversation-row.is-active,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .is-persona-conversation.is-active,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .is-group-conversation.is-active {
+    background: #312d28 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-home-quick-grid .v2-home-quick-action,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-home-assistant-section .conversation-row,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #more-options-menu .v2-more-options-grid .dropdown-item:not(.hidden) {
+    color: var(--v2-ink) !important;
+    border-color: rgba(255,255,255,.07) !important;
+    background: rgba(50,45,40,.90) !important;
+    box-shadow: 0 8px 24px rgba(0,0,0,.14) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-home-quick-grid .v2-home-quick-action:hover,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #more-options-menu .v2-more-options-grid .dropdown-item:not(.hidden):hover {
+    background: #39342e !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .chat-topbar,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .chat-search-bar {
+    background: rgba(36, 33, 29, .82) !important;
+    border-color: var(--v2-line) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #chat-view {
+    background:
+        radial-gradient(circle at 82% 10%, rgba(var(--v2-aura-1, 152, 88, 79), .11), transparent 34%),
+        radial-gradient(circle at 25% 78%, rgba(var(--v2-aura-2, 126, 148, 143), .075), transparent 30%),
+        var(--v2-paper-2) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .chat-bubble:not(.user-bubble):not(.character-message-surface),
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .bot-bubble:not(.character-message-surface) {
+    color: var(--v2-ink) !important;
+    background: #322e29 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .user-bubble {
+    color: #211f1c !important;
+    background: #eee8e1 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .composer-frame {
+    border-color: rgba(255,255,255,.08) !important;
+    background: rgba(48,44,39,.95) !important;
+    box-shadow: 0 18px 42px rgba(0,0,0,.25) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #message-input {
+    color: var(--v2-ink) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #send-button {
+    color: #211f1c !important;
+    background: #eee8e1 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #more-options-menu,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #more-options-menu .v2-more-options-heading,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .wa-popover,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .new-chat-menu,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .wa-sheet {
+    color: var(--v2-ink) !important;
+    border-color: rgba(255,255,255,.08) !important;
+    background: rgba(42,38,34,.97) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #more-options-menu .v2-more-options-section {
+    border-color: rgba(255,255,255,.06) !important;
+    background: rgba(31,29,26,.72) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #more-options-menu .v2-more-options-grid .dropdown-item:not(.hidden)::before,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-more-options-close {
+    color: #c6bdb5 !important;
+    background: #403a34 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .chat-view-footer {
+    background: linear-gradient(180deg, rgba(36,33,29,0), rgba(36,33,29,.90) 35%, rgba(36,33,29,.98)) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .wa-field-label input,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .wa-field-label select,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .wa-field-label textarea,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .room-memory-card input,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .room-memory-card textarea {
+    color: var(--v2-ink) !important;
+    border-color: rgba(255,255,255,.10) !important;
+    background: #332f2a !important;
+}
+
+@media (max-width: 767px) {
+    html[data-wetapp-ui="v2"] #more-options-menu:not(.hidden) {
+        transform-origin: bottom center !important;
+        animation: wetappV2BottomSheetIn 220ms cubic-bezier(.16,.84,.32,1) both;
+    }
+}
+
+@keyframes wetappV2BottomSheetIn {
+    0% { opacity: 0; transform: translateY(18px) scale(.99); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html[data-wetapp-ui="v2"] #chat-view.v2-view-enter,
+    html[data-wetapp-ui="v2"] .v2-message-enter,
+    html[data-wetapp-ui="v2"] .composer-frame.v2-composer-send,
+    html[data-wetapp-ui="v2"] #more-options-menu:not(.hidden),
+    html[data-wetapp-ui="v2"] .wa-modal-backdrop:not(.hidden) .wa-sheet {
+        animation: none !important;
+        transition: none !important;
+    }
+}
+
+
+/* Make Home visibly different from a legacy messenger list. */
+html[data-wetapp-ui="v2"] .v2-featured-conversation-shell {
+    margin: 2px 4px 10px !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-featured-conversation {
+    min-height: 88px !important;
+    padding: 13px 14px !important;
+    border: 1px solid rgba(58, 46, 36, 0.065) !important;
+    border-radius: 22px !important;
+    background:
+        linear-gradient(135deg, rgba(var(--v2-aura-1, 152, 88, 79), .08), rgba(var(--v2-aura-2, 126, 148, 143), .045)),
+        rgba(255,255,255,.74) !important;
+    box-shadow: 0 12px 30px rgba(64, 50, 39, 0.055) !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-featured-conversation .conversation-avatar {
+    width: 58px !important;
+    height: 58px !important;
+    flex-basis: 58px !important;
+    border-radius: 19px !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-featured-conversation .conversation-copy {
+    align-self: center !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-featured-conversation .conversation-line strong {
+    font-size: .92rem !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-featured-conversation .conversation-preview {
+    display: -webkit-box !important;
+    margin-top: 5px !important;
+    overflow: hidden !important;
+    -webkit-box-orient: vertical !important;
+    -webkit-line-clamp: 2 !important;
+    white-space: normal !important;
+    line-height: 1.42 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-featured-conversation {
+    border-color: rgba(255,255,255,.07) !important;
+    background:
+        linear-gradient(135deg, rgba(var(--v2-aura-1, 152, 88, 79), .11), rgba(var(--v2-aura-2, 126, 148, 143), .065)),
+        rgba(48,44,39,.88) !important;
+    box-shadow: 0 12px 30px rgba(0,0,0,.16) !important;
+}
+
+@media (max-width: 767px) {
+    html[data-wetapp-ui="v2"] .v2-featured-conversation {
+        min-height: 84px !important;
+        padding: 12px !important;
+        border-radius: 20px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .v2-featured-conversation .conversation-avatar {
+        width: 54px !important;
+        height: 54px !important;
+        flex-basis: 54px !important;
+        border-radius: 18px !important;
     }
 }
