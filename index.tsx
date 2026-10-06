@@ -8786,6 +8786,113 @@ const setupEventListeners = () => {
         }
     };
 
+    const ensureUiV2MoreOptionsGroups = () => {
+        if (document.documentElement.dataset.wetappUi !== 'v2') return;
+        if (moreOptionsMenu.querySelector('.v2-more-options-layout')) return;
+
+        const labels: Array<{
+            key: string;
+            title: string;
+            ids: string[];
+        }> = [
+            {
+                key: 'relationship',
+                title: '關係',
+                ids: [
+                    'room-info-btn',
+                    'dm-room-member-btn',
+                    'invite-character-btn',
+                    'leave-room-member-btn',
+                    'memory-btn',
+                    'persona-settings-btn',
+                    'cc-model-settings-btn',
+                ],
+            },
+            {
+                key: 'scene',
+                title: '場景',
+                ids: [
+                    'new-scene-btn',
+                    'surprise-event-btn',
+                ],
+            },
+            {
+                key: 'media',
+                title: '媒體',
+                ids: [
+                    'album-btn',
+                    'attach-file-menu-btn',
+                    'change-avatar-btn',
+                    'take-photo-btn',
+                ],
+            },
+            {
+                key: 'manage',
+                title: '管理',
+                ids: [
+                    'download-images-btn',
+                    'download-chat-btn',
+                    'download-all-chats-btn',
+                    'clear-chat-btn',
+                ],
+            },
+        ];
+
+        const icons: Record<string, string> = {
+            'room-info-btn': '◎',
+            'dm-room-member-btn': '↗',
+            'invite-character-btn': '+',
+            'leave-room-member-btn': '−',
+            'memory-btn': '♡',
+            'persona-settings-btn': '♙',
+            'cc-model-settings-btn': '⌁',
+            'new-scene-btn': '◫',
+            'surprise-event-btn': '✦',
+            'album-btn': '▧',
+            'attach-file-menu-btn': '＋',
+            'change-avatar-btn': '◉',
+            'take-photo-btn': '◎',
+            'download-images-btn': '↓',
+            'download-chat-btn': '⇩',
+            'download-all-chats-btn': '⇊',
+            'clear-chat-btn': '×',
+        };
+
+        const layout = document.createElement('div');
+        layout.className = 'v2-more-options-layout';
+
+        const heading = document.createElement('div');
+        heading.className = 'v2-more-options-heading';
+        heading.innerHTML = '<strong>聊天室</strong><span>選擇你想做的事</span>';
+        layout.appendChild(heading);
+
+        labels.forEach(group => {
+            const section = document.createElement('section');
+            section.className = `v2-more-options-section v2-more-options-section-${group.key}`;
+
+            const title = document.createElement('p');
+            title.className = 'v2-more-options-section-title';
+            title.textContent = group.title;
+
+            const grid = document.createElement('div');
+            grid.className = 'v2-more-options-grid';
+
+            group.ids.forEach(id => {
+                const button = document.getElementById(id);
+                if (!button) return;
+                button.dataset.v2Icon = icons[id] || '•';
+                grid.appendChild(button);
+            });
+
+            section.append(title, grid);
+            layout.appendChild(section);
+        });
+
+        moreOptionsMenu.querySelectorAll(':scope > .border-t').forEach(separator => separator.remove());
+        moreOptionsMenu.appendChild(layout);
+    };
+    ensureUiV2MoreOptionsGroups();
+
     authForm.addEventListener('submit', async (event) => {
         event.preventDefault();
         await submitUnlock();

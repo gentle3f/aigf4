@@ -44,3 +44,13 @@ test('UI v2 mobile chat menu is portaled to the viewport instead of trapped insi
     assert.match(appSource, /document\.body\.appendChild\(moreOptionsMenu\)/);
     assert.match(appSource, /syncUiV2MoreOptionsMenuPortal\(\);\s*moreOptionsMenu\.classList\.toggle\('hidden'\)/);
 });
+
+test('UI v2 chat actions are grouped instead of rendered as one long list', () => {
+    assert.match(appSource, /title: '關係'/);
+    assert.match(appSource, /title: '場景'/);
+    assert.match(appSource, /title: '媒體'/);
+    assert.match(appSource, /title: '管理'/);
+    assert.match(appSource, /layout\.className = 'v2-more-options-layout'/);
+    assert.match(css, /\.v2-more-options-grid[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+    assert.match(css, /width: 390px !important/);
+});
