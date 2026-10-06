@@ -8834,24 +8834,40 @@ const setupEventListeners = () => {
             ids: string[];
         }> = [
             {
-                key: 'relationship',
-                title: '關係',
+                key: 'interaction',
+                title: '互動',
+                ids: [
+                    'interaction-preferences-menu-btn',
+                    'director-menu-btn',
+                    'continue-scene-menu-btn',
+                ],
+            },
+            {
+                key: 'character',
+                title: '角色',
                 ids: [
                     'room-info-btn',
                     'dm-room-member-btn',
                     'invite-character-btn',
                     'leave-room-member-btn',
-                    'memory-btn',
                     'persona-settings-btn',
-                    'cc-model-settings-btn',
+                    'change-avatar-btn',
                 ],
             },
             {
                 key: 'scene',
                 title: '場景',
                 ids: [
+                    'scene-wardrobe-menu-btn',
                     'new-scene-btn',
                     'surprise-event-btn',
+                ],
+            },
+            {
+                key: 'memory',
+                title: '記憶',
+                ids: [
+                    'memory-btn',
                 ],
             },
             {
@@ -8860,8 +8876,17 @@ const setupEventListeners = () => {
                 ids: [
                     'album-btn',
                     'attach-file-menu-btn',
-                    'change-avatar-btn',
                     'take-photo-btn',
+                ],
+            },
+            {
+                key: 'tools',
+                title: '工具',
+                ids: [
+                    'usage-diagnostics-menu-btn',
+                    'performance-diagnostics-menu-btn',
+                    'jev-shadow-menu-btn',
+                    'cc-model-settings-btn',
                 ],
             },
             {
@@ -8877,6 +8902,9 @@ const setupEventListeners = () => {
         ];
 
         const icons: Record<string, string> = {
+            'interaction-preferences-menu-btn': '⌁',
+            'director-menu-btn': '✦',
+            'continue-scene-menu-btn': '↗',
             'room-info-btn': '◎',
             'dm-room-member-btn': '↗',
             'invite-character-btn': '+',
@@ -8884,12 +8912,16 @@ const setupEventListeners = () => {
             'memory-btn': '♡',
             'persona-settings-btn': '♙',
             'cc-model-settings-btn': '⌁',
+            'scene-wardrobe-menu-btn': '◫',
             'new-scene-btn': '◫',
             'surprise-event-btn': '✦',
             'album-btn': '▧',
             'attach-file-menu-btn': '＋',
             'change-avatar-btn': '◉',
             'take-photo-btn': '◎',
+            'usage-diagnostics-menu-btn': '123',
+            'performance-diagnostics-menu-btn': '⚡',
+            'jev-shadow-menu-btn': 'J',
             'download-images-btn': '↓',
             'download-chat-btn': '⇩',
             'download-all-chats-btn': '⇊',
@@ -8901,7 +8933,20 @@ const setupEventListeners = () => {
 
         const heading = document.createElement('div');
         heading.className = 'v2-more-options-heading';
-        heading.innerHTML = '<strong>聊天室</strong><span>選擇你想做的事</span>';
+
+        const headingCopy = document.createElement('div');
+        headingCopy.className = 'v2-more-options-heading-copy';
+        headingCopy.innerHTML = '<strong>聊天室</strong><span>選擇你想做的事</span>';
+
+        const closeButton = document.createElement('button');
+        closeButton.type = 'button';
+        closeButton.className = 'v2-more-options-close';
+        closeButton.setAttribute('aria-label', '關閉聊天室選單');
+        closeButton.title = '關閉';
+        closeButton.textContent = '×';
+        closeButton.addEventListener('click', () => moreOptionsMenu.classList.add('hidden'));
+
+        heading.append(headingCopy, closeButton);
         layout.appendChild(heading);
 
         labels.forEach(group => {
@@ -9425,8 +9470,18 @@ const openChatPerformanceDiagnostics = () => {
         });
     }],
 ].forEach(([label, action]) => {
+    const menuIds: Record<string, string> = {
+        'Jev Shadow': 'jev-shadow-menu-btn',
+        'Performance 診斷': 'performance-diagnostics-menu-btn',
+        '最近文字用量': 'usage-diagnostics-menu-btn',
+        '目前場景與衣著': 'scene-wardrobe-menu-btn',
+        '幫我接戲': 'continue-scene-menu-btn',
+        '導演一下': 'director-menu-btn',
+        '互動偏好': 'interaction-preferences-menu-btn',
+    };
     const button = document.createElement('button');
     button.className = 'dropdown-item';
+    button.id = menuIds[label as string] || '';
     button.textContent = label as string;
     button.onclick = action as () => void;
     moreOptionsMenu.prepend(button);

@@ -45,14 +45,32 @@ test('UI v2 mobile chat menu is portaled to the viewport instead of trapped insi
     assert.match(appSource, /syncUiV2MoreOptionsMenuPortal\(\);\s*moreOptionsMenu\.classList\.toggle\('hidden'\)/);
 });
 
-test('UI v2 chat actions are grouped instead of rendered as one long list', () => {
-    assert.match(appSource, /title: '關係'/);
-    assert.match(appSource, /title: '場景'/);
-    assert.match(appSource, /title: '媒體'/);
-    assert.match(appSource, /title: '管理'/);
+test('UI v2 chat actions are grouped into meaningful sections instead of one long list', () => {
+    for (const title of ['互動', '角色', '場景', '記憶', '媒體', '工具', '管理']) {
+        assert.match(appSource, new RegExp(`title: '${title}'`));
+    }
+    for (const id of [
+        'interaction-preferences-menu-btn',
+        'director-menu-btn',
+        'continue-scene-menu-btn',
+        'scene-wardrobe-menu-btn',
+        'usage-diagnostics-menu-btn',
+        'performance-diagnostics-menu-btn',
+        'jev-shadow-menu-btn',
+    ]) {
+        assert.match(appSource, new RegExp(id));
+    }
     assert.match(appSource, /layout\.className = 'v2-more-options-layout'/);
     assert.match(css, /\.v2-more-options-grid[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
     assert.match(css, /width: 390px !important/);
+});
+
+test('UI v2 chat action sheet has an explicit sticky close control', () => {
+    assert.match(appSource, /closeButton\.className = 'v2-more-options-close'/);
+    assert.match(appSource, /closeButton\.textContent = '×'/);
+    assert.match(appSource, /moreOptionsMenu\.classList\.add\('hidden'\)/);
+    assert.match(css, /\.v2-more-options-heading[\s\S]*position: sticky !important/);
+    assert.match(css, /\.v2-more-options-close[\s\S]*width: 36px !important/);
 });
 
 test('UI v2 home separates creative tools from the conversation list', () => {
