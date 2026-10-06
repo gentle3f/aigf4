@@ -54,3 +54,15 @@ test('UI v2 chat actions are grouped instead of rendered as one long list', () =
     assert.match(css, /\.v2-more-options-grid[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
     assert.match(css, /width: 390px !important/);
 });
+
+test('UI v2 home separates creative tools from the conversation list', () => {
+    assert.match(appSource, /const ensureUiV2HomeStructure = \(\) =>/);
+    assert.match(appSource, /quickGrid\.append\(imageStudioEntry, videoStudioEntry\)/);
+    assert.match(appSource, /searchWrap\.insertAdjacentElement\('afterend', quickSection\)/);
+    assert.match(appSource, /pinnedLabel\.textContent = '助手'/);
+    assert.match(appSource, /recentLabel\.textContent = '最近'/);
+    assert.match(appSource, /is-group-conversation/);
+    assert.match(appSource, /is-persona-conversation/);
+    assert.match(css, /\.v2-home-quick-grid[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+    assert.match(css, /\.is-group-conversation \.conversation-line strong::after[\s\S]*content: "群組"/);
+});

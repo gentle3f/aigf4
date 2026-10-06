@@ -880,7 +880,7 @@ const renderPersonaList = () => {
         shell.className = 'conversation-row-shell';
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = `conversation-row${currentConversationKey === options.key ? ' is-active' : ''}`;
+        button.className = `conversation-row${options.room ? ' is-group-conversation' : options.pinned ? ' is-assistant-conversation' : ' is-persona-conversation'}${currentConversationKey === options.key ? ' is-active' : ''}`;
         button.dataset.key = options.key;
 
         const avatar = document.createElement('span');
@@ -8785,6 +8785,44 @@ const setupEventListeners = () => {
             moreOptionsMenuHome.appendChild(moreOptionsMenu);
         }
     };
+
+    const ensureUiV2HomeStructure = () => {
+        if (document.documentElement.dataset.wetappUi !== 'v2') return;
+        if (document.querySelector('.v2-home-quick-actions')) return;
+
+        const sidebar = document.getElementById('persona-selection-view');
+        const searchWrap = sidebar?.querySelector('.conversation-search-wrap');
+        const pinnedSection = sidebar?.querySelector('.pinned-conversations');
+        const recentSection = sidebar?.querySelector('.recent-conversations');
+        if (!sidebar || !searchWrap || !pinnedSection || !recentSection) return;
+
+        const quickSection = document.createElement('section');
+        quickSection.className = 'v2-home-quick-actions';
+        quickSection.setAttribute('aria-label', '快速操作');
+
+        const quickHeading = document.createElement('div');
+        quickHeading.className = 'v2-home-quick-heading';
+        quickHeading.innerHTML = '<span>QUICK ACTIONS</span><small>建立與創作</small>';
+
+        const quickGrid = document.createElement('div');
+        quickGrid.className = 'v2-home-quick-grid';
+
+        imageStudioEntry.classList.add('v2-home-quick-action', 'v2-home-image-action');
+        videoStudioEntry.classList.add('v2-home-quick-action', 'v2-home-video-action');
+
+        quickGrid.append(imageStudioEntry, videoStudioEntry);
+        quickSection.append(quickHeading, quickGrid);
+        searchWrap.insertAdjacentElement('afterend', quickSection);
+
+        const pinnedLabel = pinnedSection.querySelector('.conversation-section-label');
+        if (pinnedLabel) pinnedLabel.textContent = '助手';
+        const recentLabel = recentSection.querySelector('.conversation-section-label');
+        if (recentLabel) recentLabel.textContent = '最近';
+
+        pinnedSection.classList.add('v2-home-assistant-section');
+        recentSection.classList.add('v2-home-recent-section');
+    };
+    ensureUiV2HomeStructure();
 
     const ensureUiV2MoreOptionsGroups = () => {
         if (document.documentElement.dataset.wetappUi !== 'v2') return;
