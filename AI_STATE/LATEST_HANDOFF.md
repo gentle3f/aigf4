@@ -1,42 +1,36 @@
 # Latest AIGF Handoff
 
 Authoritative current handoff:
-- `AI_STATE/HANDOFF_20261006_AIGF_SUPABASE_LIVE_CUTOVER_CONFIRMED.md`
+- `AI_STATE/HANDOFF_20261007_AIGF_UI_V2_LIVE_TEST.md`
 
 Current status:
-- production is on the NEW Supabase backend;
-- first seed was incomplete because old-backend local sync indexes were reused;
-- OLD project counts: conversations 29, messages 11079, media 45, private storage objects 45;
-- NEW project before repair: conversations 29, messages 578, media 0, private storage objects 0, research 4;
-- NEW project correctly has `large_chat_tables_still_in_realtime = 0`.
+- Supabase migration COMPLETE and verified: conversations 29, messages 11086, message_count sum 11086, media 45, storage 45, research 4, Realtime large tables 0.
+- Group Reply V2 is waiting for more real Research Capture baseline turns.
+- functional Wetapp UI 2.0 test is live in production behind the `?ui=v2` query gate.
+- default Wetapp URL remains on the existing UI.
+- UI 2.0 uses the exact same production functions/data/backend; only the visual layer changes.
 
-Root cause:
-- stale `wetappCloudMessageIndexV1` / `wetappCloudMediaIndexV1` caused previously synced local data to be skipped when seeding the new backend.
+UI 2.0 commit:
+- `48d0eed Add opt-in Wetapp UI 2.0`
 
-Repair:
-- commit `14df270 Force full cloud reseed after backend cutover`;
-- safe-merge protocol v2 forces a complete local message/media upsert before pull/merge;
-- preserve-remote mode prevents destructive deletion during recovery;
-- full suite 664/664 PASS, typecheck PASS, production build PASS.
-
-Production repair deployment:
-- `dpl_Br94heSVwP7XxUTYeBup7hkYHiTu`
+Production deployment:
+- `dpl_8BntRVTVvtuo5jjNmq5TV4Mc5fH2`
 - READY
-- commit `14df270db846143440db0a9479e256734c630f64`
-- `wetapp.madproduction.ai` is aliased to it.
+- `wetapp.madproduction.ai` alias active.
 
-Next action:
-- phone must fully reload/reopen Wetapp so safe-merge v2 runs;
-- after cloud sync completes, run `supabase/VERIFY_NEW_PROJECT_CUTOVER.sql` again in the NEW project;
-- expect messages/media/storage to rise toward the old-project baseline;
-- Realtime count must stay 0.
+Validation:
+- 666/666 tests PASS
+- typecheck PASS
+- production build PASS
 
-Do NOT delete old Supabase yet.
+Next:
+- user tests UI 2.0 on phone and desktop with real usage;
+- refine visual/UX issues from hands-on feedback;
+- keep Group Reply capture running in parallel.
 
 Mandatory:
 - GEN-FUJI Local MCP only for local work.
 - No Remote Desktop Commander.
 - No Codex quota.
 - Do not weaken MCP safety.
-- Do not expose/store Supabase URL or Publishable Key in handoff files.
 - Do not re-enable row-level Realtime for the four large Wetapp tables.
