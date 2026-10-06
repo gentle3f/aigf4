@@ -2,136 +2,132 @@
 
 ## Objective
 
-Finish verification of the one-time AIGF/Wetapp migration from the old Supabase backend to the new Supabase project without deleting the old project prematurely.
+Complete the one-time AIGF/Wetapp migration from the old Supabase backend to the new Supabase project while preserving the phone/local copy and not deleting the old backend until the new cloud is complete.
 
-## Confirmed in this session
-
-### Production redeploy completed after new Supabase env update
+## Production cutover
 
 Vercel project:
 - `aigf4`
 
-Current live production deployment:
+New Supabase Production env values were already in place before the first cutover redeploy.
+
+Initial cutover deployment:
 - `dpl_4TXpYwDGhey4PoXrqFxvdRuBDWqA`
-- state: READY
-- production alias: `wetapp.madproduction.ai`
-- deployment created: 2026-10-06 15:24:08 HKT
-- ready: 2026-10-06 15:24:31 HKT
+- READY
+- `wetapp.madproduction.ai` pointed to it
+- live bundle Supabase endpoint differed from the pre-cutover deployment, proving production had switched away from the old project.
 
-The Production Supabase env vars had already been updated before this deployment:
-- `VITE_SUPABASE_URL` updated about 15:18:15 HKT
-- `VITE_SUPABASE_PUBLISHABLE_KEY` updated about 15:18:18 HKT
+## New-project verification before repair
 
-Therefore this deployment was built after the new Production Supabase configuration was in place.
-
-### Live bundle endpoint fingerprint changed
-
-Compared:
-- current live production bundle on `wetapp.madproduction.ai`
-- previous production deployment `dpl_35Lygs8d4krKTMzmmnPsfxwYXuTr`
-
-Result:
-- both bundles contain exactly one Supabase project endpoint;
-- the current endpoint is different from the pre-cutover endpoint;
-- endpoint values/keys were intentionally not written into this handoff.
-
-This is direct evidence that current live production is no longer pointing at the old Supabase project.
-
-### User-reported phone action
-
-After the cutover deployment, the user reports:
-- phone login completed;
-- upload/sync was triggered.
-
-Because current live production is confirmed to point to the different/new Supabase endpoint, a fresh phone login/upload performed on the current live app targets the new project.
-
-This is strong cutover evidence, but exact cloud row/object counts have not yet been independently read from the authenticated Supabase backend.
-
-## New verification helper
-
-Added:
+User ran:
 - `supabase/VERIFY_NEW_PROJECT_CUTOVER.sql`
 
-This is read-only and returns:
-- auth user count;
-- `wetapp_state` row count;
-- `wetapp_conversations` row count;
-- `wetapp_messages` row count;
-- `wetapp_media` row count;
-- `wetapp_research_turns` row count;
-- object count in private bucket `wetapp-private`;
-- count of the four large Wetapp tables still present in `supabase_realtime`.
-
-Expected final Realtime result:
-- `large_chat_tables_still_in_realtime = 0`
-
-## Existing backend bootstrap remains valid
-
-The new backend bootstrap was already reported by the user as successfully applied in the new Supabase SQL Editor:
-- result: “Success. No rows returned”
-
-It includes:
-- Wetapp schema;
-- RLS;
-- private `wetapp-private` storage bucket;
-- state CAS;
-- Research Capture table;
-- final removal of `wetapp_state`, `wetapp_conversations`, `wetapp_messages`, and `wetapp_media` from `supabase_realtime`.
-
-## New-project verification result
-
-User ran `supabase/VERIFY_NEW_PROJECT_CUTOVER.sql` in the NEW Supabase project.
-
-Observed:
+NEW project result:
 - `auth_users = 1`
 - `wetapp_state_rows = 1`
 - `wetapp_conversations_rows = 29`
 - `wetapp_messages_rows = 578`
-- `wetapp_research_turns_rows = 4`
-- `large_chat_tables_still_in_realtime = 0`
 - `wetapp_media_rows = 0`
 - `wetapp_private_storage_objects = 0`
+- `wetapp_research_turns_rows = 4`
+- `large_chat_tables_still_in_realtime = 0`
 
-Conclusion:
-- authentication is established in the new backend;
-- phone state/chat data has seeded the new backend;
-- Research Capture is writing to the new backend;
-- the four large Wetapp tables are not published through Realtime;
-- text/state portion of the Supabase cutover is verified successful.
+This proved auth/state/Research/new endpoint worked, and Realtime publication removal worked, but data migration was incomplete.
 
-The only remaining conditional check is media. A zero media/object count is correct only if the phone currently has no locally stored private avatar blobs, character-photo assets, or chat attachments. `collectLocalMedia()` uploads exactly those three IndexedDB-backed asset classes. If the phone visibly contains any such saved private media, zero cloud media is a blocker and must be diagnosed before the old Supabase project is retired.
+## Old-project comparison
 
-## What remains before declaring migration fully closed
+User ran:
+- `supabase/COMPARE_OLD_PROJECT_CUTOVER.sql`
 
-1. Confirm whether the phone actually contains locally stored private media (custom/private avatar blobs, character photos, or chat attachments).
-2. If none exist, media count zero is expected and the migration can be treated as data-complete.
-3. If any exist, diagnose why `collectLocalMedia()` yielded/uploaded none before retiring the old backend.
-4. Observe new Supabase usage; Realtime egress should remain near zero.
-5. Do NOT delete the old Supabase project until the media condition is resolved/accepted.
+OLD project result:
+- `auth_users = 1`
+- `wetapp_state_rows = 1`
+- `wetapp_conversations_rows = 29`
+- `wetapp_messages_rows = 11079`
+- `wetapp_media_rows = 45`
+- `wetapp_private_storage_objects = 45`
+- `wetapp_research_turns_rows = null`
+- `large_chat_tables_still_in_realtime = 4`
 
-## Repo state before this handoff update
+Therefore the first new-project seed missed:
+- about 10,501 previously synced message rows;
+- all 45 previously synced media objects.
 
-Repo:
-`C:\Workspaces\PROJECTS\AIGF`
+Do NOT delete the old project.
 
-Branch:
-`perf/cleanup-send-latency-20260923`
+## Root cause found
 
-Important lineage:
-- `11a593a Document Supabase backend cutover`
-- `bc33690 Prepare new Supabase backend bootstrap`
-- `c5c1de9 Allow local research capture before migration`
-- `9c097b4 Add low-egress research capture`
-- `7d2b21c Stop Supabase Realtime self-echo egress`
+The phone retained local IndexedDB sync indexes from the old Supabase backend:
+- `wetappCloudMessageIndexV1`
+- `wetappCloudMediaIndexV1`
+- conversation/state indexes as well.
 
-Do not redo the egress hotfix, Research Capture work, schema bootstrap, or production redeploy.
+During the first seed into the empty new project:
+- `pushMessages()` compared local messages against the old-backend message index and uploaded only rows whose hashes looked changed;
+- `pushMedia()` compared local media against the old-backend media index and uploaded only changed blobs.
+
+Because the indexes were not backend-scoped, previously synced old-project data was incorrectly treated as already present in the new project.
+
+This explains the observed counts:
+- conversations were all upserted: 29 vs 29;
+- only 578 changed/new messages were uploaded;
+- zero media uploaded because all 45 local media signatures were already marked synced in the stale index.
+
+## Repair implemented
+
+Commit:
+- `14df270 Force full cloud reseed after backend cutover`
+
+Repair:
+- safe-merge protocol advanced to version 2;
+- first v2 recovery pass forces a complete local message + media snapshot;
+- forced snapshot ignores stale message/media indexes for upload selection;
+- recovery uses `preserveRemote=true`, so it upserts local data without deleting remote rows;
+- then it force-pulls/merges cloud + local;
+- only after merge does the normal state CAS/final sync complete;
+- no row-level Realtime is re-enabled.
+
+Validation:
+- full test suite: 664/664 PASS;
+- typecheck PASS;
+- production build PASS.
+
+## Repair deployment
+
+The repair commit was pushed to GitHub `main`.
+
+Current repair production deployment:
+- `dpl_Br94heSVwP7XxUTYeBup7hkYHiTu`
+- commit `14df270db846143440db0a9479e256734c630f64`
+- state READY
+- aliases include `wetapp.madproduction.ai`
+
+Live page now serves a new bundle after the repair deployment.
+
+## Required user action now
+
+On the phone:
+1. fully reload/reopen `wetapp.madproduction.ai` so the new bundle executes;
+2. leave the Live Cloud session signed in / open Live Cloud if needed;
+3. safe-merge v2 should automatically perform the forced full reseed.
+
+After the app reports cloud sync complete, run `supabase/VERIFY_NEW_PROJECT_CUTOVER.sql` again in the NEW Supabase project.
+
+Expected direction:
+- `wetapp_conversations_rows` remains around 29;
+- `wetapp_messages_rows` should rise from 578 toward the full local history, expected around the old 11079 baseline if the phone still contains the complete history;
+- `wetapp_media_rows` should rise from 0 toward 45;
+- `wetapp_private_storage_objects` should rise from 0 toward 45;
+- `large_chat_tables_still_in_realtime` must remain 0.
+
+Exact message/media counts should be compared after reseed; do not assume equality until verified.
 
 ## Durable operating rules
 
-- GEN-FUJI Local MCP is the main/only local filesystem/repo/command tool.
+- GEN-FUJI Local MCP only for local filesystem/repo/command work.
 - Never use Remote Desktop Commander.
 - Never use Codex quota.
 - Do not weaken MCP safety.
-- Do not expose/store the Supabase Project URL or Publishable Key in handoff files.
-- Do not delete the old Supabase project yet.
+- Do not expose/store Supabase URL or Publishable Key in handoff files.
+- Do not delete the old Supabase project until the repaired new-cloud counts/content are accepted.
 - Do not re-enable row-level Realtime for the four large Wetapp tables.
