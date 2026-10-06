@@ -14,6 +14,11 @@ select 'wetapp_conversations_rows', count(*)::bigint
 from public.wetapp_conversations
 
 union all
+select 'wetapp_conversation_message_count_sum',
+       coalesce(sum(message_count), 0)::bigint
+from public.wetapp_conversations
+
+union all
 select 'wetapp_messages_rows', count(*)::bigint
 from public.wetapp_messages
 
