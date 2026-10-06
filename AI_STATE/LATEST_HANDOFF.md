@@ -24,8 +24,9 @@ Validation:
 - production build PASS
 
 Next:
-- user tests UI 2.0 on phone and desktop with real usage;
-- refine visual/UX issues from hands-on feedback;
+- user continues testing UI 2.0 on phone and desktop with real usage;
+- latest phone refinements are live: no conversation trash buttons, corrected 2x2 Group header avatars, fully scrollable mobile three-dot menu, camera shortcut hidden;
+- refine remaining visual/UX issues from hands-on feedback;
 - keep Group Reply capture running in parallel.
 
 Mandatory:

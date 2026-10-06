@@ -88,3 +88,33 @@ Group Reply V2 is still waiting for more real Research Capture baseline usage. U
 - Do not weaken MCP safety.
 - Do not re-enable row-level Realtime for the four large Wetapp tables.
 - Preserve existing app behaviour while iterating UI 2.0.
+
+
+## UI 2.0 phone feedback refinement
+
+User feedback from live phone testing:
+- remove the trash-bin affordance beside every conversation;
+- fix the four-head Group avatar proportions in the chat header;
+- the three-dot menu on phone must expose/scroll through every function;
+- remove the composer camera shortcut because the user does not use it.
+
+Implemented in opt-in UI 2.0 only:
+- conversation delete buttons are visually hidden and their reserved right padding is reclaimed;
+- Group header avatar grid now uses fixed square 2x2 cells with nested images at 100% x 100% and object-fit: cover;
+- mobile three-dot menu now spans the safe-area viewport and is independently touch-scrollable;
+- composer camera button is visually hidden.
+
+No chat, Group, media, deletion, Supabase, memory, or review logic was changed.
+
+Validation after refinement:
+- 667/667 tests PASS
+- typecheck PASS
+- production build PASS
+
+Commit:
+- `004fee8 Refine mobile UI 2.0 controls`
+
+Production deployment:
+- `dpl_C9kJUPh48RHvz2J3xdiqozy1DT4n`
+- READY
+- `wetapp.madproduction.ai` alias active.
