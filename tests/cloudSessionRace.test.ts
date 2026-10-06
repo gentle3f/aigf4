@@ -247,7 +247,7 @@ test('sign-out during pending-change state-head preflight cannot poison revision
     const headResponse = new Promise(resolve => { resolveHead = resolve; });
     let pushCalls = 0;
 
-    localStorage.setItem('wetappCloudSafeMergeV1', '1');
+    localStorage.setItem('wetappCloudSafeMergeV1', '2');
     localStorage.setItem('wetappCloudPendingV1', 'true');
     localStorage.setItem('wetappCloudSyncedUserIdV1', 'owner');
 
@@ -299,7 +299,7 @@ test('same-user re-login still invalidates a state-head preflight started by the
     let pushCalls = 0;
     const ownerSession = { user: { id: 'owner', email: 'gentle3f@gmail.com' } };
 
-    localStorage.setItem('wetappCloudSafeMergeV1', '1');
+    localStorage.setItem('wetappCloudSafeMergeV1', '2');
     localStorage.setItem('wetappCloudPendingV1', 'true');
     localStorage.setItem('wetappCloudSyncedUserIdV1', 'owner');
 

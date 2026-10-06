@@ -754,7 +754,7 @@ export class SupabaseCloudSyncManager {
             const deviceHasSynced = localStorage.getItem(SYNCED_USER_ID_KEY) === sessionUserId
                 || remoteState?.source_device_id === this.deviceId;
             const hasPendingChanges = localStorage.getItem(PENDING_KEY) === 'true';
-            const safeMergeRequired = localStorage.getItem(SAFE_MERGE_VERSION_KEY) !== '1';
+            const safeMergeRequired = localStorage.getItem(SAFE_MERGE_VERSION_KEY) !== '2';
             const pendingCloudConflict = shouldRecoverPendingCloudConflict({
                 deviceHasSynced,
                 hasPendingChanges,
@@ -998,7 +998,7 @@ export class SupabaseCloudSyncManager {
             this.schedulePush(250);
             return false;
         }
-        if (this.pullRecoveryRequired || localStorage.getItem(SAFE_MERGE_VERSION_KEY) !== '1') {
+        if (this.pullRecoveryRequired || localStorage.getItem(SAFE_MERGE_VERSION_KEY) !== '2') {
             return this.recoverCloudSafely();
         }
         if (localStorage.getItem(PENDING_KEY) !== 'true') return true;
@@ -1035,11 +1035,11 @@ export class SupabaseCloudSyncManager {
         const sessionUserId = this.session.user.id;
         const sessionGeneration = this.sessionGeneration;
         localStorage.setItem(PENDING_KEY, 'true');
-        const pushed = await this.pushLocalToCloud(false, true);
+        const pushed = await this.pushLocalToCloud(false, true, undefined, true);
         if (!pushed || !this.isCurrentSession(sessionUserId, sessionGeneration)) return false;
         const pulled = await this.pullCloudToLocal(true, true);
         if (!pulled || !this.isCurrentSession(sessionUserId, sessionGeneration)) return false;
-        localStorage.setItem(SAFE_MERGE_VERSION_KEY, '1');
+        localStorage.setItem(SAFE_MERGE_VERSION_KEY, '2');
         localStorage.setItem(PENDING_KEY, 'true');
         return this.pushLocalToCloud(
             false,
@@ -1048,7 +1048,7 @@ export class SupabaseCloudSyncManager {
         );
     }
 
-    private async pushLocalToCloud(initial = false, preserveRemote = false, expectedStateRevision?: number): Promise<boolean> {
+    private async pushLocalToCloud(initial = false, preserveRemote = false, expectedStateRevision?: number, forceFullSnapshot = false): Promise<boolean> {
         if (!this.client || !this.session || this.pushing || this.pulling) return false;
         const sessionUserId = this.session.user.id;
         const sessionGeneration = this.sessionGeneration;
@@ -1073,10 +1073,10 @@ export class SupabaseCloudSyncManager {
             this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             const media = await this.collectLocalMedia(payload.rooms.rooms, sessionUserId);
             this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
-            const mediaPlan = await this.pushMedia(media, preserveRemote, sessionUserId, sessionGeneration);
+            const mediaPlan = await this.pushMedia(media, preserveRemote, sessionUserId, sessionGeneration, forceFullSnapshot);
             this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             this.setState('pushing', '正在同步對話訊息…', { progress: 55 });
-            const messagePlan = await this.pushMessages(preserveRemote, sessionUserId, sessionGeneration);
+            const messagePlan = await this.pushMessages(preserveRemote, sessionUserId, sessionGeneration, forceFullSnapshot);
             this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             if (preserveRemote) {
                 this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
@@ -1258,7 +1258,7 @@ export class SupabaseCloudSyncManager {
             pullCompleted = true;
             localStorage.removeItem(PENDING_KEY);
             this.setPullRecoveryRequired(false);
-            localStorage.setItem(SAFE_MERGE_VERSION_KEY, '1');
+            localStorage.setItem(SAFE_MERGE_VERSION_KEY, '2');
             this.callbacks.onRemoteApplied();
             this.markSynced('已載入雲端最新資料。');
             return true;
@@ -1339,13 +1339,16 @@ export class SupabaseCloudSyncManager {
         preserveRemote = false,
         sessionUserId = this.session?.user.id || '',
         sessionGeneration = this.sessionGeneration,
+        forceAll = false,
     ): Promise<CloudMessagePushPlan> {
         if (!this.client || !sessionUserId) throw new Error('Cloud sync session unavailable.');
         this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
         const { conversations, messages, hashes } = this.collectLocalMessages(sessionUserId);
         const previousHashes = await readCloudSyncIndex(MESSAGE_INDEX_KEY);
         this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
-        const changed = messages.filter(row => previousHashes[this.messageIndexKey(row)] !== hashes[this.messageIndexKey(row)]);
+        const changed = forceAll
+            ? messages
+            : messages.filter(row => previousHashes[this.messageIndexKey(row)] !== hashes[this.messageIndexKey(row)]);
         const removedKeys = Object.keys(previousHashes).filter(key => !hashes[key]);
 
         for (const batch of batches(conversations, 100)) {
@@ -1598,13 +1601,16 @@ export class SupabaseCloudSyncManager {
         preserveRemote = false,
         sessionUserId = this.session?.user.id || '',
         sessionGeneration = this.sessionGeneration,
+        forceAll = false,
     ): Promise<CloudMediaPushPlan> {
         if (!this.client || !sessionUserId) throw new Error('Cloud sync client unavailable.');
         this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
         const previousIndex = await readCloudSyncIndex(MEDIA_INDEX_KEY);
         this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
         const nextIndex = Object.fromEntries(media.map(asset => [asset.asset_id, asset.signature]));
-        const changed = media.filter(asset => previousIndex[asset.asset_id] !== asset.signature);
+        const changed = forceAll
+            ? media
+            : media.filter(asset => previousIndex[asset.asset_id] !== asset.signature);
         for (const [index, asset] of changed.entries()) {
             const upload = await this.client.storage.from(STORAGE_BUCKET).upload(asset.storage_path, asset.blob, {
                 contentType: asset.mime_type,
