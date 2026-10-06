@@ -1,0 +1,688 @@
+/* Wetapp UI 2.0 — query-gated visual layer.
+   Activated only when <html data-wetapp-ui="v2"> is set by index.html. */
+html[data-wetapp-ui="v2"] {
+    --v2-paper: #f6f3ee;
+    --v2-paper-2: #fbfaf7;
+    --v2-panel: rgba(252, 251, 248, 0.94);
+    --v2-panel-solid: #fcfbf8;
+    --v2-ink: #1e1b18;
+    --v2-muted: #817970;
+    --v2-faint: #aaa198;
+    --v2-line: rgba(53, 44, 36, 0.08);
+    --v2-accent: #98584f;
+    --v2-accent-soft: #ead7d2;
+    --v2-dark: #292521;
+    --v2-shadow: 0 18px 55px rgba(62, 48, 37, 0.10);
+    --v2-shadow-soft: 0 8px 28px rgba(62, 48, 37, 0.06);
+}
+
+html[data-wetapp-ui="v2"],
+html[data-wetapp-ui="v2"] body {
+    background: var(--v2-paper) !important;
+}
+
+html[data-wetapp-ui="v2"] body.app-body {
+    color: var(--v2-ink) !important;
+    background:
+        radial-gradient(circle at 82% 10%, rgba(173, 119, 106, 0.11), transparent 28rem),
+        radial-gradient(circle at 15% 85%, rgba(125, 146, 142, 0.08), transparent 26rem),
+        var(--v2-paper) !important;
+    font-family: "DM Sans", "Noto Sans TC", sans-serif !important;
+}
+
+/* Keep the existing app and all event wiring; only replace the shell language. */
+html[data-wetapp-ui="v2"] #app-shell {
+    width: min(100%, 1540px) !important;
+    max-width: 1540px !important;
+    height: 100dvh !important;
+    margin: 0 auto !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: var(--v2-paper-2) !important;
+    box-shadow: 0 0 0 1px rgba(38, 30, 24, 0.03), var(--v2-shadow) !important;
+}
+
+/* Home / conversation list */
+html[data-wetapp-ui="v2"] .conversation-sidebar {
+    color: var(--v2-ink) !important;
+    background: rgba(252, 251, 248, 0.92) !important;
+    border-color: var(--v2-line) !important;
+}
+
+html[data-wetapp-ui="v2"] #app-shell.chat-open .conversation-sidebar {
+    width: 360px !important;
+    flex-basis: 360px !important;
+    border-right: 1px solid var(--v2-line) !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-sidebar-header {
+    min-height: 86px !important;
+    flex-basis: 86px !important;
+    padding: 20px 20px 12px !important;
+    align-items: flex-end !important;
+    border: 0 !important;
+    background: transparent !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-sidebar-kicker {
+    margin-bottom: 4px !important;
+    color: var(--v2-muted) !important;
+    font-size: 0.62rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.16em !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-sidebar-kicker::after {
+    content: "  ·  YOUR WORLD";
+}
+
+html[data-wetapp-ui="v2"] .conversation-sidebar-title {
+    color: var(--v2-ink) !important;
+    font-family: "DM Serif Display", Georgia, serif !important;
+    font-size: 1.72rem !important;
+    font-weight: 400 !important;
+    letter-spacing: -0.035em !important;
+}
+
+html[data-wetapp-ui="v2"] .wa-icon-button,
+html[data-wetapp-ui="v2"] .icon-button {
+    width: 40px !important;
+    height: 40px !important;
+    color: #6f675f !important;
+    border-radius: 14px !important;
+    background: transparent !important;
+}
+
+html[data-wetapp-ui="v2"] .wa-icon-button:hover,
+html[data-wetapp-ui="v2"] .icon-button:hover {
+    background: #f0ece6 !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-search-wrap {
+    height: 44px !important;
+    margin: 5px 16px 12px !important;
+    padding: 0 13px !important;
+    border: 0 !important;
+    border-radius: 15px !important;
+    background: #f0ece6 !important;
+    box-shadow: none !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-search-wrap svg {
+    color: #928980 !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-search-wrap input {
+    color: var(--v2-ink) !important;
+    background: transparent !important;
+    font-size: 0.86rem !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-search-wrap input::placeholder {
+    color: #9c948c !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-scroll {
+    padding: 0 8px 96px !important;
+    background: transparent !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-section-label {
+    padding: 14px 11px 7px !important;
+    color: var(--v2-faint) !important;
+    font-size: 0.62rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.14em !important;
+    text-transform: uppercase !important;
+}
+
+/* Tools should feel like capabilities, not fake chats. */
+html[data-wetapp-ui="v2"] .pinned-conversations {
+    margin: 0 8px 6px !important;
+    padding: 8px !important;
+    border: 1px solid rgba(68, 54, 42, 0.055) !important;
+    border-radius: 22px !important;
+    background: rgba(242, 238, 232, 0.72) !important;
+}
+
+html[data-wetapp-ui="v2"] .pinned-conversations .conversation-section-label {
+    padding-top: 3px !important;
+}
+
+html[data-wetapp-ui="v2"] .pinned-conversations .conversation-row {
+    min-height: 62px !important;
+    background: rgba(255, 255, 255, 0.70) !important;
+}
+
+html[data-wetapp-ui="v2"] .pinned-conversations .conversation-row + .conversation-row {
+    margin-top: 5px !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-row {
+    min-height: 70px !important;
+    gap: 12px !important;
+    margin: 2px 0 !important;
+    padding: 9px 10px !important;
+    border: 0 !important;
+    border-radius: 18px !important;
+    color: var(--v2-ink) !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    transition: background 150ms ease, transform 150ms ease !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-row:hover {
+    background: #f2eee8 !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-row.is-active {
+    background: #ebe5de !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-copy {
+    border-bottom: 0 !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-avatar {
+    width: 49px !important;
+    height: 49px !important;
+    flex-basis: 49px !important;
+    border-radius: 17px !important;
+    box-shadow: 0 0 0 1px rgba(49, 39, 31, 0.06) !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-avatar img,
+html[data-wetapp-ui="v2"] .conversation-avatar > img {
+    border-radius: 17px !important;
+}
+
+html[data-wetapp-ui="v2"] .group-avatar-grid,
+html[data-wetapp-ui="v2"] .conversation-avatar .group-avatar-grid {
+    border-radius: 17px !important;
+    overflow: hidden !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-line strong {
+    color: var(--v2-ink) !important;
+    font-weight: 650 !important;
+}
+
+html[data-wetapp-ui="v2"] .conversation-line time,
+html[data-wetapp-ui="v2"] .conversation-preview {
+    color: var(--v2-muted) !important;
+}
+
+html[data-wetapp-ui="v2"] .new-chat-fab {
+    right: 20px !important;
+    bottom: 22px !important;
+    width: 54px !important;
+    height: 54px !important;
+    border-radius: 18px !important;
+    color: #fff !important;
+    background: var(--v2-dark) !important;
+    box-shadow: 0 14px 30px rgba(37, 31, 26, 0.22) !important;
+}
+
+html[data-wetapp-ui="v2"] .wa-popover,
+html[data-wetapp-ui="v2"] .new-chat-menu {
+    border: 1px solid var(--v2-line) !important;
+    border-radius: 20px !important;
+    color: var(--v2-ink) !important;
+    background: rgba(255, 255, 255, 0.96) !important;
+    box-shadow: 0 22px 55px rgba(52, 42, 34, 0.15) !important;
+    backdrop-filter: blur(24px) !important;
+}
+
+/* Chat canvas */
+html[data-wetapp-ui="v2"] #chat-view {
+    position: relative !important;
+    color: var(--v2-ink) !important;
+    background:
+        radial-gradient(circle at 82% 10%, rgba(170, 113, 102, 0.10), transparent 34%),
+        radial-gradient(circle at 25% 78%, rgba(126, 148, 143, 0.075), transparent 30%),
+        var(--v2-paper-2) !important;
+}
+
+html[data-wetapp-ui="v2"] .chat-topbar {
+    min-height: 76px !important;
+    flex-basis: 76px !important;
+    padding: 8px 22px 8px 12px !important;
+    border-bottom: 1px solid var(--v2-line) !important;
+    background: rgba(251, 250, 247, 0.78) !important;
+    backdrop-filter: blur(24px) saturate(1.15) !important;
+}
+
+html[data-wetapp-ui="v2"] #chat-header-avatar-container,
+html[data-wetapp-ui="v2"] #chat-header-avatar-container > *,
+html[data-wetapp-ui="v2"] #chat-header-avatar-container img {
+    width: 46px !important;
+    height: 46px !important;
+    border-radius: 16px !important;
+}
+
+html[data-wetapp-ui="v2"] #chat-header-name {
+    color: var(--v2-ink) !important;
+    font-size: 0.95rem !important;
+    font-weight: 700 !important;
+}
+
+html[data-wetapp-ui="v2"] #chat-status {
+    color: var(--v2-muted) !important;
+    font-size: 0.68rem !important;
+}
+
+html[data-wetapp-ui="v2"] #chat-container {
+    padding: 30px clamp(16px, 5vw, 76px) 36px !important;
+    background: transparent !important;
+    background-image: none !important;
+}
+
+html[data-wetapp-ui="v2"] .history-period-divider {
+    margin: 10px auto 24px !important;
+    padding: 0 !important;
+    color: var(--v2-faint) !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    font-size: 0.62rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.11em !important;
+    text-transform: uppercase !important;
+}
+
+/* Cleaner contemporary messages */
+html[data-wetapp-ui="v2"] .chat-bubble {
+    max-width: min(74%, 650px) !important;
+    padding: 11px 14px 10px !important;
+    border: 0 !important;
+    border-radius: 20px 20px 20px 7px !important;
+    color: var(--v2-ink) !important;
+    background: rgba(255, 255, 255, 0.90) !important;
+    box-shadow: var(--v2-shadow-soft) !important;
+    line-height: 1.58 !important;
+}
+
+html[data-wetapp-ui="v2"] .user-bubble {
+    color: #fff !important;
+    background: var(--v2-dark) !important;
+    border-radius: 20px 20px 7px 20px !important;
+    box-shadow: none !important;
+}
+
+html[data-wetapp-ui="v2"] .bot-bubble {
+    background: rgba(255, 255, 255, 0.90) !important;
+}
+
+html[data-wetapp-ui="v2"] .god-mode-bubble {
+    color: #4a352e !important;
+    background: #f5e7df !important;
+}
+
+html[data-wetapp-ui="v2"] .group-chat-turn {
+    gap: 9px !important;
+    margin: 8px 0 !important;
+}
+
+html[data-wetapp-ui="v2"] .group-dialogue-row {
+    gap: 10px !important;
+}
+
+html[data-wetapp-ui="v2"] .group-dialogue-avatar {
+    width: 32px !important;
+    height: 32px !important;
+    flex-basis: 32px !important;
+    margin-top: 4px !important;
+    border-radius: 11px !important;
+    background: #d9d0c8 !important;
+}
+
+html[data-wetapp-ui="v2"] .group-dialogue-bubble {
+    gap: 3px !important;
+}
+
+html[data-wetapp-ui="v2"] .group-speaker-name {
+    color: var(--v2-accent) !important;
+    font-size: 0.68rem !important;
+    font-weight: 800 !important;
+    letter-spacing: 0.01em !important;
+}
+
+html[data-wetapp-ui="v2"] .system-chat-message,
+html[data-wetapp-ui="v2"] .group-narration {
+    max-width: min(86%, 650px) !important;
+    margin: 18px auto !important;
+    padding: 2px 16px !important;
+    border: 0 !important;
+    border-left: 2px solid rgba(152, 88, 79, 0.23) !important;
+    border-radius: 0 !important;
+    color: #847a71 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    text-align: left !important;
+    font-family: "DM Serif Display", Georgia, "Noto Serif TC", serif !important;
+    font-size: 0.84rem !important;
+    font-style: italic !important;
+    font-weight: 400 !important;
+    line-height: 1.62 !important;
+}
+
+/* Composer becomes a floating object, not a toolbar. */
+html[data-wetapp-ui="v2"] .chat-view-footer {
+    padding: 28px clamp(12px, 4vw, 58px) 16px !important;
+    border: 0 !important;
+    background: linear-gradient(180deg, rgba(251, 250, 247, 0), rgba(251, 250, 247, 0.90) 35%, rgba(251, 250, 247, 0.98)) !important;
+}
+
+html[data-wetapp-ui="v2"] .composer-frame {
+    gap: 7px !important;
+    padding: 7px !important;
+    border: 1px solid rgba(48, 38, 30, 0.07) !important;
+    border-radius: 22px !important;
+    background: rgba(255, 255, 255, 0.95) !important;
+    box-shadow: 0 18px 42px rgba(63, 48, 36, 0.11) !important;
+}
+
+html[data-wetapp-ui="v2"] .composer-input-shell {
+    min-height: 44px !important;
+    border-radius: 16px !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+html[data-wetapp-ui="v2"] #message-input {
+    height: 44px !important;
+    min-height: 44px !important;
+    max-height: 112px !important;
+    padding: 10px 7px 8px 10px !important;
+    border-radius: 15px !important;
+    color: var(--v2-ink) !important;
+    font-size: 0.92rem !important;
+    line-height: 24px !important;
+}
+
+html[data-wetapp-ui="v2"] #message-input::placeholder {
+    color: #aaa098 !important;
+}
+
+html[data-wetapp-ui="v2"] .composer-icon-button {
+    width: 40px !important;
+    height: 44px !important;
+    flex-basis: 40px !important;
+    color: #756c64 !important;
+}
+
+html[data-wetapp-ui="v2"] #send-button {
+    width: 44px !important;
+    height: 44px !important;
+    flex-basis: 44px !important;
+    color: #fff !important;
+    background: var(--v2-dark) !important;
+    box-shadow: none !important;
+}
+
+html[data-wetapp-ui="v2"] #send-button:disabled {
+    color: #a59c94 !important;
+    background: #e9e4de !important;
+}
+
+html[data-wetapp-ui="v2"] #loading-indicator {
+    padding: 5px clamp(16px, 5vw, 76px) 7px !important;
+    background: transparent !important;
+}
+
+/* Search and menu surfaces */
+html[data-wetapp-ui="v2"] .chat-search-bar {
+    min-height: 56px !important;
+    border-bottom: 1px solid var(--v2-line) !important;
+    background: rgba(251, 250, 247, 0.92) !important;
+}
+
+html[data-wetapp-ui="v2"] .chat-search-bar input {
+    border-radius: 14px !important;
+    color: var(--v2-ink) !important;
+    background: #f0ece6 !important;
+}
+
+html[data-wetapp-ui="v2"] #more-options-menu {
+    top: 52px !important;
+    right: 0 !important;
+    width: 258px !important;
+    padding: 7px !important;
+    border: 1px solid var(--v2-line) !important;
+    border-radius: 20px !important;
+    color: var(--v2-ink) !important;
+    background: rgba(255, 255, 255, 0.96) !important;
+    box-shadow: 0 24px 64px rgba(52, 41, 33, 0.17) !important;
+    backdrop-filter: blur(26px) !important;
+}
+
+html[data-wetapp-ui="v2"] #more-options-menu .dropdown-item {
+    padding: 10px 12px !important;
+    border-radius: 13px !important;
+    color: var(--v2-ink) !important;
+    background: transparent !important;
+    font-size: 0.82rem !important;
+}
+
+html[data-wetapp-ui="v2"] #more-options-menu .dropdown-item:hover {
+    background: #f2eee8 !important;
+}
+
+html[data-wetapp-ui="v2"] #more-options-menu .border-t {
+    border-color: var(--v2-line) !important;
+}
+
+/* Modernise shared sheets without touching their behaviour. */
+html[data-wetapp-ui="v2"] .wa-modal-backdrop {
+    background: rgba(36, 31, 27, 0.38) !important;
+    backdrop-filter: blur(8px) !important;
+}
+
+html[data-wetapp-ui="v2"] .wa-sheet {
+    border: 1px solid rgba(48, 38, 30, 0.07) !important;
+    border-radius: 24px !important;
+    color: var(--v2-ink) !important;
+    background: var(--v2-panel-solid) !important;
+    box-shadow: 0 28px 80px rgba(44, 35, 28, 0.24) !important;
+}
+
+html[data-wetapp-ui="v2"] .wa-sheet-header {
+    min-height: 70px !important;
+    padding: 10px 14px !important;
+    background: transparent !important;
+    border-bottom: 1px solid var(--v2-line) !important;
+}
+
+html[data-wetapp-ui="v2"] .wa-sheet-header h2 {
+    font-family: "DM Serif Display", Georgia, serif !important;
+    font-size: 1.28rem !important;
+    font-weight: 400 !important;
+}
+
+html[data-wetapp-ui="v2"] .wa-field-label input,
+html[data-wetapp-ui="v2"] .wa-field-label select,
+html[data-wetapp-ui="v2"] .wa-field-label textarea,
+html[data-wetapp-ui="v2"] .room-memory-card input,
+html[data-wetapp-ui="v2"] .room-memory-card textarea {
+    border: 1px solid rgba(53, 44, 36, 0.12) !important;
+    border-radius: 14px !important;
+    color: var(--v2-ink) !important;
+    background: #fff !important;
+}
+
+html[data-wetapp-ui="v2"] .wa-primary-button {
+    border-radius: 14px !important;
+    border-color: var(--v2-dark) !important;
+    background: var(--v2-dark) !important;
+}
+
+html[data-wetapp-ui="v2"] .wa-secondary-button,
+html[data-wetapp-ui="v2"] .memory-add-button {
+    border-radius: 14px !important;
+    color: #675f58 !important;
+    border-color: rgba(53, 44, 36, 0.12) !important;
+    background: #fff !important;
+}
+
+/* Deliberate prototype marker so screenshots cannot be confused with default UI. */
+html[data-wetapp-ui="v2"] body::after {
+    content: "UI 2.0 TEST";
+    position: fixed;
+    z-index: 250;
+    right: 10px;
+    bottom: 8px;
+    padding: 5px 8px;
+    border-radius: 999px;
+    color: rgba(255,255,255,.94);
+    background: rgba(35,31,28,.68);
+    backdrop-filter: blur(12px);
+    font-size: 0.55rem;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    pointer-events: none;
+}
+
+/* Phone: keep the app's existing page transition and give it native proportions. */
+@media (max-width: 767px) {
+    html[data-wetapp-ui="v2"] #app-shell {
+        background: var(--v2-panel-solid) !important;
+        box-shadow: none !important;
+    }
+
+    html[data-wetapp-ui="v2"] .conversation-sidebar-header {
+        min-height: calc(78px + env(safe-area-inset-top)) !important;
+        flex-basis: calc(78px + env(safe-area-inset-top)) !important;
+        padding: calc(14px + env(safe-area-inset-top)) 16px 10px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .conversation-sidebar-title {
+        font-size: 1.58rem !important;
+    }
+
+    html[data-wetapp-ui="v2"] .conversation-search-wrap {
+        margin: 3px 12px 10px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .pinned-conversations {
+        margin-left: 4px !important;
+        margin-right: 4px !important;
+        border-radius: 20px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .conversation-row {
+        min-height: 68px !important;
+        padding: 8px 9px !important;
+        border-radius: 17px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .conversation-avatar {
+        width: 47px !important;
+        height: 47px !important;
+        flex-basis: 47px !important;
+        border-radius: 16px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .new-chat-fab {
+        right: 16px !important;
+        bottom: calc(16px + env(safe-area-inset-bottom)) !important;
+    }
+
+    html[data-wetapp-ui="v2"] .chat-topbar {
+        min-height: calc(68px + env(safe-area-inset-top)) !important;
+        flex-basis: calc(68px + env(safe-area-inset-top)) !important;
+        padding: calc(5px + env(safe-area-inset-top)) 10px 5px 5px !important;
+    }
+
+    html[data-wetapp-ui="v2"] #chat-header-avatar-container,
+    html[data-wetapp-ui="v2"] #chat-header-avatar-container > *,
+    html[data-wetapp-ui="v2"] #chat-header-avatar-container img {
+        width: 42px !important;
+        height: 42px !important;
+        border-radius: 15px !important;
+    }
+
+    html[data-wetapp-ui="v2"] #chat-container {
+        padding: 20px 11px 24px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .chat-bubble {
+        max-width: 84% !important;
+        padding: 10px 12px 9px !important;
+        border-radius: 18px 18px 18px 7px !important;
+        font-size: 0.92rem !important;
+    }
+
+    html[data-wetapp-ui="v2"] .user-bubble {
+        border-radius: 18px 18px 7px 18px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .group-dialogue-row {
+        gap: 8px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .group-dialogue-avatar {
+        width: 29px !important;
+        height: 29px !important;
+        flex-basis: 29px !important;
+        border-radius: 10px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .system-chat-message,
+    html[data-wetapp-ui="v2"] .group-narration {
+        max-width: 90% !important;
+        margin: 16px auto !important;
+        padding: 1px 12px !important;
+        font-size: 0.80rem !important;
+    }
+
+    html[data-wetapp-ui="v2"] .chat-view-footer {
+        padding: 24px 8px calc(8px + env(safe-area-inset-bottom)) !important;
+    }
+
+    html[data-wetapp-ui="v2"] .composer-frame {
+        padding: 6px !important;
+        border-radius: 20px !important;
+    }
+
+    html[data-wetapp-ui="v2"] #more-options-menu {
+        position: fixed !important;
+        top: auto !important;
+        right: 8px !important;
+        bottom: calc(8px + env(safe-area-inset-bottom)) !important;
+        left: 8px !important;
+        width: auto !important;
+        max-height: min(72dvh, 650px) !important;
+        padding: 10px !important;
+        border-radius: 26px !important;
+        overflow-y: auto !important;
+    }
+
+    html[data-wetapp-ui="v2"] #more-options-menu .dropdown-item {
+        min-height: 46px !important;
+        padding: 11px 13px !important;
+        border-radius: 14px !important;
+        font-size: 0.88rem !important;
+    }
+
+    html[data-wetapp-ui="v2"] .wa-modal-backdrop {
+        align-items: end !important;
+        padding: 8px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .wa-sheet {
+        width: 100% !important;
+        max-height: min(88dvh, 820px) !important;
+        border-radius: 26px 26px 22px 22px !important;
+    }
+
+    html[data-wetapp-ui="v2"] body::after {
+        right: 8px;
+        bottom: calc(5px + env(safe-area-inset-bottom));
+        font-size: 0.48rem;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html[data-wetapp-ui="v2"] * {
+        scroll-behavior: auto !important;
+    }
+}

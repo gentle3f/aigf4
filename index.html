@@ -8,9 +8,18 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Serif+Display&display=swap" rel="stylesheet">
+    <script>
+        (() => {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('ui') === 'v2') {
+                document.documentElement.dataset.wetappUi = 'v2';
+            }
+        })();
+    </script>
     <link rel="stylesheet" href="/tailwind.css">
     <link rel="stylesheet" href="/index.css">
     <link rel="stylesheet" href="/mori.css">
+    <link rel="stylesheet" href="/ui-v2.css">
 </head>
 <body class="app-body bg-gray-900 antialiased text-gray-200">
 
