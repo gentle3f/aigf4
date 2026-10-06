@@ -35,3 +35,10 @@ Mandatory:
 - No Codex quota.
 - Do not weaken MCP safety.
 - Do not re-enable row-level Realtime for the four large Wetapp tables.
+
+Latest UI 2.0 refinement:
+- Home now uses real Quick Actions for Image Studio / Video Studio.
+- chat menu now groups dynamic and fixed actions into 互動 / 角色 / 場景 / 記憶 / 媒體 / 工具 / 管理.
+- sticky × close control added.
+- latest live commit: `0dcadbc Organize UI 2.0 chat menu actions`.
+- validation: 671/671 tests PASS, typecheck PASS, build PASS.

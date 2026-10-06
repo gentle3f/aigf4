@@ -118,3 +118,100 @@ Production deployment:
 - `dpl_C9kJUPh48RHvz2J3xdiqozy1DT4n`
 - READY
 - `wetapp.madproduction.ai` alias active.
+
+
+## UI 2.0 grouped chat action menu
+
+After fixing the mobile menu visibility/portal issue, the user noted the menu was still the old long list.
+
+Implemented:
+- UI 2.0 only: existing menu buttons are dynamically regrouped into four sections while preserving original element IDs and event listeners.
+- Sections:
+  - 關係: room info, DM member, invite/leave, memory, persona settings, Cc model settings.
+  - 場景: new scene, surprise event.
+  - 媒體: album/media, attach file, change avatar, character photo.
+  - 管理: download images, save chat, save all chats, clear chat.
+- Each section renders as a 2-column tile grid instead of one vertical list.
+- Group-only/conditional buttons keep their existing hidden state semantics.
+- Desktop menu width expanded for the grouped layout; mobile retains the viewport-level portaled sheet.
+
+Validation:
+- 669/669 tests PASS
+- typecheck PASS
+- production build PASS
+
+Commit:
+- `f7fd5dc Group UI 2.0 chat actions`
+
+Production deployment:
+- `dpl_ATYaH2EqmJU1WUoBR2nYsFzYMhnm`
+- READY
+- `wetapp.madproduction.ai` alias active.
+
+
+## UI 2.0 Home rebuild
+
+Implemented the first remaining major UI 2.0 phase: true Home / conversation-list restructuring.
+
+Changes:
+- Image Studio and Video Studio are no longer visually treated as fake chat rows in UI 2.0.
+- Their existing real buttons/IDs are physically moved at runtime into a new Quick Actions section directly below search.
+- Quick Actions render as two compact capability tiles with their own icon surfaces, title and supporting text.
+- Venice AI remains in the assistant/conversation area because it is a real chat surface.
+- Home section labels are simplified to 助手 and 最近.
+- Dynamic conversation rows now identify themselves as persona, group, or assistant rows.
+- Group conversations receive a distinct visual treatment and a 群組 badge, while persona rows remain cleaner.
+- Existing event handlers and tool functionality are preserved; default UI remains unchanged.
+
+Validation:
+- 670/670 tests PASS
+- typecheck PASS
+- production build PASS
+
+Commit:
+- `aa31599 Rebuild UI 2.0 home actions`
+
+Production deployment:
+- `dpl_3ryr6PL8i2Mu1pUFDqjixTdEtar1`
+- READY
+- `wetapp.madproduction.ai` alias active.
+
+
+## UI 2.0 chat-menu categorisation + close control
+
+Phone feedback clarified that the uncategorised top rows were dynamically created actions:
+- 互動偏好
+- 導演一下
+- 幫我接戲
+- 目前場景與衣著
+- 最近文字用量
+- Performance 診斷
+- Jev Shadow
+
+These buttons previously had no stable IDs and therefore sat outside the grouped UI 2.0 layout.
+
+Implemented:
+- stable IDs assigned to all seven dynamic actions;
+- grouped menu expanded to meaningful sections:
+  - 互動: 互動偏好, 導演一下, 幫我接戲
+  - 角色: 聊天室資料, 私訊群組成員, 邀請角色加入, 請角色離場, 人格設定, 更換角色頭像
+  - 場景: 目前場景與衣著, 新場景, 驚喜事件牌
+  - 記憶: 靈魂與記憶
+  - 媒體: 媒體／連結／文件, 附加檔案, 請角色拍照
+  - 工具: 最近文字用量, Performance 診斷, Jev Shadow, Cc 模型設定
+  - 管理: 下載圖片, 儲存對話, 儲存所有對話, 清除對話
+- added an explicit sticky × close button in the menu header;
+- desktop menu also has viewport-bounded height and independent scrolling.
+
+Validation:
+- 671/671 tests PASS
+- typecheck PASS
+- production build PASS
+
+Commit:
+- `0dcadbc Organize UI 2.0 chat menu actions`
+
+Production deployment:
+- `dpl_5TB3pMnae5mmzdnvCnyGdvDv5UxA`
+- READY
+- `wetapp.madproduction.ai` alias active.
