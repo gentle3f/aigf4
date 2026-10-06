@@ -4,30 +4,42 @@ Authoritative current handoff:
 - `AI_STATE/HANDOFF_20261007_AIGF_UI_V2_LIVE_TEST.md`
 
 Current status:
-- Supabase migration COMPLETE and verified: conversations 29, messages 11086, message_count sum 11086, media 45, storage 45, research 4, Realtime large tables 0.
-- Group Reply V2 is waiting for more real Research Capture baseline turns.
-- functional Wetapp UI 2.0 test is live in production behind the `?ui=v2` query gate.
-- default Wetapp URL remains on the existing UI.
-- UI 2.0 uses the exact same production functions/data/backend; only the visual layer changes.
+- Supabase migration COMPLETE and verified.
+- Group Reply V2 is still waiting for a larger real Research Capture baseline; do not rewrite Group logic yet without explicit instruction.
+- Functional Wetapp UI 2.0 is live behind `?ui=v2`; default URL remains the old UI.
+- UI 2.0 now includes the full current visual pass:
+  - true Home Quick Actions for Image Studio / Video Studio;
+  - featured latest conversation and clearer Group/persona distinction;
+  - lighter identity-focused chat header;
+  - warm clean canvas with stable persona-driven aura/accent;
+  - open-text 1-on-1 character replies;
+  - editorial narration/scene styling;
+  - floating composer with camera shortcut hidden;
+  - grouped chat actions with explicit sticky close control;
+  - native-feel view/message/composer/sheet motion with reduced-motion fallback;
+  - editorial Wetapp typography;
+  - optional persisted warm dark mode.
 
-UI 2.0 commit:
-- `48d0eed Add opt-in Wetapp UI 2.0`
+Latest live commits:
+- `0dcadbc Organize UI 2.0 chat menu actions`
+- `aa31599 Rebuild UI 2.0 home actions`
+- `ba94ea2 Open up UI 2.0 character replies`
+- `15c1224 Complete UI 2.0 motion and theming`
 
-Production deployment:
-- `dpl_8BntRVTVvtuo5jjNmq5TV4Mc5fH2`
+Latest production deployment:
+- `dpl_B6YoTYfEj2eLpXeCJtRKQjxPLvrx`
 - READY
 - `wetapp.madproduction.ai` alias active.
 
 Validation:
-- 666/666 tests PASS
+- 676/676 tests PASS
 - typecheck PASS
 - production build PASS
 
 Next:
-- user continues testing UI 2.0 on phone and desktop with real usage;
-- latest phone refinements are live: no conversation trash buttons, corrected 2x2 Group header avatars, fully scrollable mobile three-dot menu, camera shortcut hidden;
-- refine remaining visual/UX issues from hands-on feedback;
-- keep Group Reply capture running in parallel.
+- user should use the live UI 2.0 on phone/desktop and report concrete UX/visual changes;
+- refine based on real use rather than speculative redesign;
+- keep Group Research Capture running in parallel.
 
 Mandatory:
 - GEN-FUJI Local MCP only for local work.
@@ -35,10 +47,3 @@ Mandatory:
 - No Codex quota.
 - Do not weaken MCP safety.
 - Do not re-enable row-level Realtime for the four large Wetapp tables.
-
-Latest UI 2.0 refinement:
-- Home now uses real Quick Actions for Image Studio / Video Studio.
-- chat menu now groups dynamic and fixed actions into 互動 / 角色 / 場景 / 記憶 / 媒體 / 工具 / 管理.
-- sticky × close control added.
-- latest live commit: `0dcadbc Organize UI 2.0 chat menu actions`.
-- validation: 671/671 tests PASS, typecheck PASS, build PASS.

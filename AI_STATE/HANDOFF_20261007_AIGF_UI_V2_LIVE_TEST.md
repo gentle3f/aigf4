@@ -215,3 +215,91 @@ Production deployment:
 - `dpl_5TB3pMnae5mmzdnvCnyGdvDv5UxA`
 - READY
 - `wetapp.madproduction.ai` alias active.
+
+
+## UI 2.0 one-on-one message redesign
+
+Implemented the next major visual phase after Home/menu work.
+
+Goal:
+- remove the remaining WhatsApp-like white-bubble feel from ordinary 1-on-1 character replies;
+- preserve user bubbles, Group rendering, Venice Assistant rendering, attachments and message logic.
+
+Changes:
+- ordinary 1-on-1 character bot replies receive semantic classes `character-chat-turn` and `character-message-surface`;
+- character name is rendered as a small accent speaker label;
+- avatar becomes a compact rounded identity anchor;
+- character reply surface is transparent with no card shadow/radius;
+- body text receives more open line-height and width;
+- mobile gets dedicated proportions;
+- user messages remain dark bubbles;
+- Group chat and Venice Assistant are intentionally unchanged.
+
+Validation:
+- 672/672 tests PASS
+- typecheck PASS
+- production build PASS
+
+Commit:
+- `ba94ea2 Open up UI 2.0 character replies`
+
+Production deployment:
+- `dpl_92HvDs2jWE9FMhaCrQ7Ao9M8RetT`
+- READY
+- `wetapp.madproduction.ai` alias active.
+
+Next visual phase after user reviews this:
+- motion/native feel: page/chat transition, message entrance, composer send feedback, sheet motion, reduced-motion safe fallback.
+
+
+## UI 2.0 complete visual pass
+
+After the user approved the open-text 1-on-1 message direction, the remaining visual vision was implemented in one pass.
+
+### Persona-driven accent / aura
+- UI 2.0 now derives a stable low-saturation accent palette from the active conversation identity.
+- The same persona/room receives the same accent consistently.
+- Accent affects speaker labels and the subtle chat aura.
+- No image colour extraction or extra network/model work is used.
+- Returning Home clears the per-conversation accent back to the neutral default.
+
+### Motion / native feel
+- Chat view entrance animation.
+- New-message entrance animation applies only to newly appended live messages, not restored history.
+- Composer send gets a short tactile pulse.
+- More-options popover and mobile bottom-sheet opening animation.
+- Shared sheets get a short spring-like entrance.
+- Button press/hover micro-feedback.
+- All motion respects `prefers-reduced-motion: reduce`.
+
+### Home stronger differentiation
+- The newest recent conversation is rendered as a larger featured identity card in UI 2.0.
+- This is in addition to the prior true Quick Actions split for Image Studio / Video Studio and the Group visual badge.
+
+### Optional dark mode
+- UI 2.0 now includes an optional warm dark theme rather than cyber/neon dark.
+- Toggle is added to the Home menu only in UI 2.0.
+- Choice persists in `localStorage` under `wetappUiV2Theme`.
+- The theme is restored in the head query-gate script before CSS paint to avoid a light-theme flash.
+- Default remains warm light.
+
+### Safety / scope
+- Group Reply generation/review logic remains unchanged.
+- Group Research Capture remains observational.
+- Default URL remains the old UI; UI 2.0 still requires `?ui=v2`.
+- Supabase / memory / media / Cc behaviour unchanged.
+
+Validation:
+- 676/676 tests PASS
+- typecheck PASS
+- production build PASS
+
+Commit:
+- `15c1224 Complete UI 2.0 motion and theming`
+
+Production deployment:
+- `dpl_B6YoTYfEj2eLpXeCJtRKQjxPLvrx`
+- READY
+- `wetapp.madproduction.ai` alias active.
+
+At this point the original UI 2.0 vision is substantially implemented. Next work should be driven by hands-on phone/desktop feedback rather than adding more speculative visual changes.
