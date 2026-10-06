@@ -27,3 +27,11 @@ test('UI v2 stylesheet is gated and does not redefine unscoped production surfac
     );
     assert.deepEqual(unsafe, []);
 });
+
+test('UI v2 mobile usability refinements stay visual-only', () => {
+    assert.match(css, /\.conversation-delete-button\s*\{[\s\S]*display: none !important/);
+    assert.match(css, /#composer-camera-button\s*\{[\s\S]*display: none !important/);
+    assert.match(css, /#chat-header-avatar-container > \.group-avatar-grid[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+    assert.match(css, /group-avatar-grid > span > img[\s\S]*object-fit: cover !important/);
+    assert.match(css, /#more-options-menu[\s\S]*top: calc\(8px \+ env\(safe-area-inset-top\)\)[\s\S]*bottom: calc\(8px \+ env\(safe-area-inset-bottom\)\)[\s\S]*overflow-y: auto !important/);
+});
