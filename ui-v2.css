@@ -705,6 +705,7 @@ html[data-wetapp-ui="v2"] body::after {
         left: 8px !important;
         width: auto !important;
         max-height: none !important;
+        margin: 0 !important;
         padding: 10px !important;
         border-radius: 26px !important;
         overflow-x: hidden !important;

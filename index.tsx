@@ -8771,6 +8771,21 @@ const guardConversationSearchFromAutofill = () => {
 };
 
 const setupEventListeners = () => {
+    const moreOptionsMenuHome = moreOptionsMenu.parentElement;
+    const shouldPortalUiV2MoreOptionsMenu = () => (
+        document.documentElement.dataset.wetappUi === 'v2'
+        && window.matchMedia('(max-width: 767px)').matches
+    );
+    const syncUiV2MoreOptionsMenuPortal = () => {
+        if (shouldPortalUiV2MoreOptionsMenu()) {
+            if (moreOptionsMenu.parentElement !== document.body) document.body.appendChild(moreOptionsMenu);
+            return;
+        }
+        if (moreOptionsMenuHome && moreOptionsMenu.parentElement !== moreOptionsMenuHome) {
+            moreOptionsMenuHome.appendChild(moreOptionsMenu);
+        }
+    };
+
     authForm.addEventListener('submit', async (event) => {
         event.preventDefault();
         await submitUnlock();
@@ -8965,7 +8980,11 @@ const setupEventListeners = () => {
     });
     // More options menu toggle
     moreOptionsBtn.addEventListener('click', () => {
+        syncUiV2MoreOptionsMenuPortal();
         moreOptionsMenu.classList.toggle('hidden');
+    });
+    window.addEventListener('resize', () => {
+        if (moreOptionsMenu.classList.contains('hidden')) syncUiV2MoreOptionsMenuPortal();
     });
     
     // Hide menu when clicking outside
