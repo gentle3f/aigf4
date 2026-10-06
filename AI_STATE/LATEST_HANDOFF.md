@@ -4,12 +4,11 @@ Authoritative current handoff:
 - `AI_STATE/HANDOFF_20261006_AIGF_SUPABASE_LIVE_CUTOVER_CONFIRMED.md`
 
 Current objective:
-- finish final verification of the one-time Supabase migration;
+- Supabase cutover is verified for auth, state, conversations, messages, Research Capture, and Realtime publication removal;
 - production has already been redeployed after the new Supabase Production env values were updated;
-- `wetapp.madproduction.ai` now points to deployment `dpl_4TXpYwDGhey4PoXrqFxvdRuBDWqA`;
-- the current live bundle's Supabase endpoint is different from the pre-cutover production bundle's endpoint;
-- user reports phone re-login + upload after cutover;
-- exact new-backend row/object counts are the remaining verification step.
+- `wetapp.madproduction.ai` points to deployment `dpl_4TXpYwDGhey4PoXrqFxvdRuBDWqA`;
+- verification counts from the NEW backend: auth=1, state=1, conversations=29, messages=578, research=4, large chat tables in Realtime=0;
+- media metadata=0 and private Storage objects=0 remain the only conditional check: acceptable only if the phone has no locally stored private avatar blobs, character photos, or chat attachments.
 
 Verification helper:
 - `supabase/VERIFY_NEW_PROJECT_CUTOVER.sql`
