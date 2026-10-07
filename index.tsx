@@ -2033,16 +2033,99 @@ const ensureUiV2ImmersiveSceneStructure = () => {
     const detail = document.createElement('div');
     detail.id = 'ui-v2-scene-detail';
     detail.className = 'v2-scene-detail hidden';
+
+    const worldState = document.createElement('div');
+    worldState.id = 'ui-v2-scene-world-state';
+    worldState.className = 'v2-scene-world-state';
+
+    const insight = document.createElement('section');
+    insight.id = 'ui-v2-scene-insight';
+    insight.className = 'v2-scene-insight hidden';
+    insight.setAttribute('aria-live', 'polite');
+
     const summary = document.createElement('p');
     summary.id = 'ui-v2-scene-summary';
     summary.className = 'v2-scene-summary';
     const unresolved = document.createElement('div');
     unresolved.id = 'ui-v2-scene-unresolved';
     unresolved.className = 'v2-scene-unresolved';
-    detail.append(summary, unresolved);
+    detail.append(worldState, insight, summary, unresolved);
 
     shell.append(primary, cast, detail);
     topbar.insertAdjacentElement('afterend', shell);
+};
+
+const renderUiV2SceneMemberInsight = (memberId: string | null) => {
+    const shell = document.getElementById('ui-v2-immersive-scene-shell');
+    const panel = document.getElementById('ui-v2-scene-insight');
+    const room = currentRoom;
+    document.querySelectorAll<HTMLElement>('#ui-v2-scene-cast .v2-scene-cast-person[data-member-id]').forEach(person => {
+        person.classList.toggle('is-inspected', Boolean(memberId) && person.dataset.memberId === memberId);
+    });
+    if (!shell || !panel || !room || !memberId) {
+        if (shell) delete shell.dataset.insightMemberId;
+        panel?.classList.add('hidden');
+        if (panel) panel.innerHTML = '';
+        return;
+    }
+
+    const member = room.members.find(item => item.id === memberId);
+    if (!member || !room.scene.presentMemberIds.includes(member.id)) {
+        delete shell.dataset.insightMemberId;
+        panel.classList.add('hidden');
+        panel.innerHTML = '';
+        return;
+    }
+
+    shell.dataset.insightMemberId = member.id;
+    panel.innerHTML = '';
+    panel.classList.remove('hidden');
+
+    const heading = document.createElement('div');
+    heading.className = 'v2-scene-insight-heading';
+    const identity = document.createElement('strong');
+    identity.textContent = member.persona.name;
+    const label = document.createElement('span');
+    label.textContent = 'PRIVATE · 心裡';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.setAttribute('aria-label', '關閉角色內心');
+    close.textContent = '×';
+    close.addEventListener('click', () => renderUiV2SceneMemberInsight(null));
+    heading.append(identity, label, close);
+
+    const state = room.scene.memberStates?.[member.id];
+    if (!state || !Object.values(state).some(Boolean)) {
+        const empty = document.createElement('p');
+        empty.className = 'v2-scene-insight-empty';
+        empty.textContent = '下一個群組回覆後會開始記錄佢此刻嘅內心、注意力同 chemistry。';
+        panel.append(heading, empty);
+        return;
+    }
+
+    const grid = document.createElement('div');
+    grid.className = 'v2-scene-insight-grid';
+    [
+        ['內心', state.innerThought || '未顯露'],
+        ['注意', state.attention || '未明'],
+        ['Chemistry', state.chemistry || '暫時平靜'],
+    ].forEach(([name, value]) => {
+        const item = document.createElement('div');
+        const key = document.createElement('span');
+        key.textContent = name;
+        const text = document.createElement('p');
+        text.textContent = value;
+        item.append(key, text);
+        grid.appendChild(item);
+    });
+
+    panel.append(heading, grid);
+};
+
+const toggleUiV2SceneMemberInsight = (memberId: string) => {
+    const shell = document.getElementById('ui-v2-immersive-scene-shell');
+    if (!shell) return;
+    renderUiV2SceneMemberInsight(shell.dataset.insightMemberId === memberId ? null : memberId);
 };
 
 const renderUiV2ImmersiveSceneChrome = (forcedEnabled?: boolean) => {
@@ -2080,6 +2163,7 @@ const renderUiV2ImmersiveSceneChrome = (forcedEnabled?: boolean) => {
     const location = document.getElementById('ui-v2-scene-location');
     const meta = document.getElementById('ui-v2-scene-meta');
     const cast = document.getElementById('ui-v2-scene-cast');
+    const worldState = document.getElementById('ui-v2-scene-world-state');
     const summary = document.getElementById('ui-v2-scene-summary');
     const unresolved = document.getElementById('ui-v2-scene-unresolved');
 
@@ -2097,9 +2181,12 @@ const renderUiV2ImmersiveSceneChrome = (forcedEnabled?: boolean) => {
 
         presentMembers.forEach(member => {
             const persona = resolveRoomMemberAvatarPersona(member);
-            const person = document.createElement('span');
+            const person = document.createElement('button');
+            person.type = 'button';
             person.className = 'v2-scene-cast-person';
             person.dataset.memberId = member.id;
+            person.setAttribute('aria-label', `查看 ${member.persona.name} 此刻內心`);
+            person.addEventListener('click', () => toggleUiV2SceneMemberInsight(member.id));
             const avatar = document.createElement('span');
             avatar.className = 'v2-scene-cast-avatar';
             if (persona.avatarUrl && !persona.avatarUrl.startsWith('generating_')) {
@@ -2119,6 +2206,46 @@ const renderUiV2ImmersiveSceneChrome = (forcedEnabled?: boolean) => {
         });
     }
 
+    if (worldState) {
+        worldState.innerHTML = '';
+        const heading = document.createElement('div');
+        heading.className = 'v2-scene-world-heading';
+        const title = document.createElement('strong');
+        title.textContent = 'WORLD STATE';
+        const hint = document.createElement('span');
+        hint.textContent = '姿勢 · 動作 · 衣著';
+        heading.append(title, hint);
+
+        const list = document.createElement('div');
+        list.className = 'v2-scene-world-list';
+        presentMembers.forEach(member => {
+            const row = document.createElement('div');
+            row.className = 'v2-scene-world-row';
+            const name = document.createElement('strong');
+            name.textContent = member.persona.name;
+
+            const state = room.scene.memberStates?.[member.id];
+            const posture = document.createElement('span');
+            posture.className = 'v2-scene-world-value';
+            posture.textContent = state?.posture || '下一個回覆後記錄姿勢';
+            posture.dataset.label = '姿勢';
+
+            const action = document.createElement('span');
+            action.className = 'v2-scene-world-value';
+            action.textContent = state?.action || '下一個回覆後記錄動作';
+            action.dataset.label = '動作';
+
+            const wardrobe = document.createElement('span');
+            wardrobe.className = 'v2-scene-world-value';
+            wardrobe.textContent = room.scene.wardrobe?.characters?.[member.id] || '衣著未記錄';
+            wardrobe.dataset.label = '衣著';
+
+            row.append(name, posture, action, wardrobe);
+            list.appendChild(row);
+        });
+        worldState.append(heading, list);
+    }
+
     if (summary) {
         summary.textContent = room.scene.summary?.trim()
             || '呢個場景會隨你哋嘅對話繼續累積。';
@@ -2131,6 +2258,11 @@ const renderUiV2ImmersiveSceneChrome = (forcedEnabled?: boolean) => {
             unresolved.appendChild(chip);
         });
         unresolved.classList.toggle('hidden', room.scene.unresolved.length === 0);
+    }
+
+    const selectedInsightMemberId = shell.dataset.insightMemberId;
+    if (selectedInsightMemberId) {
+        renderUiV2SceneMemberInsight(selectedInsightMemberId);
     }
 };
 
@@ -5413,6 +5545,16 @@ const normalizeGroupGenerationTraditional = (result: GroupGenerationResult): Gro
                 characters: Object.fromEntries(Object.entries(result.scene.wardrobe.characters)
                     .map(([key, outfit]) => [key, normalizeTraditionalChineseLeaks(outfit)])),
             } : emptyWardrobeState(),
+            memberStates: Object.fromEntries(Object.entries(result.scene.memberStates || {}).map(([memberId, state]) => [
+                memberId,
+                {
+                    posture: normalizeTraditionalChineseLeaks(state.posture),
+                    action: normalizeTraditionalChineseLeaks(state.action),
+                    attention: normalizeTraditionalChineseLeaks(state.attention),
+                    innerThought: normalizeTraditionalChineseLeaks(state.innerThought),
+                    chemistry: normalizeTraditionalChineseLeaks(state.chemistry),
+                },
+            ])),
         },
         npcCandidate: result.npcCandidate ? {
             ...result.npcCandidate,
@@ -6919,6 +7061,10 @@ const strictReviewGroupReply = async (
                 && !userExplicitlyRequestsContinuation(latestUserMessage)) return null;
             return {
                 ...revision,
+                scene: {
+                    ...revision.scene,
+                    memberStates: candidate.scene.memberStates || revision.scene.memberStates,
+                },
                 npcCandidate: revision.npcCandidate || candidate.npcCandidate,
             };
         } catch (error) {

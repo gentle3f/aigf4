@@ -69,6 +69,14 @@ export interface RoomMember {
     memories: RoomMemoryEntry[];
 }
 
+export interface RoomSceneMemberState {
+    posture: string;
+    action: string;
+    attention: string;
+    innerThought: string;
+    chemistry: string;
+}
+
 export interface RoomSceneState {
     id: string;
     location: string;
@@ -79,6 +87,7 @@ export interface RoomSceneState {
     unresolved: string[];
     startedAt: number;
     wardrobe?: WardrobeState;
+    memberStates?: Record<string, RoomSceneMemberState>;
 }
 
 export interface ChatRoom {
@@ -409,6 +418,23 @@ const normalizeRoomData = (room: ChatRoom): ChatRoom => {
     normalized.members = Array.isArray(normalized.members) ? normalized.members : [];
     const validMemberIds = new Set(normalized.members.map(member => member.id));
     normalized.scene.wardrobe = normalizeWardrobeState(normalized.scene.wardrobe, validMemberIds);
+    const rawMemberStates = normalized.scene.memberStates && typeof normalized.scene.memberStates === 'object'
+        ? normalized.scene.memberStates
+        : {};
+    normalized.scene.memberStates = Object.fromEntries(
+        Object.entries(rawMemberStates).flatMap(([memberId, state]) => {
+            if (!validMemberIds.has(memberId) || !state || typeof state !== 'object') return [];
+            const candidate = state as Partial<RoomSceneMemberState>;
+            const clean = (value: unknown, maxLength: number) => String(value || '').replace(/\s+/gu, ' ').trim().slice(0, maxLength);
+            return [[memberId, {
+                posture: clean(candidate.posture, 160),
+                action: clean(candidate.action, 220),
+                attention: clean(candidate.attention, 160),
+                innerThought: clean(candidate.innerThought, 260),
+                chemistry: clean(candidate.chemistry, 220),
+            } satisfies RoomSceneMemberState]];
+        }),
+    );
     normalized.members.forEach(member => {
         member.avatarAssetKey ||= privateAvatarKeyFromUrl(member.persona?.avatarUrl);
         member.soul = (Array.isArray(member.soul) ? member.soul : [])

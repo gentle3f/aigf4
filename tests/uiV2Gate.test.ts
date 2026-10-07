@@ -182,3 +182,16 @@ test('UI v2 immersive Group replies stage only live lines and expose speaker sta
     assert.match(css, /wetappV2SceneLineIn/);
     assert.match(css, /prefers-reduced-motion: reduce[\s\S]*\.v2-scene-reveal-line/);
 });
+
+
+test('UI v2 scene X-ray exposes world state and stored inner-state without a second generation request', () => {
+    assert.match(appSource, /ui-v2-scene-world-state/);
+    assert.match(appSource, /姿勢 · 動作 · 衣著/);
+    assert.match(appSource, /const renderUiV2SceneMemberInsight =/);
+    assert.match(appSource, /state\.innerThought/);
+    assert.match(appSource, /state\.attention/);
+    assert.match(appSource, /state\.chemistry/);
+    assert.match(appSource, /toggleUiV2SceneMemberInsight/);
+    assert.match(css, /\.v2-scene-world-row/);
+    assert.match(css, /\.v2-scene-insight-grid/);
+});

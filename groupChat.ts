@@ -1,5 +1,5 @@
 import { ChatMessage, ChatSegment, Content, Persona } from './managers.js';
-import { ChatRoom, ROOM_PRESENT_MEMBER_LIMIT, RoomMember, RoomSceneState } from './roomManager.js';
+import { ChatRoom, ROOM_PRESENT_MEMBER_LIMIT, RoomMember, RoomSceneMemberState, RoomSceneState } from './roomManager.js';
 import { VeniceJsonSchemaResponseFormat } from './venice.js';
 import { mergeWardrobeUpdate } from './wardrobe.js';
 
@@ -8,6 +8,15 @@ export interface GroupNpcCandidate {
     gender: 'male' | 'female';
     description: string;
     publicFigureQuery?: string;
+}
+
+interface GroupSceneMemberStatePayload {
+    member_id?: string;
+    posture?: string;
+    action?: string;
+    attention?: string;
+    inner_thought?: string;
+    chemistry?: string;
 }
 
 export interface GroupGenerationResult {
@@ -127,7 +136,7 @@ export const GROUP_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
                 scene: {
                     type: 'object',
                     additionalProperties: false,
-                    required: ['location', 'reality_layer', 'present_member_ids', 'summary', 'unresolved', 'wardrobe_updates'],
+                    required: ['location', 'reality_layer', 'present_member_ids', 'summary', 'unresolved', 'wardrobe_updates', 'member_states'],
                     properties: {
                         location: { type: 'string' },
                         reality_layer: { type: 'string', enum: ['physical', 'texting', 'imagined'] },
@@ -156,6 +165,23 @@ export const GROUP_RESPONSE_FORMAT: VeniceJsonSchemaResponseFormat = {
                                             outfit: { type: 'string' },
                                         },
                                     },
+                                },
+                            },
+                        },
+                        member_states: {
+                            type: 'array',
+                            maxItems: ROOM_PRESENT_MEMBER_LIMIT,
+                            items: {
+                                type: 'object',
+                                additionalProperties: false,
+                                required: ['member_id', 'posture', 'action', 'attention', 'inner_thought', 'chemistry'],
+                                properties: {
+                                    member_id: { type: 'string' },
+                                    posture: { type: 'string' },
+                                    action: { type: 'string' },
+                                    attention: { type: 'string' },
+                                    inner_thought: { type: 'string' },
+                                    chemistry: { type: 'string' },
                                 },
                             },
                         },
@@ -482,6 +508,31 @@ const composeText = (segments: ChatSegment[]) => segments.map(segment => {
         : `${speaker}：「${segment.text}」`;
 }).join('\n\n');
 
+const mergeSceneMemberStates = (
+    room: ChatRoom,
+    rawStates: GroupSceneMemberStatePayload[] | undefined,
+    activeMemberIds: string[] = room.scene.presentMemberIds,
+): Record<string, RoomSceneMemberState> => {
+    const next: Record<string, RoomSceneMemberState> = { ...(room.scene.memberStates || {}) };
+    if (!Array.isArray(rawStates)) return next;
+    const activeIds = new Set(activeMemberIds);
+
+    rawStates.forEach(raw => {
+        const memberId = resolveMemberId(room, raw.member_id);
+        if (!memberId || !activeIds.has(memberId)) return;
+        const previous = next[memberId];
+        next[memberId] = {
+            posture: compact(raw.posture, 160) || previous?.posture || '',
+            action: compact(raw.action, 220) || previous?.action || '',
+            attention: compact(raw.attention, 160) || previous?.attention || '',
+            innerThought: compact(raw.inner_thought, 260) || previous?.innerThought || '',
+            chemistry: compact(raw.chemistry, 220) || previous?.chemistry || '',
+        };
+    });
+
+    return next;
+};
+
 export const parseGroupGeneration = (
     rawText: string,
     room: ChatRoom,
@@ -518,6 +569,7 @@ export const parseGroupGeneration = (
                 user?: string;
                 members?: Array<{ member_id?: string; outfit?: string }>;
             };
+            member_states?: GroupSceneMemberStatePayload[];
         };
         npc_candidate?: {
             name?: string;
@@ -543,6 +595,7 @@ export const parseGroupGeneration = (
             user?: string;
             members?: Array<{ member_id?: string; outfit?: string }>;
         };
+        member_states?: GroupSceneMemberStatePayload[];
     } | null);
     const taggedNpcText = extractTaggedBlock(rawText, 'npc_candidate');
     const taggedNpc = /^(?:null|none)$/iu.test(taggedNpcText)
@@ -607,6 +660,11 @@ export const parseGroupGeneration = (
         sceneData?.wardrobe_updates,
         room.members.map(member => ({ key: member.id, label: member.persona.name })),
     );
+    const memberStates = mergeSceneMemberStates(
+        room,
+        sceneData?.member_states,
+        requestedIds.length > 0 ? requestedIds : room.scene.presentMemberIds,
+    );
     const scene: RoomSceneState = {
         ...room.scene,
         location: compact(sceneData?.location, 240) || room.scene.location,
@@ -617,6 +675,7 @@ export const parseGroupGeneration = (
         summary: compact(sceneData?.summary, 1200) || room.scene.summary,
         unresolved: unresolved.map(item => compact(item, 240)).filter(Boolean).slice(0, 6),
         wardrobe,
+        memberStates,
     };
     const npc = parsed?.npc_candidate || taggedNpc;
 

@@ -132,6 +132,16 @@ export const buildGroupSystemPromptWithAccounting = (
         key: member.id,
         label: member.persona.name,
     }));
+    const memberStateLedger = room.members
+        .filter(member => room.scene.presentMemberIds.includes(member.id))
+        .flatMap(member => {
+            const state = room.scene.memberStates?.[member.id];
+            if (!state) return [];
+            return [
+                `- ${member.id} / ${member.persona.name}: posture=${state.posture || 'unknown'}; action=${state.action || 'unknown'}; attention=${state.attention || 'unknown'}; private_inner_thought=${state.innerThought || 'unknown'}; chemistry=${state.chemistry || 'unknown'}`,
+            ];
+        })
+        .join('\n');
     const textingRealityContract = room.scene.realityLayer === 'texting'
         ? [
             'REMOTE TEXTING CONTRACT (CURRENTLY ACTIVE):',
@@ -180,6 +190,16 @@ export const buildGroupSystemPromptWithAccounting = (
             name: 'room-current-scene',
             text: currentSceneText,
         },
+        ...(memberStateLedger ? [{
+            name: 'room-member-state-ledger',
+            text: [
+                'PRIVATE SCENE-ENGINE MEMBER STATE — continuity aid, not shared knowledge:',
+                memberStateLedger,
+                '- Preserve or naturally update posture/action/attention from the visible scene.',
+                '- private_inner_thought belongs only to that member and the scene engine. Other characters must NEVER know it unless the member actually reveals it through visible dialogue/action.',
+                '- chemistry is the member’s current social dynamic with the user or another present member; keep it concrete and short, not a score.',
+            ].join('\n'),
+        }] : []),
         ...(textingRealityContract ? [{ name: 'room-texting-reality-contract', text: textingRealityContract }] : []),
         { name: 'room-wardrobe', text: formatWardrobeLedger(room.scene.wardrobe, wardrobeParticipants) },
         { name: 'room-response-preferences', text: preferencePrompt(room.chatPreferences) },
@@ -226,8 +246,11 @@ export const buildGroupSystemPromptWithAccounting = (
             '- Do not return a JSON response object. Use the simple envelope below so the live dialogue remains reliable.',
             '- Inside <chat>, put every narration or speaker turn on its own new line. Write narration as （text） and every spoken line as exact Display Name：「dialogue」. A display name may appear several times in one reply.',
             '- Never place [Name], a second speaker label, or another character’s dialogue inside the current speaker line. End that line and start a new labelled line whenever the speaker changes.',
-            '- After </chat>, put one compact JSON object inside <scene> with keys location, reality_layer, present_member_ids, summary, unresolved, wardrobe_updates.',
+            '- After </chat>, put one compact JSON object inside <scene> with keys location, reality_layer, present_member_ids, summary, unresolved, wardrobe_updates, member_states.',
             '- wardrobe_updates must be {"user":"KEEP","members":[{"member_id":"exact fixed ID","outfit":"KEEP"}]}. Include each present member. Use KEEP unless this exact turn visibly established a clothing change; otherwise provide one concise complete current outfit. Never change clothing merely to add variety.',
+            '- member_states must include every present member exactly once as {"member_id":"exact fixed ID","posture":"short current body position","action":"short current visible action","attention":"who/what currently has her attention","inner_thought":"one short private thought or immediate want","chemistry":"one short current social dynamic"}.',
+            '- Keep member_states concise. Record the current state after this reply, not a recap. Do not invent a new user action or consent. For remote texting, posture/action describe that character in her own remote surroundings only.',
+            '- inner_thought is PRIVATE scene-engine state. Never expose it in <chat> merely because it exists, and never let another character know it without visible evidence or disclosure.',
             '- Then put null inside <npc_candidate>, unless the newest turn introduced a genuinely new recurring named person; in that case use one compact JSON object with name, gender, description, public_figure_query.',
             '- Preserve location, reality layer and present members unless the newest turn actually changes them.',
             '- Return only: <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate>.',

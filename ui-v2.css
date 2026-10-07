@@ -2061,3 +2061,203 @@ html[data-wetapp-ui="v2"][data-wetapp-theme="dark"][data-wetapp-scene="immersive
         transform: none !important;
     }
 }
+
+
+/* Immersive Scene v1.1 — actionable world-state + private character insight */
+html[data-wetapp-ui="v2"] .v2-scene-cast-person[data-member-id] {
+    appearance: none !important;
+    cursor: pointer !important;
+    font: inherit !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-cast-person.is-inspected {
+    border-color: var(--v2-ink) !important;
+    color: var(--v2-ink) !important;
+    background: rgba(255,255,255,.92) !important;
+    box-shadow: inset 0 0 0 1px rgba(36,30,25,.08), 0 7px 20px rgba(57,44,35,.08) !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-world-state {
+    display: grid !important;
+    gap: 7px !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-world-heading {
+    display: flex !important;
+    align-items: baseline !important;
+    justify-content: space-between !important;
+    gap: 12px !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-world-heading strong {
+    color: var(--v2-faint) !important;
+    font-size: .52rem !important;
+    font-weight: 850 !important;
+    letter-spacing: .16em !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-world-heading span {
+    color: var(--v2-faint) !important;
+    font-size: .54rem !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-world-list {
+    display: grid !important;
+    gap: 5px !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-world-row {
+    display: grid !important;
+    grid-template-columns: minmax(72px, .7fr) minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, 1.35fr) !important;
+    gap: 8px !important;
+    align-items: start !important;
+    padding: 8px 10px !important;
+    border: 1px solid rgba(61,49,39,.055) !important;
+    border-radius: 12px !important;
+    background: rgba(255,255,255,.48) !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-world-row > strong {
+    overflow: hidden !important;
+    color: var(--v2-ink) !important;
+    font-size: .66rem !important;
+    font-weight: 800 !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-world-value {
+    display: grid !important;
+    gap: 2px !important;
+    min-width: 0 !important;
+    color: #6f675f !important;
+    font-size: .61rem !important;
+    line-height: 1.38 !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-world-value::before {
+    content: attr(data-label);
+    color: var(--v2-faint) !important;
+    font-size: .48rem !important;
+    font-weight: 800 !important;
+    letter-spacing: .07em !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-insight {
+    position: relative !important;
+    display: grid !important;
+    gap: 9px !important;
+    padding: 11px 12px !important;
+    border: 1px solid rgba(56,45,36,.08) !important;
+    border-radius: 15px !important;
+    background:
+        linear-gradient(135deg, rgba(var(--v2-aura-1,152,88,79),.075), transparent 42%),
+        rgba(255,255,255,.72) !important;
+    box-shadow: 0 10px 28px rgba(61,47,37,.065) !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-insight.hidden {
+    display: none !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-insight-heading {
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-insight-heading strong {
+    color: var(--v2-ink) !important;
+    font-family: "DM Serif Display", Georgia, "Noto Serif TC", serif !important;
+    font-size: .93rem !important;
+    font-weight: 400 !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-insight-heading > span {
+    color: var(--v2-faint) !important;
+    font-size: .49rem !important;
+    font-weight: 850 !important;
+    letter-spacing: .13em !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-insight-heading button {
+    width: 28px !important;
+    height: 28px !important;
+    margin-left: auto !important;
+    border-radius: 9px !important;
+    color: var(--v2-muted) !important;
+    background: rgba(237,232,226,.82) !important;
+    font-size: 1rem !important;
+    line-height: 1 !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-insight-grid {
+    display: grid !important;
+    grid-template-columns: 1.25fr .9fr 1fr !important;
+    gap: 7px !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-insight-grid > div {
+    min-width: 0 !important;
+    padding: 8px 9px !important;
+    border-radius: 11px !important;
+    background: rgba(247,244,240,.78) !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-insight-grid span {
+    display: block !important;
+    margin-bottom: 3px !important;
+    color: var(--v2-faint) !important;
+    font-size: .48rem !important;
+    font-weight: 850 !important;
+    letter-spacing: .07em !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-insight-grid p,
+html[data-wetapp-ui="v2"] .v2-scene-insight-empty {
+    margin: 0 !important;
+    color: #4f4944 !important;
+    font-size: .66rem !important;
+    line-height: 1.5 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-cast-person.is-inspected {
+    border-color: #d8d0c8 !important;
+    color: var(--v2-ink) !important;
+    background: #3d3833 !important;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.06) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-world-row,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-insight {
+    border-color: rgba(255,255,255,.065) !important;
+    background: rgba(255,255,255,.035) !important;
+    box-shadow: none !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-world-value,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-insight-grid p,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-insight-empty {
+    color: #c0b7af !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-insight-grid > div,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-insight-heading button {
+    background: rgba(255,255,255,.045) !important;
+}
+
+@media (max-width: 767px) {
+    html[data-wetapp-ui="v2"] .v2-scene-world-row {
+        grid-template-columns: 74px minmax(0, 1fr) !important;
+        gap: 6px 8px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .v2-scene-world-row > strong {
+        grid-row: 1 / span 3 !important;
+        padding-top: 2px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .v2-scene-insight-grid {
+        grid-template-columns: 1fr !important;
+    }
+}

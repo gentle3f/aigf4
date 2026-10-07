@@ -1097,3 +1097,45 @@ test('group parser preserves an opening dialogue quote when the matching close q
     assert.ok(dialogue && dialogue.type === 'dialogue');
     assert.equal(dialogue.text, '「你返嚟啦。」她笑住望住你。');
 });
+
+
+test('group scene member states persist posture, action, attention, private thought and chemistry', () => {
+    const room = createRoom();
+    const parsed = parseGroupGeneration(
+        '<chat>IU：「I am still here.」\nJennie：「I noticed.」</chat>'
+        + '<scene>{"location":"living room","reality_layer":"physical","present_member_ids":["iu","jennie"],"summary":"They stay close.","unresolved":[],"wardrobe_updates":{"user":"KEEP","members":[{"member_id":"iu","outfit":"KEEP"},{"member_id":"jennie","outfit":"KEEP"}]},"member_states":[{"member_id":"iu","posture":"sitting beside the user","action":"resting one hand on the sofa","attention":"the user","inner_thought":"I want to stay close a little longer.","chemistry":"quietly affectionate with the user"},{"member_id":"jennie","posture":"leaning on the armrest","action":"watching IU with a small smile","attention":"IU and the user","inner_thought":"I want to tease them, but not break the mood.","chemistry":"playfully observant of IU"}]}</scene>'
+        + '<npc_candidate>null</npc_candidate>',
+        room,
+        'iu',
+    );
+
+    assert.deepEqual(parsed.scene.memberStates?.iu, {
+        posture: 'sitting beside the user',
+        action: 'resting one hand on the sofa',
+        attention: 'the user',
+        innerThought: 'I want to stay close a little longer.',
+        chemistry: 'quietly affectionate with the user',
+    });
+    assert.equal(parsed.scene.memberStates?.jennie?.attention, 'IU and the user');
+});
+
+test('group prompt carries private member state forward without making it shared knowledge', () => {
+    const room = createRoom();
+    room.scene.memberStates = {
+        iu: {
+            posture: 'sitting beside the user',
+            action: 'holding a mug',
+            attention: 'the user',
+            innerThought: 'I hope he relaxes.',
+            chemistry: 'protective and gentle with the user',
+        },
+    };
+
+    const prompt = buildGroupSystemPrompt(room);
+    assert.match(prompt, /PRIVATE SCENE-ENGINE MEMBER STATE/);
+    assert.match(prompt, /private_inner_thought=I hope he relaxes/);
+    assert.match(prompt, /Other characters must NEVER know it/i);
+    assert.match(prompt, /member_states must include every present member exactly once/i);
+    assert.match(prompt, /posture/);
+    assert.match(prompt, /chemistry/);
+});
