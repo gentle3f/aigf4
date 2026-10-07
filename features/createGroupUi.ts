@@ -44,6 +44,9 @@ const renderCreateGroupMembers = () => {
             const image = document.createElement('img');
             image.src = persona.avatarUrl;
             image.alt = persona.name;
+            image.loading = 'lazy';
+            image.decoding = 'async';
+            image.fetchPriority = 'low';
             avatar.appendChild(image);
         } else avatar.textContent = persona.emoji || '●';
         const copy = document.createElement('span');

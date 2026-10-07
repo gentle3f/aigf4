@@ -52,7 +52,7 @@ export type ParticipantActionHandle = {
     open: (mode: ParticipantActionMode) => void;
     close: () => void;
     openPrivateChat: (roomId: string, memberId: string) => Promise<void>;
-    setMemberPresence: (roomId: string, memberId: string, present: boolean) => Promise<void>;
+    setMemberPresence: (roomId: string, memberId: string, present: boolean) => Promise<boolean>;
 };
 
 const participantActionModal = document.getElementById('participant-action-modal')!;
@@ -549,19 +549,19 @@ const setRoomMemberPresence = (roomId: string, memberId: string, present: boolea
     syncContext();
     if (activeChatRequest) {
         alert('請先等待目前回覆完成，再變更在場角色。');
-        return;
+        return false;
     }
     const room = roomManager.getRoom(roomId);
     const member = room?.members.find(item => item.id === memberId);
-    if (!room || !member) return;
+    if (!room || !member) return false;
     const currentIds = [...room.scene.presentMemberIds];
     if (!present && currentIds.length <= 1) {
         alert('場景中至少需要 1 位角色在場。');
-        return;
+        return false;
     }
     if (present && currentIds.length >= ROOM_PRESENT_MEMBER_LIMIT) {
         alert(`同一場景最多 ${ROOM_PRESENT_MEMBER_LIMIT} 位角色在場。`);
-        return;
+        return false;
     }
     const nextIds = present
         ? Array.from(new Set([...currentIds, member.id]))
@@ -584,8 +584,7 @@ const setRoomMemberPresence = (roomId: string, memberId: string, present: boolea
     });
     appendContextBridge(room.id, bridge);
     participantActionModal.classList.add('hidden');
-    if (currentConversationKey === room.id) startChat(room.id, null, 'skip');
-    renderPersonaList();
+    return true;
 };
 
 const closeParticipantAction = () => {
@@ -722,7 +721,7 @@ export const createParticipantActionUi = (
         },
         setMemberPresence: async (roomId, memberId, present) => {
             syncContext();
-            setRoomMemberPresence(roomId, memberId, present);
+            return setRoomMemberPresence(roomId, memberId, present);
         },
     };
 };

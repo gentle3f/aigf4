@@ -228,8 +228,6 @@ export const stripGroupTransportResidue = (value: string) => {
 
 const cleanGroupSegmentText = (value: unknown) => stripGroupTransportResidue(compact(value, 2200))
     .replace(/^[：:\s]+/u, '')
-    .replace(/^[「『“"]+\s*/u, '')
-    .replace(/\s*[」』”"]+$/u, '')
     .trim();
 
 const cleanNarrationText = (value: unknown) => {
@@ -378,7 +376,7 @@ const parsePlainGroupSegments = (
         const label = line.match(labelPattern);
         if (label) {
             const speakerId = resolveMemberId(room, label[1] || label[2]);
-            const text = compact(label[3]?.replace(/^[「『“"]|[」』”"]$/gu, ''), 2200);
+            const text = compact(label[3], 2200);
             if (speakerId && presentIds.has(speakerId) && text) {
                 segments.push({
                     type: 'dialogue',
@@ -473,8 +471,15 @@ export const getGroupDisplaySegments = (
 };
 
 const composeText = (segments: ChatSegment[]) => segments.map(segment => {
-    if (segment.type === 'narration') return `（${segment.text.replace(/^[（(]|[）)]$/gu, '')}）`;
-    return `${segment.speakerName || segment.speakerId}：「${segment.text.replace(/^[「“"]|[」”"]$/gu, '')}」`;
+    if (segment.type === 'narration') {
+        return /^[（(][\s\S]*[）)]$/u.test(segment.text)
+            ? segment.text
+            : `（${segment.text}）`;
+    }
+    const speaker = segment.speakerName || segment.speakerId;
+    return /^[「『“"]/u.test(segment.text)
+        ? `${speaker}：${segment.text}`
+        : `${speaker}：「${segment.text}」`;
 }).join('\n\n');
 
 export const parseGroupGeneration = (

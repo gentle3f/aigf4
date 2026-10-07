@@ -28,3 +28,23 @@ test('Participant Action cold feature owns admin continuity only, not group gene
     assert.match(featureSource, /roomManager\.replaceMember/);
     assert.doesNotMatch(featureSource, /runGroupTurnAdapter|runSingleTurnAdapter|runReviewPipeline|startJevShadowEvaluation|generateVeniceText|buildGroupSystemPrompt|parseGroupGeneration|sendMessage/);
 });
+
+
+test('Room presence toggles stay lightweight and do not rerender the full chat', () => {
+    const featureSource = readFileSync(new URL('../features/participantActionUi.ts', import.meta.url), 'utf8');
+    const roomInfoSource = readFileSync(new URL('../features/roomInfoUi.ts', import.meta.url), 'utf8');
+
+    const presenceStart = featureSource.indexOf('const setRoomMemberPresence =');
+    const presenceEnd = featureSource.indexOf('const closeParticipantAction =', presenceStart);
+    const presenceBlock = featureSource.slice(presenceStart, presenceEnd);
+    assert.match(presenceBlock, /return true/);
+    assert.doesNotMatch(presenceBlock, /startChat\(/);
+    assert.doesNotMatch(presenceBlock, /renderPersonaList\(/);
+
+    const changeStart = roomInfoSource.indexOf("checkbox.addEventListener('change'");
+    const changeEnd = roomInfoSource.indexOf('const actions =', changeStart);
+    const changeBlock = roomInfoSource.slice(changeStart, changeEnd);
+    assert.doesNotMatch(changeBlock, /checkbox\.disabled = true/);
+    assert.doesNotMatch(changeBlock, /renderRoomInfo\(\)/);
+    assert.match(changeBlock, /roomInfoSummary\.textContent/);
+});

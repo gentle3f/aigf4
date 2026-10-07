@@ -10,7 +10,7 @@ export type RoomInfoUiDependencies = {
     openPersonaSettingsForMember: (roomId: string, memberId: string) => void;
     requestMemberAvatar: (roomId: string, memberId: string) => void;
     openPrivateChat: (roomId: string, memberId: string) => Promise<void>;
-    setMemberPresence: (roomId: string, memberId: string, present: boolean) => void | Promise<void>;
+    setMemberPresence: (roomId: string, memberId: string, present: boolean) => boolean | Promise<boolean>;
     updateRoom: RoomManager['updateRoom'];
     refreshRoom: () => ChatRoom | null;
     getActiveMemberId: () => string | null;
@@ -53,6 +53,9 @@ const renderRoomInfo = () => {
             const image = document.createElement('img');
             image.src = sourcePersona.avatarUrl;
             image.alt = sourcePersona.name;
+            image.loading = 'lazy';
+            image.decoding = 'async';
+            image.fetchPriority = 'low';
             avatar.appendChild(image);
         } else {
             avatar.textContent = sourcePersona.emoji || '●';
@@ -103,14 +106,27 @@ const renderRoomInfo = () => {
         label.textContent = '在場';
         presence.append(checkbox, label);
         checkbox.addEventListener('change', async () => {
-            checkbox.disabled = true;
+            const requestedState = checkbox.checked;
             try {
-                await dependencies.setMemberPresence(room.id, member.id, checkbox.checked);
-                renderRoomInfo();
+                const applied = await dependencies.setMemberPresence(room.id, member.id, requestedState);
+                const refreshedRoom = dependencies.getRoom();
+                const actualState = Boolean(
+                    refreshedRoom?.scene.presentMemberIds.includes(member.id),
+                );
+                checkbox.checked = actualState;
+                if (!applied && actualState !== requestedState) {
+                    checkbox.setAttribute('aria-invalid', 'true');
+                    window.setTimeout(() => checkbox.removeAttribute('aria-invalid'), 500);
+                }
+                if (refreshedRoom) {
+                    roomInfoSummary.textContent = `${refreshedRoom.members.length} 位固定成員 · ${refreshedRoom.scene.presentMemberIds.length} 位目前在場 · 最多 ${ROOM_MEMBER_LIMIT} 位`;
+                }
             } catch (error) {
-                checkbox.checked = !checkbox.checked;
+                const refreshedRoom = dependencies.getRoom();
+                checkbox.checked = Boolean(
+                    refreshedRoom?.scene.presentMemberIds.includes(member.id),
+                );
                 alert(error instanceof Error ? error.message : '未能更新角色在場狀態。');
-                checkbox.disabled = false;
             }
         });
 

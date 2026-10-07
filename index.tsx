@@ -8589,7 +8589,11 @@ const openPrivateChatForRoomMember = async (roomId: string, memberId: string) =>
 
 const setRoomMemberPresence = async (roomId: string, memberId: string, present: boolean) => {
     const ui = await loadParticipantActionUi();
-    await ui.setMemberPresence(roomId, memberId, present);
+    const applied = await ui.setMemberPresence(roomId, memberId, present);
+    if (applied && currentConversationKey === roomId) {
+        currentRoom = roomManager.getRoom(roomId) || currentRoom;
+    }
+    return applied;
 };
 const refreshCurrentRoom = () => {
     if (!currentConversationKey) return null;

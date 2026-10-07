@@ -1083,3 +1083,17 @@ test('Memory V5 deep recall expands present-member memory without leaking absent
     assert.equal(ordinary.match(/IRENE私密-/gu)?.length || 0, 0);
     assert.equal(deep.match(/IRENE私密-/gu)?.length || 0, 0);
 });
+
+
+test('group parser preserves an opening dialogue quote when the matching close quote is inside the line', () => {
+    const room = createRoom();
+    const parsed = parseGroupGeneration(
+        '<chat>IU：「你返嚟啦。」她笑住望住你。</chat>',
+        room,
+        'iu',
+    );
+
+    const dialogue = parsed.segments.find(segment => segment.type === 'dialogue');
+    assert.ok(dialogue && dialogue.type === 'dialogue');
+    assert.equal(dialogue.text, '「你返嚟啦。」她笑住望住你。');
+});
