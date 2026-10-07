@@ -1446,3 +1446,28 @@ html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-featured-conversation {
         border-radius: 18px !important;
     }
 }
+
+
+/* Dark-mode Group chat contrast: legacy Group renderer still carries --wa-* text colors. */
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .group-story-bubble,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .group-story-dialogue,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .group-story-dialogue-text {
+    color: var(--v2-ink) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .group-story-narration,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .group-story-narration-text {
+    color: #b8afa7 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .group-story-narration {
+    border-left-color: rgba(220, 210, 200, .22) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .group-story-line > .group-speaker-name {
+    color: var(--v2-accent) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .group-story-line > .group-narrator-name {
+    color: #9f968e !important;
+}

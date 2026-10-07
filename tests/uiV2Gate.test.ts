@@ -127,3 +127,10 @@ test('UI v2 Home gives the latest conversation a featured identity card', () => 
     assert.match(appSource, /v2-featured-conversation/);
     assert.match(css, /\.v2-featured-conversation[\s\S]*min-height: 88px !important/);
 });
+
+test('UI v2 dark mode keeps Group dialogue and narration readable', () => {
+    assert.match(css, /data-wetapp-theme="dark"\] \.group-story-dialogue[\s\S]*color: var\(--v2-ink\) !important/);
+    assert.match(css, /data-wetapp-theme="dark"\] \.group-story-narration[\s\S]*color: #b8afa7 !important/);
+    assert.match(css, /group-story-line > \.group-speaker-name[\s\S]*color: var\(--v2-accent\) !important/);
+    assert.match(css, /data-wetapp-theme="dark"\] \.character-message-surface > p[\s\S]*color: var\(--v2-ink\) !important/);
+});
