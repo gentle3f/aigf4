@@ -433,3 +433,60 @@ Production deployment:
 - `dpl_Cv9i9aWVBUqsnxXJq5wCaSW9Trrh`
 - READY
 - `wetapp.madproduction.ai` alias active.
+
+
+## Immersive Scene v1.1 — World State + Character Insight
+
+User approved trying two extensions to Immersive Scene Mode:
+1. expanded "此刻" should show who is doing what, posture and wardrobe;
+2. tapping a cast avatar should expose a short fictional character inner state / chemistry view without a second model call.
+
+Implemented:
+- `RoomSceneState.memberStates` persisted per room/member with:
+  - posture
+  - action
+  - attention
+  - innerThought
+  - chemistry
+- Room normalization preserves/sanitizes these fields.
+- Group generation output protocol now asks for `member_states` inside the existing <scene> JSON for every present member.
+- This does NOT add another model request. The fields are generated in the same Group generation response.
+- Prompt carries prior member state into the next turn as PRIVATE SCENE-ENGINE state.
+- Strong privacy rule in prompt: one character cannot know another character's private inner thought unless visibly revealed.
+- Inner thought is a fictional roleplay state, not model chain-of-thought.
+- On strict-review revision, the accepted candidate's memberStates are preserved so a reviewer rewrite does not erase them.
+- Traditional-Chinese normalization also covers all member-state text.
+
+UI:
+- Expanded "此刻" now renders a WORLD STATE list for each present member:
+  - 姿勢
+  - 動作
+  - 衣著
+- For existing scenes with no generated state yet, UI explicitly says the field will begin recording after the next Group reply rather than inventing data.
+- Cast members are now clickable.
+- Tap a member avatar/name to open a compact private X-ray panel:
+  - 內心
+  - 注意
+  - Chemistry
+- Clicking the same member closes it; a close button is also provided.
+- The inspected cast member gets a non-color-only selected treatment.
+- Dark mode + mobile layouts included.
+
+Validation:
+- 687/687 tests PASS
+- typecheck PASS
+- production build PASS
+
+Functional commit:
+- `34739d9 Add Group world state and character insight`
+
+Production:
+- `dpl_HXFRUELBjjGX2Fw9o8mWk31LvxnG`
+- READY
+- `wetapp.madproduction.ai` alias active.
+
+Expected test:
+- open a UI v2 Group;
+- send one fresh turn so member_states are generated;
+- expand "此刻" and verify posture/action/wardrobe;
+- tap different cast members and verify inner thought/attention/chemistry switch instantly without another loading state/model request.
