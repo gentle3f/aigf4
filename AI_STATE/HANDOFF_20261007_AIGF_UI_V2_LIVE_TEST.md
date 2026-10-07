@@ -490,3 +490,45 @@ Expected test:
 - send one fresh turn so member_states are generated;
 - expand "此刻" and verify posture/action/wardrobe;
 - tap different cast members and verify inner thought/attention/chemistry switch instantly without another loading state/model request.
+
+
+## Immersive Scene v1.1 bugfix after first real user test
+
+Observed by user:
+- expanding 「此刻」 could not scroll;
+- tapping a cast avatar only showed a black/selected border, no X-ray panel;
+- posture/action were not being detected/populated reliably;
+- user asked whether chemistry is directly visible or only indirectly felt through generated dialogue.
+
+Root causes / fixes:
+1. X-ray panel lived inside the hidden `#ui-v2-scene-detail`. Cast click changed selected styling but did not open its hidden parent.
+   - cast click now explicitly opens detail, sets the 「此刻」 toggle expanded state, renders the selected member insight, and scrolls it into view.
+2. Scene detail had no bounded vertical scrolling.
+   - `.v2-scene-detail` now has viewport-aware max-height, `overflow-y:auto`, contained overscroll and a thin scrollbar; mobile uses 52dvh.
+3. `member_states` parsing was too strict.
+   - parser now accepts array or object maps;
+   - accepts snake_case and camelCase `member_id/memberId` and `inner_thought/innerThought`.
+4. Added visible-reply fallback for posture/action when generated member state is missing.
+   - only narration whose subject clearly begins with that member identity can be attributed to the member;
+   - posture is extracted only from explicit posture language;
+   - if a member spoke but has no attributable physical narration, action may safely fall back to 「正在參與目前對話」;
+   - inner thought and chemistry are NOT guessed from visible text.
+   - Regression caught and fixed an attribution bug where `IU ... looks at Jennie` could incorrectly be treated as Jennie's action.
+
+Chemistry UX contract:
+- chemistry is directly visible in the cast-member X-ray panel;
+- it is also persisted into the next Group prompt so it can be felt indirectly through subsequent dialogue/reactions;
+- no second model request is made when opening X-ray.
+
+Validation after fix:
+- 690/690 tests PASS
+- typecheck PASS
+- production build PASS
+
+Functional commit:
+- `4651270 Fix scene X-ray interaction and state fallback`
+
+Production deployment:
+- `dpl_FrehStjD4MiniMghUdoxdSHaeQA4`
+- READY
+- `wetapp.madproduction.ai` active.
