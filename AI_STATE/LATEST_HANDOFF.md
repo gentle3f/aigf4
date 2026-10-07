@@ -4,42 +4,64 @@ Authoritative current handoff:
 - `AI_STATE/HANDOFF_20261007_AIGF_UI_V2_LIVE_TEST.md`
 
 Current status:
-- Supabase migration COMPLETE and verified.
-- Group Reply V2 is still waiting for a larger real Research Capture baseline; do not rewrite Group logic yet without explicit instruction.
-- Functional Wetapp UI 2.0 is live behind `?ui=v2`; default URL remains the old UI.
-- UI 2.0 now includes the full current visual pass:
-  - true Home Quick Actions for Image Studio / Video Studio;
-  - featured latest conversation and clearer Group/persona distinction;
-  - lighter identity-focused chat header;
-  - warm clean canvas with stable persona-driven aura/accent;
-  - open-text 1-on-1 character replies;
-  - editorial narration/scene styling;
-  - floating composer with camera shortcut hidden;
-  - grouped chat actions with explicit sticky close control;
-  - native-feel view/message/composer/sheet motion with reduced-motion fallback;
-  - editorial Wetapp typography;
-  - optional persisted warm dark mode.
+- Supabase migration COMPLETE and verified. Do not redo it.
+- Group Reply V2 generation logic is still waiting for a larger real Research Capture baseline; do not rewrite Group logic without explicit instruction.
+- Wetapp UI 2.0 is live behind `?ui=v2`; default V1 remains unchanged.
+- UI 2.0 now includes:
+  - Home Quick Actions and featured latest conversation;
+  - identity-first chat header;
+  - warm light/dark themes;
+  - open-text 1-on-1 replies;
+  - improved Group story hierarchy;
+  - grouped chat action sheet;
+  - composer auto-grow;
+  - loading/auditing states that do not force scroll to bottom;
+  - dark-mode contrast fixes;
+  - fixed Group opening punctuation preservation;
+  - low-latency Room Info presence toggles.
 
-Latest live commits:
-- `0dcadbc Organize UI 2.0 chat menu actions`
-- `aa31599 Rebuild UI 2.0 home actions`
-- `ba94ea2 Open up UI 2.0 character replies`
-- `15c1224 Complete UI 2.0 motion and theming`
+Latest major addition:
+- UI-only **Immersive Scene Mode v1** for Group rooms.
+- It is persisted using `wetappUiV2ImmersiveScene` and defaults on unless explicitly disabled.
+- Topbar Scene toggle switches standard/immersive presentation.
+- Scene shell renders existing room data only: location, reality layer, present count, cast, summary, unresolved threads.
+- Cast active-speaker state uses movement/border/text/explicit `說話中`, not color alone.
+- Live Group reply segments stage at ~220ms intervals; history does not replay.
+- Narration becomes environmental prose.
+- Dark-mode and reduced-motion fallbacks included.
+- No Group generation, prompt, reviewer, memory, Supabase or Cc logic changed.
 
-Latest production deployment:
-- `dpl_B6YoTYfEj2eLpXeCJtRKQjxPLvrx`
+Design direction agreed:
+- user treats Wetapp primarily as a persistent private relationship/world experience rather than a messaging simulator;
+- future product exploration should prioritize actual usage history before adding more speculative mechanics;
+- user's high-frequency fictional four-character Group is the primary usage-study sample;
+- comfort-focused Group is a secondary sample;
+- relationship fingerprint concept is distinct from soul/memory:
+  - soul = who the character is;
+  - memory = what happened;
+  - fingerprint = repeated user-character interaction patterns that emerge over time.
+
+Latest functional commits:
+- `5538b37 Add immersive Group scene mode`
+- `56716e5 Fix group punctuation and room presence lag`
+- `df8a117 Refine composer growth and reply scrolling`
+- `215e925 Fix UI 2.0 dark Home menu contrast`
+- `84b3bba Fix UI 2.0 dark Group contrast`
+
+Current production deployment:
+- `dpl_Cv9i9aWVBUqsnxXJq5wCaSW9Trrh`
 - READY
 - `wetapp.madproduction.ai` alias active.
 
 Validation:
-- 676/676 tests PASS
+- 684/684 tests PASS
 - typecheck PASS
 - production build PASS
 
 Next:
-- user should use the live UI 2.0 on phone/desktop and report concrete UX/visual changes;
-- refine based on real use rather than speculative redesign;
-- keep Group Research Capture running in parallel.
+- user should test Immersive Scene Mode in a real high-frequency Group;
+- collect concrete UX feedback before expanding it;
+- if it works, next candidate is an Actual Usage Study before implementing relationship fingerprints or deeper world mechanics.
 
 Mandatory:
 - GEN-FUJI Local MCP only for local work.

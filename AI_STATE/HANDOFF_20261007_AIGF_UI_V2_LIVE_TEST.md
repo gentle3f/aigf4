@@ -303,3 +303,133 @@ Production deployment:
 - `wetapp.madproduction.ai` alias active.
 
 At this point the original UI 2.0 vision is substantially implemented. Next work should be driven by hands-on phone/desktop feedback rather than adding more speculative visual changes.
+
+
+## Dark-mode Group contrast fix
+
+User found Group chat text remained black in UI 2.0 dark mode and was nearly unreadable.
+
+Root cause:
+- legacy Group renderer still applied `--wa-*` text colors inside `.group-story-*` elements, overriding the general dark-mode surface styling.
+
+Fixed:
+- Group dialogue and dialogue text now use `--v2-ink` in dark mode;
+- narration uses a dedicated readable muted light tone;
+- narrator label and speaker labels receive dark-mode-safe colors;
+- narration divider is adjusted for dark background;
+- existing 1-on-1 character text already uses the dark-mode `--v2-ink` rule and is covered by regression.
+
+Validation:
+- 677/677 tests PASS
+- typecheck PASS
+- production build PASS
+
+Commit:
+- `84b3bba Fix UI 2.0 dark Group contrast`
+
+Production deployment:
+- `dpl_8z9unCnmaK4cKr89nYpzJQE7xcjm`
+- READY
+- `wetapp.madproduction.ai` alias active.
+
+
+## Dark-mode Home menu contrast fix
+
+User found Home menu text remained black in UI 2.0 dark mode.
+
+Root cause:
+- base `.wa-popover button` / `.new-chat-menu button` rules still used legacy `--wa-ink`.
+
+Fixed:
+- Home menu buttons now use `--v2-ink` in dark mode.
+- New-chat creation menu buttons receive the same fix proactively.
+- Hover states use dark-safe background and text.
+
+Validation:
+- 678/678 tests PASS
+- typecheck PASS
+- production build PASS
+
+Commit:
+- `215e925 Fix UI 2.0 dark Home menu contrast`
+
+Production deployment:
+- `dpl_BLZQDQt7U353Nn5ZHK13vma5SMSK`
+- READY
+- `wetapp.madproduction.ai` alias active.
+
+
+## Composer growth + reply-scroll refinement
+
+User feedback:
+- persona aura was too subtle to be perceptually useful for a color-weak user;
+- composer showed an awkward clipped scrollbar when text became long;
+- while waiting for a reply, loading/auditing state pulled the chat back to the bottom, interrupting reading of older messages.
+
+Implemented:
+- persona aura remains decorative only; future identity cues must not rely on color alone.
+- UI 2.0 composer now auto-grows from 44px to 136px before enabling internal scrolling.
+- internal scrollbar uses a thin complete track with inset margins; dark mode receives a matching thumb.
+- removed forced chat-bottom scrolling from loading/queueing/retrying state changes.
+- loading indicator is now an absolute floating status pill, so showing/hiding it does not change chat viewport height.
+- actual bot message insertion still uses the existing message scroll behavior, so the viewport moves only when the real reply becomes visible.
+
+Validation:
+- 680/680 tests PASS
+- typecheck PASS
+- production build PASS
+
+Commit:
+- `df8a117 Refine composer growth and reply scrolling`
+
+Production deployment:
+- `dpl_J9QtB4eXZy42dWdcjKKzoveAsXJv`
+- READY
+- `wetapp.madproduction.ai` alias active.
+
+
+## Immersive Scene Mode v1
+
+User approved trying a more immersive Group presentation after deciding the normal UI 2.0 was good but still somewhat expected.
+
+Relationship-layer design distinction agreed:
+- soul = who the character is;
+- memory = what happened;
+- future relationship fingerprint = repeated interaction patterns that emerge specifically between user and character(s), not another biography.
+
+Implemented UI-only Immersive Scene Mode for Group rooms:
+- persisted setting key: `wetappUiV2ImmersiveScene`;
+- mode is available only in UI v2 Group chats;
+- default is enabled unless user explicitly turns it off;
+- a topbar Scene toggle switches between standard and immersive presentation;
+- Scene shell shows current location, reality layer, present-member count, user + present cast;
+- "此刻" expands existing room scene summary and unresolved threads;
+- cast rail uses avatar + name, and active speaker is indicated by vertical movement, border, heavier text and an explicit `說話中` label so it does not rely on color;
+- live Group replies stage each segment at 220ms intervals;
+- restored/history messages are not replayed because staging requires `target === chatContainer`;
+- cast rail briefly tracks staged live speakers;
+- narration becomes an environmental prose line rather than a normal speaker message;
+- immersive mode visually recedes the normal topbar and opens the Group story surface;
+- dark mode and reduced-motion fallbacks included;
+- room scene persistence and presence toggles refresh the Scene shell immediately.
+
+No changes to:
+- Group generation/prompt/reviewer logic;
+- Research Capture;
+- Supabase;
+- memory or soul semantics;
+- Cc;
+- ordinary V1 UI.
+
+Validation:
+- 684/684 tests PASS
+- typecheck PASS
+- production build PASS
+
+Functional commit:
+- `5538b37 Add immersive Group scene mode`
+
+Production deployment:
+- `dpl_Cv9i9aWVBUqsnxXJq5wCaSW9Trrh`
+- READY
+- `wetapp.madproduction.ai` alias active.
