@@ -618,12 +618,31 @@ html[data-wetapp-ui="v2"] .composer-input-shell {
 html[data-wetapp-ui="v2"] #message-input {
     height: 44px !important;
     min-height: 44px !important;
-    max-height: 112px !important;
+    max-height: 136px !important;
     padding: 10px 7px 8px 10px !important;
+    overflow-y: hidden;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(93, 82, 72, 0.36) transparent;
     border-radius: 15px !important;
     color: var(--v2-ink) !important;
     font-size: 0.92rem !important;
     line-height: 24px !important;
+}
+
+html[data-wetapp-ui="v2"] #message-input::-webkit-scrollbar {
+    width: 5px;
+}
+
+html[data-wetapp-ui="v2"] #message-input::-webkit-scrollbar-track {
+    margin-block: 8px;
+    background: transparent;
+}
+
+html[data-wetapp-ui="v2"] #message-input::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: rgba(93, 82, 72, 0.34);
 }
 
 html[data-wetapp-ui="v2"] #message-input::placeholder {
@@ -656,8 +675,34 @@ html[data-wetapp-ui="v2"] #send-button:disabled {
 }
 
 html[data-wetapp-ui="v2"] #loading-indicator {
-    padding: 5px clamp(16px, 5vw, 76px) 7px !important;
+    position: absolute !important;
+    z-index: 12 !important;
+    right: clamp(12px, 4vw, 48px) !important;
+    bottom: calc(84px + env(safe-area-inset-bottom)) !important;
+    left: auto !important;
+    max-width: min(78%, 420px) !important;
+    padding: 0 !important;
     background: transparent !important;
+    pointer-events: none !important;
+}
+
+html[data-wetapp-ui="v2"] #loading-indicator > div:first-child {
+    display: none !important;
+}
+
+html[data-wetapp-ui="v2"] #loading-indicator .chat-bubble {
+    padding: 7px 11px !important;
+    border: 1px solid var(--v2-line) !important;
+    border-radius: 999px !important;
+    color: var(--v2-muted) !important;
+    background: rgba(255, 255, 255, 0.88) !important;
+    box-shadow: 0 8px 24px rgba(55, 43, 34, 0.08) !important;
+    backdrop-filter: blur(14px) !important;
+    font-size: 0.72rem !important;
+}
+
+html[data-wetapp-ui="v2"] #loading-indicator #loading-text {
+    color: inherit !important;
 }
 
 /* Search and menu surfaces */
@@ -1483,4 +1528,28 @@ html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #home-menu button:hover,
 html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .new-chat-menu button:hover {
     color: var(--v2-ink) !important;
     background: #39342e !important;
+}
+
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #loading-indicator .chat-bubble {
+    color: #c7beb6 !important;
+    border-color: rgba(255,255,255,.08) !important;
+    background: rgba(48, 44, 39, .92) !important;
+    box-shadow: 0 8px 24px rgba(0,0,0,.20) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #message-input {
+    scrollbar-color: rgba(210, 201, 193, .34) transparent;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #message-input::-webkit-scrollbar-thumb {
+    background: rgba(210, 201, 193, .30);
+}
+
+@media (max-width: 767px) {
+    html[data-wetapp-ui="v2"] #loading-indicator {
+        right: 10px !important;
+        bottom: calc(78px + env(safe-area-inset-bottom)) !important;
+        max-width: min(82%, 360px) !important;
+    }
 }

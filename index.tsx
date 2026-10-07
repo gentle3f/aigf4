@@ -3970,7 +3970,6 @@ const applyChatRuntimeState = (state: RequestState, detail?: string) => {
         loadingIndicator.classList.remove('hidden');
         setTimeout(() => {
             loadingIndicator.classList.remove('opacity-0', 'translate-y-2');
-            chatContainer.scrollTop = chatContainer.scrollHeight;
         }, 10);
     } else {
         loadingIndicator.classList.add('hidden', 'opacity-0', 'translate-y-2');
@@ -4235,8 +4234,27 @@ const persistPendingChatAttachments = async (conversationKey: string) => {
     return { attachments: snapshot.map(item => item.attachment), contentParts };
 };
 
+const syncMessageInputHeight = () => {
+    if (document.documentElement.dataset.wetappUi !== 'v2') {
+        messageInput.style.height = FIXED_MESSAGE_INPUT_HEIGHT;
+        return;
+    }
+
+    const minHeight = 44;
+    const maxHeight = 136;
+    messageInput.style.setProperty('height', 'auto', 'important');
+    const nextHeight = Math.min(maxHeight, Math.max(minHeight, messageInput.scrollHeight));
+    messageInput.style.setProperty('height', `${nextHeight}px`, 'important');
+    messageInput.style.overflowY = messageInput.scrollHeight > maxHeight ? 'auto' : 'hidden';
+};
+
 const resetMessageInput = () => {
-    messageInput.style.height = FIXED_MESSAGE_INPUT_HEIGHT;
+    if (document.documentElement.dataset.wetappUi === 'v2') {
+        messageInput.style.setProperty('height', '44px', 'important');
+        messageInput.style.overflowY = 'hidden';
+    } else {
+        messageInput.style.height = FIXED_MESSAGE_INPUT_HEIGHT;
+    }
     messageInput.scrollTop = 0;
 };
 
@@ -9181,9 +9199,7 @@ const setupEventListeners = () => {
 
     messageInput.addEventListener('input', () => {
         updateSendButtonState();
-        if (messageInput.scrollHeight > messageInput.clientHeight) {
-            messageInput.scrollTop = messageInput.scrollHeight;
-        }
+        syncMessageInputHeight();
     });
     
     publicFigureCreateBtn.addEventListener('click', () => openMimicImportModal('public'));

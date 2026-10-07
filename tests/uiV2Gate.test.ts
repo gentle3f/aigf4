@@ -139,3 +139,21 @@ test('UI v2 dark mode keeps Home and creation menu actions readable', () => {
     assert.match(css, /data-wetapp-theme="dark"\] #home-menu button[\s\S]*color: var\(--v2-ink\) !important/);
     assert.match(css, /data-wetapp-theme="dark"\] \.new-chat-menu button[\s\S]*color: var\(--v2-ink\) !important/);
 });
+
+test('UI v2 composer grows before it scrolls and keeps a complete internal scrollbar', () => {
+    assert.match(appSource, /const syncMessageInputHeight = \(\) =>/);
+    assert.match(appSource, /const maxHeight = 136/);
+    assert.match(appSource, /messageInput\.style\.setProperty\('height', 'auto', 'important'\)/);
+    assert.match(appSource, /messageInput\.style\.overflowY = messageInput\.scrollHeight > maxHeight \? 'auto' : 'hidden'/);
+    assert.match(css, /#message-input[\s\S]*max-height: 136px !important/);
+    assert.match(css, /#message-input::-webkit-scrollbar-track[\s\S]*margin-block: 8px/);
+});
+
+test('UI v2 loading and auditing states never force the chat back to the bottom', () => {
+    assert.doesNotMatch(
+        appSource,
+        /if \(showLoadingIndicator\)[\s\S]{0,700}chatContainer\.scrollTop = chatContainer\.scrollHeight/
+    );
+    assert.match(css, /#loading-indicator[\s\S]*position: absolute !important/);
+    assert.match(css, /#loading-indicator[\s\S]*pointer-events: none !important/);
+});
