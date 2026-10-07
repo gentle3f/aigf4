@@ -134,3 +134,8 @@ test('UI v2 dark mode keeps Group dialogue and narration readable', () => {
     assert.match(css, /group-story-line > \.group-speaker-name[\s\S]*color: var\(--v2-accent\) !important/);
     assert.match(css, /data-wetapp-theme="dark"\] \.character-message-surface > p[\s\S]*color: var\(--v2-ink\) !important/);
 });
+
+test('UI v2 dark mode keeps Home and creation menu actions readable', () => {
+    assert.match(css, /data-wetapp-theme="dark"\] #home-menu button[\s\S]*color: var\(--v2-ink\) !important/);
+    assert.match(css, /data-wetapp-theme="dark"\] \.new-chat-menu button[\s\S]*color: var\(--v2-ink\) !important/);
+});

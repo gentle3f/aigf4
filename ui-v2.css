@@ -1471,3 +1471,16 @@ html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .group-story-line > .group-s
 html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .group-story-line > .group-narrator-name {
     color: #9f968e !important;
 }
+
+
+/* Dark-mode Home / creation menus: base .wa-popover buttons still inherit legacy --wa-ink. */
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #home-menu button,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .new-chat-menu button {
+    color: var(--v2-ink) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #home-menu button:hover,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .new-chat-menu button:hover {
+    color: var(--v2-ink) !important;
+    background: #39342e !important;
+}
