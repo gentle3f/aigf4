@@ -195,3 +195,13 @@ test('UI v2 scene X-ray exposes world state and stored inner-state without a sec
     assert.match(css, /\.v2-scene-world-row/);
     assert.match(css, /\.v2-scene-insight-grid/);
 });
+
+
+test('UI v2 scene detail is scrollable and avatar insight opens the hidden detail panel', () => {
+    assert.match(appSource, /detail\.classList\.remove\('hidden'\)/);
+    assert.match(appSource, /nowToggle\?\.setAttribute\('aria-expanded', 'true'\)/);
+    assert.match(appSource, /scrollIntoView\(\{/);
+    assert.match(css, /\.v2-scene-detail[\s\S]*max-height: min\(48dvh, 520px\) !important/);
+    assert.match(css, /\.v2-scene-detail[\s\S]*overflow-y: auto !important/);
+    assert.match(css, /\.v2-scene-detail[\s\S]*overscroll-behavior: contain !important/);
+});

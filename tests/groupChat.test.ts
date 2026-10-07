@@ -1139,3 +1139,34 @@ test('group prompt carries private member state forward without making it shared
     assert.match(prompt, /posture/);
     assert.match(prompt, /chemistry/);
 });
+
+
+test('group member state accepts object/camelCase transport variants', () => {
+    const room = createRoom();
+    const parsed = parseGroupGeneration(
+        '<chat>IU：「我知。」</chat>'
+        + '<scene>{"location":"living room","reality_layer":"physical","present_member_ids":["iu","jennie"],"summary":"still talking","unresolved":[],"wardrobe_updates":{"user":"KEEP","members":[]},"member_states":{"iu":{"memberId":"iu","posture":"坐在梳化邊","action":"望住使用者","attention":"使用者","innerThought":"想再靠近少少","chemistry":"安靜親近"}}}</scene>'
+        + '<npc_candidate>null</npc_candidate>',
+        room,
+        'iu',
+    );
+
+    assert.equal(parsed.scene.memberStates?.iu?.posture, '坐在梳化邊');
+    assert.equal(parsed.scene.memberStates?.iu?.innerThought, '想再靠近少少');
+    assert.equal(parsed.scene.memberStates?.iu?.chemistry, '安靜親近');
+});
+
+test('group member state falls back to visible narration for posture and action', () => {
+    const room = createRoom();
+    const parsed = parseGroupGeneration(
+        '<chat>（IU 坐在梳化邊，抬眼望向 Jennie。）\nIU：「你又笑我。」\nJennie：「邊有。」</chat>'
+        + '<scene>{"location":"living room","reality_layer":"physical","present_member_ids":["iu","jennie"],"summary":"they keep talking","unresolved":[],"wardrobe_updates":{"user":"KEEP","members":[]}}</scene>'
+        + '<npc_candidate>null</npc_candidate>',
+        room,
+        'iu',
+    );
+
+    assert.match(parsed.scene.memberStates?.iu?.posture || '', /坐/);
+    assert.match(parsed.scene.memberStates?.iu?.action || '', /IU.*Jennie/);
+    assert.equal(parsed.scene.memberStates?.jennie?.action, '正在參與目前對話');
+});

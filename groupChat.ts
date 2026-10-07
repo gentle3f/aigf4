@@ -12,10 +12,12 @@ export interface GroupNpcCandidate {
 
 interface GroupSceneMemberStatePayload {
     member_id?: string;
+    memberId?: string;
     posture?: string;
     action?: string;
     attention?: string;
     inner_thought?: string;
+    innerThought?: string;
     chemistry?: string;
 }
 
@@ -510,27 +512,67 @@ const composeText = (segments: ChatSegment[]) => segments.map(segment => {
 
 const mergeSceneMemberStates = (
     room: ChatRoom,
-    rawStates: GroupSceneMemberStatePayload[] | undefined,
+    rawStates: GroupSceneMemberStatePayload[] | Record<string, GroupSceneMemberStatePayload> | undefined,
     activeMemberIds: string[] = room.scene.presentMemberIds,
 ): Record<string, RoomSceneMemberState> => {
     const next: Record<string, RoomSceneMemberState> = { ...(room.scene.memberStates || {}) };
-    if (!Array.isArray(rawStates)) return next;
     const activeIds = new Set(activeMemberIds);
+    const normalizedStates = Array.isArray(rawStates)
+        ? rawStates
+        : rawStates && typeof rawStates === 'object'
+            ? Object.entries(rawStates).map(([memberId, state]) => ({
+                ...state,
+                member_id: state.member_id || state.memberId || memberId,
+            }))
+            : [];
 
-    rawStates.forEach(raw => {
-        const memberId = resolveMemberId(room, raw.member_id);
+    normalizedStates.forEach(raw => {
+        const memberId = resolveMemberId(room, raw.member_id || raw.memberId);
         if (!memberId || !activeIds.has(memberId)) return;
         const previous = next[memberId];
         next[memberId] = {
             posture: compact(raw.posture, 160) || previous?.posture || '',
             action: compact(raw.action, 220) || previous?.action || '',
             attention: compact(raw.attention, 160) || previous?.attention || '',
-            innerThought: compact(raw.inner_thought, 260) || previous?.innerThought || '',
+            innerThought: compact(raw.inner_thought || raw.innerThought, 260) || previous?.innerThought || '',
             chemistry: compact(raw.chemistry, 220) || previous?.chemistry || '',
         };
     });
 
     return next;
+};
+
+const deriveSceneMemberStateFromVisibleReply = (
+    room: ChatRoom,
+    segments: ChatSegment[],
+    memberId: string,
+    current?: RoomSceneMemberState,
+): RoomSceneMemberState => {
+    const member = room.members.find(item => item.id === memberId);
+    const names = [memberId, member?.persona.name, member?.persona.publicIdentity?.canonicalName]
+        .filter((value): value is string => Boolean(value?.trim()));
+    const latestNarration = [...segments].reverse().find(segment => {
+        if (segment.type !== 'narration') return false;
+        const normalized = segment.text.trim().toLocaleLowerCase();
+        return names.some(name => {
+            const candidate = name.trim().toLocaleLowerCase();
+            return normalized.startsWith(candidate)
+                && /^(?:\s|[，,:：])/u.test(normalized.slice(candidate.length));
+        });
+    });
+    const spokeThisTurn = segments.some(segment => segment.type === 'dialogue' && segment.speakerId === memberId);
+    const narration = latestNarration?.text || '';
+    const postureHint = narration.match(
+        /[^。！？；\n]{0,52}(?:坐(?:著|住|喺)?|企(?:住|喺)?|站(?:著|住|在)?|躺(?:著|住|在)?|瞓(?:住|喺)?|跪(?:著|住|在)?|靠(?:住|在)?|倚(?:住|在)?|趴(?:著|住|在)?|蹲(?:著|住|在)?)[^。！？；\n]{0,52}/u,
+    )?.[0]?.trim();
+
+    return {
+        posture: current?.posture || compact(postureHint, 160),
+        action: current?.action || compact(narration, 220) || (spokeThisTurn ? '正在參與目前對話' : ''),
+        attention: current?.attention || '',
+        innerThought: current?.innerThought || '',
+        chemistry: current?.chemistry || '',
+    };
 };
 
 export const parseGroupGeneration = (
@@ -569,7 +611,7 @@ export const parseGroupGeneration = (
                 user?: string;
                 members?: Array<{ member_id?: string; outfit?: string }>;
             };
-            member_states?: GroupSceneMemberStatePayload[];
+            member_states?: GroupSceneMemberStatePayload[] | Record<string, GroupSceneMemberStatePayload>;
         };
         npc_candidate?: {
             name?: string;
@@ -595,7 +637,7 @@ export const parseGroupGeneration = (
             user?: string;
             members?: Array<{ member_id?: string; outfit?: string }>;
         };
-        member_states?: GroupSceneMemberStatePayload[];
+        member_states?: GroupSceneMemberStatePayload[] | Record<string, GroupSceneMemberStatePayload>;
     } | null);
     const taggedNpcText = extractTaggedBlock(rawText, 'npc_candidate');
     const taggedNpc = /^(?:null|none)$/iu.test(taggedNpcText)
@@ -660,11 +702,20 @@ export const parseGroupGeneration = (
         sceneData?.wardrobe_updates,
         room.members.map(member => ({ key: member.id, label: member.persona.name })),
     );
+    const activeSceneMemberIds = requestedIds.length > 0 ? requestedIds : room.scene.presentMemberIds;
     const memberStates = mergeSceneMemberStates(
         room,
         sceneData?.member_states,
-        requestedIds.length > 0 ? requestedIds : room.scene.presentMemberIds,
+        activeSceneMemberIds,
     );
+    activeSceneMemberIds.forEach(memberId => {
+        memberStates[memberId] = deriveSceneMemberStateFromVisibleReply(
+            room,
+            segments,
+            memberId,
+            memberStates[memberId],
+        );
+    });
     const scene: RoomSceneState = {
         ...room.scene,
         location: compact(sceneData?.location, 240) || room.scene.location,

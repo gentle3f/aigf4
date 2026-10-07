@@ -2261,3 +2261,30 @@ html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-insight-heading bu
         grid-template-columns: 1fr !important;
     }
 }
+
+
+/* Scene detail must remain usable on short/mobile viewports. */
+html[data-wetapp-ui="v2"] .v2-scene-detail {
+    max-height: min(48dvh, 520px) !important;
+    overflow-y: auto !important;
+    overscroll-behavior: contain !important;
+    padding-right: 4px !important;
+    scrollbar-width: thin !important;
+    scrollbar-color: rgba(93,82,72,.28) transparent !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-detail::-webkit-scrollbar {
+    width: 5px !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-detail::-webkit-scrollbar-thumb {
+    border-radius: 999px !important;
+    background: rgba(93,82,72,.26) !important;
+}
+
+@media (max-width: 767px) {
+    html[data-wetapp-ui="v2"] .v2-scene-detail {
+        max-height: 52dvh !important;
+        padding-right: 2px !important;
+    }
+}

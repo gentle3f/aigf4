@@ -2124,8 +2124,26 @@ const renderUiV2SceneMemberInsight = (memberId: string | null) => {
 
 const toggleUiV2SceneMemberInsight = (memberId: string) => {
     const shell = document.getElementById('ui-v2-immersive-scene-shell');
-    if (!shell) return;
-    renderUiV2SceneMemberInsight(shell.dataset.insightMemberId === memberId ? null : memberId);
+    const detail = document.getElementById('ui-v2-scene-detail');
+    const nowToggle = document.getElementById('ui-v2-scene-now-toggle');
+    if (!shell || !detail) return;
+
+    const shouldClose = shell.dataset.insightMemberId === memberId;
+    if (shouldClose) {
+        renderUiV2SceneMemberInsight(null);
+        return;
+    }
+
+    detail.classList.remove('hidden');
+    shell.classList.add('is-expanded');
+    nowToggle?.setAttribute('aria-expanded', 'true');
+    renderUiV2SceneMemberInsight(memberId);
+    window.requestAnimationFrame(() => {
+        document.getElementById('ui-v2-scene-insight')?.scrollIntoView({
+            block: 'nearest',
+            behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+        });
+    });
 };
 
 const renderUiV2ImmersiveSceneChrome = (forcedEnabled?: boolean) => {
