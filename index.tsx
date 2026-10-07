@@ -1940,6 +1940,206 @@ const applyUiV2ConversationTheme = (identity: string | null) => {
     document.documentElement.style.setProperty('--v2-aura-2', palette.aura2);
 };
 
+
+const UI_V2_IMMERSIVE_SCENE_STORAGE_KEY = 'wetappUiV2ImmersiveScene';
+
+const getUiV2ImmersiveScenePreference = () => {
+    try {
+        const stored = localStorage.getItem(UI_V2_IMMERSIVE_SCENE_STORAGE_KEY);
+        return stored === null ? true : stored === 'true';
+    } catch {
+        return true;
+    }
+};
+
+const setUiV2ImmersiveScenePreference = (enabled: boolean) => {
+    try {
+        localStorage.setItem(UI_V2_IMMERSIVE_SCENE_STORAGE_KEY, String(enabled));
+    } catch {
+        // The visual mode still works for this session if storage is unavailable.
+    }
+};
+
+const isUiV2ImmersiveSceneActive = () => (
+    document.documentElement.dataset.wetappUi === 'v2'
+    && document.documentElement.dataset.wetappScene === 'immersive'
+    && Boolean(currentRoom)
+);
+
+const ensureUiV2ImmersiveSceneStructure = () => {
+    if (document.documentElement.dataset.wetappUi !== 'v2') return;
+
+    const topbarActions = chatView.querySelector<HTMLElement>('.chat-topbar > div:last-child');
+    if (topbarActions && !document.getElementById('ui-v2-immersive-scene-toggle')) {
+        const toggle = document.createElement('button');
+        toggle.id = 'ui-v2-immersive-scene-toggle';
+        toggle.type = 'button';
+        toggle.className = 'v2-immersive-scene-toggle hidden';
+        toggle.setAttribute('aria-label', '切換沉浸場景模式');
+        toggle.setAttribute('aria-pressed', 'false');
+        toggle.innerHTML = '<span aria-hidden="true">◫</span><small>場景</small>';
+        toggle.addEventListener('click', () => {
+            const enabled = !isUiV2ImmersiveSceneActive();
+            setUiV2ImmersiveScenePreference(enabled);
+            renderUiV2ImmersiveSceneChrome(enabled);
+        });
+        topbarActions.insertBefore(toggle, chatSearchBtn);
+    }
+
+    if (document.getElementById('ui-v2-immersive-scene-shell')) return;
+    const topbar = chatView.querySelector<HTMLElement>('.chat-topbar');
+    if (!topbar) return;
+
+    const shell = document.createElement('section');
+    shell.id = 'ui-v2-immersive-scene-shell';
+    shell.className = 'v2-immersive-scene-shell hidden';
+    shell.setAttribute('aria-label', '目前場景');
+
+    const primary = document.createElement('div');
+    primary.className = 'v2-scene-primary';
+
+    const copy = document.createElement('div');
+    copy.className = 'v2-scene-copy';
+    const kicker = document.createElement('span');
+    kicker.className = 'v2-scene-kicker';
+    kicker.textContent = 'NOW · 此刻';
+    const location = document.createElement('strong');
+    location.id = 'ui-v2-scene-location';
+    const meta = document.createElement('span');
+    meta.id = 'ui-v2-scene-meta';
+    meta.className = 'v2-scene-meta';
+    copy.append(kicker, location, meta);
+
+    const nowButton = document.createElement('button');
+    nowButton.id = 'ui-v2-scene-now-toggle';
+    nowButton.type = 'button';
+    nowButton.className = 'v2-scene-now-toggle';
+    nowButton.setAttribute('aria-expanded', 'false');
+    nowButton.innerHTML = '<span>此刻</span><span aria-hidden="true">⌄</span>';
+    nowButton.addEventListener('click', () => {
+        const detail = document.getElementById('ui-v2-scene-detail');
+        if (!detail) return;
+        const expanded = detail.classList.toggle('hidden') === false;
+        nowButton.setAttribute('aria-expanded', String(expanded));
+        shell.classList.toggle('is-expanded', expanded);
+    });
+
+    primary.append(copy, nowButton);
+
+    const cast = document.createElement('div');
+    cast.id = 'ui-v2-scene-cast';
+    cast.className = 'v2-scene-cast';
+
+    const detail = document.createElement('div');
+    detail.id = 'ui-v2-scene-detail';
+    detail.className = 'v2-scene-detail hidden';
+    const summary = document.createElement('p');
+    summary.id = 'ui-v2-scene-summary';
+    summary.className = 'v2-scene-summary';
+    const unresolved = document.createElement('div');
+    unresolved.id = 'ui-v2-scene-unresolved';
+    unresolved.className = 'v2-scene-unresolved';
+    detail.append(summary, unresolved);
+
+    shell.append(primary, cast, detail);
+    topbar.insertAdjacentElement('afterend', shell);
+};
+
+const renderUiV2ImmersiveSceneChrome = (forcedEnabled?: boolean) => {
+    if (document.documentElement.dataset.wetappUi !== 'v2') return;
+    ensureUiV2ImmersiveSceneStructure();
+
+    const toggle = document.getElementById('ui-v2-immersive-scene-toggle') as HTMLButtonElement | null;
+    const shell = document.getElementById('ui-v2-immersive-scene-shell');
+    const room = currentRoom;
+    const canUse = Boolean(room);
+    toggle?.classList.toggle('hidden', !canUse);
+
+    if (!room) {
+        document.documentElement.removeAttribute('data-wetapp-scene');
+        shell?.classList.add('hidden');
+        toggle?.setAttribute('aria-pressed', 'false');
+        return;
+    }
+
+    const enabled = forcedEnabled ?? getUiV2ImmersiveScenePreference();
+    document.documentElement.dataset.wetappScene = enabled ? 'immersive' : 'standard';
+    toggle?.setAttribute('aria-pressed', String(enabled));
+    toggle?.classList.toggle('is-active', enabled);
+    const toggleLabel = toggle?.querySelector('small');
+    if (toggleLabel) toggleLabel.textContent = enabled ? '場景中' : '場景';
+    shell?.classList.toggle('hidden', !enabled);
+    if (!enabled || !shell) return;
+
+    const realityLabels: Record<ChatRoom['scene']['realityLayer'], string> = {
+        physical: '同一空間',
+        texting: '遠端訊息',
+        imagined: '想像場景',
+    };
+    const presentMembers = room.members.filter(member => room.scene.presentMemberIds.includes(member.id));
+    const location = document.getElementById('ui-v2-scene-location');
+    const meta = document.getElementById('ui-v2-scene-meta');
+    const cast = document.getElementById('ui-v2-scene-cast');
+    const summary = document.getElementById('ui-v2-scene-summary');
+    const unresolved = document.getElementById('ui-v2-scene-unresolved');
+
+    if (location) location.textContent = room.scene.location || room.title || '目前場景';
+    if (meta) {
+        meta.textContent = `${realityLabels[room.scene.realityLayer]} · ${presentMembers.length} 位角色在場`;
+    }
+
+    if (cast) {
+        cast.innerHTML = '';
+        const you = document.createElement('span');
+        you.className = 'v2-scene-cast-person is-user';
+        you.innerHTML = '<span class="v2-scene-cast-avatar" aria-hidden="true">你</span><span>你</span>';
+        cast.appendChild(you);
+
+        presentMembers.forEach(member => {
+            const persona = resolveRoomMemberAvatarPersona(member);
+            const person = document.createElement('span');
+            person.className = 'v2-scene-cast-person';
+            person.dataset.memberId = member.id;
+            const avatar = document.createElement('span');
+            avatar.className = 'v2-scene-cast-avatar';
+            if (persona.avatarUrl && !persona.avatarUrl.startsWith('generating_')) {
+                const image = document.createElement('img');
+                image.src = persona.avatarUrl;
+                image.alt = persona.name;
+                image.loading = 'lazy';
+                image.decoding = 'async';
+                avatar.appendChild(image);
+            } else {
+                avatar.textContent = persona.emoji || '●';
+            }
+            const name = document.createElement('span');
+            name.textContent = member.persona.name;
+            person.append(avatar, name);
+            cast.appendChild(person);
+        });
+    }
+
+    if (summary) {
+        summary.textContent = room.scene.summary?.trim()
+            || '呢個場景會隨你哋嘅對話繼續累積。';
+    }
+    if (unresolved) {
+        unresolved.innerHTML = '';
+        room.scene.unresolved.slice(0, 3).forEach(item => {
+            const chip = document.createElement('span');
+            chip.textContent = item;
+            unresolved.appendChild(chip);
+        });
+        unresolved.classList.toggle('hidden', room.scene.unresolved.length === 0);
+    }
+};
+
+const setUiV2SceneActiveSpeaker = (memberId: string | null) => {
+    document.querySelectorAll<HTMLElement>('#ui-v2-scene-cast .v2-scene-cast-person').forEach(person => {
+        person.classList.toggle('is-speaking', Boolean(memberId) && person.dataset.memberId === memberId);
+    });
+};
+
 const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, historyMode: 'push' | 'replace' | 'skip' = 'push') => {
     closeChatSearch();
     const storedRoom = roomManager.getRoom(key) || null;
@@ -1992,6 +2192,7 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
     applyUiV2ConversationTheme(room?.title || currentPersona?.name || key);
     updateChatModeControls(currentPersonaKey);
     renderChatHeaderAvatar();
+    renderUiV2ImmersiveSceneChrome();
 
     chatContainer.innerHTML = '';
     resetRenderedChatHistoryWindow();
@@ -2069,6 +2270,9 @@ const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
     currentPersonaKey = null;
     currentConversationKey = null;
     currentRoom = null;
+    document.documentElement.removeAttribute('data-wetapp-scene');
+    document.getElementById('ui-v2-immersive-scene-shell')?.classList.add('hidden');
+    document.getElementById('ui-v2-immersive-scene-toggle')?.classList.add('hidden');
     applyUiV2ConversationTheme(null);
     activeRoomMemberId = null;
     isGodModeActive = false;
@@ -3717,6 +3921,7 @@ const appendMessage = (
         : [];
     
     let messageWrapper: HTMLElement;
+    let immersiveGroupStageSpeakerIds: Array<string | null> = [];
 
     if (isSystemMessage && content.memoryProposal) {
         messageWrapper = document.createElement('div');
@@ -3743,9 +3948,19 @@ const appendMessage = (
         messageWrapper.className = 'group-chat-turn';
         const storyBubble = document.createElement('div');
         storyBubble.className = 'chat-bubble bot-bubble group-story-bubble';
+        const stageImmersiveReply = target === chatContainer
+            && isUiV2ImmersiveSceneActive()
+            && scrollMode !== 'none';
+        let immersiveStageIndex = 0;
         groupDisplaySegments.forEach(segment => {
             const line = document.createElement('div');
             line.className = `group-story-line ${segment.type === 'narration' ? 'group-story-narration' : 'group-story-dialogue'}`;
+            if (stageImmersiveReply) {
+                line.classList.add('v2-scene-reveal-line');
+                line.style.setProperty('--v2-scene-reveal-index', String(immersiveStageIndex));
+                immersiveGroupStageSpeakerIds.push(segment.type === 'dialogue' ? segment.speakerId : null);
+                immersiveStageIndex += 1;
+            }
             const speaker = document.createElement('span');
             speaker.className = `group-speaker-name${segment.type === 'narration' ? ' group-narrator-name' : ''}`;
             const text = document.createElement('span');
@@ -3940,6 +4155,23 @@ const appendMessage = (
                 messageWrapper.classList.remove('v2-message-enter');
             }, { once: true });
         }
+
+        if (immersiveGroupStageSpeakerIds.length > 0 && isUiV2ImmersiveSceneActive()) {
+            const conversationKey = currentConversationKey;
+            immersiveGroupStageSpeakerIds.forEach((memberId, index) => {
+                window.setTimeout(() => {
+                    if (
+                        currentConversationKey !== conversationKey
+                        || !isUiV2ImmersiveSceneActive()
+                    ) return;
+                    setUiV2SceneActiveSpeaker(memberId);
+                }, index * 220);
+            });
+            window.setTimeout(() => {
+                if (currentConversationKey === conversationKey) setUiV2SceneActiveSpeaker(null);
+            }, immersiveGroupStageSpeakerIds.length * 220 + 620);
+        }
+
         scheduleMessageScroll(messageWrapper, sender, scrollMode);
     }
 
@@ -7534,6 +7766,7 @@ const getResponse = async (
                 const storedRoom = roomManager.getRoom(request.room.id);
                 currentRoom = storedRoom || { ...currentRoom, scene: persistedScene };
                 currentRoom.scene = persistedScene;
+                renderUiV2ImmersiveSceneChrome();
             }
             markChatPerformance('response:group-scene-persist', groupScenePersistStartedAt);
         }
@@ -8592,6 +8825,7 @@ const setRoomMemberPresence = async (roomId: string, memberId: string, present: 
     const applied = await ui.setMemberPresence(roomId, memberId, present);
     if (applied && currentConversationKey === roomId) {
         currentRoom = roomManager.getRoom(roomId) || currentRoom;
+        renderUiV2ImmersiveSceneChrome();
     }
     return applied;
 };

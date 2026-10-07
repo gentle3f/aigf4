@@ -157,3 +157,28 @@ test('UI v2 loading and auditing states never force the chat back to the bottom'
     assert.match(css, /#loading-indicator[\s\S]*position: absolute !important/);
     assert.match(css, /#loading-indicator[\s\S]*pointer-events: none !important/);
 });
+
+
+test('UI v2 immersive scene mode is persisted, Group-only, and built from existing room state', () => {
+    assert.match(appSource, /UI_V2_IMMERSIVE_SCENE_STORAGE_KEY = 'wetappUiV2ImmersiveScene'/);
+    assert.match(appSource, /const ensureUiV2ImmersiveSceneStructure = \(\) =>/);
+    assert.match(appSource, /const renderUiV2ImmersiveSceneChrome =/);
+    assert.match(appSource, /room\.scene\.location/);
+    assert.match(appSource, /room\.scene\.presentMemberIds/);
+    assert.match(appSource, /room\.scene\.summary/);
+    assert.match(appSource, /room\.scene\.unresolved/);
+    assert.match(appSource, /document\.documentElement\.dataset\.wetappScene = enabled \? 'immersive' : 'standard'/);
+    assert.match(css, /data-wetapp-scene="immersive"/);
+    assert.match(css, /\.v2-immersive-scene-shell/);
+    assert.match(css, /\.v2-scene-cast/);
+});
+
+test('UI v2 immersive Group replies stage only live lines and expose speaker state without relying on color alone', () => {
+    assert.match(appSource, /const stageImmersiveReply = target === chatContainer/);
+    assert.match(appSource, /line\.classList\.add\('v2-scene-reveal-line'\)/);
+    assert.match(appSource, /immersiveGroupStageSpeakerIds\.push/);
+    assert.match(appSource, /setUiV2SceneActiveSpeaker/);
+    assert.match(css, /\.v2-scene-cast-person\.is-speaking::after[\s\S]*content: "說話中"/);
+    assert.match(css, /wetappV2SceneLineIn/);
+    assert.match(css, /prefers-reduced-motion: reduce[\s\S]*\.v2-scene-reveal-line/);
+});

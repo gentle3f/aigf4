@@ -1553,3 +1553,511 @@ html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] #message-input::-webkit-scro
         max-width: min(82%, 360px) !important;
     }
 }
+
+
+/* ------------------------------------------------------------
+   Immersive Scene Mode — opt-in/persisted Group presentation.
+   It reuses existing room/scene data and never changes generation logic.
+   ------------------------------------------------------------ */
+html[data-wetapp-ui="v2"] .v2-immersive-scene-toggle.hidden,
+html[data-wetapp-ui="v2"] .v2-immersive-scene-shell.hidden {
+    display: none !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-immersive-scene-toggle:not(.hidden) {
+    display: inline-flex !important;
+    min-width: 58px !important;
+    height: 38px !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 5px !important;
+    border: 1px solid transparent !important;
+    border-radius: 13px !important;
+    padding: 0 9px !important;
+    color: var(--v2-muted) !important;
+    background: transparent !important;
+    font: inherit !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-immersive-scene-toggle > span {
+    font-size: 0.9rem !important;
+    line-height: 1 !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-immersive-scene-toggle > small {
+    font-size: 0.61rem !important;
+    font-weight: 800 !important;
+    white-space: nowrap !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-immersive-scene-toggle.is-active {
+    color: var(--v2-ink) !important;
+    border-color: rgba(58, 46, 36, 0.08) !important;
+    background: rgba(255, 255, 255, 0.72) !important;
+    box-shadow: 0 5px 18px rgba(62, 48, 37, 0.055) !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-immersive-scene-shell:not(.hidden) {
+    position: relative !important;
+    z-index: 9 !important;
+    display: block !important;
+    flex: 0 0 auto !important;
+    padding: 12px clamp(16px, 4vw, 54px) 11px !important;
+    overflow: hidden !important;
+    border-bottom: 1px solid rgba(61, 49, 39, 0.065) !important;
+    color: var(--v2-ink) !important;
+    background:
+        radial-gradient(circle at 13% 15%, rgba(var(--v2-aura-1, 152, 88, 79), .095), transparent 29%),
+        radial-gradient(circle at 84% 75%, rgba(var(--v2-aura-2, 126, 148, 143), .075), transparent 31%),
+        rgba(250, 248, 244, .94) !important;
+    backdrop-filter: blur(18px) !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-primary {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 20px !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-copy {
+    display: grid !important;
+    min-width: 0 !important;
+    gap: 1px !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-kicker {
+    color: var(--v2-faint) !important;
+    font-size: 0.53rem !important;
+    font-weight: 850 !important;
+    letter-spacing: .16em !important;
+}
+
+html[data-wetapp-ui="v2"] #ui-v2-scene-location {
+    overflow: hidden !important;
+    color: var(--v2-ink) !important;
+    font-family: "DM Serif Display", Georgia, "Noto Serif TC", serif !important;
+    font-size: 1.08rem !important;
+    font-weight: 400 !important;
+    line-height: 1.2 !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-meta {
+    margin-top: 2px !important;
+    color: var(--v2-muted) !important;
+    font-size: 0.61rem !important;
+    line-height: 1.25 !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-now-toggle {
+    display: inline-flex !important;
+    min-width: 62px !important;
+    height: 34px !important;
+    flex: 0 0 auto !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 6px !important;
+    border: 1px solid rgba(54, 44, 35, .075) !important;
+    border-radius: 999px !important;
+    padding: 0 11px !important;
+    color: var(--v2-muted) !important;
+    background: rgba(255, 255, 255, .68) !important;
+    font-size: .62rem !important;
+    font-weight: 750 !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-now-toggle > span:last-child {
+    transition: transform 170ms ease !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-immersive-scene-shell.is-expanded .v2-scene-now-toggle > span:last-child {
+    transform: rotate(180deg) !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-cast {
+    display: flex !important;
+    align-items: center !important;
+    gap: 7px !important;
+    margin-top: 10px !important;
+    overflow-x: auto !important;
+    padding: 2px 1px 3px !important;
+    scrollbar-width: none !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-cast::-webkit-scrollbar {
+    display: none !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-cast-person {
+    position: relative !important;
+    display: inline-flex !important;
+    min-width: max-content !important;
+    align-items: center !important;
+    gap: 6px !important;
+    border: 1px solid rgba(62, 50, 40, .065) !important;
+    border-radius: 999px !important;
+    padding: 3px 9px 3px 3px !important;
+    color: #746b63 !important;
+    background: rgba(255, 255, 255, .54) !important;
+    font-size: .62rem !important;
+    font-weight: 650 !important;
+    line-height: 1 !important;
+    transition: transform 170ms ease, box-shadow 170ms ease, border-color 170ms ease, background 170ms ease !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-cast-avatar {
+    display: grid !important;
+    width: 25px !important;
+    height: 25px !important;
+    flex: 0 0 25px !important;
+    place-items: center !important;
+    overflow: hidden !important;
+    border-radius: 50% !important;
+    color: #fff !important;
+    background: #86776c !important;
+    font-size: .55rem !important;
+    font-weight: 800 !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-cast-avatar img {
+    display: block !important;
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: cover !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-cast-person.is-user .v2-scene-cast-avatar {
+    color: var(--v2-ink) !important;
+    background: #e7e0d8 !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-cast-person.is-speaking {
+    z-index: 2 !important;
+    transform: translateY(-2px) !important;
+    border-color: var(--v2-accent) !important;
+    color: var(--v2-ink) !important;
+    background: #fff !important;
+    box-shadow: 0 7px 20px rgba(57, 44, 35, .12) !important;
+    font-weight: 850 !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-cast-person.is-speaking::after {
+    content: "說話中";
+    display: inline-block !important;
+    margin-left: 1px !important;
+    color: var(--v2-muted) !important;
+    font-size: .50rem !important;
+    font-weight: 800 !important;
+    letter-spacing: .02em !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-detail {
+    display: grid !important;
+    gap: 8px !important;
+    max-width: 880px !important;
+    margin-top: 10px !important;
+    padding-top: 10px !important;
+    border-top: 1px solid rgba(58, 46, 36, .065) !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-detail.hidden {
+    display: none !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-summary {
+    margin: 0 !important;
+    color: #665e57 !important;
+    font-family: "DM Serif Display", Georgia, "Noto Serif TC", serif !important;
+    font-size: .77rem !important;
+    font-style: italic !important;
+    line-height: 1.55 !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-unresolved {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    gap: 5px !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-unresolved.hidden {
+    display: none !important;
+}
+
+html[data-wetapp-ui="v2"] .v2-scene-unresolved > span {
+    border-radius: 999px !important;
+    padding: 5px 8px !important;
+    color: #756c64 !important;
+    background: rgba(235, 229, 222, .75) !important;
+    font-size: .56rem !important;
+    line-height: 1.2 !important;
+}
+
+/* In scene mode the app chrome recedes and the conversation becomes the stage. */
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .chat-topbar {
+    min-height: 58px !important;
+    flex-basis: 58px !important;
+    border-bottom-color: transparent !important;
+    background: rgba(251, 249, 246, .86) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] #chat-header-avatar-container,
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] #chat-header-avatar-container > *,
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] #chat-header-avatar-container img {
+    width: 38px !important;
+    height: 38px !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] #chat-status {
+    display: none !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] #chat-container {
+    padding-top: 24px !important;
+    background:
+        radial-gradient(circle at 80% 5%, rgba(var(--v2-aura-1, 152, 88, 79), .055), transparent 36%),
+        radial-gradient(circle at 19% 86%, rgba(var(--v2-aura-2, 126, 148, 143), .045), transparent 32%) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-chat-turn {
+    margin: 13px 0 22px !important;
+    padding: 0 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-story-bubble {
+    width: min(100%, 900px) !important;
+    max-width: min(100%, 900px) !important;
+    gap: 13px !important;
+    padding: 0 !important;
+    color: var(--v2-ink) !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-story-line {
+    min-width: 0 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-story-dialogue {
+    grid-template-columns: minmax(84px, max-content) minmax(0, 1fr) !important;
+    column-gap: 12px !important;
+    padding: 4px 0 !important;
+    color: var(--v2-ink) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-story-dialogue .group-speaker-name {
+    align-items: center !important;
+    color: var(--v2-ink) !important;
+    font-size: .65rem !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-story-dialogue .group-speaker-name > span:last-child {
+    overflow: hidden !important;
+    max-width: 88px !important;
+    text-overflow: ellipsis !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-speaker-avatar {
+    width: 27px !important;
+    height: 27px !important;
+    flex-basis: 27px !important;
+    border-radius: 9px !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-story-dialogue-text {
+    align-self: center !important;
+    color: #2d2824 !important;
+    font-size: .94rem !important;
+    line-height: 1.68 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-story-narration {
+    display: block !important;
+    width: min(94%, 720px) !important;
+    margin: 10px auto !important;
+    padding: 8px 0 8px 16px !important;
+    border-left: 1px solid rgba(112, 93, 79, .21) !important;
+    color: #7f746b !important;
+    font-family: "DM Serif Display", Georgia, "Noto Serif TC", serif !important;
+    font-size: .82rem !important;
+    font-style: italic !important;
+    line-height: 1.67 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-story-narration .group-narrator-name {
+    display: none !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-story-narration-text {
+    display: block !important;
+    color: inherit !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-chat-turn.v2-message-enter {
+    animation: none !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .v2-scene-reveal-line {
+    opacity: 0;
+    transform: translateY(8px);
+    animation: wetappV2SceneLineIn 280ms cubic-bezier(.2,.72,.25,1) forwards;
+    animation-delay: calc(var(--v2-scene-reveal-index, 0) * 220ms);
+}
+
+@keyframes wetappV2SceneLineIn {
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .chat-view-footer {
+    background: linear-gradient(180deg, transparent, rgba(251, 250, 247, .93) 38%, rgba(251, 250, 247, .985)) !important;
+}
+
+/* Warm dark version of the scene layer. */
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-immersive-scene-toggle.is-active {
+    color: var(--v2-ink) !important;
+    border-color: rgba(255,255,255,.08) !important;
+    background: rgba(52, 48, 43, .82) !important;
+    box-shadow: none !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-immersive-scene-shell:not(.hidden) {
+    border-bottom-color: rgba(255,255,255,.065) !important;
+    background:
+        radial-gradient(circle at 13% 15%, rgba(var(--v2-aura-1, 152, 88, 79), .11), transparent 30%),
+        radial-gradient(circle at 84% 75%, rgba(var(--v2-aura-2, 126, 148, 143), .08), transparent 32%),
+        rgba(35, 32, 29, .96) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-now-toggle,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-cast-person {
+    color: #c3bab2 !important;
+    border-color: rgba(255,255,255,.07) !important;
+    background: rgba(255,255,255,.045) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-cast-person.is-speaking {
+    color: var(--v2-ink) !important;
+    border-color: var(--v2-accent) !important;
+    background: #39342f !important;
+    box-shadow: 0 8px 22px rgba(0,0,0,.22) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-cast-person.is-user .v2-scene-cast-avatar {
+    color: #e8e1da !important;
+    background: #4a433d !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-summary,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-meta {
+    color: #aaa198 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-unresolved > span {
+    color: #bdb4ab !important;
+    background: rgba(255,255,255,.05) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"][data-wetapp-scene="immersive"] .chat-topbar {
+    background: rgba(31, 29, 26, .88) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"][data-wetapp-scene="immersive"] #chat-container {
+    background:
+        radial-gradient(circle at 80% 5%, rgba(var(--v2-aura-1, 152, 88, 79), .065), transparent 36%),
+        radial-gradient(circle at 19% 86%, rgba(var(--v2-aura-2, 126, 148, 143), .055), transparent 32%) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"][data-wetapp-scene="immersive"] .group-story-dialogue-text {
+    color: var(--v2-ink) !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"][data-wetapp-scene="immersive"] .group-story-narration {
+    border-left-color: rgba(220,210,200,.16) !important;
+    color: #aaa198 !important;
+}
+
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"][data-wetapp-scene="immersive"] .chat-view-footer {
+    background: linear-gradient(180deg, transparent, rgba(31, 29, 26, .93) 38%, rgba(31, 29, 26, .99)) !important;
+}
+
+@media (max-width: 767px) {
+    html[data-wetapp-ui="v2"] .v2-immersive-scene-toggle:not(.hidden) {
+        min-width: 38px !important;
+        width: 38px !important;
+        padding: 0 !important;
+    }
+
+    html[data-wetapp-ui="v2"] .v2-immersive-scene-toggle > small {
+        display: none !important;
+    }
+
+    html[data-wetapp-ui="v2"] .v2-immersive-scene-shell:not(.hidden) {
+        padding: 9px 11px 8px !important;
+    }
+
+    html[data-wetapp-ui="v2"] #ui-v2-scene-location {
+        font-size: .96rem !important;
+    }
+
+    html[data-wetapp-ui="v2"] .v2-scene-meta {
+        font-size: .56rem !important;
+    }
+
+    html[data-wetapp-ui="v2"] .v2-scene-now-toggle {
+        min-width: 54px !important;
+        height: 31px !important;
+        padding: 0 9px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .v2-scene-cast {
+        margin-top: 7px !important;
+    }
+
+    html[data-wetapp-ui="v2"] .v2-scene-cast-person {
+        gap: 5px !important;
+        padding-right: 7px !important;
+        font-size: .58rem !important;
+    }
+
+    html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .chat-topbar {
+        min-height: 52px !important;
+        flex-basis: 52px !important;
+    }
+
+    html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-story-dialogue {
+        grid-template-columns: minmax(70px, max-content) minmax(0, 1fr) !important;
+        column-gap: 8px !important;
+    }
+
+    html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-story-dialogue .group-speaker-name > span:last-child {
+        max-width: 68px !important;
+    }
+
+    html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-story-dialogue-text {
+        font-size: .91rem !important;
+        line-height: 1.64 !important;
+    }
+
+    html[data-wetapp-ui="v2"][data-wetapp-scene="immersive"] .group-story-narration {
+        width: 94% !important;
+        margin-block: 8px !important;
+        padding-left: 12px !important;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html[data-wetapp-ui="v2"] .v2-scene-reveal-line,
+    html[data-wetapp-ui="v2"] .v2-scene-cast-person {
+        animation: none !important;
+        transition: none !important;
+    }
+
+    html[data-wetapp-ui="v2"] .v2-scene-reveal-line {
+        opacity: 1 !important;
+        transform: none !important;
+    }
+}
