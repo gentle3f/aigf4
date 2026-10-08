@@ -532,3 +532,44 @@ Production deployment:
 - `dpl_FrehStjD4MiniMghUdoxdSHaeQA4`
 - READY
 - `wetapp.madproduction.ai` active.
+
+
+## 2026-10-08 — Private X-ray enforcement + six present members
+
+User reported that the X-ray panel could open but all three private fields remained unavailable:
+- inner thought
+- attention
+- chemistry
+
+Root cause:
+- parser/UI supported private state, but generation acceptance did NOT require it.
+- A Group reply could be accepted even if the model omitted those fields, leaving the panel empty.
+
+Fix:
+- added `getMissingGroupPrivateStateMembers()` in the Group generation path.
+- every currently present member must have non-empty:
+  - attention
+  - innerThought
+  - chemistry
+- if any present member is missing any of the three, the Group candidate is rejected before acceptance and enters the existing repair/fallback path.
+- retry instructions now include the concrete previous defect, including which member(s) were missing private scene state.
+- no new always-on second API call was added; repair occurs only when the main Group generation fails this contract.
+
+Presence capacity:
+- `ROOM_PRESENT_MEMBER_LIMIT` raised from 5 to 6.
+- This affects the real scene/presence limit across room manager, participant actions, Group schema maxItems, Surprise Event participant slicing, and other consumers of the shared constant.
+- User is not counted as one of these six character slots.
+- Total fixed room member limit remains 8.
+
+Validation:
+- 691/691 tests PASS
+- typecheck PASS
+- production build PASS
+
+Functional commit:
+- `c2679f3 Require Group private state and allow six present members`
+
+Production:
+- `dpl_46Hfps1n3zpgKbKWuZLoSqCTdhx4`
+- READY
+- `wetapp.madproduction.ai` alias active.

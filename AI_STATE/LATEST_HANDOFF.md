@@ -4,57 +4,54 @@ Authoritative current handoff:
 - `AI_STATE/HANDOFF_20261007_AIGF_UI_V2_LIVE_TEST.md`
 
 Current status:
-- Supabase migration COMPLETE and verified. Do not redo it.
+- Supabase migration COMPLETE. Do not redo it.
 - Wetapp UI 2.0 remains opt-in via `?ui=v2`; V1 remains default.
 - Immersive Scene Mode is Group-only and persisted by `wetappUiV2ImmersiveScene`.
 
-Latest scene functionality:
+Immersive Scene / X-ray:
 - `RoomSceneState.memberStates` persists per-member:
   - posture
   - action
   - attention
   - innerThought
   - chemistry
-- These are emitted inside the existing Group generation response. No second model call.
-- Expanded `此刻` shows posture/action/wardrobe.
-- Tapping a cast member opens X-ray showing inner thought, attention and chemistry.
-- Chemistry is both directly visible in X-ray and carried into the next Group prompt as continuity.
-- Other characters must not know another character's private inner thought unless visibly revealed.
+- Expanded `此刻` shows posture/action/wardrobe and is scrollable.
+- Tapping a cast member opens X-ray and scrolls it into view.
+- X-ray directly shows inner thought, attention and chemistry.
+- Chemistry is also fed into the next Group prompt so it can influence later dialogue/reactions.
+- Other characters cannot know another member's private inner thought unless visibly revealed.
 
-Latest bugfix after first real user test:
-- `此刻` detail is now vertically scrollable with viewport-aware max-height.
-- Cast click now opens hidden detail, renders X-ray and scrolls it into view instead of only showing selected border.
-- `member_states` parser accepts array/object map formats and snake_case/camelCase variants.
-- Missing posture/action may fall back to clearly attributable visible narration.
-- Fallback attribution is conservative: narration must clearly start with that member identity; do not infer another character's action merely because their name appears later in the sentence.
-- Inner thought and chemistry are never guessed from visible text.
+Latest private-state fix:
+- Group generation now REQUIRES every currently present member to have non-empty attention, innerThought and chemistry before the candidate can be accepted.
+- Missing private state rejects the candidate and uses the existing repair/fallback path.
+- Retry instructions include the concrete previous defect and missing member names.
+- No permanent second API call was added; extra calls happen only if a generation violates this contract.
+- Parser still accepts array/object map and snake_case/camelCase member-state variants.
+- posture/action may conservatively fall back to clearly attributable visible narration; inner thought and chemistry are never guessed.
+
+Presence capacity:
+- `ROOM_PRESENT_MEMBER_LIMIT = 6`.
+- Six characters may now be present in the same scene/room at once, excluding the user.
+- Shared constant flows through RoomManager, participant actions, Group schema maxItems, Surprise Event participant selection and other dependent paths.
+- Total fixed room member limit remains 8.
 
 Validation:
-- 690/690 tests PASS
+- 691/691 tests PASS
 - typecheck PASS
 - production build PASS
 
 Latest functional commit:
-- `4651270 Fix scene X-ray interaction and state fallback`
+- `c2679f3 Require Group private state and allow six present members`
 
-Current production deployment:
-- `dpl_FrehStjD4MiniMghUdoxdSHaeQA4`
+Production:
+- `dpl_46Hfps1n3zpgKbKWuZLoSqCTdhx4`
 - READY
-- `wetapp.madproduction.ai` active.
-
-Product direction:
-- User treats Wetapp as a persistent private relationship/world experience rather than a messaging simulator.
-- High-frequency fictional four-character Group is the primary future usage-study sample.
-- Relationship fingerprint remains future:
-  - soul = who the character is
-  - memory = what happened
-  - fingerprint = repeated interaction patterns that emerge between user/characters over time
+- `wetapp.madproduction.ai` alias active.
 
 Next:
-- user should retry one fresh Group turn;
-- expand `此刻` and scroll;
-- tap several cast members and confirm X-ray appears;
-- judge accuracy/usefulness of posture/action/inner thought/chemistry before further chemistry-engine work.
+- user should send a fresh Group turn and verify all present members now show X-ray private state.
+- user can also test adding/toggling a sixth present character.
+- if private state still fails after enforcement, inspect actual generated transport output rather than adding another UI patch.
 
 Mandatory:
 - GEN-FUJI Local MCP only for local work.
