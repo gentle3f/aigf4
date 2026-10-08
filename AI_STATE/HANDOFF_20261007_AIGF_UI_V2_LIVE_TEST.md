@@ -573,3 +573,31 @@ Production:
 - `dpl_46Hfps1n3zpgKbKWuZLoSqCTdhx4`
 - READY
 - `wetapp.madproduction.ai` alias active.
+
+
+## 2026-10-08 — Composer Enter behavior
+
+User requested:
+- Enter must insert a newline.
+- Keyboard Enter must never send.
+- Only pressing the Send button sends the message.
+
+Implemented:
+- removed the messageInput keydown handler that intercepted Enter and called dispatchSendMessage().
+- no Ctrl+Enter / Shift+Enter / alternate keyboard send shortcut remains on the shared chat composer.
+- native textarea Enter behavior now inserts a newline.
+- Send button click remains the sole composer send trigger.
+- Applies to the shared composer across ordinary chat, Group and Cc.
+
+Validation:
+- 692/692 tests PASS
+- typecheck PASS
+- direct Vite production build PASS
+
+Functional commit:
+- `8bf0ed3 Make Enter insert newline in chat composer`
+
+Production:
+- `dpl_7ogpQzEntUotesM26Va175RbyRfC`
+- READY
+- `wetapp.madproduction.ai` active.

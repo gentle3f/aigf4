@@ -40,11 +40,16 @@ Validation:
 - typecheck PASS
 - production build PASS
 
-Latest functional commit:
+Latest functional commits:
+- `8bf0ed3 Make Enter insert newline in chat composer`
 - `c2679f3 Require Group private state and allow six present members`
 
+Composer behavior:
+- Enter inserts a newline; keyboard Enter never sends.
+- Only the Send button sends from the shared chat composer.
+
 Production:
-- `dpl_46Hfps1n3zpgKbKWuZLoSqCTdhx4`
+- `dpl_7ogpQzEntUotesM26Va175RbyRfC`
 - READY
 - `wetapp.madproduction.ai` alias active.
 
