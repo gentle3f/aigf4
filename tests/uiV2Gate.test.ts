@@ -207,14 +207,17 @@ test('UI v2 scene detail is scrollable and avatar insight opens the hidden detai
 });
 
 
-test('Group generation rejects missing private X-ray state before accepting a reply', () => {
-    assert.match(appSource, /const getMissingGroupPrivateStateMembers =/);
-    assert.match(appSource, /state\?\.attention\?\.trim\(\)/);
-    assert.match(appSource, /state\.innerThought\?\.trim\(\)/);
-    assert.match(appSource, /state\.chemistry\?\.trim\(\)/);
-    assert.match(appSource, /Missing private scene state for:/);
-    assert.match(appSource, /Return attention, inner_thought and chemistry for every present member/);
-    assert.match(appSource, /Previous attempt defect:/);
+test('Group generation never rejects a valid dialogue because optional X-ray state is missing', () => {
+    const groupGeneration = appSource.slice(
+        appSource.indexOf('const runRoomConversationGeneration = async'),
+        appSource.indexOf('const getDirectlyNamedRoomMember ='),
+    );
+    assert.ok(groupGeneration.length > 1000);
+    assert.match(groupGeneration, /parseGroupGeneration\(result\.text, request\.room, fallbackMemberId\)/);
+    assert.match(groupGeneration, /return parsed;/);
+    assert.doesNotMatch(groupGeneration, /getMissingGroupPrivateStateMembers/);
+    assert.doesNotMatch(groupGeneration, /Missing private scene state/);
+    assert.doesNotMatch(appSource, /Return attention, inner_thought and chemistry for every present member/);
 });
 
 

@@ -2098,7 +2098,7 @@ const renderUiV2SceneMemberInsight = (memberId: string | null) => {
     if (!state || !Object.values(state).some(Boolean)) {
         const empty = document.createElement('p');
         empty.className = 'v2-scene-insight-empty';
-        empty.textContent = '下一個群組回覆後會開始記錄佢此刻嘅內心、注意力同 chemistry。';
+        empty.textContent = '此刻未有可顯示嘅內心線索。';
         panel.append(heading, empty);
         return;
     }
@@ -2108,7 +2108,7 @@ const renderUiV2SceneMemberInsight = (memberId: string | null) => {
     [
         ['內心', state.innerThought || '未顯露'],
         ['注意', state.attention || '未明'],
-        ['Chemistry', state.chemistry || '暫時平靜'],
+        ['Chemistry', state.chemistry || '尚未記錄'],
     ].forEach(([name, value]) => {
         const item = document.createElement('div');
         const key = document.createElement('span');
@@ -6441,20 +6441,6 @@ const buildCharacterPhotoProposal = async (
     };
 };
 
-const getMissingGroupPrivateStateMembers = (
-    result: GroupGenerationResult,
-    room: ChatRoom,
-) => result.scene.presentMemberIds.flatMap(memberId => {
-    const member = room.members.find(item => item.id === memberId);
-    const state = result.scene.memberStates?.[memberId];
-    if (
-        state?.attention?.trim()
-        && state.innerThought?.trim()
-        && state.chemistry?.trim()
-    ) return [];
-    return [member?.persona.name || memberId];
-});
-
 const runRoomConversationGeneration = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
@@ -6604,15 +6590,6 @@ const runRoomConversationGeneration = async (
                         requestId: request.id,
                         model: result.model,
                     });
-                }
-
-                const missingPrivateStateMembers = getMissingGroupPrivateStateMembers(parsed, request.room);
-                if (missingPrivateStateMembers.length > 0) {
-                    rejectedReply = parsed.text;
-                    throw new Error(
-                        `Missing private scene state for: ${missingPrivateStateMembers.join(', ')}. `
-                        + 'Return attention, inner_thought and chemistry for every present member inside scene.member_states.',
-                    );
                 }
 
                 const repeats = recentReplies.some(previous => repliesAreTooSimilar(previous, parsed.text));

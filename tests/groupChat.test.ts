@@ -1135,7 +1135,7 @@ test('group prompt carries private member state forward without making it shared
     assert.match(prompt, /PRIVATE SCENE-ENGINE MEMBER STATE/);
     assert.match(prompt, /private_inner_thought=I hope he relaxes/);
     assert.match(prompt, /Other characters must NEVER know it/i);
-    assert.match(prompt, /member_states must include every present member exactly once/i);
+    assert.match(prompt, /member_states metadata is optional enhancement/i);
     assert.match(prompt, /posture/);
     assert.match(prompt, /chemistry/);
 });
@@ -1169,4 +1169,23 @@ test('group member state falls back to visible narration for posture and action'
     assert.match(parsed.scene.memberStates?.iu?.posture || '', /坐/);
     assert.match(parsed.scene.memberStates?.iu?.action || '', /IU.*Jennie/);
     assert.equal(parsed.scene.memberStates?.jennie?.action, '正在參與目前對話');
+});
+
+
+test('four-present-member Group dialogue remains valid when private metadata is absent', () => {
+    const room = createRoom();
+    room.members.push(member('rose', 'Rose'), member('lisa', 'Lisa'));
+    room.scene.presentMemberIds = ['iu', 'jennie', 'rose', 'lisa'];
+    const parsed = parseGroupGeneration(
+        '<chat>IU：「我聽住。」\nJennie：「我都係。」\nRose：「我有個主意。」\nLisa：「不如試下。」</chat>'
+        + '<scene>{"location":"living room","reality_layer":"physical","present_member_ids":["iu","jennie","rose","lisa"],"summary":"Four friends continue their conversation.","unresolved":[]}</scene>'
+        + '<npc_candidate>null</npc_candidate>',
+        room,
+        'iu',
+    );
+
+    assert.equal(parsed.segments.filter(segment => segment.type === 'dialogue').length, 4);
+    assert.deepEqual(parsed.scene.presentMemberIds, ['iu', 'jennie', 'rose', 'lisa']);
+    assert.equal(parsed.scene.memberStates?.iu?.innerThought || '', '');
+    assert.ok(parsed.text.includes('Jennie'));
 });
