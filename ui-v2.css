@@ -2288,3 +2288,28 @@ html[data-wetapp-ui="v2"] .v2-scene-detail::-webkit-scrollbar-thumb {
         padding-right: 2px !important;
     }
 }
+
+
+/* On-demand scene X-ray: explicit consent for one optional compact AI request. */
+html[data-wetapp-ui="v2"] .v2-scene-insight-fetch {
+    display: block !important;
+    width: 100% !important;
+    padding: 10px 13px !important;
+    border: 1px solid rgba(64, 53, 44, .16) !important;
+    border-radius: 11px !important;
+    color: var(--v2-ink) !important;
+    background: rgba(255, 255, 255, .8) !important;
+    font-size: .65rem !important;
+    font-weight: 750 !important;
+    text-align: center !important;
+    cursor: pointer !important;
+}
+html[data-wetapp-ui="v2"] .v2-scene-insight-fetch:disabled {
+    opacity: .68 !important;
+    cursor: progress !important;
+}
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .v2-scene-insight-fetch {
+    border-color: rgba(255,255,255,.13) !important;
+    color: var(--v2-ink) !important;
+    background: rgba(255,255,255,.06) !important;
+}

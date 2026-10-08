@@ -542,6 +542,27 @@ const mergeSceneMemberStates = (
     return next;
 };
 
+export const parseGroupXrayStates = (
+    rawText: string,
+    room: ChatRoom,
+): Record<string, RoomSceneMemberState> => {
+    const tagged = extractTaggedBlock(rawText, 'xray');
+    const data = parseJsonObject(tagged || rawText) as ({
+        member_states?: GroupSceneMemberStatePayload[] | Record<string, GroupSceneMemberStatePayload>;
+        states?: GroupSceneMemberStatePayload[] | Record<string, GroupSceneMemberStatePayload>;
+    } | null);
+    if (!data) return {};
+    const emptyRoom = {
+        ...room,
+        scene: { ...room.scene, memberStates: {} },
+    };
+    return mergeSceneMemberStates(
+        emptyRoom,
+        data.member_states || data.states,
+        room.scene.presentMemberIds,
+    );
+};
+
 const deriveSceneMemberStateFromVisibleReply = (
     room: ChatRoom,
     segments: ChatSegment[],

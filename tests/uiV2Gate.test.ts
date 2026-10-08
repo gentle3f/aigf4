@@ -225,3 +225,15 @@ test('chat composer Enter keeps a newline and only the Send button dispatches', 
     assert.doesNotMatch(appSource, /messageInput\.addEventListener\('keydown'/);
     assert.match(appSource, /sendButton\.addEventListener\('click'[\s\S]*dispatchSendMessage\(\)/);
 });
+
+
+test('X-ray missing state offers explicit single on-demand request and never blocks Group replies', () => {
+    assert.match(appSource, /const requestUiV2SceneXray = async/);
+    assert.match(appSource, /fetch\.addEventListener\('click', \(\) => \{ void requestUiV2SceneXray/);
+    assert.match(appSource, /額外 1 次 AI 請求/);
+    assert.match(appSource, /const parsed = parseGroupXrayStates\(result\.text, latest\)/);
+    assert.match(appSource, /roomManager\.updateRoomSceneDeferred\(roomId/);
+    assert.match(appSource, /latest\.updatedAt !== room\.updatedAt/);
+    assert.match(appSource, /今次未能補讀內心資料，原本對話完全不受影響/);
+    assert.match(css, /\.v2-scene-insight-fetch/);
+});

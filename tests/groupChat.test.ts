@@ -6,6 +6,7 @@ import {
     getGroupDisplaySegments,
     groupNarrationUsesFirstPerson,
     parseGroupGeneration,
+    parseGroupXrayStates,
     selectGroupHistorySinceCurrentRealityLayer,
     selectLegacyGroupHistory,
     stripGroupTransportResidue,
@@ -1188,4 +1189,28 @@ test('four-present-member Group dialogue remains valid when private metadata is 
     assert.deepEqual(parsed.scene.presentMemberIds, ['iu', 'jennie', 'rose', 'lisa']);
     assert.equal(parsed.scene.memberStates?.iu?.innerThought || '', '');
     assert.ok(parsed.text.includes('Jennie'));
+});
+
+
+test('on-demand X-ray parser maps exact Group member IDs without inventing private thoughts', () => {
+    const room = createRoom();
+    const parsed = parseGroupXrayStates(
+        '<xray>{"member_states":[{"member_id":"iu","attention":"Jennie","inner_thought":"想先聽對方講完","chemistry":"同 Jennie 互相試探"},{"member_id":"jennie","attention":"IU","inner_thought":"想同 IU 開玩笑","chemistry":"對 IU 有輕微競爭感"},{"member_id":"irene","attention":"user","inner_thought":"not present","chemistry":"absent"}]}</xray>',
+        room,
+    );
+    assert.deepEqual(Object.keys(parsed).sort(), ['iu', 'jennie']);
+    assert.equal(parsed.iu.innerThought, '想先聽對方講完');
+    assert.equal(parsed.jennie.chemistry, '對 IU 有輕微競爭感');
+    assert.equal(parsed.iu.posture, '');
+    assert.equal(parseGroupXrayStates('This is not JSON', room).iu, undefined);
+});
+
+test('on-demand X-ray parser also accepts map-form JSON with member names', () => {
+    const room = createRoom();
+    const parsed = parseGroupXrayStates(
+        '{"member_states":{"IU":{"attention":"Jennie","innerThought":"想答一句","chemistry":"兩人心照不宣"}}}',
+        room,
+    );
+    assert.equal(parsed.iu.innerThought, '想答一句');
+    assert.equal(parsed.iu.chemistry, '兩人心照不宣');
 });

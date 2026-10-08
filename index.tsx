@@ -97,6 +97,7 @@ import {
     groupNarrationUsesFirstPerson,
     GroupGenerationResult,
     parseGroupGeneration,
+    parseGroupXrayStates,
     resolveRoomMemberPersona,
     selectLegacyGroupHistory,
     selectGroupHistorySinceCurrentRealityLayer,
@@ -2055,6 +2056,125 @@ const ensureUiV2ImmersiveSceneStructure = () => {
     topbar.insertAdjacentElement('afterend', shell);
 };
 
+let uiV2XrayPendingRoomId: string | null = null;
+
+const requestUiV2SceneXray = async (roomId: string) => {
+    if (uiV2XrayPendingRoomId) return;
+    const room = roomManager.getRoom(roomId);
+    if (!room || currentRoom?.id !== roomId || !isUiV2ImmersiveSceneActive()) return;
+    const sceneId = room.scene.id;
+    const realityEpochId = room.scene.realityEpochId;
+    const presentIds = [...room.scene.presentMemberIds];
+    const sourceContext = memoryManager.getChatHistory(roomId).slice(-6)
+        .map(message => {
+            const role = message.role === 'user' ? 'USER' : 'GROUP';
+            return `${role}: ${String(message.content.text || '').slice(0, 1300)}`;
+        }).join('\n\n').slice(-5700);
+    const castLedger = room.members
+        .filter(member => presentIds.includes(member.id))
+        .map(member => `${member.id}: ${member.persona.name}`)
+        .join('\n');
+
+    uiV2XrayPendingRoomId = roomId;
+    renderUiV2SceneMemberInsight(
+        document.getElementById('ui-v2-immersive-scene-shell')?.dataset.insightMemberId || null,
+    );
+    try {
+        const model = buildCharacterModelRoute(chatModelSettings, false)[0];
+        if (!model) throw new Error('No chat model configured');
+        const result = await generateChatTextWithTimeout({
+            model,
+            messages: [
+                {
+                    role: 'system',
+                    content: [
+                        'You are a scene-state continuity assistant for a fictional multi-character chat.',
+                        'Generate SHORT imagined character states, not model reasoning or actual private facts.',
+                        'Only use currently provided scene and conversation. Do not invent user actions, speech or consent.',
+                        'Output JSON only: {"member_states":[{"member_id":"EXACT_ID","attention":"short","inner_thought":"short fictional private thought","chemistry":"one concrete current relationship dynamic"}]}.',
+                        'Return one entry per listed present member. Every field should be one short Traditional Chinese phrase.',
+                        'Private thoughts are fictional character narrative states, never knowledge available to other characters until revealed.',
+                        'Do not output dialogue or advance the current scene.',
+                    ].join('\n'),
+                },
+                {
+                    role: 'user',
+                    content: [
+                        `Location: ${room.scene.location || 'unknown'}`,
+                        `Reality layer: ${room.scene.realityLayer}`,
+                        `Scene summary: ${room.scene.summary?.slice(0, 1100) || 'unknown'}`,
+                        'Present members (use these exact IDs):',
+                        castLedger,
+                        'Recent conversation:',
+                        sourceContext || '(no recent messages)',
+                    ].join('\n\n'),
+                },
+            ],
+            temperature: 0.5,
+            topP: 0.86,
+            repetitionPenalty: 1.02,
+        }, 30000);
+
+        const latest = roomManager.getRoom(roomId);
+        if (
+            !latest
+            || currentRoom?.id !== roomId
+            || latest.scene.id !== sceneId
+            || latest.updatedAt !== room.updatedAt
+            || latest.scene.realityEpochId !== realityEpochId
+            || latest.scene.presentMemberIds.join('|') !== presentIds.join('|')
+        ) return;
+
+        const parsed = parseGroupXrayStates(result.text, latest);
+        const completed = Object.values(parsed).filter(state => (
+            state.innerThought.trim() || state.attention.trim() || state.chemistry.trim()
+        )).length;
+        if (!completed) throw new Error('AI did not return readable X-ray metadata');
+
+        const mergedStates = { ...latest.scene.memberStates };
+        for (const [memberId, state] of Object.entries(parsed)) {
+            const old = mergedStates[memberId];
+            mergedStates[memberId] = {
+                posture: old?.posture || state.posture,
+                action: old?.action || state.action,
+                attention: state.attention || old?.attention || '',
+                innerThought: state.innerThought || old?.innerThought || '',
+                chemistry: state.chemistry || old?.chemistry || '',
+            };
+        }
+        const stored = roomManager.updateRoomSceneDeferred(roomId, {
+            ...latest.scene,
+            memberStates: mergedStates,
+        });
+        if (currentRoom?.id === roomId) {
+            currentRoom = stored || { ...currentRoom, scene: { ...latest.scene, memberStates: mergedStates } };
+            renderUiV2ImmersiveSceneChrome();
+        }
+    } catch (error) {
+        console.warn('[wetapp X-ray on-demand]', {
+            reason: error instanceof Error ? error.message : String(error),
+        });
+        if (currentRoom?.id === roomId) {
+            const panel = document.getElementById('ui-v2-scene-insight');
+            if (panel) {
+                const message = document.createElement('p');
+                message.className = 'v2-scene-insight-empty';
+                message.textContent = '今次未能補讀內心資料，原本對話完全不受影響。可以再試。';
+                panel.appendChild(message);
+            }
+        }
+    } finally {
+        uiV2XrayPendingRoomId = null;
+        if (currentRoom?.id === roomId) {
+            const button = document.getElementById('ui-v2-xray-fetch') as HTMLButtonElement | null;
+            if (button) {
+                button.disabled = false;
+                button.textContent = '補讀此刻 X-ray · 額外 1 次 AI 請求';
+            }
+        }
+    }
+};
+
 const renderUiV2SceneMemberInsight = (memberId: string | null) => {
     const shell = document.getElementById('ui-v2-immersive-scene-shell');
     const panel = document.getElementById('ui-v2-scene-insight');
@@ -2095,11 +2215,26 @@ const renderUiV2SceneMemberInsight = (memberId: string | null) => {
     heading.append(identity, label, close);
 
     const state = room.scene.memberStates?.[member.id];
+    const appendFetchButton = () => {
+        if (state?.innerThought?.trim() && state.attention?.trim() && state.chemistry?.trim()) return;
+        const fetch = document.createElement('button');
+        fetch.id = 'ui-v2-xray-fetch';
+        fetch.type = 'button';
+        fetch.className = 'v2-scene-insight-fetch';
+        fetch.disabled = Boolean(uiV2XrayPendingRoomId);
+        fetch.textContent = uiV2XrayPendingRoomId
+            ? '正在補讀此刻 X-ray…'
+            : '補讀此刻 X-ray · 額外 1 次 AI 請求';
+        fetch.addEventListener('click', () => { void requestUiV2SceneXray(room.id); });
+        panel.appendChild(fetch);
+    };
+
     if (!state || !Object.values(state).some(Boolean)) {
         const empty = document.createElement('p');
         empty.className = 'v2-scene-insight-empty';
         empty.textContent = '此刻未有可顯示嘅內心線索。';
         panel.append(heading, empty);
+        appendFetchButton();
         return;
     }
 
@@ -2120,6 +2255,7 @@ const renderUiV2SceneMemberInsight = (memberId: string | null) => {
     });
 
     panel.append(heading, grid);
+    appendFetchButton();
 };
 
 const toggleUiV2SceneMemberInsight = (memberId: string) => {
