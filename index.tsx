@@ -9617,13 +9617,6 @@ const setupEventListeners = () => {
         }
         dispatchSendMessage();
     });
-    messageInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            dispatchSendMessage();
-        }
-    });
-
     messageInput.addEventListener('input', () => {
         updateSendButtonState();
         syncMessageInputHeight();

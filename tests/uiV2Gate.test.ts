@@ -216,3 +216,9 @@ test('Group generation rejects missing private X-ray state before accepting a re
     assert.match(appSource, /Return attention, inner_thought and chemistry for every present member/);
     assert.match(appSource, /Previous attempt defect:/);
 });
+
+
+test('chat composer Enter keeps a newline and only the Send button dispatches', () => {
+    assert.doesNotMatch(appSource, /messageInput\.addEventListener\('keydown'/);
+    assert.match(appSource, /sendButton\.addEventListener\('click'[\s\S]*dispatchSendMessage\(\)/);
+});
