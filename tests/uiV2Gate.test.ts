@@ -205,3 +205,14 @@ test('UI v2 scene detail is scrollable and avatar insight opens the hidden detai
     assert.match(css, /\.v2-scene-detail[\s\S]*overflow-y: auto !important/);
     assert.match(css, /\.v2-scene-detail[\s\S]*overscroll-behavior: contain !important/);
 });
+
+
+test('Group generation rejects missing private X-ray state before accepting a reply', () => {
+    assert.match(appSource, /const getMissingGroupPrivateStateMembers =/);
+    assert.match(appSource, /state\?\.attention\?\.trim\(\)/);
+    assert.match(appSource, /state\.innerThought\?\.trim\(\)/);
+    assert.match(appSource, /state\.chemistry\?\.trim\(\)/);
+    assert.match(appSource, /Missing private scene state for:/);
+    assert.match(appSource, /Return attention, inner_thought and chemistry for every present member/);
+    assert.match(appSource, /Previous attempt defect:/);
+});

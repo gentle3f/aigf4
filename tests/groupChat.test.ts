@@ -534,9 +534,9 @@ test('group parser preserves separate speakers and scene state', () => {
     assert.equal(parsed.npcCandidate?.gender, 'female');
 });
 
-test('group rooms preserve five active members in scene state', () => {
+test('group rooms preserve six active members in scene state', () => {
     const room = createRoom();
-    room.members.push(member('rose', 'Rose'), member('lisa', 'Lisa'));
+    room.members.push(member('rose', 'Rose'), member('lisa', 'Lisa'), member('sana', 'Sana'));
     room.scene.presentMemberIds = room.members.map(item => item.id);
 
     const parsed = parseGroupGeneration(JSON.stringify({
@@ -544,15 +544,15 @@ test('group rooms preserve five active members in scene state', () => {
         scene: {
             location: 'living room',
             reality_layer: 'physical',
-            present_member_ids: ['iu', 'jennie', 'irene', 'rose', 'lisa'],
-            summary: 'All five members remain present.',
+            present_member_ids: ['iu', 'jennie', 'irene', 'rose', 'lisa', 'sana'],
+            summary: 'All six members remain present.',
             unresolved: [],
         },
         npc_candidate: null,
     }), room);
 
-    assert.equal(ROOM_PRESENT_MEMBER_LIMIT, 5);
-    assert.deepEqual(parsed.scene.presentMemberIds, ['iu', 'jennie', 'irene', 'rose', 'lisa']);
+    assert.equal(ROOM_PRESENT_MEMBER_LIMIT, 6);
+    assert.deepEqual(parsed.scene.presentMemberIds, ['iu', 'jennie', 'irene', 'rose', 'lisa', 'sana']);
 });
 
 test('group parser accepts Venice legacy messages and sender_id fields', () => {

@@ -14,7 +14,7 @@ export const IU_GROUP_ROOM_ID = 'room_iu_jennie_irene_v1';
 const IU_GROUP_MIGRATION_VERSION = 2;
 
 export const ROOM_MEMBER_LIMIT = 8;
-export const ROOM_PRESENT_MEMBER_LIMIT = 5;
+export const ROOM_PRESENT_MEMBER_LIMIT = 6;
 
 export type RoomMemoryKind =
     | 'core'

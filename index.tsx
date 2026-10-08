@@ -6441,6 +6441,20 @@ const buildCharacterPhotoProposal = async (
     };
 };
 
+const getMissingGroupPrivateStateMembers = (
+    result: GroupGenerationResult,
+    room: ChatRoom,
+) => result.scene.presentMemberIds.flatMap(memberId => {
+    const member = room.members.find(item => item.id === memberId);
+    const state = result.scene.memberStates?.[memberId];
+    if (
+        state?.attention?.trim()
+        && state.innerThought?.trim()
+        && state.chemistry?.trim()
+    ) return [];
+    return [member?.persona.name || memberId];
+});
+
 const runRoomConversationGeneration = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
@@ -6524,6 +6538,7 @@ const runRoomConversationGeneration = async (
                             request.surpriseEvent
                                 ? 'The previous event opening also failed its participant contract. Include every selected character visibly, preserve each distinct first move, and do not let an unselected fixed member speak.'
                                 : '',
+                            lastError ? `Previous attempt defect: ${lastError.message}` : '',
                             rejectedReply ? `Rejected output; do not copy it:\n${rejectedReply.slice(0, 900)}` : '',
                         ].filter(Boolean).join('\n'),
                     });
@@ -6590,6 +6605,16 @@ const runRoomConversationGeneration = async (
                         model: result.model,
                     });
                 }
+
+                const missingPrivateStateMembers = getMissingGroupPrivateStateMembers(parsed, request.room);
+                if (missingPrivateStateMembers.length > 0) {
+                    rejectedReply = parsed.text;
+                    throw new Error(
+                        `Missing private scene state for: ${missingPrivateStateMembers.join(', ')}. `
+                        + 'Return attention, inner_thought and chemistry for every present member inside scene.member_states.',
+                    );
+                }
+
                 const repeats = recentReplies.some(previous => repliesAreTooSimilar(previous, parsed.text));
                 if (repeats && !userExplicitlyRequestsContinuation(latestUserMessage)) {
                     rejectedReply = parsed.text;
