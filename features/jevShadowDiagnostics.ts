@@ -30,7 +30,24 @@ export const openJevShadowDiagnostics = () => {
     researchToggle.type = 'button';
     const researchExport = document.createElement('button');
     researchExport.type = 'button';
-    researchExport.textContent = '分享 Research JSON';
+    researchExport.textContent = '準備 Research JSON（每批 50 筆）';
+    const researchDownload = document.createElement('a');
+    researchDownload.textContent = '下載已準備的 Research JSON';
+    researchDownload.className = 'jev-shadow-download-ready hidden';
+    researchDownload.setAttribute('aria-label', '下載這批完整研究 JSON');
+    researchDownload.style.cssText = 'display:inline-block;padding:10px 14px;border:1px solid currentColor;border-radius:8px;font-weight:700';
+    const researchShare = document.createElement('button');
+    researchShare.type = 'button';
+    researchShare.textContent = '分享已準備的 Research JSON';
+    researchShare.classList.add('hidden');
+    const researchNext = document.createElement('button');
+    researchNext.type = 'button';
+    researchNext.textContent = '準備下一批 50 筆';
+    researchNext.classList.add('hidden');
+    const researchRestart = document.createElement('button');
+    researchRestart.type = 'button';
+    researchRestart.textContent = '重新由最新一批開始';
+    researchRestart.classList.add('hidden');
     const refresh = document.createElement('button');
     refresh.type = 'button';
     refresh.textContent = '重新整理';
@@ -43,7 +60,7 @@ export const openJevShadowDiagnostics = () => {
     const clear = document.createElement('button');
     clear.type = 'button';
     clear.textContent = '清除本頁記錄';
-    controls.append(researchToggle, researchExport, refresh, copy, shareOrDownload, clear);
+    controls.append(researchToggle, researchExport, researchDownload, researchShare, researchNext, researchRestart, refresh, copy, shareOrDownload, clear);
     const researchStatus = document.createElement('p');
     researchStatus.className = 'jev-shadow-action-status';
     const status = document.createElement('p');
@@ -339,44 +356,105 @@ export const openJevShadowDiagnostics = () => {
             : 'Research Capture 已關閉；已保存的 research archive 不會因此刪除。';
         void renderResearchState();
     };
-    researchExport.onclick = async () => {
+    // A genuine second tap on a ready link/button preserves the mobile browser's
+    // user activation. Preparing a large IndexedDB export before navigator.share()
+    // previously consumed the activation and silently failed on iOS.
+    let researchOffset = 0;
+    let preparedResearchFile: File | null = null;
+    let researchDownloadUrl: string | null = null;
+    let nextResearchOffset: number | null = null;
+    const releasePreparedResearchFile = () => {
+        if (researchDownloadUrl) URL.revokeObjectURL(researchDownloadUrl);
+        researchDownloadUrl = null;
+        preparedResearchFile = null;
+        nextResearchOffset = null;
+        researchDownload.removeAttribute('href');
+        researchDownload.classList.add('hidden');
+        researchShare.classList.add('hidden');
+        researchNext.classList.add('hidden');
+    };
+    dialog.addEventListener('close', releasePreparedResearchFile, { once: true });
+
+    const prepareResearchBatch = async () => {
+        researchExport.disabled = true;
+        researchNext.disabled = true;
+        releasePreparedResearchFile();
+        status.textContent = '正在從手機本機讀取最多 50 筆研究紀錄…';
         try {
-            const exportData = await createResearchCaptureExport();
-            const json = JSON.stringify(exportData, null, 2);
+            const exportData = await createResearchCaptureExport({ offset: researchOffset, limit: 50 });
+            if (exportData.batch.count === 0) {
+                status.textContent = exportData.batch.total === 0
+                    ? '本機 Research Archive 目前 0 筆。請確認 Research Capture 已開啟，並使用同一部手機／瀏覽器。'
+                    : '這批已無紀錄，請按「重新由最新一批開始」。';
+                researchRestart.classList.toggle('hidden', researchOffset === 0);
+                return;
+            }
+            // No JSON whitespace: significantly less temporary memory on mobile.
+            const json = JSON.stringify(exportData);
             const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
-            const filename = `aigf-research-capture-${stamp}.json`;
-            const file = new File([json], filename, { type: 'application/json' });
-            if (
-                typeof navigator.share === 'function'
-                && typeof navigator.canShare === 'function'
-                && navigator.canShare({ files: [file] })
-            ) {
-                await navigator.share({
-                    files: [file],
-                    title: 'AIGF Research Capture',
-                });
-                status.textContent = '已開啟分享選單。Research JSON 包含實際聊天內容，請只保存到你信任的位置。';
-                return;
-            }
-            const url = URL.createObjectURL(file);
-            try {
-                const anchor = document.createElement('a');
-                anchor.href = url;
-                anchor.download = filename;
-                document.body.appendChild(anchor);
-                anchor.click();
-                anchor.remove();
-                status.textContent = '已下載 Research JSON。此檔包含實際聊天內容，請妥善保存。';
-            } finally {
-                window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-            }
+            const part = String(Math.floor(researchOffset / 50) + 1).padStart(2, '0');
+            const filename = `aigf-research-capture-part-${part}-${stamp}.json`;
+            preparedResearchFile = new File([json], filename, { type: 'application/json' });
+            researchDownloadUrl = URL.createObjectURL(preparedResearchFile);
+            researchDownload.href = researchDownloadUrl;
+            researchDownload.download = filename;
+            researchDownload.classList.remove('hidden');
+            researchShare.classList.remove('hidden');
+            nextResearchOffset = exportData.batch.nextOffset;
+            researchNext.classList.toggle('hidden', nextResearchOffset === null);
+            researchRestart.classList.toggle('hidden', researchOffset === 0);
+            status.textContent = `已準備第 ${part} 批：${exportData.batch.count} 筆／本機共 ${exportData.batch.total} 筆（${(preparedResearchFile.size / 1024 / 1024).toFixed(1)} MB）。請再按「下載已準備的 Research JSON」，或「分享已準備的 Research JSON」。內容包括私人對話，請妥善保存。`;
         } catch (error) {
-            if (error instanceof DOMException && error.name === 'AbortError') {
-                status.textContent = '已取消分享。';
+            const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+            status.textContent = `無法準備 Research JSON：${detail.slice(0, 220)}。原有紀錄未被刪除，請再試。`;
+        } finally {
+            researchExport.disabled = false;
+            researchNext.disabled = false;
+        }
+    };
+
+    researchExport.onclick = () => { void prepareResearchBatch(); };
+    researchDownload.onclick = () => {
+        status.textContent = '已啟動瀏覽器下載；請查看手機「下載項目」或「檔案」App。原有研究紀錄不受影響。';
+    };
+    researchShare.onclick = () => {
+        const file = preparedResearchFile;
+        if (!file) return;
+        // Call share synchronously in the actual tap handler, never after awaited DB work.
+        try {
+            if (
+                typeof navigator.share !== 'function'
+                || (typeof navigator.canShare === 'function' && !navigator.canShare({ files: [file] }))
+            ) {
+                status.textContent = '此手機不支援檔案分享。請按旁邊「下載已準備的 Research JSON」。';
                 return;
             }
-            status.textContent = '未能匯出 Research JSON。';
+            void navigator.share({ files: [file], title: 'AIGF Research Capture' })
+                .then(() => {
+                    status.textContent = '已完成分享操作。檔案包含實際對話，請只分享至信任的位置。';
+                })
+                .catch(error => {
+                    if (error instanceof DOMException && error.name === 'AbortError') {
+                        status.textContent = '已取消分享；下載檔案連結仍然可用。';
+                    } else {
+                        const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+                        status.textContent = `手機分享失敗（${detail.slice(0, 170)}）。請改按「下載已準備的 Research JSON」。`;
+                    }
+                });
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            status.textContent = `手機分享失敗（${detail.slice(0, 170)}）。請改按「下載已準備的 Research JSON」。`;
         }
+    };
+    researchNext.onclick = () => {
+        if (nextResearchOffset === null) return;
+        researchOffset = nextResearchOffset;
+        void prepareResearchBatch();
+    };
+    researchRestart.onclick = () => {
+        researchOffset = 0;
+        researchRestart.classList.add('hidden');
+        void prepareResearchBatch();
     };
 
     refresh.onclick = () => {

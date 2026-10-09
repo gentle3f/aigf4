@@ -324,17 +324,41 @@ export const listPendingResearchTurnRecords = async (limit = 20): Promise<Resear
     });
 };
 
-export const listRecentResearchTurnRecords = async (limit = 100): Promise<ResearchGroupTurnRecord[]> => {
+export const listResearchTurnRecordsPage = async (
+    offset = 0,
+    limit = 50,
+): Promise<ResearchGroupTurnRecord[]> => {
     if (!canUseIndexedDb()) return [];
-    return withStore('readonly', async store => {
-        const all = await requestResult(store.getAll()) as ResearchGroupTurnRecord[];
-        return all
-            .filter(record => record.schemaVersion === 1)
-            .sort((left, right) => right.createdAtMs - left.createdAtMs)
-            .slice(0, Math.max(1, limit))
-            .map(clone);
-    });
+    const skip = Math.max(0, Math.floor(offset));
+    const take = Math.min(100, Math.max(1, Math.floor(limit)));
+    return withStore('readonly', store => new Promise<ResearchGroupTurnRecord[]>((resolve, reject) => {
+        const rows: ResearchGroupTurnRecord[] = [];
+        const request = store.index('createdAtMs').openCursor(null, 'prev');
+        let skipped = false;
+        request.onerror = () => reject(request.error || new Error('Research archive page read failed.'));
+        request.onsuccess = () => {
+            const cursor = request.result;
+            if (!cursor || rows.length >= take) {
+                resolve(rows);
+                return;
+            }
+            if (!skipped && skip) {
+                skipped = true;
+                cursor.advance(skip);
+                return;
+            }
+            skipped = true;
+            const record = cursor.value as ResearchGroupTurnRecord;
+            if (record.schemaVersion === 1) rows.push(record);
+            if (rows.length >= take) resolve(rows);
+            else cursor.continue();
+        };
+    }));
 };
+
+export const listRecentResearchTurnRecords = async (limit = 100): Promise<ResearchGroupTurnRecord[]> => (
+    listResearchTurnRecordsPage(0, limit)
+);
 
 export const markResearchTurnsSynced = async (
     uploaded: ReadonlyArray<{ recordId: string; updatedAtMs: number }>,
@@ -362,12 +386,19 @@ export const markResearchTurnsSynced = async (
 export const getResearchCaptureStats = async () => {
     if (!canUseIndexedDb()) return { total: 0, pending: 0, oldestAtMs: undefined as number | undefined };
     return withStore('readonly', async store => {
-        const all = await requestResult(store.getAll()) as ResearchGroupTurnRecord[];
-        const valid = all.filter(record => record.schemaVersion === 1);
+        // Count/index lookups do not materialize every full conversation in phone memory.
+        const totalRequest = store.count();
+        const pendingRequest = store.index('syncState').count('pending');
+        const oldestRequest = store.index('createdAtMs').openCursor();
+        const [total, pending, oldest] = await Promise.all([
+            requestResult(totalRequest),
+            requestResult(pendingRequest),
+            requestResult(oldestRequest),
+        ]);
         return {
-            total: valid.length,
-            pending: valid.filter(record => record.syncState === 'pending').length,
-            oldestAtMs: valid.length ? Math.min(...valid.map(record => record.createdAtMs)) : undefined,
+            total,
+            pending,
+            oldestAtMs: oldest ? Number(oldest.key) : undefined,
         };
     });
 };
@@ -584,13 +615,28 @@ export const buildResearchCloudProjection = (
     return { metadata, samplePayload };
 };
 
-export const createResearchCaptureExport = async (limit = RESEARCH_CAPTURE_MAX_LOCAL_RECORDS) => ({
-    schemaVersion: 1,
-    exportedAt: new Date().toISOString(),
-    policy: {
-        localRetentionMs: RESEARCH_CAPTURE_RETENTION_MS,
-        localMaxRecords: RESEARCH_CAPTURE_MAX_LOCAL_RECORDS,
-        cloudPolicy: 'compact-metadata-all-turns; sampled-full-content-only',
-    },
-    records: await listRecentResearchTurnRecords(limit),
-});
+export const createResearchCaptureExport = async (
+    options: { offset?: number; limit?: number } = {},
+) => {
+    const offset = Math.max(0, Math.floor(options.offset || 0));
+    const limit = Math.min(100, Math.max(1, Math.floor(options.limit || 50)));
+    const stats = await getResearchCaptureStats();
+    const records = await listResearchTurnRecordsPage(offset, limit);
+    return {
+        schemaVersion: 1,
+        exportedAt: new Date().toISOString(),
+        batch: {
+            offset,
+            limit,
+            total: stats.total,
+            count: records.length,
+            nextOffset: offset + records.length < stats.total ? offset + records.length : null,
+        },
+        policy: {
+            localRetentionMs: RESEARCH_CAPTURE_RETENTION_MS,
+            localMaxRecords: RESEARCH_CAPTURE_MAX_LOCAL_RECORDS,
+            cloudPolicy: 'compact-metadata-all-turns; sampled-full-content-only',
+        },
+        records,
+    };
+};

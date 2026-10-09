@@ -6,6 +6,9 @@ import type { GroupGenerationResult } from '../groupChat.js';
 import {
     buildResearchCloudProjection,
     buildResearchGroupTurnRecord,
+    createResearchCaptureExport,
+    getResearchCaptureStats,
+    listResearchTurnRecordsPage,
     getResearchCloudSampleReasons,
     listPendingResearchTurnRecords,
     markResearchTurnsSynced,
@@ -326,5 +329,39 @@ test('captured turns stay local until review completes or fails', async () => {
     assert.equal((await listPendingResearchTurnRecords()).length, 0);
     assert.equal(await patchResearchTurnRecord(record.recordId, { lifecycle: 'completed' }), true);
     assert.equal((await listPendingResearchTurnRecords()).length, 1);
+    await resetResearchDb();
+});
+
+
+test('Research JSON export uses bounded newest-first pages without deleting stored turns', async () => {
+    await resetResearchDb();
+    const now = Date.now();
+    for (let i = 0; i < 8; i += 1) {
+        const record = makeCloudPolicyRecord(`export-test-${i}`);
+        record.createdAtMs = now + i;
+        record.updatedAtMs = now + i;
+        await saveResearchTurnRecord(record);
+    }
+
+    const stats = await getResearchCaptureStats();
+    assert.equal(stats.total, 8);
+    assert.equal(stats.pending, 8);
+    assert.equal(stats.oldestAtMs, now);
+    const first = await listResearchTurnRecordsPage(0, 3);
+    const second = await listResearchTurnRecordsPage(3, 3);
+    const last = await listResearchTurnRecordsPage(6, 3);
+    assert.deepEqual(first.map(r => r.recordId), ['export-test-7', 'export-test-6', 'export-test-5']);
+    assert.deepEqual(second.map(r => r.recordId), ['export-test-4', 'export-test-3', 'export-test-2']);
+    assert.deepEqual(last.map(r => r.recordId), ['export-test-1', 'export-test-0']);
+
+    const batch = await createResearchCaptureExport({ offset: 3, limit: 3 });
+    assert.equal(batch.batch.total, 8);
+    assert.equal(batch.batch.count, 3);
+    assert.equal(batch.batch.nextOffset, 6);
+    assert.equal(batch.records[0].recordId, 'export-test-4');
+    assert.equal(batch.records[0].userMessage, 'private user message');
+    const finalBatch = await createResearchCaptureExport({ offset: 6, limit: 3 });
+    assert.equal(finalBatch.batch.nextOffset, null);
+    assert.equal((await getResearchCaptureStats()).total, 8);
     await resetResearchDb();
 });
