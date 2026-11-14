@@ -20,6 +20,21 @@ import {
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
 import { RESEARCH_CAPTURE_SETTING_KEY, setPersistedAppSetting } from './appSettings.js';
+import {
+    ASSISTANT_TOPIC_PREFIX,
+    ASSISTANT_TOPICS_SETTING_KEY,
+    getAssistantTopicTitle,
+    isAssistantConversationKey,
+    listAssistantConversationKeys,
+    normalizeAssistantTopicTitle,
+    parseAssistantTopicTitles,
+} from './assistantTopics.js';
+import {
+    MAX_ASSISTANT_TOTAL_FILE_CHARACTERS,
+    extractAssistantJsonExport,
+    isAssistantTextFile,
+    wrapAssistantFileText,
+} from './assistantFiles.js';
 import type { SupabaseCloudSyncState } from './supabaseCloudSync.js';
 import { coreInstruction, VENICE_ASSISTANT_PERSONA_KEY } from "./personas.tsx";
 import {
@@ -322,6 +337,13 @@ const authSubmitLabel = document.getElementById('auth-submit-label')!;
 const authSubmitLoading = document.getElementById('auth-submit-loading')!;
 const chatAttachmentInput = document.getElementById('chat-attachment-input') as HTMLInputElement;
 const chatAttachmentPreview = document.getElementById('chat-attachment-preview')!;
+const assistantFileUploadButton = document.createElement('button');
+assistantFileUploadButton.type = 'button';
+assistantFileUploadButton.className = 'assistant-file-upload hidden';
+assistantFileUploadButton.textContent = '📎 上傳 JSON／文字檔案';
+assistantFileUploadButton.title = '上傳檔案交由 Venice AI 分析';
+assistantFileUploadButton.addEventListener('click', () => chatAttachmentInput.click());
+chatAttachmentPreview.after(assistantFileUploadButton);
 const composerCameraButton = document.getElementById('composer-camera-button') as HTMLButtonElement;
 const imageStudioEntry = document.getElementById('image-studio-entry') as HTMLButtonElement;
 const imageSeed = document.getElementById('image-seed') as HTMLInputElement;
@@ -585,7 +607,7 @@ const CHAT_HISTORY_CHAR_BUDGET = 48000;
 const GROUP_CHAT_HISTORY_MESSAGE_LIMIT = 40;
 const GROUP_CHAT_HISTORY_CHAR_BUDGET = 40000;
 const ASSISTANT_HISTORY_MESSAGE_LIMIT = 60;
-const ASSISTANT_HISTORY_CHAR_BUDGET = 36000;
+const ASSISTANT_HISTORY_CHAR_BUDGET = 115000;
 const GOD_MODE_HISTORY_LIMIT = 10;
 const ROOM_MEMORY_SUMMARY_TURN_INTERVAL = AUTO_MEMORY_TURN_INTERVAL;
 const AUTO_MEMORY_RECENT_MESSAGE_LIMIT = 32;
@@ -823,6 +845,174 @@ const enableAvatarPreview = (target: HTMLElement, persona: Persona) => {
     };
 };
 
+
+type AssistantTopicEntry = { key: string; title: string; timestamp: number; preview: string };
+const readAssistantTopicNames = () => parseAssistantTopicTitles(localStorage.getItem(ASSISTANT_TOPICS_SETTING_KEY));
+const storeAssistantTopicNames = (names: Record<string, string>) =>
+    setPersistedAppSetting(ASSISTANT_TOPICS_SETTING_KEY, JSON.stringify(names));
+const getAssistantTopicEntries = (): AssistantTopicEntry[] => {
+    const names = readAssistantTopicNames();
+    const keys = listAssistantConversationKeys(
+        Object.keys(memoryManager.getAllChatHistories()),
+        names,
+        VENICE_ASSISTANT_PERSONA_KEY,
+    );
+    return keys.map(key => {
+        const history = memoryManager.peekChatHistory(key);
+        const userText = history.find(message => message.role === 'user')?.content.text || '';
+        const latest = history.at(-1);
+        return {
+            key,
+            title: getAssistantTopicTitle(key, VENICE_ASSISTANT_PERSONA_KEY, names, userText),
+            timestamp: latest?.createdAt || 0,
+            preview: latest?.content.text?.replace(/\s+/gu, ' ').slice(0, 72)
+                || (key === VENICE_ASSISTANT_PERSONA_KEY ? '以前的 Venice AI 訊息' : '開始新對話'),
+        };
+    }).sort((left, right) => right.timestamp - left.timestamp);
+};
+
+let assistantTopicPanel: HTMLElement | null = null;
+let assistantTopicToggle: HTMLButtonElement | null = null;
+let assistantTopicPanelOpen = window.matchMedia('(min-width: 900px)').matches;
+let assistantTopicSearch = '';
+const createAssistantTopic = () => {
+    if (activeChatRequest) cancelActiveChatRequest();
+    const key = ASSISTANT_TOPIC_PREFIX + (crypto.randomUUID?.() || Math.random().toString(36).slice(2));
+    const names = readAssistantTopicNames();
+    names[key] = '新對話';
+    storeAssistantTopicNames(names);
+    memoryManager.setChatHistory(key, []);
+    startChat(key);
+};
+const renameAssistantTopic = (key: string) => {
+    if (key === VENICE_ASSISTANT_PERSONA_KEY) return;
+    const current = getAssistantTopicEntries().find(topic => topic.key === key)?.title || '新對話';
+    const reply = window.prompt('重新命名 Venice AI 話題', current);
+    if (reply === null) return;
+    const title = normalizeAssistantTopicTitle(reply);
+    if (!title) return;
+    const names = readAssistantTopicNames();
+    names[key] = title;
+    storeAssistantTopicNames(names);
+    if (currentConversationKey === key) chatHeaderName.textContent = title;
+    renderPersonaList();
+};
+const deleteAssistantTopic = async (key: string) => {
+    if (key === VENICE_ASSISTANT_PERSONA_KEY) return;
+    const name = getAssistantTopicEntries().find(topic => topic.key === key)?.title || '此話題';
+    if (!window.confirm('確定刪除「' + name + '」及其對話紀錄？此操作不能復原。')) return;
+    if (activeChatRequest?.conversationKey === key) cancelActiveChatRequest();
+    const history = memoryManager.peekChatHistory(key);
+    const assetIds = new Set(history.flatMap(message => message.content.attachments?.map(a => a.assetId) || []));
+    if (assetIds.size) {
+        const media = await loadChatMediaStoreModule();
+        for (const id of assetIds) {
+            await media.deleteChatAttachment(id).catch(error => console.warn('Failed to delete assistant attachment', error));
+        }
+    }
+    memoryManager.deleteChatHistory(key);
+    const names = readAssistantTopicNames();
+    delete names[key];
+    storeAssistantTopicNames(names);
+    if (currentConversationKey === key) startChat(VENICE_ASSISTANT_PERSONA_KEY, null, 'replace');
+    else renderPersonaList();
+};
+
+const renderAssistantTopicPanel = () => {
+    const body = assistantTopicPanel?.querySelector<HTMLElement>('.assistant-topic-list');
+    if (!body) return;
+    body.replaceChildren();
+    for (const entry of getAssistantTopicEntries()) {
+        if (assistantTopicSearch && !entry.title.toLocaleLowerCase().includes(assistantTopicSearch)
+            && !entry.preview.toLocaleLowerCase().includes(assistantTopicSearch)) continue;
+        const row = document.createElement('div');
+        row.className = 'assistant-topic-row';
+        if (currentConversationKey === entry.key) row.classList.add('active');
+        const select = document.createElement('button');
+        select.type = 'button';
+        select.className = 'assistant-topic-name';
+        select.textContent = entry.title;
+        select.title = entry.preview;
+        select.addEventListener('click', () => startChat(entry.key));
+        row.appendChild(select);
+        if (entry.key !== VENICE_ASSISTANT_PERSONA_KEY) {
+            const rename = document.createElement('button');
+            rename.type = 'button';
+            rename.className = 'assistant-topic-action';
+            rename.textContent = '✎';
+            rename.title = '重新命名';
+            rename.setAttribute('aria-label', '重新命名 ' + entry.title);
+            rename.addEventListener('click', () => renameAssistantTopic(entry.key));
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'assistant-topic-action';
+            remove.textContent = '×';
+            remove.title = '刪除話題';
+            remove.setAttribute('aria-label', '刪除 ' + entry.title);
+            remove.addEventListener('click', () => void deleteAssistantTopic(entry.key));
+            row.append(rename, remove);
+        }
+        body.appendChild(row);
+    }
+};
+const ensureAssistantTopicPanel = () => {
+    if (assistantTopicPanel) return;
+    assistantTopicPanel = document.createElement('aside');
+    assistantTopicPanel.id = 'assistant-topic-panel';
+    assistantTopicPanel.className = 'assistant-topic-panel hidden';
+    assistantTopicPanel.setAttribute('aria-label', 'Venice AI 話題列表');
+    const head = document.createElement('div');
+    head.className = 'assistant-topic-head';
+    const heading = document.createElement('strong');
+    heading.textContent = 'Venice AI 話題';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '×';
+    close.setAttribute('aria-label', '收起話題列表');
+    close.addEventListener('click', () => {
+        assistantTopicPanelOpen = false;
+        updateAssistantTopicLayout(true);
+    });
+    head.append(heading, close);
+    const create = document.createElement('button');
+    create.type = 'button';
+    create.className = 'assistant-topic-create';
+    create.textContent = '＋ 新對話';
+    create.addEventListener('click', createAssistantTopic);
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'assistant-topic-search';
+    search.placeholder = '搜尋話題';
+    search.setAttribute('aria-label', '搜尋 Venice AI 話題');
+    search.addEventListener('input', () => {
+        assistantTopicSearch = search.value.trim().toLocaleLowerCase();
+        renderAssistantTopicPanel();
+    });
+    const list = document.createElement('div');
+    list.className = 'assistant-topic-list';
+    assistantTopicPanel.append(head, create, search, list);
+    chatView.prepend(assistantTopicPanel);
+    assistantTopicToggle = document.createElement('button');
+    assistantTopicToggle.type = 'button';
+    assistantTopicToggle.className = 'assistant-topic-toggle hidden';
+    assistantTopicToggle.textContent = '☰';
+    assistantTopicToggle.setAttribute('aria-label', '切換 Venice AI 話題列表');
+    assistantTopicToggle.addEventListener('click', () => {
+        assistantTopicPanelOpen = !assistantTopicPanelOpen;
+        updateAssistantTopicLayout(true);
+    });
+    backButton.after(assistantTopicToggle);
+};
+const updateAssistantTopicLayout = (active: boolean) => {
+    ensureAssistantTopicPanel();
+    chatView.classList.toggle('assistant-topics-mode', active);
+    const opened = active && assistantTopicPanelOpen;
+    chatView.classList.toggle('assistant-topics-open', opened);
+    assistantTopicPanel?.classList.toggle('hidden', !opened);
+    assistantTopicToggle?.classList.toggle('hidden', !active);
+    if (active) renderAssistantTopicPanel();
+};
+
 let personaListRenderVersion = 0;
 
 const renderPersonaList = () => {
@@ -880,12 +1070,13 @@ const renderPersonaList = () => {
         persona?: Persona;
         room?: ChatRoom;
         pinned?: boolean;
+        assistantTopic?: boolean;
     }) => {
         const shell = document.createElement('div');
         shell.className = 'conversation-row-shell';
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = `conversation-row${options.room ? ' is-group-conversation' : options.pinned ? ' is-assistant-conversation' : ' is-persona-conversation'}${currentConversationKey === options.key ? ' is-active' : ''}`;
+        button.className = `conversation-row${options.room ? ' is-group-conversation' : options.pinned || options.assistantTopic ? ' is-assistant-conversation' : ' is-persona-conversation'}${currentConversationKey === options.key ? ' is-active' : ''}`;
         button.dataset.key = options.key;
 
         const avatar = document.createElement('span');
@@ -928,14 +1119,25 @@ const renderPersonaList = () => {
             const deleteButton = document.createElement('button');
             deleteButton.type = 'button';
             deleteButton.className = 'conversation-delete-button';
-            deleteButton.title = options.room ? `刪除群組 ${options.title}` : `刪除與 ${options.title} 的聊天`;
+            deleteButton.title = options.assistantTopic ? `刪除話題 ${options.title}` : options.room ? `刪除群組 ${options.title}` : `刪除與 ${options.title} 的聊天`;
             deleteButton.setAttribute('aria-label', deleteButton.title);
             deleteButton.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5m4-5v5"></path></svg>';
             deleteButton.addEventListener('click', event => {
                 event.preventDefault();
                 event.stopPropagation();
-                void deleteConversationFromList(options.key, options.title, options.room);
+                if (options.assistantTopic) void deleteAssistantTopic(options.key);
+                else void deleteConversationFromList(options.key, options.title, options.room);
             });
+            if (options.assistantTopic) {
+                const rename = document.createElement('button');
+                rename.type = 'button';
+                rename.className = 'assistant-topic-action';
+                rename.textContent = '✎';
+                rename.title = '重新命名';
+                rename.setAttribute('aria-label', '重新命名 ' + options.title);
+                rename.addEventListener('click', () => renameAssistantTopic(options.key));
+                shell.appendChild(rename);
+            }
             shell.appendChild(deleteButton);
         }
         return shell;
@@ -943,14 +1145,32 @@ const renderPersonaList = () => {
 
     const assistant = personas[VENICE_ASSISTANT_PERSONA_KEY];
     if (assistant) {
+        const newTopic = document.createElement('button');
+        newTopic.type = 'button';
+        newTopic.className = 'assistant-topic-home-create';
+        newTopic.textContent = '＋ Venice AI 新對話';
+        newTopic.addEventListener('click', createAssistantTopic);
+        aiAssistantList.appendChild(newTopic);
         aiAssistantList.appendChild(createRow({
             key: VENICE_ASSISTANT_PERSONA_KEY,
-            title: 'Venice AI',
-            preview: previewText(VENICE_ASSISTANT_PERSONA_KEY, '可選模型的私人 AI 助手'),
+            title: 'Venice AI · 原有對話',
+            preview: previewText(VENICE_ASSISTANT_PERSONA_KEY, '既有的 Venice AI 聊天紀錄'),
             timestamp: latestTimestamp(VENICE_ASSISTANT_PERSONA_KEY),
             persona: assistant,
             pinned: true,
         }));
+        for (const topic of getAssistantTopicEntries()) {
+            if (topic.key === VENICE_ASSISTANT_PERSONA_KEY) continue;
+            if (query && !topic.title.toLocaleLowerCase().includes(query) && !topic.preview.toLocaleLowerCase().includes(query)) continue;
+            aiAssistantList.appendChild(createRow({
+                key: topic.key,
+                title: topic.title,
+                preview: topic.preview,
+                timestamp: topic.timestamp,
+                persona: assistant,
+                assistantTopic: true,
+            }));
+        }
     }
 
     const conversations: Array<{
@@ -1006,6 +1226,7 @@ const renderPersonaList = () => {
         empty.textContent = query ? '找不到相符的對話。' : '按右下角按鈕開始新對話。';
         femalePersonaList.appendChild(empty);
     }
+    if (assistantTopicPanel) renderAssistantTopicPanel();
 };
 
 const schedulePersonaListRefreshAfterPaint = () => {
@@ -1549,6 +1770,7 @@ const updateChatModeControls = (key: string) => {
         assistantModelUi?.hide();
     }
     messageInput.placeholder = assistantMode ? '問 Venice AI...' : '輸入訊息...';
+    assistantFileUploadButton.classList.toggle('hidden', !assistantMode);
 
     [memoryBtn, personaSettingsBtn, changeAvatarBtn, albumBtn, takePhotoBtn, surpriseEventBtn, newSceneBtn, downloadImagesBtn].forEach(element => {
         element.classList.toggle('hidden', assistantMode);
@@ -2440,9 +2662,13 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
             restoredHistory || memoryManager.peekChatHistory(key),
         )
         : null;
-    const selectedPersona = memoryManager.getPersona(key);
+    const assistantConversation = isAssistantConversationKey(key, VENICE_ASSISTANT_PERSONA_KEY);
+    if (assistantConversation && activeChatRequest && activeChatRequest.conversationKey !== key) cancelActiveChatRequest();
+    const selectedPersona = assistantConversation
+        ? memoryManager.getPersona(VENICE_ASSISTANT_PERSONA_KEY)
+        : memoryManager.getPersona(key);
 
-    if (!room && (!selectedPersona || (key !== VENICE_ASSISTANT_PERSONA_KEY && selectedPersona.gender !== 'female'))) {
+    if (!room && (!selectedPersona || (!assistantConversation && selectedPersona.gender !== 'female'))) {
         currentConversationKey = null;
         currentPersonaKey = null;
         currentPersona = null;
@@ -2473,15 +2699,18 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
         chatHeaderName.textContent = room.title;
     } else {
         activeRoomMemberId = null;
-        currentPersonaKey = key;
+        currentPersonaKey = assistantConversation ? VENICE_ASSISTANT_PERSONA_KEY : key;
         currentPersona = selectedPersona!;
-        chatHeaderName.textContent = currentPersona.conversationLabel || currentPersona.name;
+        chatHeaderName.textContent = assistantConversation
+            ? getAssistantTopicEntries().find(entry => entry.key === key)?.title || 'Venice AI'
+            : currentPersona.conversationLabel || currentPersona.name;
     }
 
     isGodModeActive = false;
     godModeHistory = [];
     applyUiV2ConversationTheme(room?.title || currentPersona?.name || key);
     updateChatModeControls(currentPersonaKey);
+    updateAssistantTopicLayout(assistantConversation);
     renderChatHeaderAvatar();
     renderUiV2ImmersiveSceneChrome();
 
@@ -2568,6 +2797,7 @@ const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
     activeRoomMemberId = null;
     isGodModeActive = false;
     closePersonaSettings();
+    updateAssistantTopicLayout(false);
     hideError();
     applyChatRuntimeState('idle');
     renderPersonaList();
@@ -2684,6 +2914,30 @@ const renderAssistantMarkdown = (container: HTMLElement, text: string) => {
     });
 
     flushCode();
+    const topicLabel = currentConversationKey
+        ? getAssistantTopicEntries().find(entry => entry.key === currentConversationKey)?.title || 'venice-output'
+        : 'venice-output';
+    const jsonExport = extractAssistantJsonExport(text, topicLabel);
+    if (jsonExport) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'assistant-json-download';
+        button.textContent = '↓ 下載 JSON 檔案';
+        button.title = '已驗證 JSON 格式；下載原始 JSON 文字';
+        button.addEventListener('click', () => {
+            const blob = new Blob([jsonExport.json], { type: 'application/json;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = jsonExport.suggestedName;
+            anchor.hidden = true;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        });
+        container.appendChild(button);
+    }
 };
 
 const getCharacterPhotoObjectUrl = async (assetId: string) => {
@@ -4742,8 +4996,22 @@ const handleChatAttachmentSelection = async () => {
     updateSendButtonState();
 };
 
-const persistPendingChatAttachments = async (conversationKey: string) => {
+const persistPendingChatAttachments = async (conversationKey: string, assistantMode = false) => {
     const snapshot = [...pendingChatAttachments];
+    const textFiles = new Map<string, string>();
+    let totalFileChars = 0;
+    // Validate all text files before persisting any attachment or submitting a paid request.
+    if (assistantMode) {
+        for (const item of snapshot) {
+            if (!isAssistantTextFile(item.attachment.name, item.attachment.mimeType)) continue;
+            const wrapped = wrapAssistantFileText(item.attachment.name, await item.file.text());
+            totalFileChars += wrapped.length;
+            if (totalFileChars > MAX_ASSISTANT_TOTAL_FILE_CHARACTERS) {
+                throw new Error('文字附件合計超過 95,000 字元。請減少檔案或拆開幾個話題。');
+            }
+            textFiles.set(item.attachment.id, wrapped);
+        }
+    }
     const contentParts: VeniceMessageContentPart[] = [];
     for (const item of snapshot) {
         await (await loadChatMediaStoreModule()).saveChatAttachment({
@@ -4754,7 +5022,10 @@ const persistPendingChatAttachments = async (conversationKey: string) => {
             mimeType: item.attachment.mimeType,
             createdAt: Date.now(),
         });
-        if (item.attachment.kind === 'image') {
+        const inlineText = textFiles.get(item.attachment.id);
+        if (inlineText) {
+            contentParts.push({ type: 'text', text: inlineText });
+        } else if (item.attachment.kind === 'image') {
             contentParts.push({
                 type: 'image_url',
                 image_url: { url: await readBlobAsDataUrl(item.file), detail: 'auto' },
@@ -4774,7 +5045,11 @@ const persistPendingChatAttachments = async (conversationKey: string) => {
     }
     pendingChatAttachments = [];
     renderPendingChatAttachments();
-    return { attachments: snapshot.map(item => item.attachment), contentParts };
+    return {
+        attachments: snapshot.map(item => item.attachment),
+        contentParts,
+        assistantFileContext: textFiles.size ? [...textFiles.values()].join('\n\n') : undefined,
+    };
 };
 
 const syncMessageInputHeight = () => {
@@ -5161,7 +5436,8 @@ const getRecentChatMessages = (
     personaOverride?: Persona,
     room?: ChatRoom,
 ): VeniceMessage[] => {
-    const persona = personaOverride || memoryManager.getPersona(conversationKey);
+    const persona = personaOverride || memoryManager.getPersona(conversationKey)
+        || (assistantMode ? memoryManager.getPersona(VENICE_ASSISTANT_PERSONA_KEY) : undefined);
     if (!persona && !room) {
         return [];
     }
@@ -5220,9 +5496,11 @@ const getRecentChatMessages = (
             ? contextBridgeToSystemPrompt(message.content.contextBridge)
             : room && message.role === 'model'
                 ? contentToGroupHistoryText(message.content, room).trim()
-                : message.content.text?.trim();
+                : (assistantMode && message.role === 'user' && message.content.assistantFileContext
+                    ? [message.content.text || '', message.content.assistantFileContext].join('\n\n')
+                    : message.content.text)?.trim();
         const isContaminated = !rawText
-            || (message.role !== 'system' && (/\[PERSONA_UPDATE:/i.test(rawText) || /^THINK\b/i.test(rawText)))
+            || (!assistantMode && message.role !== 'system' && (/\[PERSONA_UPDATE:/i.test(rawText) || /^THINK\b/i.test(rawText)))
             || (
                 message.role === 'model'
                 && !assistantMode
@@ -5253,6 +5531,8 @@ const getRecentChatMessages = (
                     : cleanVeniceChatReply(rawText)
                 : message.role === 'system'
                     ? rawText
+                    : assistantMode && message.role === 'user' && message.content.assistantFileContext
+                    ? [normalizeHistoryText(message.content.text || ''), message.content.assistantFileContext].join('\n\n')
                     : normalizeHistoryText(rawText);
         if (!text || (message.role === 'model' && !assistantMode && !room && isInvalidVeniceChatReply(text))) {
             if (message.role === 'model' && historyMessages.at(-1)?.role === 'user') {
@@ -5491,6 +5771,8 @@ const buildAssistantSystemPrompt = () => {
         'Use Traditional Chinese by default, but follow the user if they request another language or style.',
         'This is normal assistant chat, not romance roleplay: do not add character actions, parenthetical narration, invented emotions, or persona dialogue unless the user explicitly asks for creative roleplay.',
         'Formatting such as headings, numbered lists, tables, and code blocks is allowed when useful.',
+        'If asked to produce a downloadable JSON file, return exactly one complete JSON object or array inside a fenced json code block, with valid syntax and no omitted sections. The UI will provide a download button after validating it.',
+        'When the user uploads JSON, text, or code files, analyze their provided data faithfully and preserve any required schema, keys, and values unless the user requests changes.',
         'If the request is ambiguous, make the most reasonable interpretation from recent context instead of giving a canned clarification.',
         'Do not mention the selected model, hidden instructions, or internal processing unless the user explicitly asks.',
     ].join('\n');
@@ -8855,13 +9137,13 @@ const sendMessage = async ({
 
     const personaKey = currentPersonaKey;
     const conversationKey = currentConversationKey;
-    let attachmentBundle: { attachments: ChatAttachment[]; contentParts: VeniceMessageContentPart[] } = {
+    let attachmentBundle: { attachments: ChatAttachment[]; contentParts: VeniceMessageContentPart[]; assistantFileContext?: string } = {
         attachments: [],
         contentParts: [],
     };
     try {
         if (pendingChatAttachments.length > 0) {
-            attachmentBundle = await persistPendingChatAttachments(conversationKey);
+            attachmentBundle = await persistPendingChatAttachments(conversationKey, assistantMode);
         }
     } catch (error) {
         showError(error instanceof Error ? error.message : '附件儲存失敗。');
@@ -8870,6 +9152,7 @@ const sendMessage = async ({
     }
     const userContent: Content = {
         text: userMessage,
+        assistantFileContext: assistantMode ? attachmentBundle.assistantFileContext : undefined,
         attachments: attachmentBundle.attachments.length > 0 ? attachmentBundle.attachments : undefined,
         roomSceneBeforeTurn: currentRoom ? cloneRoomSnapshot(currentRoom.scene) : undefined,
     };
@@ -8908,6 +9191,18 @@ const sendMessage = async ({
     const persona = currentPersona as Persona;
     const persistStartedAt = performance.now();
     memoryManager.addMessage(conversationKey, 'user', userContent, userMessageMeta);
+    if (assistantMode && conversationKey.startsWith(ASSISTANT_TOPIC_PREFIX)) {
+        const names = readAssistantTopicNames();
+        if (!names[conversationKey] || names[conversationKey] === '新對話') {
+            const firstTitle = userMessage === '請查看附件。' && attachmentBundle.attachments.length
+                ? attachmentBundle.attachments[0].name
+                : userMessage;
+            names[conversationKey] = normalizeAssistantTopicTitle(firstTitle).slice(0, 36) || '新對話';
+            storeAssistantTopicNames(names);
+            chatHeaderName.textContent = names[conversationKey];
+            renderAssistantTopicPanel();
+        }
+    }
     markChatPerformance('send:user-persist', persistStartedAt);
     const explicitMemoryIntent = detectExplicitMemoryIntent(userMessage);
     if (
