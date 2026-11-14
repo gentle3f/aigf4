@@ -48,6 +48,8 @@ export interface VeniceTextGenerationOptions {
   onStateChange?: (state: RequestState, detail?: string) => void;
   /** Enables SSE streaming and receives the accumulated visible text. */
   onTextDelta?: (text: string) => void;
+  /** Enable Venice-managed web search and URL scraping for this request only. */
+  enableWebSearch?: boolean;
 }
 
 export interface VeniceTextGenerationResult {
@@ -256,6 +258,7 @@ export async function generateVeniceText(
     signal,
     onStateChange,
     onTextDelta,
+    enableWebSearch = false,
   } = options;
 
   onStateChange?.('generating', '思考中');
@@ -288,9 +291,9 @@ export async function generateVeniceText(
         include_venice_system_prompt: false,
         disable_thinking: true,
         strip_thinking_response: true,
-        enable_web_search: 'off',
-        enable_web_scraping: false,
-        enable_web_citations: false,
+        enable_web_search: enableWebSearch ? 'auto' : 'off',
+        enable_web_scraping: enableWebSearch,
+        enable_web_citations: enableWebSearch,
       },
     }),
   };
