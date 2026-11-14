@@ -592,6 +592,8 @@ const AUTO_MEMORY_RECENT_MESSAGE_LIMIT = 32;
 const AUTO_MEMORY_MODEL_TIMEOUT_MS = 50_000;
 const CHAT_MAX_AUTO_CONTINUES = 2;
 const CHAT_MODEL_ATTEMPT_TIMEOUT_MS = 45_000;
+// DeepSeek and uncensored reasoning models can take minutes to produce a complete non-streamed reply.
+const CHAT_SLOW_MODEL_ATTEMPT_TIMEOUT_MS = 265_000;
 const SURPRISE_EVENT_ATTEMPT_TIMEOUT_MS = 45_000;
 const CHAT_MODEL_TIMEOUT_ERROR = 'CHAT_MODEL_TIMEOUT';
 const SCENE_END_MARKER = '[SCENE END]';
@@ -5523,6 +5525,10 @@ const generateChatTextWithTimeout = async (
     options: Parameters<typeof generateVeniceText>[0],
     timeoutMs = CHAT_MODEL_ATTEMPT_TIMEOUT_MS,
 ) => {
+    // Preserve fast-model budgets while allowing DeepSeek/uncensored models to finish.
+    const effectiveTimeoutMs = /deepseek|uncensored|reasoner|thinking/i.test(options.model)
+        ? Math.max(timeoutMs, CHAT_SLOW_MODEL_ATTEMPT_TIMEOUT_MS)
+        : timeoutMs;
     const upstreamSignal = options.signal;
     const timeoutController = new AbortController();
     let timedOut = false;
@@ -5534,7 +5540,7 @@ const generateChatTextWithTimeout = async (
     };
     const visibilityTimeout = upstreamSignal
         ? createVisibilityAwareTimeout({
-            timeoutMs,
+            timeoutMs: effectiveTimeoutMs,
             onTimeout: abortForTimeout,
             signal: upstreamSignal,
             onAbort: abortFromUpstream,
@@ -5542,7 +5548,7 @@ const generateChatTextWithTimeout = async (
         : null;
     const timeoutId = visibilityTimeout
         ? null
-        : window.setTimeout(abortForTimeout, timeoutMs);
+        : window.setTimeout(abortForTimeout, effectiveTimeoutMs);
 
     try {
         const result = await generateVeniceText({

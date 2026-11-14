@@ -25,5 +25,10 @@
         }
       ]
     }
-  ]
+  ],
+  "functions": {
+    "api/venice-chat.js": {
+      "maxDuration": 300
+    }
+  }
 }
