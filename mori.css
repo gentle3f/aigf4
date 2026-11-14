@@ -1965,3 +1965,88 @@ body.app-body {
         grid-template-columns: 1fr;
     }
 }
+
+
+/* Venice AI independent topic navigator: scoped away from character/group chat. */
+#chat-view.assistant-topics-mode { position: relative; }
+#chat-view .assistant-topic-toggle {
+  border: 1px solid rgba(148,163,184,.35); border-radius: 9px;
+  padding: 7px 10px; margin-inline-end: 4px; color: #cbd5e1;
+  background: rgba(15,23,42,.55); font-size: 16px; cursor: pointer;
+}
+#chat-view .assistant-topic-toggle.hidden { display: none !important; }
+#chat-view .assistant-topic-panel {
+  position: absolute; inset: 0 auto 0 0; z-index: 27;
+  width: 248px; display: flex; flex-direction: column; gap: 12px;
+  padding: 14px 10px 16px;
+  overflow-y: auto; overflow-x: hidden;
+  background: #0d1628; color: #e2e8f0;
+  border-right: 1px solid rgba(148,163,184,.2);
+}
+#chat-view .assistant-topic-panel.hidden { display: none !important; }
+#chat-view.assistant-topics-open > .chat-topbar,
+#chat-view.assistant-topics-open > #chat-search-bar,
+#chat-view.assistant-topics-open > #assistant-model-bar,
+#chat-view.assistant-topics-open > #chat-container,
+#chat-view.assistant-topics-open > #loading-indicator,
+#chat-view.assistant-topics-open > #error-message,
+#chat-view.assistant-topics-open > .chat-view-footer {
+  margin-left: 248px;
+}
+.assistant-topic-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 7px; }
+.assistant-topic-head strong { font-size: 14px; font-weight: 700; }
+.assistant-topic-head button { color: #aebcd0; font-size: 20px; line-height: 1; padding: 2px 6px; cursor: pointer; }
+.assistant-topic-create, .assistant-topic-home-create {
+  display: block; width: 100%; text-align: left;
+  padding: 11px 12px; font-size: 13px; font-weight: 600;
+  color: #dbeafe; background: rgba(51,65,85,.48);
+  border: 1px solid rgba(125,211,252,.25); border-radius: 9px;
+  cursor: pointer;
+}
+.assistant-topic-create:hover, .assistant-topic-home-create:hover { background: rgba(30,64,175,.25); }
+.assistant-topic-home-create { margin: 5px 9px 9px; width: calc(100% - 18px); }
+.assistant-topic-search {
+  background: #17243b; color: #e2e8f0; border: 1px solid rgba(148,163,184,.28);
+  border-radius: 8px; padding: 9px 10px; width: 100%; font-size: 12px; min-width: 0;
+}
+.assistant-topic-list { display: flex; flex-direction: column; gap: 3px; min-height: 0; }
+.assistant-topic-row { display: flex; align-items: center; gap: 3px; padding: 3px; border-radius: 8px; }
+.assistant-topic-row:hover { background: rgba(71,85,105,.22); }
+.assistant-topic-row.active { background: rgba(30,64,175,.35); }
+.assistant-topic-name {
+  border: 0; background: transparent; color: #d1d9e7;
+  min-width: 0; padding: 8px 6px; flex: 1;
+  text-align: left; font-size: 12px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+}
+.assistant-topic-action {
+  border: 0; color: #94a3b8; background: transparent;
+  flex: none; font-size: 16px; padding: 5px; cursor: pointer;
+}
+.assistant-topic-action:hover { color: #f8fafc; }
+.assistant-file-upload {
+  padding: 7px 13px; margin: 0 12px 6px; width: max-content; max-width: calc(100% - 24px);
+  border: 1px solid rgba(125,211,252,.3); border-radius: 7px;
+  background: rgba(15,23,42,.6); color: #bfdbfe; font-size: 12px; cursor: pointer;
+}
+.assistant-file-upload.hidden { display: none !important; }
+.assistant-json-download {
+  margin-top: 14px; padding: 9px 13px; display: inline-flex;
+  border: 1px solid rgba(56,189,248,.4); border-radius: 8px;
+  background: rgba(2,132,199,.12); color: #0369a1;
+  font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.assistant-json-download:hover { background: rgba(2,132,199,.24); }
+@media (max-width: 899px) {
+  #chat-view.assistant-topics-open > .chat-topbar,
+  #chat-view.assistant-topics-open > #chat-search-bar,
+  #chat-view.assistant-topics-open > #assistant-model-bar,
+  #chat-view.assistant-topics-open > #chat-container,
+  #chat-view.assistant-topics-open > #loading-indicator,
+  #chat-view.assistant-topics-open > #error-message,
+  #chat-view.assistant-topics-open > .chat-view-footer { margin-left: 0; }
+  #chat-view .assistant-topic-panel {
+    width: min(82vw, 310px); z-index: 55;
+    box-shadow: 12px 0 25px rgba(0,0,0,.5);
+  }
+}
