@@ -50,10 +50,20 @@ export default async function handler(req, res) {
       for await (const chunk of upstream.body) {
         if (res.destroyed) break;
         if (!res.write(chunk)) {
-          await new Promise(resolve => res.once('drain', resolve));
+          // Both a normal drain and a cancelled connection must release backpressure.
+          await new Promise(resolve => {
+            const resume = () => {
+              res.off('drain', resume);
+              res.off('close', resume);
+              resolve();
+            };
+            res.once('drain', resume);
+            res.once('close', resume);
+          });
         }
       }
-      return res.end();
+      if (!res.destroyed) res.end();
+      return;
     }
 
     const text = await upstream.text();
