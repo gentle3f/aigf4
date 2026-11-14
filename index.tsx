@@ -2914,6 +2914,30 @@ const renderAssistantMarkdown = (container: HTMLElement, text: string) => {
     });
 
     flushCode();
+    const topicLabel = currentConversationKey
+        ? getAssistantTopicEntries().find(entry => entry.key === currentConversationKey)?.title || 'venice-output'
+        : 'venice-output';
+    const jsonExport = extractAssistantJsonExport(text, topicLabel);
+    if (jsonExport) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'assistant-json-download';
+        button.textContent = '↓ 下載 JSON 檔案';
+        button.title = '已驗證 JSON 格式；下載原始 JSON 文字';
+        button.addEventListener('click', () => {
+            const blob = new Blob([jsonExport.json], { type: 'application/json;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = jsonExport.suggestedName;
+            anchor.hidden = true;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        });
+        container.appendChild(button);
+    }
 };
 
 const getCharacterPhotoObjectUrl = async (assetId: string) => {
