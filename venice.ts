@@ -2,6 +2,7 @@ export type RequestState = 'idle' | 'queueing' | 'generating' | 'retrying' | 'er
 
 import { normalizeArtificialProseEscapes } from './chatProseEscapes.js';
 import { parseVenicePromptCacheUsage, type VenicePromptCacheUsage } from './veniceCache.js';
+import { readVeniceSse } from './veniceStream.js';
 
 export type VeniceMessageContentPart =
   | { type: 'text'; text: string }
@@ -45,6 +46,8 @@ export interface VeniceTextGenerationOptions {
   promptCacheKey?: string;
   signal?: AbortSignal;
   onStateChange?: (state: RequestState, detail?: string) => void;
+  /** Enables SSE streaming and receives the accumulated visible text. */
+  onTextDelta?: (text: string) => void;
 }
 
 export interface VeniceTextGenerationResult {
@@ -252,6 +255,7 @@ export async function generateVeniceText(
     promptCacheKey,
     signal,
     onStateChange,
+    onTextDelta,
   } = options;
 
   onStateChange?.('generating', '思考中');
@@ -261,13 +265,14 @@ export async function generateVeniceText(
     : `${VENICE_API_BASE}/chat/completions`;
   const requestMessages = ensureStructuredOutputJsonInstruction(messages, responseFormat);
 
-  const response = await fetchJson<VeniceChatResponse>(endpoint, {
+  const requestInit: RequestInit = {
     method: 'POST',
     headers: REQUEST_HEADERS(),
     signal,
     body: JSON.stringify({
       model,
       messages: requestMessages,
+      ...(onTextDelta ? { stream: true } : {}),
       temperature,
       top_p: topP,
       repetition_penalty: repetitionPenalty,
@@ -288,8 +293,39 @@ export async function generateVeniceText(
         enable_web_citations: false,
       },
     }),
-  });
+  };
 
+  if (onTextDelta) {
+    const response = await fetch(endpoint, { credentials: 'same-origin', ...requestInit });
+    if (!response.ok) {
+      if (response.status === 401) throw new Error(VENICE_AUTH_REQUIRED_ERROR);
+      const errorText = await response.text();
+      let reason = errorText;
+      try {
+        const parsed = JSON.parse(errorText) as { error?: unknown };
+        const err = parsed.error;
+        reason = typeof err === 'string' ? err
+          : (err && typeof err === 'object' && 'message' in err)
+            ? String((err as { message?: string }).message)
+            : reason;
+      } catch { /* Keep the original HTTP error text. */ }
+      throw new Error(reason || 'Venice streaming request failed (' + response.status + ').');
+    }
+    if (!response.headers.get('content-type')?.includes('text/event-stream')) {
+      throw new Error('Venice did not return an SSE stream.');
+    }
+    const streamed = await readVeniceSse(response.body, onTextDelta);
+    return {
+      model: streamed.model || model,
+      text: streamed.text,
+      promptTokens: streamed.usage?.prompt_tokens,
+      completionTokens: streamed.usage?.completion_tokens,
+      promptCacheUsage: parseVenicePromptCacheUsage(streamed.usage),
+      finishReason: streamed.finishReason,
+    };
+  }
+
+  const response = await fetchJson<VeniceChatResponse>(endpoint, requestInit);
   const choice = response.choices?.[0];
   const text = choice?.message?.content ?? choice?.text ?? '';
 
