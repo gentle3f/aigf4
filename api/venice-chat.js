@@ -1,7 +1,7 @@
 import { requireAuthenticatedRequest } from './_auth.js';
 
 const VENICE_UPSTREAM = 'https://api.venice.ai/api/v1/chat/completions';
-const UPSTREAM_TIMEOUT_MS = 120_000;
+const UPSTREAM_TIMEOUT_MS = 250_000;
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
