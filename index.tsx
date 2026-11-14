@@ -337,6 +337,13 @@ const authSubmitLabel = document.getElementById('auth-submit-label')!;
 const authSubmitLoading = document.getElementById('auth-submit-loading')!;
 const chatAttachmentInput = document.getElementById('chat-attachment-input') as HTMLInputElement;
 const chatAttachmentPreview = document.getElementById('chat-attachment-preview')!;
+const assistantFileUploadButton = document.createElement('button');
+assistantFileUploadButton.type = 'button';
+assistantFileUploadButton.className = 'assistant-file-upload hidden';
+assistantFileUploadButton.textContent = '📎 上傳 JSON／文字檔案';
+assistantFileUploadButton.title = '上傳檔案交由 Venice AI 分析';
+assistantFileUploadButton.addEventListener('click', () => chatAttachmentInput.click());
+chatAttachmentPreview.after(assistantFileUploadButton);
 const composerCameraButton = document.getElementById('composer-camera-button') as HTMLButtonElement;
 const imageStudioEntry = document.getElementById('image-studio-entry') as HTMLButtonElement;
 const imageSeed = document.getElementById('image-seed') as HTMLInputElement;
@@ -1219,6 +1226,7 @@ const renderPersonaList = () => {
         empty.textContent = query ? '找不到相符的對話。' : '按右下角按鈕開始新對話。';
         femalePersonaList.appendChild(empty);
     }
+    if (assistantTopicPanel) renderAssistantTopicPanel();
 };
 
 const schedulePersonaListRefreshAfterPaint = () => {
@@ -1762,6 +1770,7 @@ const updateChatModeControls = (key: string) => {
         assistantModelUi?.hide();
     }
     messageInput.placeholder = assistantMode ? '問 Venice AI...' : '輸入訊息...';
+    assistantFileUploadButton.classList.toggle('hidden', !assistantMode);
 
     [memoryBtn, personaSettingsBtn, changeAvatarBtn, albumBtn, takePhotoBtn, surpriseEventBtn, newSceneBtn, downloadImagesBtn].forEach(element => {
         element.classList.toggle('hidden', assistantMode);
@@ -4963,8 +4972,22 @@ const handleChatAttachmentSelection = async () => {
     updateSendButtonState();
 };
 
-const persistPendingChatAttachments = async (conversationKey: string) => {
+const persistPendingChatAttachments = async (conversationKey: string, assistantMode = false) => {
     const snapshot = [...pendingChatAttachments];
+    const textFiles = new Map<string, string>();
+    let totalFileChars = 0;
+    // Validate all text files before persisting any attachment or submitting a paid request.
+    if (assistantMode) {
+        for (const item of snapshot) {
+            if (!isAssistantTextFile(item.attachment.name, item.attachment.mimeType)) continue;
+            const wrapped = wrapAssistantFileText(item.attachment.name, await item.file.text());
+            totalFileChars += wrapped.length;
+            if (totalFileChars > MAX_ASSISTANT_TOTAL_FILE_CHARACTERS) {
+                throw new Error('文字附件合計超過 95,000 字元。請減少檔案或拆開幾個話題。');
+            }
+            textFiles.set(item.attachment.id, wrapped);
+        }
+    }
     const contentParts: VeniceMessageContentPart[] = [];
     for (const item of snapshot) {
         await (await loadChatMediaStoreModule()).saveChatAttachment({
@@ -4975,7 +4998,10 @@ const persistPendingChatAttachments = async (conversationKey: string) => {
             mimeType: item.attachment.mimeType,
             createdAt: Date.now(),
         });
-        if (item.attachment.kind === 'image') {
+        const inlineText = textFiles.get(item.attachment.id);
+        if (inlineText) {
+            contentParts.push({ type: 'text', text: inlineText });
+        } else if (item.attachment.kind === 'image') {
             contentParts.push({
                 type: 'image_url',
                 image_url: { url: await readBlobAsDataUrl(item.file), detail: 'auto' },
@@ -4995,7 +5021,11 @@ const persistPendingChatAttachments = async (conversationKey: string) => {
     }
     pendingChatAttachments = [];
     renderPendingChatAttachments();
-    return { attachments: snapshot.map(item => item.attachment), contentParts };
+    return {
+        attachments: snapshot.map(item => item.attachment),
+        contentParts,
+        assistantFileContext: textFiles.size ? [...textFiles.values()].join('\n\n') : undefined,
+    };
 };
 
 const syncMessageInputHeight = () => {
@@ -9079,13 +9109,13 @@ const sendMessage = async ({
 
     const personaKey = currentPersonaKey;
     const conversationKey = currentConversationKey;
-    let attachmentBundle: { attachments: ChatAttachment[]; contentParts: VeniceMessageContentPart[] } = {
+    let attachmentBundle: { attachments: ChatAttachment[]; contentParts: VeniceMessageContentPart[]; assistantFileContext?: string } = {
         attachments: [],
         contentParts: [],
     };
     try {
         if (pendingChatAttachments.length > 0) {
-            attachmentBundle = await persistPendingChatAttachments(conversationKey);
+            attachmentBundle = await persistPendingChatAttachments(conversationKey, assistantMode);
         }
     } catch (error) {
         showError(error instanceof Error ? error.message : '附件儲存失敗。');
@@ -9094,6 +9124,7 @@ const sendMessage = async ({
     }
     const userContent: Content = {
         text: userMessage,
+        assistantFileContext: assistantMode ? attachmentBundle.assistantFileContext : undefined,
         attachments: attachmentBundle.attachments.length > 0 ? attachmentBundle.attachments : undefined,
         roomSceneBeforeTurn: currentRoom ? cloneRoomSnapshot(currentRoom.scene) : undefined,
     };
@@ -9132,6 +9163,18 @@ const sendMessage = async ({
     const persona = currentPersona as Persona;
     const persistStartedAt = performance.now();
     memoryManager.addMessage(conversationKey, 'user', userContent, userMessageMeta);
+    if (assistantMode && conversationKey.startsWith(ASSISTANT_TOPIC_PREFIX)) {
+        const names = readAssistantTopicNames();
+        if (!names[conversationKey] || names[conversationKey] === '新對話') {
+            const firstTitle = userMessage === '請查看附件。' && attachmentBundle.attachments.length
+                ? attachmentBundle.attachments[0].name
+                : userMessage;
+            names[conversationKey] = normalizeAssistantTopicTitle(firstTitle).slice(0, 36) || '新對話';
+            storeAssistantTopicNames(names);
+            chatHeaderName.textContent = names[conversationKey];
+            renderAssistantTopicPanel();
+        }
+    }
     markChatPerformance('send:user-persist', persistStartedAt);
     const explicitMemoryIntent = detectExplicitMemoryIntent(userMessage);
     if (
