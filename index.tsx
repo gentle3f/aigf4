@@ -2947,7 +2947,8 @@ const renderAssistantMarkdown = (container: HTMLElement, text: string) => {
     const topicLabel = currentConversationKey
         ? getAssistantTopicEntries().find(entry => entry.key === currentConversationKey)?.title || 'venice-output'
         : 'venice-output';
-    const jsonExport = extractAssistantJsonExport(text, topicLabel);
+    const archiveExport = extractAssistantZipExport(text);
+    const jsonExport = archiveExport ? null : extractAssistantJsonExport(text, topicLabel);
     if (jsonExport) {
         const button = document.createElement('button');
         button.type = 'button';
@@ -2969,7 +2970,6 @@ const renderAssistantMarkdown = (container: HTMLElement, text: string) => {
         container.appendChild(button);
     }
 
-    const archiveExport = extractAssistantZipExport(text);
     if (archiveExport) {
         const zipButton = document.createElement('button');
         zipButton.type = 'button';
