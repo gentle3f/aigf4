@@ -1,10 +1,10 @@
 /** Venice AI's independent conversation keys and cloud-syncable titles. */
-export const ASSISTANT_TOPIC_PREFIX = 'venice-ai-topic-';
+export const ASSISTANT_TOPIC_PREFIX = 'assistant-topic-';
 export const ASSISTANT_TOPICS_SETTING_KEY = 'veniceAssistantTopicsV1';
 export type AssistantTopicTitles = Record<string, string>;
 
 export const isAssistantConversationKey = (key: string | null, assistantKey: string): boolean =>
-    Boolean(key && (key === assistantKey || /^venice-ai-topic-[a-z0-9-]+$/i.test(key)));
+    Boolean(key && (key === assistantKey || /^assistant-topic-[a-z0-9-]+$/i.test(key)));
 
 export const normalizeAssistantTopicTitle = (value: string): string =>
     value.replace(/\s+/gu, ' ').trim().slice(0, 70);
@@ -16,7 +16,7 @@ export const parseAssistantTopicTitles = (raw: string | null): AssistantTopicTit
         if (!data || typeof data !== 'object' || Array.isArray(data)) return {};
         const titles: AssistantTopicTitles = Object.create(null);
         for (const [key, name] of Object.entries(data)) {
-            if (!/^venice-ai-topic-[a-z0-9-]+$/i.test(key) || typeof name !== 'string') continue;
+            if (!/^assistant-topic-[a-z0-9-]+$/i.test(key) || typeof name !== 'string') continue;
             titles[key] = normalizeAssistantTopicTitle(name) || '新對話';
         }
         return titles;
