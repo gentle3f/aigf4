@@ -35,6 +35,13 @@ import {
     isAssistantTextFile,
     wrapAssistantFileText,
 } from './assistantFiles.js';
+import {
+    buildAssistantZipDownload,
+    extractAssistantZipExport,
+    isAssistantZipFile,
+    readAssistantZipArchive,
+    type AssistantZipInspection,
+} from './assistantZip.js';
 import type { SupabaseCloudSyncState } from './supabaseCloudSync.js';
 import { coreInstruction, VENICE_ASSISTANT_PERSONA_KEY } from "./personas.tsx";
 import {
@@ -361,7 +368,7 @@ updateAssistantWebSearchButton();
 const assistantFileUploadButton = document.createElement('button');
 assistantFileUploadButton.type = 'button';
 assistantFileUploadButton.className = 'assistant-file-upload hidden';
-assistantFileUploadButton.textContent = '📎 上傳 JSON／文字檔案';
+assistantFileUploadButton.textContent = '📎 上傳 ZIP／JSON／文字檔案';
 assistantFileUploadButton.title = '上傳檔案交由 Venice AI 分析';
 assistantFileUploadButton.addEventListener('click', () => chatAttachmentInput.click());
 chatAttachmentPreview.after(assistantFileUploadButton);
@@ -611,6 +618,7 @@ let characterPhotoRequestController: AbortController | null = null;
 let activeCharacterPhotoProposalId: string | null = null;
 let switchingCharacterPhotoProposalId: string | null = null;
 let pendingChatAttachments: Array<{ attachment: ChatAttachment; file: File; previewUrl?: string }> = [];
+const assistantZipInspections = new Map<string, AssistantZipInspection>();
 const chatAttachmentObjectUrls = new Map<string, string>();
 let openMessageActionMenu: HTMLElement | null = null;
 let personaSettingsUi: import('./features/personaSettingsUi.js').PersonaSettingsUiHandle | null = null;
@@ -4980,7 +4988,7 @@ const renderPendingChatAttachments = () => {
         } else {
             const icon = document.createElement('span');
             icon.className = 'pending-attachment-icon';
-            icon.textContent = item.attachment.kind === 'video' ? '▶' : 'DOC';
+            icon.textContent = isAssistantZipFile(item.attachment.name, item.attachment.mimeType) ? 'ZIP' : item.attachment.kind === 'video' ? '▶' : 'DOC';
             chip.appendChild(icon);
         }
         const copy = document.createElement('span');
@@ -4992,10 +5000,26 @@ const renderPendingChatAttachments = () => {
         remove.addEventListener('click', () => {
             if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
             pendingChatAttachments = pendingChatAttachments.filter(candidate => candidate.attachment.id !== item.attachment.id);
+            assistantZipInspections.delete(item.attachment.id);
             renderPendingChatAttachments();
             updateSendButtonState();
         });
         chip.append(copy, remove);
+        const archive = assistantZipInspections.get(item.attachment.id);
+        if (archive) {
+            const details = document.createElement('details');
+            details.className = 'assistant-zip-contents';
+            const summary = document.createElement('summary');
+            summary.textContent = '查看 ZIP 檔案（' + archive.fileNames.length + '）';
+            const fileList = document.createElement('ul');
+            for (const name of archive.fileNames) {
+                const line = document.createElement('li');
+                line.textContent = name;
+                fileList.appendChild(line);
+            }
+            details.append(summary, fileList);
+            chip.appendChild(details);
+        }
         chatAttachmentPreview.appendChild(chip);
     });
 };
@@ -5008,7 +5032,15 @@ const handleChatAttachmentSelection = async () => {
         for (const file of files) {
             try {
                 const currentBytes = pendingChatAttachments.reduce((sum, item) => sum + item.file.size, 0);
-                pendingChatAttachments.push(await prepareChatAttachment(file, currentBytes));
+                if (isAssistantZipFile(file.name, file.type) && !isAssistantPersonaKey(currentPersonaKey)) {
+                    throw new Error('ZIP 讀取功能只限 Venice AI 助手。');
+                }
+                const prepared = await prepareChatAttachment(file, currentBytes);
+                if (isAssistantZipFile(file.name, file.type)) {
+                    const inspected = await readAssistantZipArchive(prepared.file);
+                    assistantZipInspections.set(prepared.attachment.id, inspected);
+                }
+                pendingChatAttachments.push(prepared);
             } catch (error) {
                 alert(error instanceof Error ? error.message : `無法加入 ${file.name}。`);
             }
@@ -5025,8 +5057,11 @@ const persistPendingChatAttachments = async (conversationKey: string, assistantM
     // Validate all text files before persisting any attachment or submitting a paid request.
     if (assistantMode) {
         for (const item of snapshot) {
-            if (!isAssistantTextFile(item.attachment.name, item.attachment.mimeType)) continue;
-            const wrapped = wrapAssistantFileText(item.attachment.name, await item.file.text());
+            const zip = isAssistantZipFile(item.attachment.name, item.attachment.mimeType);
+            if (!zip && !isAssistantTextFile(item.attachment.name, item.attachment.mimeType)) continue;
+            const wrapped = zip
+                ? (assistantZipInspections.get(item.attachment.id) || await readAssistantZipArchive(item.file)).context
+                : wrapAssistantFileText(item.attachment.name, await item.file.text());
             totalFileChars += wrapped.length;
             if (totalFileChars > MAX_ASSISTANT_TOTAL_FILE_CHARACTERS) {
                 throw new Error('文字附件合計超過 95,000 字元。請減少檔案或拆開幾個話題。');
@@ -5066,6 +5101,7 @@ const persistPendingChatAttachments = async (conversationKey: string, assistantM
         if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
     }
     pendingChatAttachments = [];
+    snapshot.forEach(item => assistantZipInspections.delete(item.attachment.id));
     renderPendingChatAttachments();
     return {
         attachments: snapshot.map(item => item.attachment),
@@ -5794,7 +5830,11 @@ const buildAssistantSystemPrompt = () => {
         'This is normal assistant chat, not romance roleplay: do not add character actions, parenthetical narration, invented emotions, or persona dialogue unless the user explicitly asks for creative roleplay.',
         'Formatting such as headings, numbered lists, tables, and code blocks is allowed when useful.',
         'If asked to produce a downloadable JSON file, return exactly one complete JSON object or array inside a fenced json code block, with valid syntax and no omitted sections. The UI will provide a download button after validating it.',
-        'When the user uploads JSON, text, or code files, analyze their provided data faithfully and preserve any required schema, keys, and values unless the user requests changes.',
+        'When the user uploads ZIP, JSON, text, or code files, analyze their provided data faithfully and preserve any required schema, keys, and values unless the user requests changes.',
+        'Uploaded ZIP archives are pre-inspected. You receive a list of contained filenames plus UTF-8 text from supported files; binaries are only listed by name. Never claim to have inspected the contents of listed binary files.',
+        'When the user requests a downloadable ZIP, return exactly ONE complete JSON object (inside one json code fence) with format "wetapp-zip-v1", filename "output.zip", and files [{path:"file.json",content:"FULL UTF-8 FILE CONTENT"}]. Every content field is a string containing the exact full file contents with valid JSON escaping. Support .json, .txt, .md, .csv, .yaml, code and other UTF-8 text formats. Do not output an abbreviated file or leave placeholders.',
+        'If updating an earlier uploaded ZIP and you need to retain its unchanged files, include sourceArchive with the exact uploaded ZIP filename. The browser will copy original files and replace only those named in files; unrelated files, including binaries, are retained. Source ZIP must be in this conversation.',
+        'For ZIP exports, prefer one complete manifest JSON, not separate code fences for multiple files, since the browser needs that manifest to construct a real downloadable archive.',
         'If the request is ambiguous, make the most reasonable interpretation from recent context instead of giving a canned clarification.',
         'Do not mention the selected model, hidden instructions, or internal processing unless the user explicitly asks.',
     ].join('\n');
