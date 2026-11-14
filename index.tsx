@@ -5500,7 +5500,7 @@ const getRecentChatMessages = (
                     ? [message.content.text || '', message.content.assistantFileContext].join('\n\n')
                     : message.content.text)?.trim();
         const isContaminated = !rawText
-            || (message.role !== 'system' && (/\[PERSONA_UPDATE:/i.test(rawText) || /^THINK\b/i.test(rawText)))
+            || (!assistantMode && message.role !== 'system' && (/\[PERSONA_UPDATE:/i.test(rawText) || /^THINK\b/i.test(rawText)))
             || (
                 message.role === 'model'
                 && !assistantMode
@@ -5531,6 +5531,8 @@ const getRecentChatMessages = (
                     : cleanVeniceChatReply(rawText)
                 : message.role === 'system'
                     ? rawText
+                    : assistantMode && message.role === 'user' && message.content.assistantFileContext
+                    ? [normalizeHistoryText(message.content.text || ''), message.content.assistantFileContext].join('\n\n')
                     : normalizeHistoryText(rawText);
         if (!text || (message.role === 'model' && !assistantMode && !room && isInvalidVeniceChatReply(text))) {
             if (message.role === 'model' && historyMessages.at(-1)?.role === 'user') {
