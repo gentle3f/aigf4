@@ -47,8 +47,10 @@ export async function readVeniceSse(
       throw new Error('Malformed Venice SSE event.');
     }
 
-    if (message.error && typeof message.error === 'object') {
-      const failure = message.error as { message?: string; code?: string };
+    if (message.error) {
+      const failure = typeof message.error === 'object'
+        ? message.error as { message?: string; code?: string }
+        : { message: String(message.error) };
       throw new Error(failure.message || failure.code || 'Venice streaming error.');
     }
     if (message.type === 'content_filter_error') {
@@ -100,7 +102,7 @@ export async function readVeniceSse(
     return result;
   } finally {
     // Release the stream reader even on cancellation or mid-stream errors.
-    if (receivedDone) await reader.cancel().catch(() => undefined);
+    await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 }
