@@ -1063,12 +1063,13 @@ const renderPersonaList = () => {
         persona?: Persona;
         room?: ChatRoom;
         pinned?: boolean;
+        assistantTopic?: boolean;
     }) => {
         const shell = document.createElement('div');
         shell.className = 'conversation-row-shell';
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = `conversation-row${options.room ? ' is-group-conversation' : options.pinned ? ' is-assistant-conversation' : ' is-persona-conversation'}${currentConversationKey === options.key ? ' is-active' : ''}`;
+        button.className = `conversation-row${options.room ? ' is-group-conversation' : options.pinned || options.assistantTopic ? ' is-assistant-conversation' : ' is-persona-conversation'}${currentConversationKey === options.key ? ' is-active' : ''}`;
         button.dataset.key = options.key;
 
         const avatar = document.createElement('span');
@@ -1111,14 +1112,25 @@ const renderPersonaList = () => {
             const deleteButton = document.createElement('button');
             deleteButton.type = 'button';
             deleteButton.className = 'conversation-delete-button';
-            deleteButton.title = options.room ? `刪除群組 ${options.title}` : `刪除與 ${options.title} 的聊天`;
+            deleteButton.title = options.assistantTopic ? `刪除話題 ${options.title}` : options.room ? `刪除群組 ${options.title}` : `刪除與 ${options.title} 的聊天`;
             deleteButton.setAttribute('aria-label', deleteButton.title);
             deleteButton.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5m4-5v5"></path></svg>';
             deleteButton.addEventListener('click', event => {
                 event.preventDefault();
                 event.stopPropagation();
-                void deleteConversationFromList(options.key, options.title, options.room);
+                if (options.assistantTopic) void deleteAssistantTopic(options.key);
+                else void deleteConversationFromList(options.key, options.title, options.room);
             });
+            if (options.assistantTopic) {
+                const rename = document.createElement('button');
+                rename.type = 'button';
+                rename.className = 'assistant-topic-action';
+                rename.textContent = '✎';
+                rename.title = '重新命名';
+                rename.setAttribute('aria-label', '重新命名 ' + options.title);
+                rename.addEventListener('click', () => renameAssistantTopic(options.key));
+                shell.appendChild(rename);
+            }
             shell.appendChild(deleteButton);
         }
         return shell;
@@ -1126,14 +1138,32 @@ const renderPersonaList = () => {
 
     const assistant = personas[VENICE_ASSISTANT_PERSONA_KEY];
     if (assistant) {
+        const newTopic = document.createElement('button');
+        newTopic.type = 'button';
+        newTopic.className = 'assistant-topic-home-create';
+        newTopic.textContent = '＋ Venice AI 新對話';
+        newTopic.addEventListener('click', createAssistantTopic);
+        aiAssistantList.appendChild(newTopic);
         aiAssistantList.appendChild(createRow({
             key: VENICE_ASSISTANT_PERSONA_KEY,
-            title: 'Venice AI',
-            preview: previewText(VENICE_ASSISTANT_PERSONA_KEY, '可選模型的私人 AI 助手'),
+            title: 'Venice AI · 原有對話',
+            preview: previewText(VENICE_ASSISTANT_PERSONA_KEY, '既有的 Venice AI 聊天紀錄'),
             timestamp: latestTimestamp(VENICE_ASSISTANT_PERSONA_KEY),
             persona: assistant,
             pinned: true,
         }));
+        for (const topic of getAssistantTopicEntries()) {
+            if (topic.key === VENICE_ASSISTANT_PERSONA_KEY) continue;
+            if (query && !topic.title.toLocaleLowerCase().includes(query) && !topic.preview.toLocaleLowerCase().includes(query)) continue;
+            aiAssistantList.appendChild(createRow({
+                key: topic.key,
+                title: topic.title,
+                preview: topic.preview,
+                timestamp: topic.timestamp,
+                persona: assistant,
+                assistantTopic: true,
+            }));
+        }
     }
 
     const conversations: Array<{
@@ -2623,9 +2653,13 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
             restoredHistory || memoryManager.peekChatHistory(key),
         )
         : null;
-    const selectedPersona = memoryManager.getPersona(key);
+    const assistantConversation = isAssistantConversationKey(key, VENICE_ASSISTANT_PERSONA_KEY);
+    if (assistantConversation && activeChatRequest && activeChatRequest.conversationKey !== key) cancelActiveChatRequest();
+    const selectedPersona = assistantConversation
+        ? memoryManager.getPersona(VENICE_ASSISTANT_PERSONA_KEY)
+        : memoryManager.getPersona(key);
 
-    if (!room && (!selectedPersona || (key !== VENICE_ASSISTANT_PERSONA_KEY && selectedPersona.gender !== 'female'))) {
+    if (!room && (!selectedPersona || (!assistantConversation && selectedPersona.gender !== 'female'))) {
         currentConversationKey = null;
         currentPersonaKey = null;
         currentPersona = null;
@@ -2656,15 +2690,18 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
         chatHeaderName.textContent = room.title;
     } else {
         activeRoomMemberId = null;
-        currentPersonaKey = key;
+        currentPersonaKey = assistantConversation ? VENICE_ASSISTANT_PERSONA_KEY : key;
         currentPersona = selectedPersona!;
-        chatHeaderName.textContent = currentPersona.conversationLabel || currentPersona.name;
+        chatHeaderName.textContent = assistantConversation
+            ? getAssistantTopicEntries().find(entry => entry.key === key)?.title || 'Venice AI'
+            : currentPersona.conversationLabel || currentPersona.name;
     }
 
     isGodModeActive = false;
     godModeHistory = [];
     applyUiV2ConversationTheme(room?.title || currentPersona?.name || key);
     updateChatModeControls(currentPersonaKey);
+    updateAssistantTopicLayout(assistantConversation);
     renderChatHeaderAvatar();
     renderUiV2ImmersiveSceneChrome();
 
@@ -2751,6 +2788,7 @@ const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
     activeRoomMemberId = null;
     isGodModeActive = false;
     closePersonaSettings();
+    updateAssistantTopicLayout(false);
     hideError();
     applyChatRuntimeState('idle');
     renderPersonaList();
@@ -5344,7 +5382,8 @@ const getRecentChatMessages = (
     personaOverride?: Persona,
     room?: ChatRoom,
 ): VeniceMessage[] => {
-    const persona = personaOverride || memoryManager.getPersona(conversationKey);
+    const persona = personaOverride || memoryManager.getPersona(conversationKey)
+        || (assistantMode ? memoryManager.getPersona(VENICE_ASSISTANT_PERSONA_KEY) : undefined);
     if (!persona && !room) {
         return [];
     }
@@ -5403,7 +5442,9 @@ const getRecentChatMessages = (
             ? contextBridgeToSystemPrompt(message.content.contextBridge)
             : room && message.role === 'model'
                 ? contentToGroupHistoryText(message.content, room).trim()
-                : message.content.text?.trim();
+                : (assistantMode && message.role === 'user' && message.content.assistantFileContext
+                    ? [message.content.text || '', message.content.assistantFileContext].join('\n\n')
+                    : message.content.text)?.trim();
         const isContaminated = !rawText
             || (message.role !== 'system' && (/\[PERSONA_UPDATE:/i.test(rawText) || /^THINK\b/i.test(rawText)))
             || (
