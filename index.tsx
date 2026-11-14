@@ -4479,7 +4479,7 @@ const showAssistantStreamPreview = (request: ActiveChatRequest, text: string) =>
     if (currentConversationKey !== request.conversationKey || !isAssistantPersonaKey(currentPersonaKey)) return;
     const distanceFromBottom = chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight;
     if (!request.streamPreview?.isConnected) {
-        request.streamPreview = appendMessage({ text }, 'bot', undefined, 'none');
+        request.streamPreview = appendMessage({ text: '…' }, 'bot', undefined, 'none');
     }
     const bubble = request.streamPreview.querySelector<HTMLElement>('.bot-bubble');
     if (bubble) {
