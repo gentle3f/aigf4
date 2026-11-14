@@ -2050,3 +2050,25 @@ body.app-body {
     box-shadow: 12px 0 25px rgba(0,0,0,.5);
   }
 }
+
+
+/* Only the Venice AI file composer uses the expanded ZIP inspection preview. */
+.assistant-zip-contents {
+    flex-basis: 100%;
+    width: 100%;
+    padding: 5px 8px;
+    color: #bdd8f1;
+    font-size: 11px;
+}
+.assistant-zip-contents summary { cursor: pointer; width: max-content; max-width: 100%; }
+.assistant-zip-contents ul {
+    max-height: 150px;
+    overflow-y: auto;
+    padding-left: 16px;
+    margin-top: 5px;
+    list-style: disc;
+    overflow-wrap: anywhere;
+}
+.pending-attachment-chip:has(.assistant-zip-contents) { flex-wrap: wrap; }
+.assistant-zip-download { margin-left: 8px; }
+.assistant-zip-download:disabled { opacity: .55; cursor: wait; }
