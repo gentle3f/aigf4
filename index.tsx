@@ -637,6 +637,8 @@ type ActiveChatRequest = {
     pendingWardrobeState?: WardrobeState;
     controller: AbortController;
     startedAt: number;
+    /** Temporary DOM only. Never persisted until the full streamed answer finishes. */
+    streamPreview?: HTMLElement;
 };
 type PhotoViewerContext = {
     source: 'chat' | 'album' | 'studio';
@@ -1613,6 +1615,7 @@ const cancelActiveChatRequest = () => {
     const request = activeChatRequest;
     activeChatRequest = null;
     request.controller.abort();
+    clearAssistantStreamPreview(request);
     if (request.surpriseEvent) {
         updateSurpriseEventProposal(request.conversationKey, request.surpriseEvent.id, {
             status: 'pending',
@@ -4466,6 +4469,26 @@ const appendMessage = (
     return messageWrapper;
 };
 
+// Keep streaming text provisional: do not save partial responses to chat history.
+const clearAssistantStreamPreview = (request: ActiveChatRequest) => {
+    request.streamPreview?.remove();
+    request.streamPreview = undefined;
+};
+const showAssistantStreamPreview = (request: ActiveChatRequest, text: string) => {
+    if (!text.trim() || !isActiveChatRequest(request)) return;
+    if (currentConversationKey !== request.conversationKey || !isAssistantPersonaKey(currentPersonaKey)) return;
+    const distanceFromBottom = chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight;
+    if (!request.streamPreview?.isConnected) {
+        request.streamPreview = appendMessage({ text: '…' }, 'bot', undefined, 'none');
+    }
+    const bubble = request.streamPreview.querySelector<HTMLElement>('.bot-bubble');
+    if (bubble) {
+        // textContent is safe for untrusted model output; final Markdown renders on completion.
+        bubble.textContent = text;
+        bubble.style.whiteSpace = 'pre-wrap';
+    }
+    if (distanceFromBottom < 160) chatContainer.scrollTop = chatContainer.scrollHeight;
+};
 
 const getIdleStatusText = () => {
     return isGodModeActive
@@ -6159,6 +6182,7 @@ const runConversationGeneration = async (
                     repetitionPenalty: assistantMode ? 1.04 : 1.12,
                     promptCacheKey,
                     signal: request.controller.signal,
+                    onTextDelta: assistantMode ? text => showAssistantStreamPreview(request, text) : undefined,
                 });
                 markChatPerformance(
                     index === 0 && !isRepairAttempt
@@ -6311,6 +6335,7 @@ const runConversationGeneration = async (
                 }
                 return cleanedText;
             } catch (error) {
+                if (assistantMode) clearAssistantStreamPreview(request);
                 if (!attemptRecorded && requestStartedAt !== null) {
                     const failure = getSingleGenerationAttemptFailure(error);
                     recordSingleGenerationAttempt(trace, {
@@ -8043,6 +8068,7 @@ const getResponse = async (
             ? await runAssistantChatGeneration(request, triggeringMessage, assistantModel || VENICE_ASSISTANT_MODEL)
             : await runCharacterChatGeneration(request, triggeringMessage);
         if (!isActiveChatRequest(request)) return;
+        clearAssistantStreamPreview(request);
 
         const botContent: Content = typeof generated === 'string'
             ? {
@@ -8148,6 +8174,7 @@ const getResponse = async (
         if (request.room) void maybeSummarizeRoomMemory(request.room.id);
         else if (request.mode === 'character') void maybeSummarizePersonaMemory(request.personaKey);
     } catch (error) {
+        clearAssistantStreamPreview(request);
         if (isAbortError(error)) {
             if (request.surpriseEvent) {
                 updateSurpriseEventProposal(request.conversationKey, request.surpriseEvent.id, {
