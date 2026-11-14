@@ -337,6 +337,27 @@ const authSubmitLabel = document.getElementById('auth-submit-label')!;
 const authSubmitLoading = document.getElementById('auth-submit-loading')!;
 const chatAttachmentInput = document.getElementById('chat-attachment-input') as HTMLInputElement;
 const chatAttachmentPreview = document.getElementById('chat-attachment-preview')!;
+const ASSISTANT_WEB_SEARCH_SETTING_KEY = 'veniceAssistantWebSearchV1';
+const isVeniceAssistantWebSearchEnabled = () =>
+    localStorage.getItem(ASSISTANT_WEB_SEARCH_SETTING_KEY) !== 'off';
+const assistantWebSearchButton = document.createElement('button');
+assistantWebSearchButton.type = 'button';
+assistantWebSearchButton.className = 'assistant-web-search-switch rounded-lg border border-slate-600 px-3 py-2 text-xs font-medium text-slate-200 transition hover:border-sky-400';
+assistantWebSearchButton.title = '啟用 Venice 自動搜尋及網址讀取；網絡搜尋可能產生額外 API 費用。';
+const updateAssistantWebSearchButton = () => {
+    const enabled = isVeniceAssistantWebSearchEnabled();
+    assistantWebSearchButton.textContent = enabled ? '🌐 網絡搜尋：自動' : '🌐 網絡搜尋：關閉';
+    assistantWebSearchButton.setAttribute('aria-pressed', String(enabled));
+};
+assistantWebSearchButton.addEventListener('click', () => {
+    setPersistedAppSetting(
+        ASSISTANT_WEB_SEARCH_SETTING_KEY,
+        isVeniceAssistantWebSearchEnabled() ? 'off' : 'auto',
+    );
+    updateAssistantWebSearchButton();
+});
+document.getElementById('refresh-assistant-models')?.after(assistantWebSearchButton);
+updateAssistantWebSearchButton();
 const assistantFileUploadButton = document.createElement('button');
 assistantFileUploadButton.type = 'button';
 assistantFileUploadButton.className = 'assistant-file-upload hidden';
@@ -2710,6 +2731,7 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
     godModeHistory = [];
     applyUiV2ConversationTheme(room?.title || currentPersona?.name || key);
     updateChatModeControls(currentPersonaKey);
+    if (assistantConversation) updateAssistantWebSearchButton();
     updateAssistantTopicLayout(assistantConversation);
     renderChatHeaderAvatar();
     renderUiV2ImmersiveSceneChrome();
@@ -6465,6 +6487,7 @@ const runConversationGeneration = async (
                     promptCacheKey,
                     signal: request.controller.signal,
                     onTextDelta: assistantMode ? text => showAssistantStreamPreview(request, text) : undefined,
+                    enableWebSearch: assistantMode && isVeniceAssistantWebSearchEnabled(),
                 });
                 markChatPerformance(
                     index === 0 && !isRepairAttempt
