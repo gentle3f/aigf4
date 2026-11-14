@@ -4,6 +4,7 @@ export const RESEARCH_CAPTURE_SETTING_KEY = 'aigf4ResearchCaptureEnabledV1';
 
 export const PERSISTED_APP_SETTING_KEYS = [
     'veniceAssistantModel',
+    'veniceAssistantWebSearchV1',
     'veniceAssistantTopicsV1',
     'aigf4ChatModelSettingsV1',
     'veniceImageGenerateModel',
