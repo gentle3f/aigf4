@@ -2968,6 +2968,53 @@ const renderAssistantMarkdown = (container: HTMLElement, text: string) => {
         });
         container.appendChild(button);
     }
+
+    const archiveExport = extractAssistantZipExport(text);
+    if (archiveExport) {
+        const zipButton = document.createElement('button');
+        zipButton.type = 'button';
+        zipButton.className = 'assistant-json-download assistant-zip-download';
+        zipButton.textContent = '↓ 下載 ZIP（' + archiveExport.files.length + ' 個更新檔案）';
+        zipButton.title = archiveExport.sourceArchive
+            ? '由原 ZIP 保留現有檔案，並套用 AI 提供嘅替換內容'
+            : '將 AI 產生的文字檔案打包成 ZIP';
+        const conversationKeyAtRender = currentConversationKey;
+        zipButton.addEventListener('click', async () => {
+            if (!conversationKeyAtRender) return;
+            zipButton.disabled = true;
+            zipButton.textContent = '正在建立 ZIP…';
+            try {
+                let sourceBlob: Blob | null = null;
+                if (archiveExport.sourceArchive) {
+                    const history = memoryManager.peekChatHistory(conversationKeyAtRender);
+                    const matches = history.flatMap(message => message.role === 'user'
+                        ? message.content.attachments || [] : []);
+                    const source = [...matches].reverse().find(item =>
+                        item.name === archiveExport.sourceArchive
+                        && isAssistantZipFile(item.name, item.mimeType));
+                    if (source) {
+                        sourceBlob = await (await loadChatMediaStoreModule()).getChatAttachmentBlob(source.assetId);
+                    }
+                }
+                const { filename, blob } = await buildAssistantZipDownload(archiveExport, sourceBlob);
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = filename;
+                link.hidden = true;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+            } catch (error) {
+                showError(error instanceof Error ? error.message : '無法建立 ZIP 檔案。');
+            } finally {
+                zipButton.disabled = false;
+                zipButton.textContent = '↓ 下載 ZIP（' + archiveExport.files.length + ' 個更新檔案）';
+            }
+        });
+        container.appendChild(zipButton);
+    }
 };
 
 const getCharacterPhotoObjectUrl = async (assetId: string) => {
