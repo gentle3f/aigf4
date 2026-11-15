@@ -2956,8 +2956,9 @@ const renderAssistantMarkdown = (container: HTMLElement, text: string) => {
     const topicLabel = currentConversationKey
         ? getAssistantTopicEntries().find(entry => entry.key === currentConversationKey)?.title || 'venice-output'
         : 'venice-output';
-    const archiveExport = extractAssistantZipExport(text);
-    const jsonExport = archiveExport ? null : extractAssistantJsonExport(text, topicLabel);
+    const patchExport = extractAssistantJsonPatchExport(text);
+    const archiveExport = patchExport ? null : extractAssistantZipExport(text);
+    const jsonExport = patchExport || archiveExport ? null : extractAssistantJsonExport(text, topicLabel);
     if (jsonExport) {
         const button = document.createElement('button');
         button.type = 'button';
@@ -2977,6 +2978,47 @@ const renderAssistantMarkdown = (container: HTMLElement, text: string) => {
             window.setTimeout(() => URL.revokeObjectURL(url), 1000);
         });
         container.appendChild(button);
+    }
+
+    if (patchExport) {
+        const patchButton = document.createElement('button');
+        patchButton.type = 'button';
+        patchButton.className = 'assistant-json-download';
+        patchButton.textContent = '↓ 下載完整修正版 JSON（' + patchExport.operations.length + ' 項修改）';
+        patchButton.title = '使用原始上傳檔案套用經驗證嘅最小修改；不會覆蓋原始存檔';
+        const conversationKeyAtRender = currentConversationKey;
+        patchButton.addEventListener('click', async () => {
+            if (!conversationKeyAtRender) return;
+            patchButton.disabled = true;
+            patchButton.textContent = '正在核對修改並建立 JSON…';
+            try {
+                const history = memoryManager.peekChatHistory(conversationKeyAtRender);
+                const matches = history.flatMap(message => message.role === 'user'
+                    ? message.content.attachments || [] : []);
+                const source = [...matches].reverse().find(item =>
+                    item.name === patchExport.sourceFile && isAssistantJsonFile(item.name));
+                if (!source) throw new Error('搵唔到原始 JSON 存檔，請喺呢個話題重新上傳。');
+                const blob = await (await loadChatMediaStoreModule()).getChatAttachmentBlob(source.assetId);
+                if (!blob) throw new Error('原始存檔附件已不存在，請重新上傳後再下載修正版。');
+                const patched = patchAssistantJsonSave(await blob.text(), patchExport);
+                const output = new Blob([patched.json], { type: 'application/json;charset=utf-8' });
+                const url = URL.createObjectURL(output);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = patched.filename;
+                link.hidden = true;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+            } catch (error) {
+                showError(error instanceof Error ? error.message : '修復存檔失敗，原始 JSON 未被修改。');
+            } finally {
+                patchButton.disabled = false;
+                patchButton.textContent = '↓ 下載完整修正版 JSON（' + patchExport.operations.length + ' 項修改）';
+            }
+        });
+        container.appendChild(patchButton);
     }
 
     if (archiveExport) {
