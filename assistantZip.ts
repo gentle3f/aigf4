@@ -103,6 +103,7 @@ export const readAssistantZipArchive = async (
     file: Blob & { name?: string },
     provider?: ZipLibrary,
     model = '',
+    question = '',
 ): Promise<AssistantZipInspection> => {
     const name = file.name || 'archive.zip';
     if (!isAssistantZipFile(name) || file.size > ASSISTANT_ZIP_MAX_ARCHIVE_BYTES) {
@@ -134,7 +135,7 @@ export const readAssistantZipArchive = async (
             throw new Error('ZIP 內檔案並非有效 UTF-8 文字：' + item.path);
         }
         const prepared = isAssistantJsonFile(item.path)
-            ? prepareAssistantJsonSave(item.path, decoded, model)
+            ? prepareAssistantJsonSave(item.path, decoded, model, question)
             : null;
         const wrapped = prepared?.context ?? wrapAssistantFileText(item.path, decoded);
         longContext ||= Boolean(prepared?.longContext);

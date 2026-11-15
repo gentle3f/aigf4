@@ -35,7 +35,11 @@ test('Other models cannot silently receive oversized Luna files',()=>{
   const big = JSON.stringify({log:'a'.repeat(80_000)});
   assert.throws(()=>prepareAssistantJsonSave('save.json',big,'qwen-3-8-27b'),/請先.*DeepSeek/);
   assert.throws(()=>prepareAssistantJsonSave('save.json','bad '+ 'x'.repeat(70_000),model),/有效 JSON/);
-  assert.throws(()=>prepareAssistantJsonSave('save.json',JSON.stringify({s:'漢'.repeat(520_000)}),model),/上下文預算/);
+  const indexed = prepareAssistantJsonSave('save.json',JSON.stringify({s:'漢'.repeat(520_000)}),model,'請檢查存檔');
+  assert.equal(indexed.indexed, true);
+  assert.equal(indexed.longContext, true);
+  assert.ok(indexed.context.length < 80_000);
+  assert.match(indexed.context, /PARTIAL INSPECTION/);
 });
 
 test('Patch manifest parser accepts valid JSON pointers but not unsafe paths',()=>{
