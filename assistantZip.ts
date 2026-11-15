@@ -1,4 +1,10 @@
 import { isAssistantTextFile, wrapAssistantFileText, MAX_ASSISTANT_TOTAL_FILE_CHARACTERS } from './assistantFiles.js';
+import {
+    MAX_ASSISTANT_LARGE_JSON_CHARACTERS,
+    isAssistantJsonFile,
+    prepareAssistantJsonSave,
+    supportsAssistantLargeJson,
+} from './assistantLargeSave.js';
 import { loadJsZip } from './jsZipLoader.js';
 
 /** ZIP is unpacked only in the user's browser; no user file reaches another service directly. */
@@ -46,9 +52,10 @@ export type AssistantZipInspection = {
     fileNames: string[];
     textFileCount: number;
     ignoredFileCount: number;
+    longContext: boolean;
 };
 
-const getValidZipEntries = (archive: ZipArchive): ValidEntry[] => {
+const getValidZipEntries = (archive: ZipArchive, allowLargeJson = false): ValidEntry[] => {
     const values = Object.values(archive.files);
     if (values.length > ASSISTANT_ZIP_MAX_ENTRIES) {
         throw new Error('ZIP 檔案數量超過 120 項，未進行解壓。');
@@ -81,7 +88,10 @@ const getValidZipEntries = (archive: ZipArchive): ValidEntry[] => {
             throw new Error('ZIP 解壓總大小超過 15MB，已停止處理。');
         }
         const text = isAssistantTextFile(entry.name, '');
-        if (text && byteLength > ASSISTANT_ZIP_MAX_TEXT_FILE_BYTES) {
+        const allowedBytes = allowLargeJson && isAssistantJsonFile(entry.name)
+            ? ASSISTANT_ZIP_MAX_ARCHIVE_BYTES
+            : ASSISTANT_ZIP_MAX_TEXT_FILE_BYTES;
+        if (text && byteLength > allowedBytes) {
             throw new Error('ZIP 內文字檔過大：' + entry.name);
         }
         output.push({ path: entry.name, entry, byteLength, text });
@@ -92,6 +102,7 @@ const getValidZipEntries = (archive: ZipArchive): ValidEntry[] => {
 export const readAssistantZipArchive = async (
     file: Blob & { name?: string },
     provider?: ZipLibrary,
+    model = '',
 ): Promise<AssistantZipInspection> => {
     const name = file.name || 'archive.zip';
     if (!isAssistantZipFile(name) || file.size > ASSISTANT_ZIP_MAX_ARCHIVE_BYTES) {
@@ -99,16 +110,21 @@ export const readAssistantZipArchive = async (
     }
     const library = await getZipLibrary(provider);
     const archive = await library.loadAsync(file, { checkCRC32: false });
-    const entries = getValidZipEntries(archive);
+    const longContextSupported = supportsAssistantLargeJson(model);
+    const entries = getValidZipEntries(archive, longContextSupported);
     const fileNames = entries.map(item => item.path);
     let textFileCount = 0;
     let ignoredFileCount = 0;
+    let longContext = false;
     const sections: string[] = [];
     let budget = 0;
     for (const item of entries) {
         if (!item.text) { ignoredFileCount += 1; continue; }
         const bytes = await item.entry.async('uint8array');
-        if (bytes.byteLength > ASSISTANT_ZIP_MAX_TEXT_FILE_BYTES) {
+        const allowedBytes = longContextSupported && isAssistantJsonFile(item.path)
+            ? ASSISTANT_ZIP_MAX_ARCHIVE_BYTES
+            : ASSISTANT_ZIP_MAX_TEXT_FILE_BYTES;
+        if (bytes.byteLength > allowedBytes) {
             throw new Error('ZIP 解壓後文字檔過大：' + item.path);
         }
         let decoded: string;
@@ -117,10 +133,16 @@ export const readAssistantZipArchive = async (
         } catch {
             throw new Error('ZIP 內檔案並非有效 UTF-8 文字：' + item.path);
         }
-        const wrapped = wrapAssistantFileText(item.path, decoded);
+        const prepared = isAssistantJsonFile(item.path)
+            ? prepareAssistantJsonSave(item.path, decoded, model)
+            : null;
+        const wrapped = prepared?.context ?? wrapAssistantFileText(item.path, decoded);
+        longContext ||= Boolean(prepared?.longContext);
         budget += wrapped.length;
-        if (budget > MAX_ASSISTANT_TOTAL_FILE_CHARACTERS) {
-            throw new Error('ZIP 文字合計超過 95,000 字元，請先縮減內容再上傳。');
+        if (budget > (longContext ? MAX_ASSISTANT_LARGE_JSON_CHARACTERS + 15_000 : MAX_ASSISTANT_TOTAL_FILE_CHARACTERS)) {
+            throw new Error(longContext
+                ? 'ZIP 內大型 JSON 同其他文字檔合計超出安全上下文預算。'
+                : 'ZIP 文字合計超過 95,000 字元，請先縮減內容再上傳。');
         }
         sections.push(wrapped);
         textFileCount += 1;
@@ -135,10 +157,10 @@ export const readAssistantZipArchive = async (
         '',
     ].join('\n');
     const context = introduction + sections.join('\n\n') + '\n--- END UPLOADED ZIP ARCHIVE ---';
-    if (context.length > MAX_ASSISTANT_TOTAL_FILE_CHARACTERS) {
-        throw new Error('ZIP 文字同檔案目錄合計超過 95,000 字元。');
+    if (context.length > (longContext ? MAX_ASSISTANT_LARGE_JSON_CHARACTERS + 15_000 : MAX_ASSISTANT_TOTAL_FILE_CHARACTERS)) {
+        throw new Error('ZIP 文字同檔案目錄合計超出安全上下文預算。');
     }
-    return { context, fileNames, textFileCount, ignoredFileCount };
+    return { context, fileNames, textFileCount, ignoredFileCount, longContext };
 };
 
 /** Complete text files (or replacements for a ZIP uploaded in this same conversation). */
@@ -201,7 +223,7 @@ export const buildAssistantZipDownload = async (
     const archive = originalZip
         ? await library.loadAsync(originalZip, { checkCRC32: false })
         : new library();
-    if (originalZip) getValidZipEntries(archive);
+    if (originalZip) getValidZipEntries(archive, true);
     const originalCount = originalZip ? Object.keys(archive.files).length : 0;
     if (originalCount + manifest.files.length > ASSISTANT_ZIP_MAX_ENTRIES + ASSISTANT_ZIP_MAX_OUTPUT_FILES) {
         throw new Error('輸出 ZIP 包含太多檔案。');
