@@ -30,15 +30,25 @@ import {
     parseAssistantTopicTitles,
 } from './assistantTopics.js';
 import {
+    MAX_ASSISTANT_FILE_CHARACTERS,
     MAX_ASSISTANT_TOTAL_FILE_CHARACTERS,
     extractAssistantJsonExport,
     isAssistantTextFile,
     wrapAssistantFileText,
 } from './assistantFiles.js';
 import {
+    MAX_ASSISTANT_LARGE_JSON_CHARACTERS,
+    extractAssistantJsonPatchExport,
+    isAssistantJsonFile,
+    patchAssistantJsonSave,
+    prepareAssistantJsonSave,
+    supportsAssistantLargeJson,
+} from './assistantLargeSave.js';
+import {
     buildAssistantZipDownload,
     extractAssistantZipExport,
     isAssistantZipFile,
+    isSafeArchivePath,
     readAssistantZipArchive,
     type AssistantZipInspection,
 } from './assistantZip.js';
@@ -368,7 +378,7 @@ updateAssistantWebSearchButton();
 const assistantFileUploadButton = document.createElement('button');
 assistantFileUploadButton.type = 'button';
 assistantFileUploadButton.className = 'assistant-file-upload hidden';
-assistantFileUploadButton.textContent = '📎 上傳 ZIP／JSON／文字檔案';
+assistantFileUploadButton.textContent = '📎 上傳 ZIP／JSON／大型存檔';
 assistantFileUploadButton.title = '上傳檔案交由 Venice AI 分析';
 assistantFileUploadButton.addEventListener('click', () => chatAttachmentInput.click());
 chatAttachmentPreview.after(assistantFileUploadButton);
@@ -2947,8 +2957,9 @@ const renderAssistantMarkdown = (container: HTMLElement, text: string) => {
     const topicLabel = currentConversationKey
         ? getAssistantTopicEntries().find(entry => entry.key === currentConversationKey)?.title || 'venice-output'
         : 'venice-output';
-    const archiveExport = extractAssistantZipExport(text);
-    const jsonExport = archiveExport ? null : extractAssistantJsonExport(text, topicLabel);
+    const patchExport = extractAssistantJsonPatchExport(text);
+    const archiveExport = patchExport ? null : extractAssistantZipExport(text);
+    const jsonExport = patchExport || archiveExport ? null : extractAssistantJsonExport(text, topicLabel);
     if (jsonExport) {
         const button = document.createElement('button');
         button.type = 'button';
@@ -2968,6 +2979,76 @@ const renderAssistantMarkdown = (container: HTMLElement, text: string) => {
             window.setTimeout(() => URL.revokeObjectURL(url), 1000);
         });
         container.appendChild(button);
+    }
+
+    if (patchExport) {
+        const patchButton = document.createElement('button');
+        patchButton.type = 'button';
+        patchButton.className = 'assistant-json-download';
+        patchButton.textContent = '↓ 下載完整修正版 JSON（' + patchExport.operations.length + ' 項修改）';
+        patchButton.title = '使用原始上傳檔案套用經驗證嘅最小修改；不會覆蓋原始存檔';
+        const conversationKeyAtRender = currentConversationKey;
+        patchButton.addEventListener('click', async () => {
+            if (!conversationKeyAtRender) return;
+            patchButton.disabled = true;
+            patchButton.textContent = '正在核對修改並建立 JSON…';
+            try {
+                const history = memoryManager.peekChatHistory(conversationKeyAtRender);
+                const matches = history.flatMap(message => message.role === 'user'
+                    ? message.content.attachments || [] : []);
+                const source = [...matches].reverse().find(item =>
+                    item.name === patchExport.sourceFile && isAssistantJsonFile(item.name));
+                let originalRaw: string | null = null;
+                if (source) {
+                    const blob = await (await loadChatMediaStoreModule()).getChatAttachmentBlob(source.assetId);
+                    if (!blob) throw new Error('原始存檔附件已不存在，請重新上傳後再下載修正版。');
+                    originalRaw = await blob.text();
+                } else if (isSafeArchivePath(patchExport.sourceFile) && isAssistantJsonFile(patchExport.sourceFile)) {
+                    // A Luna save uploaded inside a ZIP can also be repaired and
+                    // downloaded as a stand-alone, importable full JSON file.
+                    const archives = [...matches].reverse().filter(item =>
+                        isAssistantZipFile(item.name, item.mimeType));
+                    for (const attachment of archives) {
+                        const zipBlob = await (await loadChatMediaStoreModule()).getChatAttachmentBlob(attachment.assetId);
+                        if (!zipBlob) continue;
+                        const sourceZip = new File([zipBlob], attachment.name, { type: attachment.mimeType });
+                        const inspected = await readAssistantZipArchive(
+                            sourceZip, undefined, 'deepseek-v4-1-flash-1017-uncensored');
+                        if (!inspected.fileNames.includes(patchExport.sourceFile)) continue;
+                        const zipLibrary = await (await import('./jsZipLoader.js')).loadJsZip();
+                        const archive = await zipLibrary.loadAsync(zipBlob);
+                        const innerFile = archive.file(patchExport.sourceFile);
+                        if (!innerFile) continue;
+                        const bytes: Uint8Array = await innerFile.async('uint8array');
+                        if (bytes.byteLength > 2_500_000) {
+                            throw new Error('ZIP 內原始 JSON 超過 2.5MB，未有套用修改。');
+                        }
+                        originalRaw = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+                        break;
+                    }
+                }
+                if (originalRaw === null) {
+                    throw new Error('搵唔到原始 JSON 存檔（包括 ZIP 內檔案），請喺同一話題重新上傳。');
+                }
+                const patched = patchAssistantJsonSave(originalRaw, patchExport);
+                const output = new Blob([patched.json], { type: 'application/json;charset=utf-8' });
+                const url = URL.createObjectURL(output);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = patched.filename;
+                link.hidden = true;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+            } catch (error) {
+                showError(error instanceof Error ? error.message : '修復存檔失敗，原始 JSON 未被修改。');
+            } finally {
+                patchButton.disabled = false;
+                patchButton.textContent = '↓ 下載完整修正版 JSON（' + patchExport.operations.length + ' 項修改）';
+            }
+        });
+        container.appendChild(patchButton);
     }
 
     if (archiveExport) {
@@ -5039,7 +5120,9 @@ const renderPendingChatAttachments = () => {
             chip.appendChild(icon);
         }
         const copy = document.createElement('span');
-        copy.textContent = `${item.attachment.name} · ${Math.max(1, Math.round(item.attachment.size / 1024))} KB`;
+        copy.textContent = `${item.attachment.name} · ${Math.max(1, Math.round(item.attachment.size / 1024))} KB`
+            + (isAssistantJsonFile(item.attachment.name) && item.attachment.size > MAX_ASSISTANT_FILE_CHARACTERS
+                ? ' · 大型存檔（原檔保留）' : '');
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.setAttribute('aria-label', `移除 ${item.attachment.name}`);
@@ -5084,7 +5167,7 @@ const handleChatAttachmentSelection = async () => {
                 }
                 const prepared = await prepareChatAttachment(file, currentBytes);
                 if (isAssistantZipFile(file.name, file.type)) {
-                    const inspected = await readAssistantZipArchive(prepared.file);
+                    const inspected = await readAssistantZipArchive(prepared.file, undefined, selectedAssistantModel);
                     assistantZipInspections.set(prepared.attachment.id, inspected);
                 }
                 pendingChatAttachments.push(prepared);
@@ -5100,20 +5183,42 @@ const handleChatAttachmentSelection = async () => {
 const persistPendingChatAttachments = async (conversationKey: string, assistantMode = false) => {
     const snapshot = [...pendingChatAttachments];
     const textFiles = new Map<string, string>();
+    const historyTextFiles = new Map<string, string>();
     let totalFileChars = 0;
-    // Validate all text files before persisting any attachment or submitting a paid request.
+    let containsLongSave = false;
+    // Validate before persisting anything or charging for a model request.
     if (assistantMode) {
         for (const item of snapshot) {
             const zip = isAssistantZipFile(item.attachment.name, item.attachment.mimeType);
             if (!zip && !isAssistantTextFile(item.attachment.name, item.attachment.mimeType)) continue;
-            const wrapped = zip
-                ? (assistantZipInspections.get(item.attachment.id) || await readAssistantZipArchive(item.file)).context
-                : wrapAssistantFileText(item.attachment.name, await item.file.text());
+            let wrapped: string;
+            let longContext = false;
+            if (zip) {
+                const inspected = assistantZipInspections.get(item.attachment.id)
+                    || await readAssistantZipArchive(item.file, undefined, selectedAssistantModel);
+                wrapped = inspected.context;
+                longContext = inspected.longContext;
+                containsLongSave ||= longContext;
+            } else if (isAssistantJsonFile(item.attachment.name)) {
+                const prepared = prepareAssistantJsonSave(item.attachment.name, await item.file.text(), selectedAssistantModel);
+                wrapped = prepared.context;
+                longContext = prepared.longContext;
+                containsLongSave ||= longContext;
+            } else {
+                wrapped = wrapAssistantFileText(item.attachment.name, await item.file.text());
+            }
             totalFileChars += wrapped.length;
-            if (totalFileChars > MAX_ASSISTANT_TOTAL_FILE_CHARACTERS) {
-                throw new Error('文字附件合計超過 95,000 字元。請減少檔案或拆開幾個話題。');
+            const budget = containsLongSave
+                ? MAX_ASSISTANT_LARGE_JSON_CHARACTERS + 15_000
+                : MAX_ASSISTANT_TOTAL_FILE_CHARACTERS;
+            if (totalFileChars > budget) {
+                throw new Error(containsLongSave
+                    ? '本次大型存檔連其他附件超出安全上下文預算；請先單獨上傳存檔。'
+                    : '文字附件合計超過 95,000 字元，請減少檔案或拆開幾個話題。');
             }
             textFiles.set(item.attachment.id, wrapped);
+            // Save original large JSON only as an attachment blob, not inside chat history.
+            if (!longContext) historyTextFiles.set(item.attachment.id, wrapped);
         }
     }
     const contentParts: VeniceMessageContentPart[] = [];
@@ -5153,7 +5258,7 @@ const persistPendingChatAttachments = async (conversationKey: string, assistantM
     return {
         attachments: snapshot.map(item => item.attachment),
         contentParts,
-        assistantFileContext: textFiles.size ? [...textFiles.values()].join('\n\n') : undefined,
+        assistantFileContext: historyTextFiles.size ? [...historyTextFiles.values()].join('\n\n') : undefined,
     };
 };
 
@@ -5878,6 +5983,9 @@ const buildAssistantSystemPrompt = () => {
         'Formatting such as headings, numbered lists, tables, and code blocks is allowed when useful.',
         'If asked to produce a downloadable JSON file, return exactly one complete JSON object or array inside a fenced json code block, with valid syntax and no omitted sections. The UI will provide a download button after validating it.',
         'When the user uploads ZIP, JSON, text, or code files, analyze their provided data faithfully and preserve any required schema, keys, and values unless the user requests changes.',
+        'For fixing an uploaded LARGE JSON save, do NOT reproduce the full save as your answer. Return a concise diagnosis followed by ONE complete fenced json object with format "wetapp-json-patch-v1", sourceFile "EXACT_ORIGINAL_FILENAME.json", filename "fixed-save.json", operations: [{"op":"replace","path":"/escaped/JSON/pointer","value":CORRECT_VALUE}]. Supported ops: add, remove, replace. Each path is a JSON Pointer (RFC 6901); escape "~" as "~0" and "/" as "~1". The browser will safely apply these operations to a fresh copy of the FULL original stored file, validate paths and download a complete corrected JSON. Keep edits minimal and justified.',
+        'Never invent JSON Pointer paths or field values absent from the uploaded save; inspect its real schema and only patch verified fields. Do not change unrelated game history or metadata. If any section was not provided, acknowledge the limit.',
+        'Downloading a patched save does not automatically replace the original uploaded file or game save; the user must inspect and import the resulting file themselves.',
         'Uploaded ZIP archives are pre-inspected. You receive a list of contained filenames plus UTF-8 text from supported files; binaries are only listed by name. Never claim to have inspected the contents of listed binary files.',
         'When the user requests a downloadable ZIP, return exactly ONE complete JSON object (inside one json code fence) with format "wetapp-zip-v1", filename "output.zip", and files [{path:"file.json",content:"FULL UTF-8 FILE CONTENT"}]. Every content field is a string containing the exact full file contents with valid JSON escaping. Support .json, .txt, .md, .csv, .yaml, code and other UTF-8 text formats. Do not output an abbreviated file or leave placeholders.',
         'If updating an earlier uploaded ZIP and you need to retain its unchanged files, include sourceArchive with the exact uploaded ZIP filename. The browser will copy original files and replace only those named in files; unrelated files, including binaries, are retained. Source ZIP must be in this conversation.',
@@ -6229,6 +6337,40 @@ const getLatestUserVeniceContent = (
     ];
 };
 
+const loadPreviousAssistantLargeSaveContext = async (
+    request: ActiveChatRequest,
+    model: string,
+): Promise<string> => {
+    if (request.mode !== 'assistant') return '';
+    const histories = memoryManager.peekChatHistory(request.conversationKey);
+    const sources = [...histories].reverse()
+        .filter(message => message.role === 'user')
+        .flatMap(message => [...(message.content.attachments || [])].reverse())
+        .filter(attachment => isAssistantZipFile(attachment.name, attachment.mimeType)
+            || (isAssistantJsonFile(attachment.name) && attachment.size > MAX_ASSISTANT_FILE_CHARACTERS));
+    for (const source of sources) {
+        // Current-turn files are already present in request.attachmentParts.
+        if (request.attachments?.some(item => item.assetId === source.assetId)) continue;
+        const blob = await (await loadChatMediaStoreModule()).getChatAttachmentBlob(source.assetId);
+        if (!blob) throw new Error('搵唔到之前上傳嘅存檔附件，請重新上傳，避免 AI 憑空修改。');
+        if (isAssistantZipFile(source.name, source.mimeType)) {
+            const inspected = await readAssistantZipArchive(
+                new File([blob], source.name, { type: source.mimeType }),
+                undefined,
+                model,
+            );
+            if (inspected.longContext) return inspected.context;
+        } else {
+            if (!supportsAssistantLargeJson(model)) {
+                throw new Error('呢個話題有大型 JSON 存檔，請選擇 DeepSeek V4.1 Flash 1017 Uncensored 繼續分析。');
+            }
+            const prepared = prepareAssistantJsonSave(source.name, await blob.text(), model);
+            if (prepared.longContext) return prepared.context;
+        }
+    }
+    return '';
+};
+
 const getSingleGenerationAttemptFailure = (
     error: unknown,
 ) => classifyGenerationAttemptFailure(
@@ -6480,6 +6622,11 @@ const runConversationGeneration = async (
         request.room,
     );
     const latestUserContent = getLatestUserVeniceContent(request, latestUserMessage);
+    // Rehydrate the complete large save from private attachment storage for follow-ups.
+    // Huge blobs are not duplicated into localStorage chat history.
+    const previousLargeJsonContext = assistantMode
+        ? await loadPreviousAssistantLargeSaveContext(request, models[0] || '')
+        : '';
     const promptCacheKey = assistantMode
         ? undefined
         : createConversationPromptCacheKey(request.conversationKey, 'chat');
@@ -6503,6 +6650,11 @@ const runConversationGeneration = async (
             chars: getVeniceMessageAggregate([{ role: 'user', content: latestUserContent }]),
             messages: 1,
         },
+        ...(previousLargeJsonContext ? [{
+            name: 'rehydrated-large-json-from-attachment',
+            chars: previousLargeJsonContext.length,
+            messages: 1,
+        }] : []),
     ];
     markChatPerformance('generation:prompt-build', preparationStartedAt);
 
@@ -6544,6 +6696,12 @@ const runConversationGeneration = async (
                 }
 
                 messages.push(...recentMessages);
+                if (previousLargeJsonContext) {
+                    messages.push({
+                        role: 'user',
+                        content: 'Reference: complete previously uploaded JSON save. Original is retained.\n' + previousLargeJsonContext,
+                    });
+                }
                 messages.push({ role: 'user', content: latestUserContent });
                 const generationPhase = index === 0 && !isRepairAttempt
                     ? 'generation:primary'
