@@ -5180,7 +5180,7 @@ const handleChatAttachmentSelection = async () => {
     updateSendButtonState();
 };
 
-const persistPendingChatAttachments = async (conversationKey: string, assistantMode = false) => {
+const persistPendingChatAttachments = async (conversationKey: string, assistantMode = false, question = '') => {
     const snapshot = [...pendingChatAttachments];
     const textFiles = new Map<string, string>();
     const historyTextFiles = new Map<string, string>();
@@ -5194,13 +5194,15 @@ const persistPendingChatAttachments = async (conversationKey: string, assistantM
             let wrapped: string;
             let longContext = false;
             if (zip) {
-                const inspected = assistantZipInspections.get(item.attachment.id)
-                    || await readAssistantZipArchive(item.file, undefined, selectedAssistantModel);
+                const preview = assistantZipInspections.get(item.attachment.id);
+                const inspected = preview?.longContext
+                    ? await readAssistantZipArchive(item.file, undefined, selectedAssistantModel, question)
+                    : preview || await readAssistantZipArchive(item.file, undefined, selectedAssistantModel, question);
                 wrapped = inspected.context;
                 longContext = inspected.longContext;
                 containsLongSave ||= longContext;
             } else if (isAssistantJsonFile(item.attachment.name)) {
-                const prepared = prepareAssistantJsonSave(item.attachment.name, await item.file.text(), selectedAssistantModel);
+                const prepared = prepareAssistantJsonSave(item.attachment.name, await item.file.text(), selectedAssistantModel, question);
                 wrapped = prepared.context;
                 longContext = prepared.longContext;
                 containsLongSave ||= longContext;
@@ -5983,6 +5985,7 @@ const buildAssistantSystemPrompt = () => {
         'Formatting such as headings, numbered lists, tables, and code blocks is allowed when useful.',
         'If asked to produce a downloadable JSON file, return exactly one complete JSON object or array inside a fenced json code block, with valid syntax and no omitted sections. The UI will provide a download button after validating it.',
         'When the user uploads ZIP, JSON, text, or code files, analyze their provided data faithfully and preserve any required schema, keys, and values unless the user requests changes.',
+        'Some oversized JSON attachments are given as INDEXED PARTIAL VIEWS, not full text. If the view says PARTIAL, NEVER assert that you read the whole save. Use provided paths to identify exactly what was inspected; ask the user for a precise symptom, name, or JSON Pointer path when the excerpt is insufficient. On a follow-up, Wetapp will retrieve relevant indexed records from the unchanged original.',
         'For fixing an uploaded LARGE JSON save, do NOT reproduce the full save as your answer. Return a concise diagnosis followed by ONE complete fenced json object with format "wetapp-json-patch-v1", sourceFile "EXACT_ORIGINAL_FILENAME.json", filename "fixed-save.json", operations: [{"op":"replace","path":"/escaped/JSON/pointer","value":CORRECT_VALUE}]. Supported ops: add, remove, replace. Each path is a JSON Pointer (RFC 6901); escape "~" as "~0" and "/" as "~1". The browser will safely apply these operations to a fresh copy of the FULL original stored file, validate paths and download a complete corrected JSON. Keep edits minimal and justified.',
         'Never invent JSON Pointer paths or field values absent from the uploaded save; inspect its real schema and only patch verified fields. Do not change unrelated game history or metadata. If any section was not provided, acknowledge the limit.',
         'Downloading a patched save does not automatically replace the original uploaded file or game save; the user must inspect and import the resulting file themselves.',
@@ -6340,6 +6343,7 @@ const getLatestUserVeniceContent = (
 const loadPreviousAssistantLargeSaveContext = async (
     request: ActiveChatRequest,
     model: string,
+    question: string,
 ): Promise<string> => {
     if (request.mode !== 'assistant') return '';
     const histories = memoryManager.peekChatHistory(request.conversationKey);
@@ -6358,13 +6362,14 @@ const loadPreviousAssistantLargeSaveContext = async (
                 new File([blob], source.name, { type: source.mimeType }),
                 undefined,
                 model,
+                question,
             );
             if (inspected.longContext) return inspected.context;
         } else {
             if (!supportsAssistantLargeJson(model)) {
                 throw new Error('呢個話題有大型 JSON 存檔，請選擇 DeepSeek V4.1 Flash 1017 Uncensored 繼續分析。');
             }
-            const prepared = prepareAssistantJsonSave(source.name, await blob.text(), model);
+            const prepared = prepareAssistantJsonSave(source.name, await blob.text(), model, question);
             if (prepared.longContext) return prepared.context;
         }
     }
@@ -6625,7 +6630,7 @@ const runConversationGeneration = async (
     // Rehydrate the complete large save from private attachment storage for follow-ups.
     // Huge blobs are not duplicated into localStorage chat history.
     const previousLargeJsonContext = assistantMode
-        ? await loadPreviousAssistantLargeSaveContext(request, models[0] || '')
+        ? await loadPreviousAssistantLargeSaveContext(request, models[0] || '', latestUserMessage)
         : '';
     const promptCacheKey = assistantMode
         ? undefined
@@ -9411,7 +9416,7 @@ const sendMessage = async ({
     };
     try {
         if (pendingChatAttachments.length > 0) {
-            attachmentBundle = await persistPendingChatAttachments(conversationKey, assistantMode);
+            attachmentBundle = await persistPendingChatAttachments(conversationKey, assistantMode, userMessage);
         }
     } catch (error) {
         showError(error instanceof Error ? error.message : '附件儲存失敗。');
