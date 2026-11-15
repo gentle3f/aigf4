@@ -30,11 +30,20 @@ import {
     parseAssistantTopicTitles,
 } from './assistantTopics.js';
 import {
+    MAX_ASSISTANT_FILE_CHARACTERS,
     MAX_ASSISTANT_TOTAL_FILE_CHARACTERS,
     extractAssistantJsonExport,
     isAssistantTextFile,
     wrapAssistantFileText,
 } from './assistantFiles.js';
+import {
+    MAX_ASSISTANT_LARGE_JSON_CHARACTERS,
+    extractAssistantJsonPatchExport,
+    isAssistantJsonFile,
+    patchAssistantJsonSave,
+    prepareAssistantJsonSave,
+    supportsAssistantLargeJson,
+} from './assistantLargeSave.js';
 import {
     buildAssistantZipDownload,
     extractAssistantZipExport,
@@ -368,7 +377,7 @@ updateAssistantWebSearchButton();
 const assistantFileUploadButton = document.createElement('button');
 assistantFileUploadButton.type = 'button';
 assistantFileUploadButton.className = 'assistant-file-upload hidden';
-assistantFileUploadButton.textContent = '📎 上傳 ZIP／JSON／文字檔案';
+assistantFileUploadButton.textContent = '📎 上傳 ZIP／JSON／大型存檔';
 assistantFileUploadButton.title = '上傳檔案交由 Venice AI 分析';
 assistantFileUploadButton.addEventListener('click', () => chatAttachmentInput.click());
 chatAttachmentPreview.after(assistantFileUploadButton);
@@ -5039,7 +5048,9 @@ const renderPendingChatAttachments = () => {
             chip.appendChild(icon);
         }
         const copy = document.createElement('span');
-        copy.textContent = `${item.attachment.name} · ${Math.max(1, Math.round(item.attachment.size / 1024))} KB`;
+        copy.textContent = `${item.attachment.name} · ${Math.max(1, Math.round(item.attachment.size / 1024))} KB`
+            + (isAssistantJsonFile(item.attachment.name) && item.attachment.size > MAX_ASSISTANT_FILE_CHARACTERS
+                ? ' · 大型存檔（原檔保留）' : '');
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.setAttribute('aria-label', `移除 ${item.attachment.name}`);
@@ -5100,20 +5111,38 @@ const handleChatAttachmentSelection = async () => {
 const persistPendingChatAttachments = async (conversationKey: string, assistantMode = false) => {
     const snapshot = [...pendingChatAttachments];
     const textFiles = new Map<string, string>();
+    const historyTextFiles = new Map<string, string>();
     let totalFileChars = 0;
-    // Validate all text files before persisting any attachment or submitting a paid request.
+    let containsLongSave = false;
+    // Validate before persisting anything or charging for a model request.
     if (assistantMode) {
         for (const item of snapshot) {
             const zip = isAssistantZipFile(item.attachment.name, item.attachment.mimeType);
             if (!zip && !isAssistantTextFile(item.attachment.name, item.attachment.mimeType)) continue;
-            const wrapped = zip
-                ? (assistantZipInspections.get(item.attachment.id) || await readAssistantZipArchive(item.file)).context
-                : wrapAssistantFileText(item.attachment.name, await item.file.text());
+            let wrapped: string;
+            let longContext = false;
+            if (zip) {
+                wrapped = (assistantZipInspections.get(item.attachment.id) || await readAssistantZipArchive(item.file)).context;
+            } else if (isAssistantJsonFile(item.attachment.name)) {
+                const prepared = prepareAssistantJsonSave(item.attachment.name, await item.file.text(), selectedAssistantModel);
+                wrapped = prepared.context;
+                longContext = prepared.longContext;
+                containsLongSave ||= longContext;
+            } else {
+                wrapped = wrapAssistantFileText(item.attachment.name, await item.file.text());
+            }
             totalFileChars += wrapped.length;
-            if (totalFileChars > MAX_ASSISTANT_TOTAL_FILE_CHARACTERS) {
-                throw new Error('文字附件合計超過 95,000 字元。請減少檔案或拆開幾個話題。');
+            const budget = containsLongSave
+                ? MAX_ASSISTANT_LARGE_JSON_CHARACTERS + 15_000
+                : MAX_ASSISTANT_TOTAL_FILE_CHARACTERS;
+            if (totalFileChars > budget) {
+                throw new Error(containsLongSave
+                    ? '本次大型存檔連其他附件超出安全上下文預算；請先單獨上傳存檔。'
+                    : '文字附件合計超過 95,000 字元，請減少檔案或拆開幾個話題。');
             }
             textFiles.set(item.attachment.id, wrapped);
+            // Save original large JSON only as an attachment blob, not inside chat history.
+            if (!longContext) historyTextFiles.set(item.attachment.id, wrapped);
         }
     }
     const contentParts: VeniceMessageContentPart[] = [];
@@ -5153,7 +5182,7 @@ const persistPendingChatAttachments = async (conversationKey: string, assistantM
     return {
         attachments: snapshot.map(item => item.attachment),
         contentParts,
-        assistantFileContext: textFiles.size ? [...textFiles.values()].join('\n\n') : undefined,
+        assistantFileContext: historyTextFiles.size ? [...historyTextFiles.values()].join('\n\n') : undefined,
     };
 };
 
@@ -5878,6 +5907,9 @@ const buildAssistantSystemPrompt = () => {
         'Formatting such as headings, numbered lists, tables, and code blocks is allowed when useful.',
         'If asked to produce a downloadable JSON file, return exactly one complete JSON object or array inside a fenced json code block, with valid syntax and no omitted sections. The UI will provide a download button after validating it.',
         'When the user uploads ZIP, JSON, text, or code files, analyze their provided data faithfully and preserve any required schema, keys, and values unless the user requests changes.',
+        'For fixing an uploaded LARGE JSON save, do NOT reproduce the full save as your answer. Return a concise diagnosis followed by ONE complete fenced json object with format "wetapp-json-patch-v1", sourceFile "EXACT_ORIGINAL_FILENAME.json", filename "fixed-save.json", operations: [{"op":"replace","path":"/escaped/JSON/pointer","value":CORRECT_VALUE}]. Supported ops: add, remove, replace. Each path is a JSON Pointer (RFC 6901); escape "~" as "~0" and "/" as "~1". The browser will safely apply these operations to a fresh copy of the FULL original stored file, validate paths and download a complete corrected JSON. Keep edits minimal and justified.',
+        'Never invent JSON Pointer paths or field values absent from the uploaded save; inspect its real schema and only patch verified fields. Do not change unrelated game history or metadata. If any section was not provided, acknowledge the limit.',
+        'Downloading a patched save does not automatically replace the original uploaded file or game save; the user must inspect and import the resulting file themselves.',
         'Uploaded ZIP archives are pre-inspected. You receive a list of contained filenames plus UTF-8 text from supported files; binaries are only listed by name. Never claim to have inspected the contents of listed binary files.',
         'When the user requests a downloadable ZIP, return exactly ONE complete JSON object (inside one json code fence) with format "wetapp-zip-v1", filename "output.zip", and files [{path:"file.json",content:"FULL UTF-8 FILE CONTENT"}]. Every content field is a string containing the exact full file contents with valid JSON escaping. Support .json, .txt, .md, .csv, .yaml, code and other UTF-8 text formats. Do not output an abbreviated file or leave placeholders.',
         'If updating an earlier uploaded ZIP and you need to retain its unchanged files, include sourceArchive with the exact uploaded ZIP filename. The browser will copy original files and replace only those named in files; unrelated files, including binaries, are retained. Source ZIP must be in this conversation.',
