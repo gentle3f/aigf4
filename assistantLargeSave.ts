@@ -4,6 +4,7 @@
  * constructed from fresh parses so unrelated nested fields are preserved.
  */
 import { MAX_ASSISTANT_FILE_CHARACTERS } from './assistantFiles.js';
+import { prepareIndexedAssistantJson } from './assistantJsonIndex.js';
 
 export const MAX_ASSISTANT_LARGE_JSON_CHARACTERS = 2_100_000;
 export const MAX_ASSISTANT_LARGE_JSON_TOKEN_ESTIMATE = 750_000;
@@ -33,12 +34,14 @@ export type AssistantLargeJsonPreparation = {
     longContext: boolean;
     originalCharacters: number;
     providedCharacters: number;
+    indexed: boolean;
 };
 
 export const prepareAssistantJsonSave = (
     filename: string,
     raw: string,
     model: string,
+    question = '',
 ): AssistantLargeJsonPreparation => {
     const longContext = raw.length > MAX_ASSISTANT_FILE_CHARACTERS;
     if (longContext && !supportsAssistantLargeJson(model)) {
@@ -58,9 +61,16 @@ export const prepareAssistantJsonSave = (
         }
         if (compact.length > MAX_ASSISTANT_LARGE_JSON_CHARACTERS
             || estimateLargeJsonTokens(compact) > MAX_ASSISTANT_LARGE_JSON_TOKEN_ESTIMATE) {
-            throw new Error(
-                '存檔超出大型 JSON 安全上下文預算。請先拆分存檔內容，或提供要檢查的部分；未有將檔案截斷後冒充完整分析。',
-            );
+            // An indexed view lets the user query arbitrarily large saves
+            // without pretending the model ingested the complete contents.
+            const indexed = prepareIndexedAssistantJson(filename, raw, question);
+            return {
+                context: indexed.context,
+                longContext: true,
+                originalCharacters: raw.length,
+                providedCharacters: indexed.context.length,
+                indexed: true,
+            };
         }
     }
 
@@ -80,6 +90,7 @@ export const prepareAssistantJsonSave = (
         longContext,
         originalCharacters: raw.length,
         providedCharacters: compact.length,
+        indexed: false,
     };
 };
 
