@@ -2998,10 +2998,39 @@ const renderAssistantMarkdown = (container: HTMLElement, text: string) => {
                     ? message.content.attachments || [] : []);
                 const source = [...matches].reverse().find(item =>
                     item.name === patchExport.sourceFile && isAssistantJsonFile(item.name));
-                if (!source) throw new Error('搵唔到原始 JSON 存檔，請喺呢個話題重新上傳。');
-                const blob = await (await loadChatMediaStoreModule()).getChatAttachmentBlob(source.assetId);
-                if (!blob) throw new Error('原始存檔附件已不存在，請重新上傳後再下載修正版。');
-                const patched = patchAssistantJsonSave(await blob.text(), patchExport);
+                let originalRaw: string | null = null;
+                if (source) {
+                    const blob = await (await loadChatMediaStoreModule()).getChatAttachmentBlob(source.assetId);
+                    if (!blob) throw new Error('原始存檔附件已不存在，請重新上傳後再下載修正版。');
+                    originalRaw = await blob.text();
+                } else if (isSafeArchivePath(patchExport.sourceFile) && isAssistantJsonFile(patchExport.sourceFile)) {
+                    // A Luna save uploaded inside a ZIP can also be repaired and
+                    // downloaded as a stand-alone, importable full JSON file.
+                    const archives = [...matches].reverse().filter(item =>
+                        isAssistantZipFile(item.name, item.mimeType));
+                    for (const attachment of archives) {
+                        const zipBlob = await (await loadChatMediaStoreModule()).getChatAttachmentBlob(attachment.assetId);
+                        if (!zipBlob) continue;
+                        const sourceZip = new File([zipBlob], attachment.name, { type: attachment.mimeType });
+                        const inspected = await readAssistantZipArchive(
+                            sourceZip, undefined, 'deepseek-v4-1-flash-1017-uncensored');
+                        if (!inspected.fileNames.includes(patchExport.sourceFile)) continue;
+                        const zipLibrary = await (await import('./jsZipLoader.js')).loadJsZip();
+                        const archive = await zipLibrary.loadAsync(zipBlob);
+                        const innerFile = archive.file(patchExport.sourceFile);
+                        if (!innerFile) continue;
+                        const bytes: Uint8Array = await innerFile.async('uint8array');
+                        if (bytes.byteLength > 2_500_000) {
+                            throw new Error('ZIP 內原始 JSON 超過 2.5MB，未有套用修改。');
+                        }
+                        originalRaw = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+                        break;
+                    }
+                }
+                if (originalRaw === null) {
+                    throw new Error('搵唔到原始 JSON 存檔（包括 ZIP 內檔案），請喺同一話題重新上傳。');
+                }
+                const patched = patchAssistantJsonSave(originalRaw, patchExport);
                 const output = new Blob([patched.json], { type: 'application/json;charset=utf-8' });
                 const url = URL.createObjectURL(output);
                 const link = document.createElement('a');
