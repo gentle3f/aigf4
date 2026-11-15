@@ -7202,12 +7202,6 @@ const runRoomConversationGeneration = async (
                     });
                 }
                 messages.push(...recentMessages);
-                if (previousLargeJsonContext) {
-                    messages.push({
-                        role: 'user',
-                        content: 'Reference: complete previously uploaded JSON save. Original is retained.\n' + previousLargeJsonContext,
-                    });
-                }
                 messages.push({ role: 'user', content: latestUserContent });
                 markChatPerformance('generation:prompt-build', preparationStartedAt);
 
