@@ -22,7 +22,7 @@ const save = {
       { id:3, actor:'Jisoo', text:'Alice 與 Bob 交談', timestamp:103 },
     ],
   },
-  longLog: Array.from({length:12000}, (_,i)=>({
+  longLog: Array.from({length:26000}, (_,i)=>({
     id:i, speaker:i%2?'旁白':'player',
     content:'這是無關的長篇歷史劇情與角色日常，請保留原始內容。'.repeat(5),
   })),
