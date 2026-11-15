@@ -6314,21 +6314,32 @@ const loadPreviousAssistantLargeSaveContext = async (
 ): Promise<string> => {
     if (request.mode !== 'assistant') return '';
     const histories = memoryManager.peekChatHistory(request.conversationKey);
-    const source = [...histories].reverse()
+    const sources = [...histories].reverse()
         .filter(message => message.role === 'user')
         .flatMap(message => [...(message.content.attachments || [])].reverse())
-        .find(attachment => isAssistantJsonFile(attachment.name)
-            && attachment.size > MAX_ASSISTANT_FILE_CHARACTERS);
-    if (!source) return '';
-    // First upload is already present as request.attachmentParts.
-    if (request.attachments?.some(item => item.assetId === source.assetId)) return '';
-    if (!supportsAssistantLargeJson(model)) {
-        throw new Error('呢個話題有大型 JSON 存檔，請選擇 DeepSeek V4.1 Flash 1017 Uncensored 繼續分析。');
+        .filter(attachment => isAssistantZipFile(attachment.name, attachment.mimeType)
+            || (isAssistantJsonFile(attachment.name) && attachment.size > MAX_ASSISTANT_FILE_CHARACTERS));
+    for (const source of sources) {
+        // Current-turn files are already present in request.attachmentParts.
+        if (request.attachments?.some(item => item.assetId === source.assetId)) continue;
+        const blob = await (await loadChatMediaStoreModule()).getChatAttachmentBlob(source.assetId);
+        if (!blob) throw new Error('搵唔到之前上傳嘅存檔附件，請重新上傳，避免 AI 憑空修改。');
+        if (isAssistantZipFile(source.name, source.mimeType)) {
+            const inspected = await readAssistantZipArchive(
+                new File([blob], source.name, { type: source.mimeType }),
+                undefined,
+                model,
+            );
+            if (inspected.longContext) return inspected.context;
+        } else {
+            if (!supportsAssistantLargeJson(model)) {
+                throw new Error('呢個話題有大型 JSON 存檔，請選擇 DeepSeek V4.1 Flash 1017 Uncensored 繼續分析。');
+            }
+            const prepared = prepareAssistantJsonSave(source.name, await blob.text(), model);
+            if (prepared.longContext) return prepared.context;
+        }
     }
-    const blob = await (await loadChatMediaStoreModule()).getChatAttachmentBlob(source.assetId);
-    if (!blob) throw new Error('搵唔到之前上傳嘅大型 JSON 原檔，請重新上傳，避免 AI 憑空修改。');
-    const prepared = prepareAssistantJsonSave(source.name, await blob.text(), model);
-    return prepared.longContext ? prepared.context : '';
+    return '';
 };
 
 const getSingleGenerationAttemptFailure = (
