@@ -48,6 +48,7 @@ import {
     buildAssistantZipDownload,
     extractAssistantZipExport,
     isAssistantZipFile,
+    isSafeArchivePath,
     readAssistantZipArchive,
     type AssistantZipInspection,
 } from './assistantZip.js';
@@ -5137,7 +5138,7 @@ const handleChatAttachmentSelection = async () => {
                 }
                 const prepared = await prepareChatAttachment(file, currentBytes);
                 if (isAssistantZipFile(file.name, file.type)) {
-                    const inspected = await readAssistantZipArchive(prepared.file);
+                    const inspected = await readAssistantZipArchive(prepared.file, undefined, selectedAssistantModel);
                     assistantZipInspections.set(prepared.attachment.id, inspected);
                 }
                 pendingChatAttachments.push(prepared);
@@ -5164,7 +5165,11 @@ const persistPendingChatAttachments = async (conversationKey: string, assistantM
             let wrapped: string;
             let longContext = false;
             if (zip) {
-                wrapped = (assistantZipInspections.get(item.attachment.id) || await readAssistantZipArchive(item.file)).context;
+                const inspected = assistantZipInspections.get(item.attachment.id)
+                    || await readAssistantZipArchive(item.file, undefined, selectedAssistantModel);
+                wrapped = inspected.context;
+                longContext = inspected.longContext;
+                containsLongSave ||= longContext;
             } else if (isAssistantJsonFile(item.attachment.name)) {
                 const prepared = prepareAssistantJsonSave(item.attachment.name, await item.file.text(), selectedAssistantModel);
                 wrapped = prepared.context;
