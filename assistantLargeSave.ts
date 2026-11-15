@@ -107,6 +107,14 @@ const decodePointer = (path: string): string[] | null => {
     return decoded;
 };
 
+const isValidJsonSourcePath = (path: string): boolean => {
+    if (path.length > 240 || !/\.json$/iu.test(path)
+        || path.startsWith('/') || /[\\:\x00-\x1f\x7f]/u.test(path)) return false;
+    const segments = path.split('/');
+    return segments.length <= 12 && segments.every(part =>
+        part.length > 0 && part.length <= 120 && part !== '.' && part !== '..');
+};
+
 const isValidPatchManifest = (value: unknown): value is AssistantJsonPatchExport => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     const obj = value as Record<string, unknown>;
@@ -114,7 +122,7 @@ const isValidPatchManifest = (value: unknown): value is AssistantJsonPatchExport
         || typeof obj.filename !== 'string' || obj.filename.length > 180
         || !/^[^/\\\x00-\x1f]{1,180}\.json$/iu.test(obj.filename)
         || typeof obj.sourceFile !== 'string'
-        || !/^[^/\\\x00-\x1f]{1,180}\.json$/iu.test(obj.sourceFile)
+        || !isValidJsonSourcePath(obj.sourceFile)
         || !Array.isArray(obj.operations)
         || obj.operations.length < 1 || obj.operations.length > MAX_ASSISTANT_JSON_PATCH_OPERATIONS) return false;
     for (const item of obj.operations) {
