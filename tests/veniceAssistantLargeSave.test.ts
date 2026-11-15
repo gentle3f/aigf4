@@ -100,7 +100,7 @@ test('Venice assistant rehydrates original save on follow-up and preserves separ
   assert.match(app,/historyTextFiles\.set/);
   assert.match(app,/previousLargeJsonContext/);
   assert.match(app,/assistantMode\s+\?\s+await loadPreviousAssistantLargeSaveContext/);
-  assert.match(app,/patchAssistantJsonSave\(await blob.text\(\), patchExport\)/);
+  assert.match(app,/patchAssistantJsonSave\(originalRaw, patchExport\)/);
   assert.match(app,/const jsonExport = patchExport \|\| archiveExport \? null : extractAssistantJsonExport/);
   assert.match(app,/supportsAssistantLargeJson/);
 });
