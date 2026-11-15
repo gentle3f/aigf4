@@ -45,6 +45,11 @@ test('Patch manifest parser accepts valid JSON pointers but not unsafe paths',()
   };
   const text='\x60\x60\x60json\n'+JSON.stringify(manifest)+'\n\x60\x60\x60';
   assert.deepEqual(extractAssistantJsonPatchExport(text),manifest);
+  assert.deepEqual(
+    extractAssistantJsonPatchExport(JSON.stringify({...manifest,sourceFile:'data/Luna_save.json'}))?.sourceFile,
+    'data/Luna_save.json',
+  );
+  assert.equal(extractAssistantJsonPatchExport(JSON.stringify({...manifest,sourceFile:'../Luna_save.json'})),null);
   for(const path of ['/__proto__/polluted','/constructor/prototype','/nested/~2bad','', 'a']) {
     const malformed={...manifest,operations:[{...manifest.operations[0],path}]};
     assert.equal(extractAssistantJsonPatchExport(JSON.stringify(malformed)),null);
