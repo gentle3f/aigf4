@@ -6261,6 +6261,29 @@ const getLatestUserVeniceContent = (
     ];
 };
 
+const loadPreviousAssistantLargeSaveContext = async (
+    request: ActiveChatRequest,
+    model: string,
+): Promise<string> => {
+    if (request.mode !== 'assistant') return '';
+    const histories = memoryManager.peekChatHistory(request.conversationKey);
+    const source = [...histories].reverse()
+        .filter(message => message.role === 'user')
+        .flatMap(message => [...(message.content.attachments || [])].reverse())
+        .find(attachment => isAssistantJsonFile(attachment.name)
+            && attachment.size > MAX_ASSISTANT_FILE_CHARACTERS);
+    if (!source) return '';
+    // First upload is already present as request.attachmentParts.
+    if (request.attachments?.some(item => item.assetId === source.assetId)) return '';
+    if (!supportsAssistantLargeJson(model)) {
+        throw new Error('呢個話題有大型 JSON 存檔，請選擇 DeepSeek V4.1 Flash 1017 Uncensored 繼續分析。');
+    }
+    const blob = await (await loadChatMediaStoreModule()).getChatAttachmentBlob(source.assetId);
+    if (!blob) throw new Error('搵唔到之前上傳嘅大型 JSON 原檔，請重新上傳，避免 AI 憑空修改。');
+    const prepared = prepareAssistantJsonSave(source.name, await blob.text(), model);
+    return prepared.longContext ? prepared.context : '';
+};
+
 const getSingleGenerationAttemptFailure = (
     error: unknown,
 ) => classifyGenerationAttemptFailure(
@@ -6512,6 +6535,11 @@ const runConversationGeneration = async (
         request.room,
     );
     const latestUserContent = getLatestUserVeniceContent(request, latestUserMessage);
+    // Rehydrate the complete large save from private attachment storage for follow-ups.
+    // Huge blobs are not duplicated into localStorage chat history.
+    const previousLargeJsonContext = assistantMode
+        ? await loadPreviousAssistantLargeSaveContext(request, models[0] || '')
+        : '';
     const promptCacheKey = assistantMode
         ? undefined
         : createConversationPromptCacheKey(request.conversationKey, 'chat');
@@ -6535,6 +6563,11 @@ const runConversationGeneration = async (
             chars: getVeniceMessageAggregate([{ role: 'user', content: latestUserContent }]),
             messages: 1,
         },
+        ...(previousLargeJsonContext ? [{
+            name: 'rehydrated-large-json-from-attachment',
+            chars: previousLargeJsonContext.length,
+            messages: 1,
+        }] : []),
     ];
     markChatPerformance('generation:prompt-build', preparationStartedAt);
 
@@ -6576,6 +6609,12 @@ const runConversationGeneration = async (
                 }
 
                 messages.push(...recentMessages);
+                if (previousLargeJsonContext) {
+                    messages.push({
+                        role: 'user',
+                        content: 'Reference: complete previously uploaded JSON save. Original is retained.\n' + previousLargeJsonContext,
+                    });
+                }
                 messages.push({ role: 'user', content: latestUserContent });
                 const generationPhase = index === 0 && !isRepairAttempt
                     ? 'generation:primary'
@@ -7121,6 +7160,12 @@ const runRoomConversationGeneration = async (
                     });
                 }
                 messages.push(...recentMessages);
+                if (previousLargeJsonContext) {
+                    messages.push({
+                        role: 'user',
+                        content: 'Reference: complete previously uploaded JSON save. Original is retained.\n' + previousLargeJsonContext,
+                    });
+                }
                 messages.push({ role: 'user', content: latestUserContent });
                 markChatPerformance('generation:prompt-build', preparationStartedAt);
 
