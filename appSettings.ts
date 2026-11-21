@@ -1,6 +1,8 @@
 import { notifyLocalCloudChange } from './cloudSyncEvents.js';
+import { mergeGroupModeRegisters } from './groupModeSync.js';
 
 export const RESEARCH_CAPTURE_SETTING_KEY = 'aigf4ResearchCaptureEnabledV1';
+export const GROUP_V2_SYNCED_MODES_KEY = 'aigf4GroupV2SyncedModesV1';
 
 export const PERSISTED_APP_SETTING_KEYS = [
     'veniceAssistantModel',
@@ -15,6 +17,7 @@ export const PERSISTED_APP_SETTING_KEYS = [
     'veniceVideoTextModel',
     'aigf4RandomPersonaVariationsV2',
     RESEARCH_CAPTURE_SETTING_KEY,
+    GROUP_V2_SYNCED_MODES_KEY,
 ] as const;
 
 export type PersistedAppSettingKey = typeof PERSISTED_APP_SETTING_KEYS[number];
@@ -44,7 +47,10 @@ export const restorePersistedAppSettings = (
     let changed = false;
     PERSISTED_APP_SETTING_KEYS.forEach(key => {
         if (typeof settings[key] !== 'string') return;
-        const next = settings[key] as string;
+        const remoteValue = settings[key] as string;
+        const next = key === GROUP_V2_SYNCED_MODES_KEY
+            ? JSON.stringify(mergeGroupModeRegisters(localStorage.getItem(key), remoteValue))
+            : remoteValue;
         if (localStorage.getItem(key) === next) return;
         localStorage.setItem(key, next);
         changed = true;

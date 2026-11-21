@@ -1,5 +1,7 @@
 import type { ChatRoom, RoomMember } from './roomManager.js';
 import { formatRelationshipStatePrompt } from './relationshipState.js';
+import { buildGroupAgencyContext } from './groupAgency.js';
+import { buildStoryCausalityLedger } from './groupCausality.js';
 import {
     formatMemoryPromptMetadata,
     isDeepMemoryRecallQuery,
@@ -109,6 +111,8 @@ export const buildGroupSystemPromptWithAccounting = (
     presentationPolicy: GroupPresentationPolicy = 'legacy',
 ): GroupSystemPromptAccounting => {
     const present = new Set(room.scene.presentMemberIds);
+    const agencyContext = presentationPolicy === 'owner-v2' ? buildGroupAgencyContext(room, query) : '';
+    const causalityContext = presentationPolicy === 'owner-v2' ? buildStoryCausalityLedger(room) : '';
     const deepRecall = isDeepMemoryRecallQuery(query);
     const memoryQuery = [query, room.scene.summary, ...room.scene.unresolved].filter(Boolean).join('\n');
     const sharedSoul = room.sharedSoul
@@ -221,6 +225,8 @@ export const buildGroupSystemPromptWithAccounting = (
             name: 'room-member-files',
             text: `FIXED MEMBER FILES:\n\n${memberBlocks}`,
         },
+        ...(agencyContext ? [{ name: 'room-agency-evidence', text: agencyContext }] : []),
+        ...(causalityContext ? [{ name: 'room-story-causality-facts', text: causalityContext }] : []),
         {
             name: 'room-memory-firewall',
             text: 'INDIVIDUAL MEMORY FIREWALL: Never transfer a private fact, promise, vulnerability or emotional interpretation from one member file to another. Mere co-presence does not make a detail equally memorable to everyone. A member may recall only room-wide memories and entries inside her own file.',

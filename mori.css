@@ -1600,6 +1600,32 @@ body.app-body {
     outline-offset: 3px;
     border-radius: 3px;
 }
+/* AIGF Memory V6: quick search + inspectable source receipts. */
+.aigf-memory-search {
+    display:block;
+    width:100%;
+    padding:12px 14px;
+    margin: 8px 0 14px;
+    background:var(--mori-paper,#fff);
+    color:var(--mori-ink);
+    border:1px solid var(--mori-line);
+    border-radius:10px;
+}
+.room-memory-card[hidden] { display:none !important; }
+.aigf-memory-source-details {
+    font-size:0.78rem;
+    overflow-wrap:anywhere;
+    color:var(--mori-muted);
+}
+.aigf-memory-source-details summary {
+    cursor:pointer;
+    margin:8px 0;
+}
+.aigf-memory-source-details li {
+    margin:5px 0;
+    line-height:1.55;
+}
+
 /* AIGF group title rename and per-room experimental engine selector. */
 #room-info-title .room-title-rename-button {
     display: inline-flex;

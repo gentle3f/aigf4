@@ -50,6 +50,9 @@ export interface RoomMemoryEntry {
     unresolved?: boolean;
     sourceMessageIds?: string[];
     sourceMessageIndexes?: number[];
+    /** Owner manually confirmed/corrected, stronger than generated summaries. */
+    ownerConfirmed?: boolean;
+    correctionHistory?: Array<{ at: number; previousTitle: string; previousSummary: string }>;
     searchTags?: string[];
     createdAt: number;
     pinned: boolean;
@@ -102,6 +105,8 @@ export interface ChatRoom {
     sharedSoul: RoomMemoryEntry[];
     sharedMemories: RoomMemoryEntry[];
     favoritePhotoPrompt?: string;
+    /** Optional ongoing personal objectives, not a required speaking schedule. */
+    agencyGoals?: Record<string, string>;
     createdAt: number;
     updatedAt: number;
     lastSummarizedUserMessageCount: number;
@@ -405,6 +410,14 @@ const normalizeRoomMemoryEntry = (
         visibility,
         sceneId: entry.sceneId?.trim() || undefined,
         sourceMessageIds: Array.from(new Set((entry.sourceMessageIds || []).filter(Boolean))),
+        ownerConfirmed: entry.ownerConfirmed === true,
+        correctionHistory: (Array.isArray(entry.correctionHistory) ? entry.correctionHistory : [])
+            .filter(item => item && Number.isFinite(item.at))
+            .slice(-8).map(item => ({
+                at: Math.max(0, item.at),
+                previousTitle: String(item.previousTitle || '').slice(0, 180),
+                previousSummary: String(item.previousSummary || '').slice(0, 2000),
+            })),
         searchTags: buildMemorySearchTags(entry.title, entry.summary, entry.kind, entry.searchTags || []),
         unresolved: Boolean(entry.unresolved),
     };
@@ -417,6 +430,15 @@ const normalizeRoomData = (room: ChatRoom): ChatRoom => {
     }
     normalized.members = Array.isArray(normalized.members) ? normalized.members : [];
     const validMemberIds = new Set(normalized.members.map(member => member.id));
+    normalized.agencyGoals = Object.fromEntries(
+        Object.entries(normalized.agencyGoals && typeof normalized.agencyGoals === 'object'
+            ? normalized.agencyGoals : {}).flatMap(([id, goal]) => {
+                if (!validMemberIds.has(id) || typeof goal !== 'string') return [];
+                const cleaned = goal.replace(/[\u0000-\u001f\u007f]/gu,' ')
+                    .replace(/\s+/gu,' ').trim().slice(0, 240);
+                return cleaned ? [[id,cleaned]] : [];
+            }),
+    );
     normalized.scene.wardrobe = normalizeWardrobeState(normalized.scene.wardrobe, validMemberIds);
     const rawMemberStates = normalized.scene.memberStates && typeof normalized.scene.memberStates === 'object'
         ? normalized.scene.memberStates
@@ -1350,8 +1372,18 @@ export class RoomManager {
             const entries = type === 'soul' ? member.soul : member.memories;
             const entry = entries.find(item => item.id === memoryId);
             if (!entry) return;
-            entry.title = updates.title.trim() || entry.title;
-            entry.summary = updates.summary.trim() || entry.summary;
+            const nextTitle = updates.title.trim() || entry.title;
+            const nextSummary = updates.summary.trim() || entry.summary;
+            const ownerCorrected = nextTitle !== entry.title || nextSummary !== entry.summary;
+            if (ownerCorrected) {
+                entry.correctionHistory = [
+                    ...(entry.correctionHistory || []),
+                    { at: Date.now(), previousTitle: entry.title, previousSummary: entry.summary },
+                ].slice(-8);
+                entry.ownerConfirmed = true;
+            }
+            entry.title = nextTitle;
+            entry.summary = nextSummary;
             if (typeof updates.importance === 'number') {
                 entry.importance = Math.max(1, Math.min(5, Math.round(updates.importance)));
             }
@@ -1361,8 +1393,35 @@ export class RoomManager {
                 const canonical = room.sharedMemories.find(item => item.id === memoryId);
                 const perspective = canonical?.perspectives?.find(item => item.memberId === memberId);
                 if (canonical) {
+                    if (ownerCorrected) {
+                        canonical.ownerConfirmed = true;
+                        canonical.correctionHistory = [
+                            ...(canonical.correctionHistory || []),
+                            { at: Date.now(), previousTitle: canonical.title, previousSummary: canonical.summary },
+                        ].slice(-8);
+                    }
                     canonical.title = entry.title;
-                    if (canonical.visibility === 'shared') canonical.summary = entry.summary;
+                    if (canonical.visibility === 'shared') {
+                        canonical.summary = entry.summary;
+                        // Keep everyone with shared knowledge on the same corrected fact.
+                        room.members.forEach(other => {
+                            if (other.id === memberId) return;
+                            const otherCopy = other.memories.find(item => item.id === memoryId);
+                            if (!otherCopy) return;
+                            if (ownerCorrected) {
+                                otherCopy.correctionHistory = [
+                                    ...(otherCopy.correctionHistory || []),
+                                    { at: Date.now(), previousTitle: otherCopy.title, previousSummary: otherCopy.summary },
+                                ].slice(-8);
+                                otherCopy.ownerConfirmed = true;
+                            }
+                            otherCopy.title = entry.title;
+                            otherCopy.summary = entry.summary;
+                            otherCopy.searchTags = buildMemorySearchTags(
+                                otherCopy.title, otherCopy.summary, otherCopy.kind,
+                            );
+                        });
+                    }
                     canonical.searchTags = buildMemorySearchTags(
                         canonical.title,
                         canonical.summary,
@@ -1381,6 +1440,24 @@ export class RoomManager {
                     );
                 }
             }
+        });
+    }
+
+    setMemorySubjectIds(roomId: string, memoryId: string, subjectIds: string[]) {
+        return this.updateRoom(roomId, room => {
+            const canonical = room.sharedMemories.find(entry => entry.id === memoryId);
+            if (!canonical) return;
+            const valid = new Set(room.members.map(member => member.id));
+            const selected = Array.from(new Set(subjectIds.filter(id => valid.has(id))));
+            if (!selected.length) throw new Error('劇情事實最少要有一個涉及人物。');
+            canonical.subjectIds = selected;
+            canonical.participants = selected;
+            room.members.forEach(member => {
+                const memory = member.memories.find(item => item.id === memoryId);
+                if (!memory) return;
+                memory.subjectIds = selected;
+                memory.participants = selected;
+            });
         });
     }
 

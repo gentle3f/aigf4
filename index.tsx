@@ -10154,6 +10154,30 @@ const setupEventListeners = () => {
     };
     ensureUiV2ThemeControl();
 
+    // New layout is the default; classic stays available without losing local chats.
+    if (!document.getElementById('aigf-layout-style-toggle')) {
+        const switchLayout = document.createElement('button');
+        switchLayout.type = 'button';
+        switchLayout.id = 'aigf-layout-style-toggle';
+        switchLayout.className = 'wa-popover-item';
+        const inNewLayout = document.documentElement.dataset.wetappUi === 'v2';
+        switchLayout.textContent = inNewLayout ? '介面：現代版（切換經典版）'
+            : '介面：經典版（切換現代版）';
+        switchLayout.addEventListener('click', () => {
+            const next = inNewLayout ? 'classic' : 'v2';
+            try {
+                localStorage.setItem('wetappUiPreferenceV1', next);
+                if (localStorage.getItem('wetappUiPreferenceV1') !== next) throw Error('UI_PREFERENCE_NOT_SAVED');
+                const url = new URL(window.location.href);
+                url.searchParams.delete('ui');
+                window.location.assign(url.toString());
+            } catch {
+                alert('無法保存版面選擇；可於網址使用 ?ui=classic 或 ?ui=v2 切換。');
+            }
+        });
+        homeMenu.appendChild(switchLayout);
+    }
+
     const ensureUiV2MoreOptionsGroups = () => {
         if (document.documentElement.dataset.wetappUi !== 'v2') return;
         if (moreOptionsMenu.querySelector('.v2-more-options-layout')) return;
@@ -10170,6 +10194,7 @@ const setupEventListeners = () => {
                     'interaction-preferences-menu-btn',
                     'director-menu-btn',
                     'continue-scene-menu-btn',
+                    'latest-branch-menu-btn',
                 ],
             },
             {
@@ -10827,6 +10852,30 @@ const openChatPerformanceDiagnostics = () => {
     button.onclick = action as () => void;
     moreOptionsMenu.prepend(button);
 });
+
+// The underlying timeline branch engine already preserves the original.
+// This gives mobile users an obvious one-tap entry instead of a hidden
+// message bubble action: draft the latest user turn in a separate branch.
+const latestBranchMenuButton = document.createElement('button');
+latestBranchMenuButton.type = 'button';
+latestBranchMenuButton.className = 'dropdown-item';
+latestBranchMenuButton.id = 'latest-branch-menu-btn';
+latestBranchMenuButton.dataset.v2Icon = '⑂';
+latestBranchMenuButton.textContent = '由最近訊息建立故事分支';
+latestBranchMenuButton.addEventListener('click', () => {
+    if (!currentConversationKey || activeChatRequest) return;
+    moreOptionsMenu.classList.add('hidden');
+    const lastUser = [...memoryManager.getChatHistory(currentConversationKey)]
+        .reverse().find(message => message.role === 'user' && message.id);
+    if (!lastUser?.id) {
+        alert('暫時未有可以建立分支的使用者訊息。');
+        return;
+    }
+    createTimelineBranch(lastUser.id);
+});
+moreOptionsMenu.prepend(latestBranchMenuButton);
+moreOptionsMenu.querySelector('.v2-more-options-section-interaction .v2-more-options-grid')
+    ?.appendChild(latestBranchMenuButton);
 
 window.addEventListener('wetapp-storage-failed', () => {
     showError('本機儲存失敗。請保持此頁開啟，立即檢查雲端同步或匯出備份，避免重新整理後遺失訊息。');

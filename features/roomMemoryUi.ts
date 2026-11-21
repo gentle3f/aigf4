@@ -39,6 +39,7 @@ export type RoomMemoryUiDependencies = {
         | 'addEpisodicMemories'
         | 'updateMemory'
         | 'setMemoryKnowerIds'
+        | 'setMemorySubjectIds'
         | 'deleteMemory'
     >;
     isRoomSummaryInFlight: (roomId: string) => boolean;
@@ -71,6 +72,7 @@ let currentPersona: Persona | null = null;
 let activeRoomMemberId: string | null = null;
 let selectedMemoryMemberId: string | null = null;
 let selectedMemoryType: 'soul' | 'memory' = 'soul';
+let memoryFilterQuery = '';
 let manualMemoryUpdateNotice: {
     conversationKey: string;
     tone: 'running' | 'success' | 'error';
@@ -351,6 +353,19 @@ const renderRoomMemory = () => {
     memorySoulTab.classList.toggle('is-active', selectedMemoryType === 'soul');
     memoryEventTab.classList.toggle('is-active', selectedMemoryType === 'memory');
     roomMemoryList.innerHTML = '';
+    const memorySearch = document.createElement('input');
+    memorySearch.type = 'search';
+    memorySearch.className = 'aigf-memory-search';
+    memorySearch.placeholder = '搜尋記憶、人物或事件（不需使用 AI）';
+    memorySearch.setAttribute('aria-label', '搜尋及核對已儲存記憶');
+    memorySearch.value = memoryFilterQuery;
+    memorySearch.addEventListener('input', () => {
+        memoryFilterQuery = memorySearch.value.trim().normalize('NFKC').toLocaleLowerCase();
+        roomMemoryList.querySelectorAll<HTMLElement>('.room-memory-card').forEach(card => {
+            card.hidden = Boolean(memoryFilterQuery && !String(card.dataset.memorySearch || '').includes(memoryFilterQuery));
+        });
+    });
+    roomMemoryList.appendChild(memorySearch);
     const member = room?.members.find(item => item.id === selectedMemoryMemberId);
     if (room && !member) return;
 
@@ -482,6 +497,7 @@ const renderRoomMemory = () => {
                     knowerIds: [member.id],
                     visibility: 'restricted',
                     importance: 5,
+                    ownerConfirmed: true,
                     perspectives: [{
                         memberId: member.id,
                         salience: 5,
@@ -499,6 +515,7 @@ const renderRoomMemory = () => {
                     knowerIds: [member.id],
                     visibility: 'restricted',
                     importance: 5,
+                    ownerConfirmed: true,
                     perspectives: [{
                         memberId: member.id,
                         salience: 5,
@@ -550,6 +567,9 @@ const renderRoomMemory = () => {
             : undefined;
         const card = document.createElement('article');
         card.className = 'room-memory-card';
+        card.dataset.memorySearch = `${entry.title} ${entry.summary} ${entry.kind}`
+            .normalize('NFKC').toLocaleLowerCase();
+        card.hidden = Boolean(memoryFilterQuery && !card.dataset.memorySearch.includes(memoryFilterQuery));
         const title = document.createElement('input');
         title.value = entry.title;
         title.disabled = isLegacyPersonaMemory;
@@ -590,6 +610,7 @@ const renderRoomMemory = () => {
             settings.appendChild(unresolvedLabel);
         }
         let knowerInputs: HTMLInputElement[] = [];
+        let subjectInputs: HTMLInputElement[] = [];
         let ownership: HTMLDetailsElement | null = null;
         if (room && canonicalEntry && selectedMemoryType === 'memory') {
             ownership = document.createElement('details');
@@ -611,12 +632,29 @@ const renderRoomMemory = () => {
             });
             const hint = document.createElement('p');
             hint.textContent = '只勾真正親歷、目睹或後來被告知，而且會長期記住的人。';
-            ownership.append(ownershipSummary, ownershipOptions, hint);
+            const actorHeading = document.createElement('strong');
+            actorHeading.textContent = '事件涉及人物（誰做咗乜）';
+            const subjectOptions = document.createElement('div');
+            subjectOptions.className = 'room-memory-knowers';
+            const currentSubjects = new Set(canonicalEntry.subjectIds?.length
+                ? canonicalEntry.subjectIds : canonicalEntry.participants);
+            subjectInputs = room.members.map(roomMember => {
+                const label = document.createElement('label');
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.value = roomMember.id;
+                checkbox.checked = currentSubjects.has(roomMember.id);
+                label.append(checkbox, document.createTextNode(roomMember.persona.name));
+                subjectOptions.appendChild(label);
+                return checkbox;
+            });
+            ownership.append(ownershipSummary, ownershipOptions, hint, actorHeading, subjectOptions);
         }
         const meta = document.createElement('p');
         const perspective = canonicalEntry?.perspectives?.find(item => item.memberId === member?.id);
         meta.textContent = [
             entry.pinned ? '永久' : '事件',
+            ('ownerConfirmed' in entry && entry.ownerConfirmed) ? '使用者已確認' : '尚未人工確認',
             perspective?.knowledge === 'experienced'
                 ? '親歷'
                 : perspective?.knowledge === 'witnessed'
@@ -629,6 +667,46 @@ const renderRoomMemory = () => {
             entry.sourceMessageIndexes?.length ? `來源訊息 ${entry.sourceMessageIndexes.join(', ')}` : '',
         ].filter(Boolean).join(' · ');
         if (entry.sourceMessageIds?.length) meta.title = entry.sourceMessageIds.join('\n');
+        const sourceDetails = document.createElement('details');
+        sourceDetails.className = 'aigf-memory-source-details';
+        const sourceHeading = document.createElement('summary');
+        sourceHeading.textContent = '檢查原始訊息及更正歷史';
+        sourceDetails.appendChild(sourceHeading);
+        const messageHistory = memoryManager.peekChatHistory(room?.id || personaKey || '');
+        const idToMessage = new Map(messageHistory.filter(message => message.id)
+            .map(message => [message.id!, message]));
+        const sourceIds = Array.isArray(entry.sourceMessageIds) ? entry.sourceMessageIds : [];
+        const sourceIndexes = Array.isArray(entry.sourceMessageIndexes) ? entry.sourceMessageIndexes : [];
+        const matched = sourceIds
+            .map(id => idToMessage.get(id))
+            .filter((message): message is NonNullable<typeof message> => Boolean(message));
+        // Legacy sourceMessageIndexes may refer to older exports or offsets.
+        // Never guess a present message by position and call it evidence.
+        // Exact sourceMessageIds are the only trustworthy locator here.
+        if (!matched.length) {
+            const missing = document.createElement('p');
+            missing.textContent = sourceIds.length || sourceIndexes.length
+                ? '只有舊訊息序號或已失效引用，未能核對原文；唔代表事件一定真實。'
+                : '呢項記憶冇原始訊息引用；內容需要人手核對。';
+            sourceDetails.appendChild(missing);
+        } else {
+            const sourceList = document.createElement('ul');
+            matched.slice(0, 8).forEach(message => {
+                const item = document.createElement('li');
+                item.textContent = `${message.role === 'user' ? '使用者' : '角色／系統'}：${(message.content.text || '[媒體或附件]').slice(0, 280)}`;
+                sourceList.appendChild(item);
+            });
+            sourceDetails.appendChild(sourceList);
+        }
+        if ('correctionHistory' in entry && Array.isArray(entry.correctionHistory) && entry.correctionHistory.length) {
+            const history = document.createElement('ul');
+            entry.correctionHistory.slice(-5).forEach(item => {
+                const row = document.createElement('li');
+                row.textContent = `更正前：${item.previousTitle} — ${item.previousSummary.slice(0, 250)}`;
+                history.appendChild(row);
+            });
+            sourceDetails.appendChild(history);
+        }
         const actions = document.createElement('div');
         actions.className = 'room-memory-actions';
         const save = document.createElement('button');
@@ -650,7 +728,13 @@ const renderRoomMemory = () => {
                     unresolved: Boolean(unresolved?.checked),
                 });
                 if (canonicalEntry && knowerInputs.length) {
+                    const selectedSubjects = subjectInputs.filter(input => input.checked).map(input => input.value);
+                    if (!selectedSubjects.length) {
+                        alert('事件最少要選擇一位涉及人物。');
+                        return;
+                    }
                     roomManager.setMemoryKnowerIds(room.id, entry.id, selectedKnowers);
+                    roomManager.setMemorySubjectIds(room.id, entry.id, selectedSubjects);
                     renderRoomMemory();
                     return;
                 }
@@ -691,7 +775,7 @@ const renderRoomMemory = () => {
         actions.append(save, remove);
         card.append(title, summary, settings);
         if (ownership) card.appendChild(ownership);
-        card.append(meta, actions);
+        card.append(meta, sourceDetails, actions);
         roomMemoryList.appendChild(card);
     });
 };

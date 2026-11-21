@@ -1,8 +1,11 @@
 /**
- * Owner-only Group V2 personal trial: reversible local device setting.
- * This never migrates chats, edits memory, or syncs a new group setting to cloud.
- * Production V1 is the default when the value is absent or storage fails.
+ * Group V2 per-room mode synced through existing Supabase app-settings state.
+ * Defaults to V1; old per-device trial keys remain readable for migration.
+ * No new SQL table, conversation mutation or scene/character migration.
  */
+import { GROUP_V2_SYNCED_MODES_KEY, setPersistedAppSetting } from './appSettings.js';
+import { parseGroupModeRegister, recordGroupMode } from './groupModeSync.js';
+
 export const GROUP_V2_PERSONAL_TRIAL_SETTING_PREFIX='aigf4GroupPersonalTrialV1:';
 export type PersonalTrialStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'>;
 const keyFor=(roomId:string):string=>{
@@ -14,15 +17,24 @@ const getStorage=():PersonalTrialStorage|undefined=>{
  try{return typeof localStorage==='undefined'?undefined:localStorage;}catch{return undefined;}
 };
 export const isGroupV2PersonalTrialEnabled=(roomId:string,store:PersonalTrialStorage|undefined=getStorage()):boolean=>{
- try{return Boolean(store)&&store.getItem(keyFor(roomId))==='enabled';}
- catch{return false;}
+ try{
+  if(!store)return false;
+  const raw=store.getItem(GROUP_V2_SYNCED_MODES_KEY);
+  const mode=parseGroupModeRegister(raw).rooms[roomId];
+  if(mode)return mode.enabled;
+  return store.getItem(keyFor(roomId))==='enabled';
+ }catch{return false;}
 };
 export const setGroupV2PersonalTrialEnabled=(roomId:string,enabled:boolean,
  store:PersonalTrialStorage|undefined=getStorage()):boolean=>{
  if(!store)throw Error('PERSONAL_TRIAL_LOCAL_STORAGE_UNAVAILABLE');
- const key=keyFor(roomId);
- if(enabled)store.setItem(key,'enabled');
- else store.removeItem(key);
+ const legacy=keyFor(roomId);
+ const updated=JSON.stringify(recordGroupMode(store.getItem(GROUP_V2_SYNCED_MODES_KEY),roomId,enabled,Date.now()));
+ // Only the actual browser app-settings path triggers Supabase cloud sync.
+ if(store===getStorage())setPersistedAppSetting(GROUP_V2_SYNCED_MODES_KEY,updated);
+ else store.setItem(GROUP_V2_SYNCED_MODES_KEY,updated);
+ // Remove historical per-device mode after the new mode is safely persisted.
+ store.removeItem(legacy);
  if(isGroupV2PersonalTrialEnabled(roomId,store)!==enabled)
   throw Error('PERSONAL_TRIAL_SETTING_NOT_PERSISTED');
  return enabled;

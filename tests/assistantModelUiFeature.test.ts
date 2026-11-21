@@ -9,7 +9,10 @@ test('Venice Assistant model catalogue stays cold until Assistant or model setti
     assert.match(indexSource, /import\(['"]\.\/features\/assistantModelUi\.js['"]\)/);
     assert.match(indexSource, /if \(assistantMode\) \{[\s\S]*loadAssistantModelUi\(\)/);
     assert.match(indexSource, /loadChatModelSettingsUi = async[\s\S]*loadAssistantModelUi\(\)/);
-    assert.doesNotMatch(indexSource, /assistant-model-select|refresh-assistant-models|listVeniceTextModels|buildFallbackAssistantModels/);
+    // A DOM anchor for positioning the search toggle is permitted; the
+    // expensive catalogue and model-list UI must still be lazy-loaded.
+    assert.match(indexSource, /document\.getElementById\('refresh-assistant-models'\)\?\.after\(assistantWebSearchButton\)/);
+    assert.doesNotMatch(indexSource, /listVeniceTextModels|buildFallbackAssistantModels|assistant-model-select/);
 
     assert.match(featureSource, /assistant-model-select/);
     assert.match(featureSource, /refresh-assistant-models/);

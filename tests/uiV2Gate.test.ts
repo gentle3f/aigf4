@@ -6,8 +6,11 @@ const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../ui-v2.css', import.meta.url), 'utf8');
 
-test('UI v2 is opt-in through the ui=v2 query parameter', () => {
+test('UI 2.0 is the default and has explicit classic rollback and v2 override', () => {
     assert.match(html, /params\.get\('ui'\) === 'v2'/);
+    assert.match(html, /let storedPreference = 'v2'/);
+    assert.match(html, /params\.get\('ui'\) === 'classic'/);
+    assert.match(html, /wetappUiPreferenceV1/);
     assert.match(html, /document\.documentElement\.dataset\.wetappUi = 'v2'/);
     assert.match(html, /href="\/ui-v2\.css"/);
 });

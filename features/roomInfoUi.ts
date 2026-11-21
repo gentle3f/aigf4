@@ -106,7 +106,7 @@ const renderRoomInfo = () => {
         modeOptions.appendChild(button);
     });
     const modeHint = document.createElement('small');
-    modeHint.textContent = '只影響此裝置、此群組之後的新回覆，不會改動角色身份、記憶或舊對話。';
+    modeHint.textContent = '只影響此群組之後的新回覆；選擇會透過現有 Supabase 設定同步至其他裝置，不會更改舊對話。';
     modeControl.append(modeLabel, modeOptions, modeHint);
     roomInfoSummary.appendChild(modeControl);
     roomMemberList.innerHTML = '';
@@ -189,6 +189,33 @@ const renderRoomInfo = () => {
             }
         });
 
+        const goalButton = document.createElement('button');
+        goalButton.type = 'button';
+        goalButton.className = 'room-member-mini-action';
+        goalButton.textContent = '自主目標';
+        goalButton.title = '可選：設定角色持續想做的事；留空即交由故事場景與記憶推動';
+        goalButton.addEventListener('click', () => {
+            if (!dependencies.canRenameMember()) {
+                alert('請等待目前回覆完成，再修改角色目標。');
+                return;
+            }
+            const existing = room.agencyGoals?.[member.id] || '';
+            const entered = window.prompt(`${member.persona.name} 想主動做甚麼？留空清除，唔需要替角色安排每個動作。`, existing);
+            if (entered === null) return;
+            const goal = entered.replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim();
+            if (goal.length > 240 || /[<>]/u.test(goal)) {
+                alert('自主目標最多 240 字，不能包含控制符號。');
+                return;
+            }
+            dependencies.updateRoom(room.id, editableRoom => {
+                editableRoom.agencyGoals ||= {};
+                if (goal) editableRoom.agencyGoals[member.id] = goal;
+                else delete editableRoom.agencyGoals[member.id];
+            });
+            dependencies.refreshRoom();
+            renderRoomInfo();
+        });
+
         const avatarButton = document.createElement('button');
         avatarButton.type = 'button';
         avatarButton.className = 'room-member-mini-action';
@@ -244,7 +271,7 @@ const renderRoomInfo = () => {
 
         const actions = document.createElement('div');
         actions.className = 'room-member-actions';
-        actions.append(renameButton, dmButton, avatarButton, presence);
+        actions.append(renameButton, goalButton, dmButton, avatarButton, presence);
         row.append(avatar, copy, actions);
         roomMemberList.appendChild(row);
     });

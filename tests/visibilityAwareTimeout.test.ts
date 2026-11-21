@@ -127,5 +127,5 @@ test('cancels scheduled work when the provider settles while hidden', () => {
 test('chat transport applies visibility timing only to requests with an upstream signal', () => {
     const source = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8');
     assert.match(source, /const visibilityTimeout = upstreamSignal\s*\? createVisibilityAwareTimeout\(/u);
-    assert.match(source, /const timeoutId = visibilityTimeout\s*\? null\s*:\s*window\.setTimeout\(abortForTimeout, timeoutMs\)/u);
+    assert.match(source, /const timeoutId = visibilityTimeout\s*\? null\s*:\s*window\.setTimeout\(abortForTimeout, effectiveTimeoutMs\)/u);
 });

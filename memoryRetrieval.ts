@@ -9,7 +9,7 @@ import {
 type MemoryEntryLike = Pick<
     PersonaMemoryEntry,
     'id' | 'kind' | 'title' | 'summary' | 'createdAt' | 'pinned' | 'importance' | 'unresolved' | 'searchTags'
->;
+> & { ownerConfirmed?: boolean };
 
 const normalize = (value: string) => value.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim();
 
@@ -110,6 +110,7 @@ export const scoreMemoryForQuery = (entry: MemoryEntryLike, query: string, now =
         + tagMatches.size * 30
         + (entry.pinned ? 160 : 0)
         + (entry.unresolved ? 30 : 0)
+        + (entry.ownerConfirmed ? 60 : 0)
         + recency;
 };
 
@@ -161,5 +162,6 @@ export const formatMemoryPromptMetadata = (entry: MemoryEntryLike) => {
     const labels = [`importance ${normalizeMemoryImportance(entry)}/5`];
     if (entry.unresolved) labels.push('unresolved');
     if (entry.pinned) labels.push('permanent');
+    if (entry.ownerConfirmed) labels.push('owner-confirmed');
     return labels.join(', ');
 };

@@ -11,7 +11,19 @@
     <script>
         (() => {
             const params = new URLSearchParams(window.location.search);
-            if (params.get('ui') === 'v2') {
+            // UI 2.0 is the normal experience. ?ui=classic always permits
+            // an immediate safe rollback without changing chats or cloud data.
+            let storedPreference = 'v2';
+            try {
+                storedPreference = localStorage.getItem('wetappUiPreferenceV1') === 'classic'
+                    ? 'classic' : 'v2';
+            } catch {
+                storedPreference = 'v2';
+            }
+            const selectedUi = params.get('ui') === 'v2' ? 'v2'
+                : params.get('ui') === 'classic' || params.get('ui') === 'v1'
+                    ? 'classic' : storedPreference;
+            if (selectedUi === 'v2') {
                 document.documentElement.dataset.wetappUi = 'v2';
                 try {
                     document.documentElement.dataset.wetappTheme =
@@ -19,6 +31,8 @@
                 } catch {
                     document.documentElement.dataset.wetappTheme = 'light';
                 }
+            } else {
+                document.documentElement.dataset.wetappUi = 'classic';
             }
         })();
     </script>

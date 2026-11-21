@@ -55,7 +55,8 @@ test('V1 is default, V2 toggle only affects selected group and supports instant 
   assert.equal(isGroupV2PersonalTrialEnabled('rB',store),false);
   setGroupV2PersonalTrialEnabled('rA',false,store);
   assert.equal(isGroupV2PersonalTrialEnabled('rA',store),false);
-  assert.equal(values.size,0);
+  assert.equal(isGroupV2PersonalTrialEnabled('rA',store),false);
+  assert.equal(values.size,1); // Explicit V1 rollback syncs to other devices.
 });
 
 test('V2 experimental guidance retains original tagged transport, group identity, memory firewall',()=>{
@@ -89,6 +90,6 @@ test('V2 is wired into current production generation with opt-in UI and backward
   assert.match(prompt,/presentationPolicy: GroupPresentationPolicy = 'legacy'/);
   assert.match(prompt,/presentationPolicy === 'owner-v2'/);
   assert.match(info,/群聊引擎/);
-  assert.match(info,/只影響此裝置、此群組之後的新回覆/);
+  assert.match(info,/選擇會透過現有 Supabase 設定同步至其他裝置/);
   assert.match(info,/setGroupV2Enabled\(room\.id, next\)/);
 });
