@@ -33,7 +33,12 @@ export const collectStoryFacts = (room: ChatRoom, limit=10): StoryFact[] => {
     }));
 };
 export const buildStoryCausalityLedger = (room: ChatRoom): string => {
-    const facts=collectStoryFacts(room,9);
+    // Do not put private events into a room-wide causal index. They are
+    // already carried separately in the relevant member's memory file.
+    const facts=collectStoryFacts(room,24)
+        .filter(fact=>room.scene.presentMemberIds.length>0 &&
+            room.scene.presentMemberIds.every(id=>fact.knowerIds.includes(id)))
+        .slice(0,9);
     if(!facts.length)return '';
     const names=new Map(room.members.map(member=>[member.id,member.persona.name]));
     const describe=(ids:string[])=>ids.map(id=>names.get(id)||id).join(', ')||'unknown';

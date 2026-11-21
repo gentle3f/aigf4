@@ -1393,7 +1393,9 @@ export class RoomManager {
                 const canonical = room.sharedMemories.find(item => item.id === memoryId);
                 const perspective = canonical?.perspectives?.find(item => item.memberId === memberId);
                 if (canonical) {
-                    if (ownerCorrected) {
+                    // A correction to one private perspective must NOT certify
+                    // the unchanged group-wide canonical summary as a true fact.
+                    if (ownerCorrected && canonical.visibility === 'shared') {
                         canonical.ownerConfirmed = true;
                         canonical.correctionHistory = [
                             ...(canonical.correctionHistory || []),

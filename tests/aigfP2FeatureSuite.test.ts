@@ -124,6 +124,31 @@ test('owner-confirmed story event tracks actors separately from witnesses and su
  assert.equal(changed.correctionHistory?.at(-1)?.previousSummary,original.summary);
 });
 
+
+test('correcting a private member memory never certifies the old canonical summary or leaks it room-wide',()=>{
+ const {manager,room}=makeRoom();
+ const [lisa,jennie]=room.members;
+ manager.addEpisodicMemories(room.id,[{
+  kind:'event',title:'私下計劃',summary:'早前模型估計她想搬走',
+  participants:[lisa.id],subjectIds:[lisa.id],knowerIds:[lisa.id],
+  visibility:'restricted',importance:4,ownerConfirmed:false,
+  perspectives:[{memberId:lisa.id,salience:4,knowledge:'experienced',
+   summary:'早前模型估計她想搬走'}],
+ }]);
+ const before=manager.getRoom(room.id)!;
+ const fact=before.sharedMemories.find(x=>x.title==='私下計劃')!;
+ assert.equal(fact.ownerConfirmed,false);
+ manager.updateMemory(room.id,lisa.id,fact.id,'memory',{
+  title:'私人更正',summary:'其實她只係想出門買花',
+ });
+ const corrected=manager.getRoom(room.id)!;
+ assert.equal(corrected.sharedMemories.find(x=>x.id===fact.id)?.ownerConfirmed,false);
+ assert.equal(corrected.members[0].memories.find(x=>x.id===fact.id)?.ownerConfirmed,true);
+ assert.equal(corrected.members[1].memories.some(x=>x.id===fact.id),false);
+ assert.doesNotMatch(buildStoryCausalityLedger(corrected),/早前模型估計她想搬走/);
+ assert.doesNotMatch(buildStoryCausalityLedger(corrected),/其實她只係想出門買花/);
+});
+
 test('UI2 is default and classic fallback can be chosen from home menu',()=>{
  const html=file('index.html'), source=file('index.tsx');
  assert.match(html,/let storedPreference = 'v2'/);
