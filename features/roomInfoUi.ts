@@ -1,4 +1,6 @@
 import type { Persona } from '../managers.js';
+import { normalizeGroupRoomTitle } from '../groupRoomTitle.js';
+import { isGroupMemberDisplayNameAvailable, normalizeGroupMemberDisplayName } from '../groupMemberDisplayName.js';
 import { FAVORITE_PHOTO_PROMPT_MAX_LENGTH, normalizeFavoritePhotoPrompt } from '../photoPromptPreference.js';
 import { ROOM_MEMBER_LIMIT } from '../roomManager.js';
 import type { ChatRoom, RoomManager, RoomSceneState } from '../roomManager.js';
@@ -13,6 +15,11 @@ export type RoomInfoUiDependencies = {
     setMemberPresence: (roomId: string, memberId: string, present: boolean) => boolean | Promise<boolean>;
     updateRoom: RoomManager['updateRoom'];
     refreshRoom: () => ChatRoom | null;
+    canRenameMember: () => boolean;
+    onMemberRenamed: () => void;
+    onRoomRenamed: () => void;
+    isGroupV2Enabled: (roomId: string) => boolean;
+    setGroupV2Enabled: (roomId: string, enabled: boolean) => void;
     getActiveMemberId: () => string | null;
     openPersonaSettingsFallback: () => void;
     hideMoreOptionsMenu: () => void;
@@ -36,7 +43,72 @@ const renderRoomInfo = () => {
     const activeRoomMemberId = dependencies.getActiveMemberId();
 
     roomInfoTitle.textContent = room.title;
+    const renameRoomButton = document.createElement('button');
+    renameRoomButton.type = 'button';
+    renameRoomButton.className = 'room-member-mini-action room-title-rename-button';
+    renameRoomButton.textContent = '修改群組名稱';
+    renameRoomButton.setAttribute('aria-label', '修改群組名稱');
+    renameRoomButton.addEventListener('click', () => {
+        if (!dependencies.canRenameMember()) {
+            alert('請等待目前回覆完成，再修改群組名稱。');
+            return;
+        }
+        const requested = window.prompt('修改群組名稱', room.title);
+        if (requested === null) return;
+        const title = normalizeGroupRoomTitle(requested);
+        if (!title) {
+            alert('群組名稱不可留空、超過 48 字或包含控制符號。');
+            return;
+        }
+        if (title === room.title) return;
+        try {
+            const saved = dependencies.updateRoom(room.id, draft => { draft.title = title; });
+            if (!saved) throw new Error('未能儲存群組名稱。');
+            dependencies.onRoomRenamed();
+            renderRoomInfo();
+        } catch (error) {
+            alert(error instanceof Error ? error.message : '未能修改群組名稱。');
+        }
+    });
+    roomInfoTitle.appendChild(renameRoomButton);
     roomInfoSummary.textContent = `${room.members.length} 位固定成員 · ${room.scene.presentMemberIds.length} 位目前在場 · 最多 ${ROOM_MEMBER_LIMIT} 位`;
+    const modeControl = document.createElement('div');
+    modeControl.className = 'group-engine-mode-control';
+    const modeLabel = document.createElement('strong');
+    modeLabel.textContent = '群聊引擎';
+    const modeOptions = document.createElement('div');
+    modeOptions.className = 'group-engine-mode-options';
+    const isV2 = dependencies.isGroupV2Enabled(room.id);
+    ([
+        { mode: 'v1', label: '經典 V1', enabled: !isV2 },
+        { mode: 'v2', label: '實驗 V2', enabled: isV2 },
+    ] as const).forEach(option => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'room-member-mini-action group-engine-mode-button';
+        button.textContent = option.label;
+        button.setAttribute('aria-pressed', String(option.enabled));
+        if (option.enabled) button.classList.add('is-selected');
+        button.addEventListener('click', () => {
+            if (!dependencies.canRenameMember()) {
+                alert('請等待目前回覆完成後再切換引擎。');
+                return;
+            }
+            const next = option.mode === 'v2';
+            if (dependencies.isGroupV2Enabled(room.id) === next) return;
+            try {
+                dependencies.setGroupV2Enabled(room.id, next);
+                renderRoomInfo();
+            } catch {
+                alert('切換未能儲存；請檢查本機瀏覽器設定。');
+            }
+        });
+        modeOptions.appendChild(button);
+    });
+    const modeHint = document.createElement('small');
+    modeHint.textContent = '只影響此裝置、此群組之後的新回覆，不會改動角色身份、記憶或舊對話。';
+    modeControl.append(modeLabel, modeOptions, modeHint);
+    roomInfoSummary.appendChild(modeControl);
     roomMemberList.innerHTML = '';
 
     room.members.forEach(member => {
@@ -75,6 +147,46 @@ const renderRoomInfo = () => {
             if (!dependencies.selectMember(member.id)) return;
             dependencies.openPersonaSettingsForMember(room.id, member.id);
             renderRoomInfo();
+        });
+
+        const renameButton = document.createElement('button');
+        renameButton.type = 'button';
+        renameButton.className = 'room-member-mini-action';
+        renameButton.textContent = '改名';
+        renameButton.setAttribute('aria-label', `修改 ${member.persona.name} 的群組顯示名稱`);
+        renameButton.addEventListener('click', () => {
+            if (!dependencies.canRenameMember()) {
+                alert('請等待目前回覆完成，再修改顯示名稱。');
+                return;
+            }
+            const requested = window.prompt('修改此群組的顯示名稱（不影響 Wikipedia 身份）', member.persona.name);
+            if (requested === null) return;
+            const nextName = normalizeGroupMemberDisplayName(requested);
+            if (!nextName) {
+                alert('名稱不可留空、超過 32 字或包含對話格式符號。');
+                return;
+            }
+            const current = dependencies.getRoom();
+            if (!current || !current.members.some(item => item.id === member.id)) return;
+            if (!isGroupMemberDisplayNameAvailable(
+                nextName,
+                current.members.filter(item => item.id !== member.id).map(item => item.persona.name),
+            )) {
+                alert(`群組已有「${nextName}」，請使用不同名稱。`);
+                return;
+            }
+            if (nextName === member.persona.name) return;
+            try {
+                const saved = dependencies.updateRoom(room.id, editableRoom => {
+                    const target = editableRoom.members.find(item => item.id === member.id);
+                    if (target) target.persona.name = nextName;
+                });
+                if (!saved) throw new Error('未能儲存群組顯示名稱。');
+                dependencies.onMemberRenamed();
+                renderRoomInfo();
+            } catch (error) {
+                alert(error instanceof Error ? error.message : '未能修改顯示名稱。');
+            }
         });
 
         const avatarButton = document.createElement('button');
@@ -132,7 +244,7 @@ const renderRoomInfo = () => {
 
         const actions = document.createElement('div');
         actions.className = 'room-member-actions';
-        actions.append(dmButton, avatarButton, presence);
+        actions.append(renameButton, dmButton, avatarButton, presence);
         row.append(avatar, copy, actions);
         roomMemberList.appendChild(row);
     });

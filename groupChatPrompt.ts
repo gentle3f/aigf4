@@ -99,10 +99,14 @@ export interface GroupSystemPromptAccounting {
     components: PromptComponentSize[];
 }
 
+/** V1 remains byte-for-byte the default. V2 relaxes rigid group pacing only when enabled. */
+export type GroupPresentationPolicy = 'legacy' | 'owner-v2';
+
 export const buildGroupSystemPromptWithAccounting = (
     room: ChatRoom,
     query = '',
     sessionMemory = '',
+    presentationPolicy: GroupPresentationPolicy = 'legacy',
 ): GroupSystemPromptAccounting => {
     const present = new Set(room.scene.presentMemberIds);
     const deepRecall = isDeepMemoryRecallQuery(query);
@@ -230,7 +234,15 @@ export const buildGroupSystemPromptWithAccounting = (
             '- Romance should grow through attention, trust, playful tension and concrete care. Do not make everyone instantly obedient, generically sweet, cruel, therapeutic or emotionally dependent.',
             '- Give characters their own immediate wants and initiative. When natural, let someone make a concrete choice, suggest a plan, interrupt, or start the next small action instead of always waiting for the user or ending with a question.',
             '- Pace attraction and dramatic tension in steps. Preserve gains in closeness, allow a charged moment to breathe, and transition naturally after an intense beat instead of abruptly resetting or endlessly escalating.',
-            '- Normally write 5 to 10 alternating narration/dialogue lines for a substantial turn. A character may speak more than once before and after an action, and present members may answer, interrupt, tease or react to one another.',
+            presentationPolicy === 'owner-v2'
+                ? '- Choose narration and dialogue according to what actually matters in this moment, not a fixed count, three-role comedy format, or forced alternating rhythm. Let whoever has something meaningful to say finish a natural thought; use environment details only when they enrich the scene.'
+                : '- Normally write 5 to 10 alternating narration/dialogue lines for a substantial turn. A character may speak more than once before and after an action, and present members may answer, interrupt, tease or react to one another.',
+            ...(presentationPolicy === 'owner-v2' ? [
+                '- NO ENSEMBLE CAST SLOTS: never divide members into required shy/playful/smart/critic roles. Each member retains multiple facets, personal context, changing mood and particular interests. Similar reactions or silence by several members are allowed when natural.',
+                '- A character may initiate an invitation, choice, affection or a plot thread when motivated by scene details or a remembered shared experience. Initiative is not synonymous with conflict, defiance, repeated sexual escalation or asking endless questions.',
+                '- Mutual intimacy, special nicknames, previous experiments and fictional role dynamics do not require stronger or more extreme scenes. After a meaningful beat, let consequences, humour, practical activities, ordinary warmth and changing relationships matter.',
+                '- A pleasant surprise should feel plausible in retrospect: who chose it, why now, and what it changes are more important than merely increasing intensity. Never force random twists or deliberate withholding.',
+            ] : []),
             sceneDetailGuidance,
             '- Let relevant present members speak and act. Do not force every member to speak on every turn, and do not create a detached novel chapter.',
             '- If the user asks present members to leave, update present_member_ids. If the user enters imagination, story or roleplay inside the room, set reality_layer to imagined; return to the prior physical/texting layer when the user ends it.',

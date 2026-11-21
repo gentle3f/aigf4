@@ -1,4 +1,5 @@
 import type { MemoryManager } from '../managers.js';
+import { GROUP_MEMBER_DISPLAY_NAME_LIMIT, normalizeGroupMemberDisplayName, isGroupMemberDisplayNameAvailable, withGroupMemberDisplayName } from '../groupMemberDisplayName.js';
 import { VENICE_ASSISTANT_PERSONA_KEY } from '../personas.tsx';
 import { ROOM_MEMBER_LIMIT, cloneRoomSnapshot } from '../roomManager.js';
 import type { RoomManager } from '../roomManager.js';
@@ -54,7 +55,28 @@ const renderCreateGroupMembers = () => {
         copy.querySelector('strong')!.textContent = persona.name;
         copy.querySelector('small')!.textContent = persona.description;
         label.append(checkbox, avatar, copy);
-        createGroupMemberList.appendChild(label);
+        const option = document.createElement('div');
+        option.className = 'create-group-member-entry';
+        option.dataset.personaKey = key;
+        const nameEditor = document.createElement('label');
+        nameEditor.className = 'create-group-member-name-field';
+        nameEditor.hidden = true;
+        const nameCaption = document.createElement('span');
+        nameCaption.textContent = '群組顯示名稱（選填）';
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.className = 'create-group-member-display-name';
+        nameInput.maxLength = GROUP_MEMBER_DISPLAY_NAME_LIMIT;
+        nameInput.placeholder = '例如 Lisa；留空使用原名';
+        nameInput.autocomplete = 'off';
+        nameInput.disabled = true;
+        checkbox.addEventListener('change', () => {
+            nameEditor.hidden = !checkbox.checked;
+            nameInput.disabled = !checkbox.checked;
+        });
+        nameEditor.append(nameCaption, nameInput);
+        option.append(label, nameEditor);
+        createGroupMemberList.appendChild(option);
     });
 };
 
@@ -68,8 +90,30 @@ const confirmCreateGroup = () => {
     const dependencies = activeDependencies;
     if (!dependencies) return;
     const { roomManager, memoryManager } = dependencies;
-    const selectedKeys = Array.from(createGroupMemberList.querySelectorAll<HTMLInputElement>('input:checked'))
-        .map(input => input.value);
+    const selectedOptions = Array.from(createGroupMemberList.querySelectorAll<HTMLElement>('.create-group-member-entry'))
+        .filter(option => option.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked);
+    const selectedKeys = selectedOptions.map(option => option.dataset.personaKey || '').filter(Boolean);
+    const selected = [];
+    const usedNames = groupModalTargetRoomId
+        ? (roomManager.getRoom(groupModalTargetRoomId)?.members.map(member => member.persona.name) || [])
+        : [];
+    for (const option of selectedOptions) {
+        const key = option.dataset.personaKey || '';
+        const persona = memoryManager.getPersona(key);
+        if (!persona) continue;
+        const proposed = option.querySelector<HTMLInputElement>('.create-group-member-display-name')?.value || '';
+        const displayName = proposed.trim() ? normalizeGroupMemberDisplayName(proposed) : persona.name;
+        if (!displayName) {
+            alert('顯示名稱不可留空、超過 32 字或包含對話格式符號。');
+            return;
+        }
+        if (!isGroupMemberDisplayNameAvailable(displayName, usedNames)) {
+            alert(`群組已有「${displayName}」，請使用不同的名稱。`);
+            return;
+        }
+        usedNames.push(displayName);
+        selected.push({ sourcePersonaKey: key, persona: withGroupMemberDisplayName(persona, displayName) });
+    }
     if (groupModalTargetRoomId) {
         const room = roomManager.getRoom(groupModalTargetRoomId);
         if (!room || selectedKeys.length === 0) {
@@ -80,13 +124,11 @@ const confirmCreateGroup = () => {
             alert(`每個群組最多 ${ROOM_MEMBER_LIMIT} 位角色。`);
             return;
         }
-        selectedKeys.forEach((key, index) => {
-            const persona = memoryManager.getPersona(key);
-            if (!persona) return;
+        selected.forEach((entry, index) => {
             roomManager.addMember(room.id, {
                 id: `member_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`,
-                sourcePersonaKey: key,
-                persona: cloneRoomSnapshot(persona),
+                sourcePersonaKey: entry.sourcePersonaKey,
+                persona: cloneRoomSnapshot(entry.persona),
                 joinedAt: Date.now(),
                 soul: [],
                 memories: [],
@@ -101,10 +143,6 @@ const confirmCreateGroup = () => {
         alert('群組至少需要 2 位角色。');
         return;
     }
-    const selected = selectedKeys.flatMap(key => {
-        const persona = memoryManager.getPersona(key);
-        return persona ? [{ sourcePersonaKey: key, persona }] : [];
-    });
     const room = roomManager.createRoom(createGroupName.value, selected);
     memoryManager.addMessage(room.id, 'system', { text: `${room.title} 已建立。` });
     closeCreateGroup();

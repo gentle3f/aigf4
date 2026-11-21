@@ -19,6 +19,9 @@ import {
 } from "./managers.js";
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
+import { GROUP_V2_OWNER_PERSONAL_GUIDANCE, isGroupV2PersonalTrialEnabled, normalizeGroupV2OwnerReply, setGroupV2PersonalTrialEnabled } from './groupV2PersonalTrial.js';
+import { formatOwnerProfileForGroup, loadOwnerProfile } from './ownerProfile.js';
+import { formatRelationshipMeaningsForV2, loadMeaningLedger } from './relationshipMeaning.js';
 import { RESEARCH_CAPTURE_SETTING_KEY, setPersistedAppSetting } from './appSettings.js';
 import {
     ASSISTANT_TOPIC_PREFIX,
@@ -2745,6 +2748,16 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
             : currentPersona.conversationLabel || currentPersona.name;
     }
 
+    chatHeaderName.classList.toggle('is-room-title-editable', Boolean(room));
+    if (room) {
+        chatHeaderName.setAttribute('role', 'button');
+        chatHeaderName.setAttribute('tabindex', '0');
+        chatHeaderName.setAttribute('aria-label', `${room.title}：開啟群組資料並修改名稱`);
+    } else {
+        chatHeaderName.removeAttribute('role');
+        chatHeaderName.removeAttribute('tabindex');
+        chatHeaderName.removeAttribute('aria-label');
+    }
     isGodModeActive = false;
     godModeHistory = [];
     applyUiV2ConversationTheme(room?.title || currentPersona?.name || key);
@@ -7196,12 +7209,33 @@ const runRoomConversationGeneration = async (
             const attemptPhase = classifySingleGenerationAttempt(modelIndex, attempt + 1);
             applyChatRuntimeState(isRetry ? 'retrying' : 'generating', isRetry ? '重新思考中...' : '思考中...');
             try {
+                const groupV2OwnerTrial = isGroupV2PersonalTrialEnabled(request.room.id);
                 const groupPromptBuild = groupPromptModule.buildGroupSystemPromptWithAccounting(
                     request.room,
                     latestUserMessage,
                     formatSessionMemoryPrompt(request.conversationKey),
+                    groupV2OwnerTrial ? 'owner-v2' : 'legacy',
                 );
-                const groupSystemPrompt = groupPromptBuild.prompt;
+                let ownerProfile = null;
+                if (groupV2OwnerTrial) {
+                    try { ownerProfile = loadOwnerProfile(localStorage); }
+                    catch { ownerProfile = null; }
+                }
+                const ownerIdentityLedger = groupV2OwnerTrial
+                    ? formatOwnerProfileForGroup(ownerProfile, request.room.members.map(member => member.id))
+                    : '';
+                let confirmedRelationshipMeanings = '';
+                if (groupV2OwnerTrial) {
+                    try {
+                        const ledger = loadMeaningLedger(request.room.id, localStorage);
+                        if (ledger?.confirmed.length) {
+                            confirmedRelationshipMeanings = formatRelationshipMeaningsForV2(ledger, request.room);
+                        }
+                    } catch { confirmedRelationshipMeanings = ''; }
+                }
+                const groupSystemPrompt = groupV2OwnerTrial
+                    ? [groupPromptBuild.prompt, ownerIdentityLedger, confirmedRelationshipMeanings, GROUP_V2_OWNER_PERSONAL_GUIDANCE].filter(Boolean).join('\n\n')
+                    : groupPromptBuild.prompt;
                 const surpriseEventContract = request.surpriseEvent
                     ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
                     : '';
@@ -7221,6 +7255,11 @@ const runRoomConversationGeneration = async (
                 const promptComponents: PromptComponentSize[] = [
                     { ...promptComponent('room-group-context', groupSystemPrompt), includeInTotal: false },
                     ...groupPromptBuild.components,
+                    ...(groupV2OwnerTrial ? [
+                        promptComponent('group-v2-owner-identity-ledger', ownerIdentityLedger),
+                        ...(confirmedRelationshipMeanings ? [promptComponent('group-v2-confirmed-relationship-meanings', confirmedRelationshipMeanings)] : []),
+                        promptComponent('group-v2-personal-trial-guidance', GROUP_V2_OWNER_PERSONAL_GUIDANCE),
+                    ] : []),
                     promptComponent('archived-recall', archivedRecall),
                     promptComponent('surprise-event', surpriseEventContract),
                     {
@@ -7293,9 +7332,12 @@ const runRoomConversationGeneration = async (
                     result,
                 );
                 const groupParseStartedAt = performance.now();
-                const parsed = normalizeGroupGenerationTraditional(
+                const generated = normalizeGroupGenerationTraditional(
                     parseGroupGeneration(result.text, request.room, fallbackMemberId),
                 );
+                const parsed = groupV2OwnerTrial
+                    ? normalizeGroupV2OwnerReply(generated)
+                    : generated;
                 markChatPerformance('generation:group-parse', groupParseStartedAt);
                 if (parsed.npcCandidate && isUnconfirmedAddressPrefixName(
                     parsed.npcCandidate.name,
@@ -9765,6 +9807,26 @@ const getRoomInfoUiDependencies = () => ({
     setMemberPresence: setRoomMemberPresence,
     updateRoom: (roomId: string, updater: (room: ChatRoom) => void) => roomManager.updateRoom(roomId, updater),
     refreshRoom: () => refreshCurrentRoom(),
+    canRenameMember: () => !activeChatRequest,
+    onMemberRenamed: () => {
+        const updated = refreshCurrentRoom();
+        if (updated && activeRoomMemberId) selectActiveRoomMember(activeRoomMemberId);
+        renderChatHeaderAvatar();
+        renderUiV2ImmersiveSceneChrome();
+        renderPersonaList();
+    },
+    onRoomRenamed: () => {
+        const updated = refreshCurrentRoom();
+        if (!updated) return;
+        chatHeaderName.textContent = updated.title;
+        chatHeaderName.setAttribute('aria-label', `${updated.title}：開啟群組資料並修改名稱`);
+        renderPersonaList();
+        renderUiV2ImmersiveSceneChrome();
+    },
+    isGroupV2Enabled: (roomId: string) => isGroupV2PersonalTrialEnabled(roomId),
+    setGroupV2Enabled: (roomId: string, enabled: boolean) => {
+        setGroupV2PersonalTrialEnabled(roomId, enabled);
+    },
     getActiveMemberId: () => activeRoomMemberId,
     openPersonaSettingsFallback: () => {
         openPersonaSettings();
@@ -10415,6 +10477,14 @@ const setupEventListeners = () => {
         moreOptionsMenu.classList.add('hidden');
     });
     roomInfoBtn.addEventListener('click', openRoomInfo);
+    chatHeaderName.addEventListener('click', () => {
+        if (currentRoom) openRoomInfo();
+    });
+    chatHeaderName.addEventListener('keydown', event => {
+        if (!currentRoom || (event.key !== 'Enter' && event.key !== ' ')) return;
+        event.preventDefault();
+        openRoomInfo();
+    });
     dmRoomMemberBtn.addEventListener('click', () => openParticipantAction('dm'));
     inviteCharacterBtn.addEventListener('click', () => openParticipantAction('invite'));
     leaveRoomMemberBtn.addEventListener('click', () => openParticipantAction('leave'));
