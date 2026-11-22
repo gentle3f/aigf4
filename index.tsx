@@ -20,6 +20,7 @@ import {
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
 import { createComposerAutoSize } from './composerAutoSize.js';
+import { WORLDLINE_SETTING_KEY, getWorldline, recordWorldlineTurn, updateWorldlineRegistry, buildWorldlinePrompt } from './worldline.js';
 import { GROUP_V2_OWNER_PERSONAL_GUIDANCE, isGroupV2PersonalTrialEnabled, normalizeGroupV2OwnerReply, setGroupV2PersonalTrialEnabled } from './groupV2PersonalTrial.js';
 import { formatOwnerProfileForGroup, loadOwnerProfile } from './ownerProfile.js';
 import { formatRelationshipMeaningsForV2, loadMeaningLedger } from './relationshipMeaning.js';
@@ -2749,6 +2750,7 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
             : currentPersona.conversationLabel || currentPersona.name;
     }
 
+    document.documentElement.classList.toggle('aigf-worldline-active', Boolean(getActiveWorldline(key)));
     chatHeaderName.classList.toggle('is-room-title-editable', Boolean(room));
     if (room) {
         chatHeaderName.setAttribute('role', 'button');
@@ -5902,6 +5904,28 @@ const buildChatSystemPrompt = (
     includeWardrobeEnvelope = false,
     conversationKey = personaKey,
 ) => {
+    const narratorWorld = persona.name === '世界敘述者'
+        && persona.prompt.includes('disembodied narrator')
+        && getActiveWorldline(conversationKey);
+    if (narratorWorld) {
+        const narratorWardrobe = includeWardrobeEnvelope ? [
+            'HIDDEN WARDROBE CHECKPOINT: append at the END of the response only:',
+            `<wardrobe>${JSON.stringify({
+                user: 'KEEP',
+                characters: Object.fromEntries(wardrobeParticipants.map(item => [item.key,'KEEP'])),
+            })}</wardrobe>`,
+            'Do not write this private state tag in the visible story. Preserve KEEP for unchanged outfits.',
+        ].join('\n') : '';
+        return [
+            'You are the WORLD NARRATOR / GAME MASTER for interactive fiction, NOT a character, assistant, romance partner or girlfriend.',
+            'Write in immersive, natural Traditional Chinese prose, with clearly attributed dialogue from independently motivated NPCs.',
+            'The player alone decides their speech, decisions, feelings, actions and consent.',
+            'Maintain living factions, major quests, golden-finger abilities, consequences, relationships, secrets and time continuity. Never reduce the story to a rigid list of options.',
+            'The attached Worldline system state is the source of persistent world rules and confirmed facts; invent new unconfirmed details freely without overwriting canon.',
+            `World director voice: ${persona.prompt}`,
+            narratorWardrobe,
+        ].filter(Boolean).join('\n\n');
+    }
     const behaviorGuidance = buildPersonaBehaviorGuidance(personaKey, persona);
     const publicIdentity = persona.publicIdentityEnabled ? persona.publicIdentity : undefined;
     const soulMemory = formatPersonaMemoryPrompt(persona, 'soul', latestUserMessage);
@@ -6577,6 +6601,18 @@ const getWardrobeParticipantsForRequest = (
     ])).map(name => ({ key: name, label: name }));
 };
 
+const getActiveWorldline = (conversationKey: string) => {
+    try {
+        const world = getWorldline(localStorage.getItem(WORLDLINE_SETTING_KEY), conversationKey);
+        return world && !world.paused ? world : null;
+    } catch { return null; }
+};
+const isWorldlineNarrator = (request: ActiveChatRequest) => (
+    request.persona.name === '世界敘述者'
+    && request.persona.prompt.includes('disembodied narrator')
+    && Boolean(getActiveWorldline(request.conversationKey))
+);
+
 const runConversationGeneration = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
@@ -6617,15 +6653,18 @@ const runConversationGeneration = async (
     const npcContinuityRequirement = assistantMode
         ? ''
         : buildNpcContinuityRequirement(establishedNpcNames);
-    const turnOwnershipRequirement = assistantMode
+    const turnOwnershipRequirement = assistantMode || isWorldlineNarrator(request)
         ? ''
         : buildImmediateTurnOwnershipRequirement(request.persona.name, latestUserMessage);
     const surpriseEventContract = !assistantMode && request.surpriseEvent
         ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
         : '';
+    const activeWorld = assistantMode ? null : getActiveWorldline(request.conversationKey);
+    const worldlineContext = activeWorld ? buildWorldlinePrompt(activeWorld) : '';
     const systemPromptParts = [
         baseSystemPrompt,
         archivedRecall,
+        worldlineContext,
         surpriseEventContract,
         turnOwnershipRequirement,
         npcContinuityRequirement,
@@ -6654,6 +6693,7 @@ const runConversationGeneration = async (
     const requestPromptComponents: PromptComponentSize[] = [
         ...basePromptComponents,
         promptComponent('archived-recall', archivedRecall),
+        promptComponent('worldline-stable-world-state', worldlineContext),
         promptComponent('surprise-event', surpriseEventContract),
         promptComponent('immediate-turn-ownership', turnOwnershipRequirement),
         promptComponent('npc-continuity', npcContinuityRequirement),
@@ -7239,9 +7279,12 @@ const runRoomConversationGeneration = async (
                 const surpriseEventContract = request.surpriseEvent
                     ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
                     : '';
+                const world = getActiveWorldline(request.conversationKey);
+                const worldlineContext = world ? buildWorldlinePrompt(world) : '';
                 const roomSystemPrompt = [
                     groupSystemPrompt,
                     archivedRecall,
+                    worldlineContext,
                     surpriseEventContract,
                 ].filter(Boolean).join('\n\n');
                 const recentMessages = getRecentChatMessages(
@@ -7261,6 +7304,7 @@ const runRoomConversationGeneration = async (
                         promptComponent('group-v2-personal-trial-guidance', GROUP_V2_OWNER_PERSONAL_GUIDANCE),
                     ] : []),
                     promptComponent('archived-recall', archivedRecall),
+                    promptComponent('worldline-stable-world-state', worldlineContext),
                     promptComponent('surprise-event', surpriseEventContract),
                     {
                         name: 'recent-conversation-history',
@@ -7644,7 +7688,9 @@ const strictReviewSingleReply = async (
         request.surpriseEvent
             ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
             : '',
-        buildImmediateTurnOwnershipRequirement(request.persona.name, latestUserMessage),
+        (() => { const world = getActiveWorldline(request.conversationKey); return world ? buildWorldlinePrompt(world) : ''; })(),
+        isWorldlineNarrator(request)
+            ? '' : buildImmediateTurnOwnershipRequirement(request.persona.name, latestUserMessage),
         buildNpcContinuityRequirement(establishedNpcNames),
         buildNpcSpeechRequirement(addressedNpcNames),
     ].filter(Boolean).join('\n\n');
@@ -7725,6 +7771,7 @@ const strictReviewGroupReply = async (
         request.surpriseEvent
             ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
             : '',
+        (() => { const world = getActiveWorldline(request.conversationKey); return world ? buildWorldlinePrompt(world) : ''; })(),
         'STRICT REVISION FORMAT: revised_response must contain one complete <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate> envelope.',
     ].join('\n\n');
 
@@ -8703,6 +8750,20 @@ const getResponse = async (
         }
         const persistStartedAt = performance.now();
         memoryManager.addMessage(request.conversationKey, 'model', botContent);
+        if (request.mode === 'character') {
+            try {
+                const world = getActiveWorldline(request.conversationKey);
+                if (world) {
+                    const next = recordWorldlineTurn(world, triggeringMessage, botContent.text || '');
+                    const registry = updateWorldlineRegistry(
+                        localStorage.getItem(WORLDLINE_SETTING_KEY), request.conversationKey, next,
+                    );
+                    setPersistedAppSetting(WORLDLINE_SETTING_KEY, JSON.stringify(registry));
+                }
+            } catch (error) {
+                console.warn('Worldline chronicle persistence deferred; chat reply remains saved.', error);
+            }
+        }
         markChatPerformance('response:final-persist', persistStartedAt);
         if (shouldRenderCompletedReplyInConversation(currentConversationKey, request.conversationKey)) {
             const renderStartedAt = performance.now();
@@ -9845,6 +9906,64 @@ const openRoomInfo = () => {
         .then(({ openRoomInfo: openRoomInfoUi }) => openRoomInfoUi(getRoomInfoUiDependencies()))
         .catch(error => console.error('Failed to load Room Info UI', error));
 };
+const openWorldline = async (source: 'new' | 'current' = 'current') => {
+    if (activeChatRequest) {
+        alert('請等目前回覆完成後，再開啟或修改世界線。');
+        return;
+    }
+    try {
+        const { openWorldlineUi } = await import('./features/worldlineUi.js');
+        openWorldlineUi({
+            getActiveConversation: () => currentConversationKey
+                ? {
+                    key: currentConversationKey,
+                    title: currentRoom?.title || currentPersona?.conversationLabel
+                        || currentPersona?.name || '目前對話',
+                    isAssistant: isAssistantConversationKey(
+                        currentConversationKey, VENICE_ASSISTANT_PERSONA_KEY,
+                    ),
+                } : null,
+            createNarratorConversation: title => {
+                const key = memoryManager.saveCustomPersona({
+                    name: '世界敘述者',
+                    emoji: '🌌',
+                    gender: 'female',
+                    description: 'AIGF Worldline 的世界敘事者；負責描述世界、其他 NPC 同事件，而唔係固定戀愛對象。',
+                    prompt: [
+                        'You are the disembodied narrator / game-master of a living interactive-fiction world.',
+                        'You are NOT a romanceable participant, fixed narrator avatar or girlfriend.',
+                        'Use in-world vivid narration and attributed NPC dialogue, including any adult characters.',
+                        'Do not assign the player actions, consent, thoughts or automatic romantic feelings.',
+                        'Maintain a primary story arc, ongoing NPC agendas and independent world pressures.',
+                        'Let the player ignore quests, pursue romance, train, travel or change the world.',
+                        'Never reduce the world to fixed 3-choice menus or generic surprise event cards.',
+                        'The persistent worldline state attached to this conversation determines powers and canon.',
+                    ].join('\n'),
+                    greeting: '（一個新世界等待揭曉。序章會喺你開始世界線之後展開。）',
+                    avatarPrompt: 'original fantasy world atlas with an ancient glowing gateway, landscape, no people, no writing',
+                });
+                memoryManager.updatePersona(key, { conversationLabel: title });
+                renderPersonaList();
+                return key;
+            },
+            openConversation: key => {
+                if (currentConversationKey !== key) startChat(key, null, 'push');
+            },
+            dispatchText: text => { void sendMessage({ messageText: text }); },
+            afterWorldlineChange: () => {
+                renderPersonaList();
+                if (currentConversationKey) {
+                    const world = getActiveWorldline(currentConversationKey);
+                    document.documentElement.classList.toggle('aigf-worldline-active', Boolean(world));
+                }
+            },
+        }, source);
+    } catch (error) {
+        console.error('Unable to open Worldline panel', error);
+        alert('世界線介面暫時未能開啟。');
+    }
+};
+
 const getRoomMemoryUiDependencies = () => ({
     getContext: () => ({
         room: refreshCurrentRoom(),
@@ -10372,6 +10491,33 @@ const setupEventListeners = () => {
         homeMenu.classList.add('hidden');
     });
     createGroupRoomBtn.addEventListener('click', () => { void openCreateGroup(); });
+    if (!document.getElementById('aigf-new-worldline-btn')) {
+        const createWorldlineButton = document.createElement('button');
+        createWorldlineButton.id = 'aigf-new-worldline-btn';
+        createWorldlineButton.type = 'button';
+        createWorldlineButton.className = 'dropdown-item aigf-worldline-entry';
+        createWorldlineButton.textContent = '🌌 開始全新世界線（修仙／轉生／系統流）';
+        createWorldlineButton.addEventListener('click', () => {
+            newChatMenu.classList.add('hidden');
+            void openWorldline('new');
+        });
+        newChatMenu.appendChild(createWorldlineButton);
+    }
+    if (!document.getElementById('aigf-worldline-menu-btn')) {
+        const worldlineMenuButton = document.createElement('button');
+        worldlineMenuButton.id = 'aigf-worldline-menu-btn';
+        worldlineMenuButton.type = 'button';
+        worldlineMenuButton.className = 'dropdown-item aigf-worldline-entry';
+        worldlineMenuButton.dataset.v2Icon = '✧';
+        worldlineMenuButton.textContent = '世界線 · 主線／金手指／NPC';
+        worldlineMenuButton.addEventListener('click', () => {
+            moreOptionsMenu.classList.add('hidden');
+            void openWorldline('current');
+        });
+        moreOptionsMenu.prepend(worldlineMenuButton);
+        moreOptionsMenu.querySelector('.v2-more-options-section-interaction .v2-more-options-grid')
+            ?.appendChild(worldlineMenuButton);
+    }
     closeSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     cancelSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     confirmSurpriseEventOptionsBtn.addEventListener('click', confirmSurpriseEventOptions);

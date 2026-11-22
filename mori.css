@@ -1626,6 +1626,94 @@ body.app-body {
     line-height:1.55;
 }
 
+/* Worldline first-class story / system-flow mode. No external CSS framework. */
+.wl-dialog {
+    width: min(92vw, 700px);
+    max-width: 700px;
+    max-height: min(88dvh, 840px);
+    padding: 0;
+    overflow-y: auto;
+    border: 1px solid rgba(118,105,86,.3);
+    border-radius: 20px;
+    background: var(--mori-paper, #fbfaf8);
+    color: var(--mori-ink, #292721);
+    box-shadow: 0 28px 80px rgba(0,0,0,.26);
+    z-index: 5100;
+}
+.wl-dialog::backdrop { background: rgba(13, 16, 20, .62); backdrop-filter: blur(4px); }
+.wl-header {
+    display:flex;
+    position:sticky;
+    top:0;
+    z-index:2;
+    justify-content:space-between;
+    align-items:flex-start;
+    gap:20px;
+    padding:22px 24px;
+    background:var(--mori-paper, #fbfaf8);
+    border-bottom:1px solid rgba(118,105,86,.2);
+}
+.wl-header h2 {font-size:1.3rem;font-weight:700;line-height:1.35;margin:0 0 5px;}
+.wl-header p {font-size:.83rem;opacity:.7;line-height:1.45;margin:0;}
+.wl-close {
+    appearance:none;border:1px solid rgba(112,94,73,.3);
+    background:transparent;color:inherit;min-width:36px;height:36px;
+    border-radius:50%;font-size:1.4rem;cursor:pointer;
+}
+.wl-form {display:grid;gap:15px;padding:20px 24px 24px;}
+.wl-field {display:grid;gap:6px;min-width:0;}
+.wl-field-label {font-size:.82rem;font-weight:650;}
+.wl-input {
+    width:100%;max-width:100%;min-width:0;box-sizing:border-box;
+    font-family:inherit;font-size:.92rem;line-height:1.5;
+    padding:10px 12px;border:1px solid rgba(101,91,82,.32);
+    background:var(--mori-paper,#fff);color:var(--mori-ink,#222);
+    border-radius:10px;
+}
+textarea.wl-input {resize:vertical;min-height:58px;}
+.wl-settings-row,.wl-actions,.wl-attach-choice {
+    display:flex;flex-wrap:wrap;gap:10px;
+}
+.wl-inline {display:grid;gap:5px;flex:1;min-width:170px;}
+.wl-inline span {font-size:.8rem;font-weight:600;}
+.wl-radio {display:flex;align-items:center;gap:8px;font-size:.86rem;}
+.wl-radio input {accent-color:#4d6154;}
+.wl-actions {align-items:center;}
+.wl-button {
+    border:1px solid rgba(101,91,82,.3);
+    background:transparent;color:inherit;
+    border-radius:10px;cursor:pointer;
+    padding:10px 13px;font:inherit;font-size:.85rem;
+    transition:background .12s;
+}
+.wl-button:hover {background:rgba(110,101,86,.1);}
+.wl-primary {
+    background:#445a4d;color:#fff;border-color:#445a4d;
+}
+.wl-primary:hover {background:#33483b;}
+.wl-quick-actions .wl-button {flex:1 1 180px;text-align:left;}
+.wl-note {font-size:.82rem;opacity:.75;margin:0;line-height:1.65;}
+.wl-error {font-size:.82rem;line-height:1.5;color:#a45144;min-height:1em;margin:0;}
+.wl-cast,.wl-chronicle {border:1px solid rgba(105,91,76,.2);border-radius:10px;padding:12px;}
+.wl-cast summary,.wl-chronicle summary {cursor:pointer;font-weight:650;}
+.wl-cast-body {display:grid;gap:9px;padding-top:12px;}
+.wl-npc-entry {display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+.wl-npc-entry span {font-size:.76rem;opacity:.78;flex:1;}
+.wl-chronicle p {font-size:.78rem;line-height:1.5;}
+.aigf-worldline-entry {font-weight:600;}
+.aigf-worldline-active #chat-header-name::before {content:'🌌';font-size:.85em;margin-inline-end:6px;}
+@media(max-width:600px){
+    .wl-dialog {width:100vw;max-width:100vw;max-height:92dvh;border-radius:18px 18px 0 0;margin:auto 0 0;}
+    .wl-header {padding:17px;}
+    .wl-form {padding:16px;}
+    .wl-actions .wl-button {flex-grow:1;}
+}
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .wl-dialog,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .wl-header,
+html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .wl-input {
+    background:#292824;color:#eee8e1;border-color:#646052;
+}
+
 /* AIGF group title rename and per-room experimental engine selector. */
 #room-info-title .room-title-rename-button {
     display: inline-flex;

@@ -1,5 +1,6 @@
 import { notifyLocalCloudChange } from './cloudSyncEvents.js';
 import { mergeGroupModeRegisters } from './groupModeSync.js';
+import { WORLDLINE_SETTING_KEY, mergeWorldlineRegistries } from './worldline.js';
 
 export const RESEARCH_CAPTURE_SETTING_KEY = 'aigf4ResearchCaptureEnabledV1';
 export const GROUP_V2_SYNCED_MODES_KEY = 'aigf4GroupV2SyncedModesV1';
@@ -18,6 +19,7 @@ export const PERSISTED_APP_SETTING_KEYS = [
     'aigf4RandomPersonaVariationsV2',
     RESEARCH_CAPTURE_SETTING_KEY,
     GROUP_V2_SYNCED_MODES_KEY,
+    WORLDLINE_SETTING_KEY,
 ] as const;
 
 export type PersistedAppSettingKey = typeof PERSISTED_APP_SETTING_KEYS[number];
@@ -50,7 +52,9 @@ export const restorePersistedAppSettings = (
         const remoteValue = settings[key] as string;
         const next = key === GROUP_V2_SYNCED_MODES_KEY
             ? JSON.stringify(mergeGroupModeRegisters(localStorage.getItem(key), remoteValue))
-            : remoteValue;
+            : key === WORLDLINE_SETTING_KEY
+                ? JSON.stringify(mergeWorldlineRegistries(localStorage.getItem(key), remoteValue))
+                : remoteValue;
         if (localStorage.getItem(key) === next) return;
         localStorage.setItem(key, next);
         changed = true;
