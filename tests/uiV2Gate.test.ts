@@ -143,11 +143,14 @@ test('UI v2 dark mode keeps Home and creation menu actions readable', () => {
     assert.match(css, /data-wetapp-theme="dark"\] \.new-chat-menu button[\s\S]*color: var\(--v2-ink\) !important/);
 });
 
-test('UI v2 composer grows before it scrolls and keeps a complete internal scrollbar', () => {
-    assert.match(appSource, /const syncMessageInputHeight = \(\) =>/);
-    assert.match(appSource, /const maxHeight = 136/);
-    assert.match(appSource, /messageInput\.style\.setProperty\('height', 'auto', 'important'\)/);
-    assert.match(appSource, /messageInput\.style\.overflowY = messageInput\.scrollHeight > maxHeight \? 'auto' : 'hidden'/);
+test('UI v2 composer grows before scrolling using native CSS or deferred measurements', () => {
+    const autoSizeSource = readFileSync(new URL('../composerAutoSize.ts', import.meta.url), 'utf8');
+    assert.match(appSource, /const syncMessageInputHeight = \(\) => composerAutoSize\.sync\(\)/);
+    assert.match(appSource, /nativeContentSizing: \(\) => typeof CSS !== 'undefined'/);
+    assert.match(autoSizeSource, /pending = opts\.requestFrame\(/);
+    assert.match(autoSizeSource, /const actualScrollHeight = opts\.textarea\.scrollHeight/);
+    assert.match(autoSizeSource, /Math\.min\(136, Math\.max\(44, actualScrollHeight\)\)/);
+    assert.match(css, /@supports \(field-sizing: content\)/);
     assert.match(css, /#message-input[\s\S]*max-height: 136px !important/);
     assert.match(css, /#message-input::-webkit-scrollbar-track[\s\S]*margin-block: 8px/);
 });

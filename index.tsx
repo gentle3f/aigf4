@@ -19,6 +19,7 @@ import {
 } from "./managers.js";
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
+import { createComposerAutoSize } from './composerAutoSize.js';
 import { GROUP_V2_OWNER_PERSONAL_GUIDANCE, isGroupV2PersonalTrialEnabled, normalizeGroupV2OwnerReply, setGroupV2PersonalTrialEnabled } from './groupV2PersonalTrial.js';
 import { formatOwnerProfileForGroup, loadOwnerProfile } from './ownerProfile.js';
 import { formatRelationshipMeaningsForV2, loadMeaningLedger } from './relationshipMeaning.js';
@@ -5103,16 +5104,26 @@ const updateSendButtonState = () => {
         || chatRuntimeState === 'queueing'
         || chatRuntimeState === 'generating'
         || chatRuntimeState === 'retrying';
-    sendButton.disabled = !isUnlocked
-        || requestInProgress
-        || (messageInput.value.trim() === '' && pendingChatAttachments.length === 0);
-    sendButton.setAttribute('aria-busy', requestInProgress ? 'true' : 'false');
-    const hideCamera = messageInput.value.trim().length > 0
+    const hasTypedText = messageInput.value.trim().length > 0;
+    const nextDisabled = !isUnlocked || requestInProgress
+        || (!hasTypedText && pendingChatAttachments.length === 0);
+    if (sendButton.disabled !== nextDisabled) sendButton.disabled = nextDisabled;
+    const busy = requestInProgress ? 'true' : 'false';
+    if (sendButton.getAttribute('aria-busy') !== busy) {
+        sendButton.setAttribute('aria-busy', busy);
+    }
+    const hideCamera = hasTypedText
         || isAssistantPersonaKey(currentPersonaKey)
         || isGodModeActive;
     composerCameraButton.classList.toggle('is-hidden-for-text', hideCamera);
-    composerCameraButton.setAttribute('aria-hidden', hideCamera ? 'true' : 'false');
-    composerCameraButton.tabIndex = hideCamera ? -1 : 0;
+    const nextHidden = hideCamera ? 'true' : 'false';
+    if (composerCameraButton.getAttribute('aria-hidden') !== nextHidden) {
+        composerCameraButton.setAttribute('aria-hidden', nextHidden);
+    }
+    const nextTabIndex = hideCamera ? -1 : 0;
+    if (composerCameraButton.tabIndex !== nextTabIndex) {
+        composerCameraButton.tabIndex = nextTabIndex;
+    }
 };
 
 const renderPendingChatAttachments = () => {
@@ -5277,29 +5288,18 @@ const persistPendingChatAttachments = async (conversationKey: string, assistantM
     };
 };
 
-const syncMessageInputHeight = () => {
-    if (document.documentElement.dataset.wetappUi !== 'v2') {
-        messageInput.style.height = FIXED_MESSAGE_INPUT_HEIGHT;
-        return;
-    }
-
-    const minHeight = 44;
-    const maxHeight = 136;
-    messageInput.style.setProperty('height', 'auto', 'important');
-    const nextHeight = Math.min(maxHeight, Math.max(minHeight, messageInput.scrollHeight));
-    messageInput.style.setProperty('height', `${nextHeight}px`, 'important');
-    messageInput.style.overflowY = messageInput.scrollHeight > maxHeight ? 'auto' : 'hidden';
-};
-
-const resetMessageInput = () => {
-    if (document.documentElement.dataset.wetappUi === 'v2') {
-        messageInput.style.setProperty('height', '44px', 'important');
-        messageInput.style.overflowY = 'hidden';
-    } else {
-        messageInput.style.height = FIXED_MESSAGE_INPUT_HEIGHT;
-    }
-    messageInput.scrollTop = 0;
-};
+const composerAutoSize = createComposerAutoSize({
+    textarea: messageInput,
+    isV2: () => document.documentElement.dataset.wetappUi === 'v2',
+    nativeContentSizing: () => typeof CSS !== 'undefined'
+        && typeof CSS.supports === 'function'
+        && CSS.supports('field-sizing', 'content'),
+    requestFrame: callback => window.requestAnimationFrame(callback),
+    cancelFrame: handle => window.cancelAnimationFrame(handle),
+    classicHeight: FIXED_MESSAGE_INPUT_HEIGHT,
+});
+const syncMessageInputHeight = () => composerAutoSize.sync();
+const resetMessageInput = () => composerAutoSize.reset();
 
 const CC_BEHAVIOR_GUIDANCE = [
     'Cc’s Cantonese must sound locally natural rather than translated. Keep Hong Kong word choices consistent, but never stuff every line with slang or the same catchphrases.',

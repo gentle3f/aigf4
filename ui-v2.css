@@ -631,6 +631,17 @@ html[data-wetapp-ui="v2"] #message-input {
     line-height: 24px !important;
 }
 
+/* Modern browsers resize natively without forced synchronous layout per key. */
+@supports (field-sizing: content) {
+    html[data-wetapp-ui="v2"] #message-input {
+        field-sizing: content;
+        height: auto !important;
+        min-height: 44px !important;
+        max-height: 136px !important;
+        overflow-y: auto;
+    }
+}
+
 html[data-wetapp-ui="v2"] #message-input::-webkit-scrollbar {
     width: 5px;
 }
