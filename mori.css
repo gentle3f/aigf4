@@ -1626,6 +1626,29 @@ body.app-body {
     line-height:1.55;
 }
 
+/* Worldline main-quest generator: deliberate button, clear cost/status and reroll. */
+.wl-quest-tools {
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px 12px;
+    align-items:center;
+    margin-top:-8px;
+}
+.wl-random-quest {
+    font-weight:650;
+    border-color:rgba(75,105,84,.45);
+}
+.wl-random-quest:disabled {
+    cursor:progress;
+    opacity:.65;
+}
+.wl-quest-feedback {
+    margin:0;
+    color:var(--mori-muted,#6c706c);
+    font-size:.76rem;
+    line-height:1.4;
+    flex:1 1 230px;
+}
 /* Worldline first-class story / system-flow mode. No external CSS framework. */
 .wl-dialog {
     width: min(92vw, 700px);

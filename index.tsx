@@ -9950,6 +9950,22 @@ const openWorldline = async (source: 'new' | 'current' = 'current') => {
                 if (currentConversationKey !== key) startChat(key, null, 'push');
             },
             dispatchText: text => { void sendMessage({ messageText: text }); },
+            generateRandomQuest: async input => {
+                const { buildRandomMainQuestMessages, normalizeRandomMainQuest } =
+                    await import('./worldlineRandomQuest.js');
+                const seed = Math.floor(Math.random() * 2_000_000_000);
+                const result = await generateChatTextWithTimeout({
+                    model: DEFAULT_CHAT_MODEL_SETTINGS.primary || VENICE_CHAT_MODEL,
+                    messages: buildRandomMainQuestMessages(input),
+                    maxCompletionTokens: 900,
+                    temperature: 1.04,
+                    topP: 0.94,
+                    repetitionPenalty: 1.05,
+                    seed,
+                    stop: [],
+                }, 65_000);
+                return normalizeRandomMainQuest(result.text);
+            },
             afterWorldlineChange: () => {
                 renderPersonaList();
                 if (currentConversationKey) {

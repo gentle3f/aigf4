@@ -3,6 +3,7 @@
  * No second chat transcript, no new Supabase schema, no automatic NPC joins.
  */
 import { setPersistedAppSetting } from '../appSettings.js';
+import type { RandomMainQuestInput } from '../worldlineRandomQuest.js';
 import {
     WORLDLINE_SETTING_KEY,getWorldline,makeWorldline,normalizeWorldline,updateWorldlineRegistry,
     worldlineGenreLabel,buildWorldlineOpening,
@@ -14,6 +15,7 @@ export interface WorldlineUiDeps {
     openConversation:(key:string)=>void;
     dispatchText:(text:string)=>void;
     afterWorldlineChange:()=>void;
+    generateRandomQuest:(input:RandomMainQuestInput)=>Promise<string>;
 }
 const genres: Array<[WorldlineGenre,string]>=[
     ['xianxia','修仙／玄幻'],['isekai','穿越異世界'],
@@ -103,8 +105,62 @@ const openStart=(deps:WorldlineUiDeps,preferred:'new'|'current')=>{
     const golden=control(form,'金手指／系統能力','textarea',
         '一種可以持續成長、玩法自由嘅獨特系統；由故事揭示真正用途') as HTMLTextAreaElement;
     golden.maxLength=700;golden.rows=2;
-    const quest=control(form,'主線目標（可以留空畀 AI 自由生成）','textarea','') as HTMLTextAreaElement;
-    quest.maxLength=550;quest.rows=2;
+    const quest=control(form,'主線目標（留空會喺開始時自動生成）','textarea','') as HTMLTextAreaElement;
+    quest.maxLength=550;quest.rows=3;
+    quest.placeholder='按「🎲 AI 隨機生成主線」，或者直接輸入你自己嘅故事。';
+    const questTools=element('div','wl-quest-tools');
+    const randomButton=element('button','wl-button wl-random-quest','🎲 AI 隨機生成主線');
+    randomButton.type='button';
+    const questNotice=element('p','wl-quest-feedback','由 AI 根據世界、身份同金手指原創主線；可以再抽或者修改。');
+    questNotice.setAttribute('aria-live','polite');
+    questTools.append(randomButton,questNotice);
+    form.appendChild(questTools);
+    let generatingQuest=false;
+    let startInProgress=false;
+    let closed=false;
+    dialog.addEventListener('close',()=>{closed=true;},{once:true});
+    const generateQuest=async ():Promise<string>=>{
+        if(generatingQuest)throw Error('上一條主線仲喺生成中。');
+        if(!premise.value.trim())throw Error('請先設定世界背景。');
+        const previousQuest=quest.value.trim();
+        const input:RandomMainQuestInput={
+            title:title.value.trim()||'未命名世界',
+            genre:genre.value as WorldlineGenre,
+            premise:premise.value.trim(),
+            protagonist:protagonist.value.trim(),
+            goldenFinger:golden.value.trim(),
+            previousQuest,
+        };
+        generatingQuest=true;
+        randomButton.disabled=true;
+        create.disabled=true;
+        randomButton.textContent='主線創作中…';
+        setStatus(questNotice,'AI 正按目前世界設定生成主線，唔會預設人物關係。');
+        try{
+            const generated=await deps.generateRandomQuest(input);
+            if(closed)throw Error('世界線視窗已關閉。');
+            if(quest.value.trim()!==previousQuest){
+                setStatus(questNotice,'你已手動修改主線，保留你嘅文字。');
+                return quest.value.trim();
+            }
+            quest.value=generated;
+            setStatus(questNotice,'已生成新主線。你可以再抽一次，或者直接編輯。');
+            return generated;
+        }catch(error){
+            const msg=error instanceof Error?error.message:'主線生成失敗';
+            if(!closed)setStatus(questNotice,msg);
+            throw error;
+        }finally{
+            generatingQuest=false;
+            randomButton.disabled=false;
+            create.disabled=false;
+            randomButton.textContent=quest.value.trim()
+                ? '🎲 再抽一條新主線':'🎲 AI 隨機生成主線';
+        }
+    };
+    randomButton.addEventListener('click',()=>{
+        void generateQuest().catch(()=>{ /* feedback already visible */ });
+    });
     const options=element('div','wl-settings-row');
     const pacing=element('label','wl-inline');
     pacing.appendChild(element('span','','節奏'));
@@ -143,8 +199,14 @@ const openStart=(deps:WorldlineUiDeps,preferred:'new'|'current')=>{
     const create=element('button','wl-button wl-primary','開始序章');
     create.type='button';
     create.addEventListener('click',()=>{
-        try{
-            if(!premise.value.trim())throw Error('請輸入你想玩嘅世界背景。');
+        if(startInProgress||generatingQuest)return;
+        startInProgress=true;
+        create.disabled=true;
+        void (async()=>{
+            try{
+                if(!premise.value.trim())throw Error('請輸入你想玩嘅世界背景。');
+                if(!quest.value.trim())await generateQuest();
+                if(closed)return;
             const opts:WorldlineStartOptions={
                 title:title.value.trim()||'未命名世界',genre:genre.value as WorldlineGenre,
                 premise:premise.value.trim(),protagonist:protagonist.value.trim(),
@@ -161,7 +223,13 @@ const openStart=(deps:WorldlineUiDeps,preferred:'new'|'current')=>{
             deps.openConversation(key);
             deps.afterWorldlineChange();
             deps.dispatchText(buildWorldlineOpening(world));
-        }catch(e){setStatus(notice,e instanceof Error?e.message:'世界線建立失敗');}
+            }catch(e){
+                if(!closed)setStatus(notice,e instanceof Error?e.message:'世界線建立失敗');
+            }finally{
+                startInProgress=false;
+                create.disabled=false;
+            }
+        })();
     });
     actions.appendChild(create);form.append(notice,actions);dialog.appendChild(form);
     showDialog(dialog);
