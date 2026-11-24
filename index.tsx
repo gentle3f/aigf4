@@ -23,7 +23,7 @@ import { createComposerAutoSize } from './composerAutoSize.js';
 import { WORLDLINE_SETTING_KEY, getWorldline, recordWorldlineTurn, updateWorldlineRegistry, buildWorldlinePrompt } from './worldline.js';
 import { buildWorldReadModel, compileWorldRecall } from './worldOs.js';
 import { recordWorldResearch, captureResearchMessages, researchText, type ResearchContext } from './worldResearch.js';
-import { WORLD_LEDGER_KEY, appendWorldBatches, buildWorldExtractionMessages, compileWorldLedger, parseWorldExtraction, pendingWorldSources, projectWorld, selectWorldBatch } from './worldLedger.js';
+import { WORLD_LEDGER_KEY, appendWorldBatches, buildRecoverableWorldExtractionMessages, compileWorldLedger, recoverWorldExtraction, pendingWorldSources, projectWorld, selectWorldBatch } from './worldLedger.js';
 import { GROUP_V2_OWNER_PERSONAL_GUIDANCE, isGroupV2PersonalTrialEnabled, normalizeGroupV2OwnerReply, setGroupV2PersonalTrialEnabled } from './groupV2PersonalTrial.js';
 import { formatOwnerProfileForGroup, loadOwnerProfile } from './ownerProfile.js';
 import { formatRelationshipMeaningsForV2, loadMeaningLedger } from './relationshipMeaning.js';
@@ -6622,35 +6622,47 @@ const buildWorldlineRuntimeContext = (key:string,query:string) => {
     if(!world)return '';
     return [buildWorldlinePrompt(world),compileWorldLedger(localStorage.getItem(WORLD_LEDGER_KEY),key,memoryManager.peekChatHistory(key),query)].filter(Boolean).join('\n\n');
 };
-const worldLedgerJobs = new Map<string, Promise<boolean>>();
-const syncWorldLedger = (key: string, recent = false): Promise<boolean> => {
+type WorldSyncResult = {advanced:number;deferred:string[];issueCount:number};
+const worldLedgerJobs = new Map<string, Promise<WorldSyncResult>>();
+const syncWorldLedger = (key: string, recent = false, skipIds:readonly string[]=[]): Promise<WorldSyncResult> => {
     const running = worldLedgerJobs.get(key);
     if (running) return running;
     const job = (async () => {
-        if (!getActiveWorldline(key)) return false;
+        const empty:WorldSyncResult={advanced:0,deferred:[],issueCount:0};
+        if (!getActiveWorldline(key)) return empty;
         const history = memoryManager.peekChatHistory(key);
         const raw = localStorage.getItem(WORLD_LEDGER_KEY);
-        const batch = selectWorldBatch(pendingWorldSources(raw, key, history), recent);
-        if (!batch.length) return false;
-        // Historical extraction must not see later events when replaying an old batch.
-        const first = history.findIndex(m => m.id === batch[0].id);
-        const context = compileWorldLedger(raw, key, history.slice(0, Math.max(0, first)), '', 4200);
-        const result = await generateChatTextWithTimeout({
-            model: DEFAULT_CHAT_MODEL_SETTINGS.primary || VENICE_CHAT_MODEL,
-            messages: buildWorldExtractionMessages(batch, context),
-            maxCompletionTokens: 5000,
-            temperature: 0.2,
-            stop: [],
-        }, 90000,{conversationKey:key,stage:recent?'ledger-new-turn':'ledger-rebuild',sourceIds:batch.flatMap(m=>m.id?[m.id]:[])});
-        let rows:ReturnType<typeof parseWorldExtraction>;
-        try{rows=parseWorldExtraction(result.text,batch);}
-        catch(error){recordWorldResearch({conversationKey:key,stage:'ledger-validation',sourceIds:batch.flatMap(m=>m.id?[m.id]:[])},{kind:'rejected',error:researchText(error instanceof Error?error.message:String(error))});throw error;}
-        if (!getActiveWorldline(key)) return false;
-        const latestHistory = memoryManager.peekChatHistory(key);
-        const next = appendWorldBatches(localStorage.getItem(WORLD_LEDGER_KEY), key, rows, latestHistory);
-        const saved=setPersistedAppSetting(WORLD_LEDGER_KEY, JSON.stringify(next));
-        recordWorldResearch({conversationKey:key,stage:'ledger-validation',sourceIds:rows.map(row=>row.sourceId)},{kind:'validated',saved,observations:rows.map(row=>({sourceId:row.sourceId,observations:row.observations})),stateCoverage:{processed:projectWorld(next,key,latestHistory).processed,total:latestHistory.filter(m=>m.role!=='system'&&m.id&&m.content.text?.trim()).length}});
-        return saved;
+        const skip=new Set(skipIds);
+        const batch = selectWorldBatch(pendingWorldSources(raw, key, history).filter(m=>!skip.has(m.id!)), recent);
+        if (!batch.length) return empty;
+        const recovered=await recoverWorldExtraction(batch,async sources=>{
+            const first=history.findIndex(m=>m.id===sources[0].id);
+            const context=compileWorldLedger(raw,key,history.slice(0,Math.max(0,first)),'',4200);
+            const result=await generateChatTextWithTimeout({
+                model: DEFAULT_CHAT_MODEL_SETTINGS.primary || VENICE_CHAT_MODEL,
+                messages:buildRecoverableWorldExtractionMessages(sources,context),
+                maxCompletionTokens:5000,temperature:0.1,stop:[],
+            },90000,{conversationKey:key,stage:recent?'ledger-new-turn':'ledger-rebuild',sourceIds:sources.flatMap(m=>m.id?[m.id]:[])});
+            return result.text;
+        });
+        if(recovered.issues.length)recordWorldResearch({conversationKey:key,stage:'ledger-validation',sourceIds:batch.flatMap(m=>m.id?[m.id]:[])},{kind:'rejected',issues:recovered.issues.map(i=>({sourceId:i.sourceId,reason:researchText(i.reason)})),attempts:recovered.attempts,deferred:recovered.deferred});
+        if (!getActiveWorldline(key)) return empty;
+        const latestHistory=memoryManager.peekChatHistory(key);
+        const currentRaw=localStorage.getItem(WORLD_LEDGER_KEY);
+        const before=projectWorld(currentRaw,key,latestHistory);
+        const next=appendWorldBatches(currentRaw,key,recovered.rows,latestHistory);
+        let saved=false;
+        try{
+            if(recovered.rows.length)saved=setPersistedAppSetting(WORLD_LEDGER_KEY,JSON.stringify(next));
+        }catch(error){
+            const reason=error instanceof Error?error.message:String(error);
+            recordWorldResearch({conversationKey:key,stage:'ledger-storage'},{kind:'save-error',error:researchText(reason)});
+            if(error instanceof DOMException&&(error.name==='QuotaExceededError'||error.name==='NS_ERROR_DOM_QUOTA_REACHED'))throw new Error('本機儲存空間不足，之前已保存嘅紀錄不變。請先匯出備份，唔好清除網站資料。');
+            throw new Error('本機保存世界紀錄失敗：'+reason);
+        }
+        const after=projectWorld(localStorage.getItem(WORLD_LEDGER_KEY),key,latestHistory);
+        recordWorldResearch({conversationKey:key,stage:'ledger-validation',sourceIds:recovered.rows.map(row=>row.sourceId)},{kind:'validated',saved,observations:recovered.rows.map(row=>({sourceId:row.sourceId,incomplete:!!row.incomplete,observations:row.observations})),stateCoverage:{processed:after.processed,partial:after.partial,total:after.total}});
+        return {advanced:Math.max(0,after.processed-before.processed),deferred:recovered.deferred,issueCount:recovered.issues.length};
     })().finally(() => worldLedgerJobs.delete(key));
     worldLedgerJobs.set(key, job);
     return job;
@@ -10023,7 +10035,7 @@ const openWorldline = async (source: 'new' | 'current' = 'current') => {
                 return normalizeRandomMainQuest(result.text);
             },
             getWorldLedger: key => projectWorld(localStorage.getItem(WORLD_LEDGER_KEY), key, memoryManager.peekChatHistory(key)),
-            rebuildWorldLedger: key => syncWorldLedger(key, false),
+            rebuildWorldLedger: (key,skipIds) => syncWorldLedger(key,false,skipIds),
             afterWorldlineChange: () => {
                 renderPersonaList();
                 if (currentConversationKey) {

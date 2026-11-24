@@ -10,7 +10,7 @@ export type WorldKind=typeof WORLD_KINDS[number];
 export const WORLD_STATES=['established','change','correction','claim','plan','hypothesis','resolved'] as const;
 export type ObservationState=typeof WORLD_STATES[number];
 export type Observation={sourceId:string;quote:string;kind:WorldKind;subject:string;key:string;value:string;state:ObservationState};
-export type WorldBatch={sourceId:string;fingerprint:string;at:number;observations:Observation[]};
+export type WorldBatch={sourceId:string;fingerprint:string;at:number;observations:Observation[];incomplete?:true};
 export type Ledger={schema:typeof WORLD_LEDGER_SCHEMA;worlds:Record<string,Record<string,WorldBatch>>};
 const str=(v:unknown,max:number)=>typeof v==='string'?v.trim().slice(0,max):'';
 const norm=(v:string)=>v.normalize('NFKC').trim().toLocaleLowerCase();
@@ -41,19 +41,32 @@ export const parseLedger=(raw:unknown):Ledger=>{
         for(const [id,b] of Object.entries(rows)){
             if(!safe(id)||!object(b)||b.sourceId!==id||typeof b.fingerprint!=='string'||!Number.isSafeInteger(b.at)||!Array.isArray(b.observations))continue;
             batches[id]={sourceId:id,fingerprint:str(b.fingerprint,60),at:Number(b.at),
-                observations:b.observations.map(readObservation).filter((o):o is Observation=>!!o&&o.sourceId===id)};
+                observations:b.observations.map(readObservation).filter((o):o is Observation=>!!o&&o.sourceId===id),...(b.incomplete===true?{incomplete:true as const}:{})};
         }
         out.worlds[key]=batches;
     }
     return out;
 };
+/** Complete reviews cannot be replaced by a later incomplete retry of the same source. */
+const mergeWorldBatch=(prev:WorldBatch|undefined,next:WorldBatch):WorldBatch=>{
+    if(!prev)return next;
+    if(prev.fingerprint===next.fingerprint){
+        if(!prev.incomplete&&next.incomplete)return prev;
+        if(prev.incomplete){
+            const observations=[...new Map([...prev.observations,...next.observations].map(o=>[JSON.stringify(o),o])).entries()].sort(([a],[b])=>a.localeCompare(b)).map(([,o])=>o);
+            return {...(!next.incomplete||next.at>=prev.at?next:prev),observations};
+        }
+    }
+    return next.at>prev.at||(next.at===prev.at&&JSON.stringify(next)>JSON.stringify(prev))?next:prev;
+};
+
 export const mergeLedgers=(a:unknown,b:unknown):Ledger=>{
     const left=parseLedger(a),right=parseLedger(b);
     for(const [key,rows] of Object.entries(right.worlds)){
         const target=left.worlds[key]||(left.worlds[key]=Object.create(null));
         for(const [id,next] of Object.entries(rows)){
             const prev=target[id];
-            if(!prev||next.at>prev.at||(next.at===prev.at&&JSON.stringify(next)>JSON.stringify(prev)))target[id]=next;
+            target[id]=mergeWorldBatch(prev,next);
         }
     }
     return left;
@@ -71,15 +84,15 @@ export const getValidBatches=(raw:unknown,key:string,history:readonly WorldSourc
     return result;
 };
 export const pendingWorldSources=(raw:unknown,key:string,history:readonly WorldSource[])=>{
-    const seen=new Set(getValidBatches(raw,key,history).map(b=>b.sourceId));
+    const seen=new Set(getValidBatches(raw,key,history).filter(b=>!b.incomplete).map(b=>b.sourceId));
     return history.filter(s=>eligible(s)&&!seen.has(s.id!));
 };
-export const selectWorldBatch=(pending:readonly WorldSource[],recent=false,budget=18000)=>{
+export const selectWorldBatch=(pending:readonly WorldSource[],recent=false,budget=9500,maxSources=8)=>{
     const selected:WorldSource[]=[];let count=0;
     const ordered=recent?[...pending].reverse():pending;
     for(const s of ordered){
         const len=s.content.text!.length;
-        if(selected.length&&(count+len>budget||selected.length>=24))break;
+        if(selected.length&&(count+len>budget||selected.length>=maxSources))break;
         selected.push(s);count+=len;
     }
     return recent?selected.reverse():selected;
@@ -114,6 +127,100 @@ export const parseWorldExtraction=(raw:string,sources:readonly WorldSource[],at=
     }
     return [...result.values()];
 };
+/** Recovery uses short request-local source IDs to reduce copied-ID mistakes.
+ * Coverage is explicit, so missing/invalid results never count as a completed review.
+ */
+export const buildRecoverableWorldExtractionMessages=(sources:readonly WorldSource[],context:string):VeniceMessage[]=>{
+    const messages=buildWorldExtractionMessages(sources.map((s,i)=>({...s,id:'s'+(i+1)})),context);
+    messages[0]={role:'system',content:String(messages[0].content).replace('Output strict JSON object {observations:[...]}.','Output a strict JSON object.')+' Output {reviewedSourceIds:["s1","s2"],observations:[...]}. Include each actually reviewed source ID even if it has no durable observations. Copy short source IDs exactly. Quote source text verbatim, including punctuation. Prefer important state changes and concise quotes; do not output lengthy explanations.'};
+    return messages;
+};
+export type WorldExtractionIssue={sourceId?:string;reason:string};
+export type WorldRecoveryResult={rows:WorldBatch[];deferred:string[];issues:WorldExtractionIssue[];attempts:number};
+const normalizeQuote=(s:string)=>s.replace(/\s+/gu,'');
+const restoreExactQuote=(text:string,quote:string)=>{
+    if(text.includes(quote))return quote;
+    // Repair whitespace-only transcription differences when the evidence is unique.
+    const needle=normalizeQuote(quote);
+    if(needle.length<4)return null;
+    let compact='';const positions:number[]=[];
+    for(let i=0;i<text.length;i++)if(!/\s/u.test(text[i])){compact+=text[i];positions.push(i);}
+    const at=compact.indexOf(needle);
+    if(at<0||compact.indexOf(needle,at+1)>=0)return null;
+    const exact=text.slice(positions[at],positions[at+needle.length-1]+1);
+    return exact.length<=200?exact:null;
+};
+export const parseRecoverableWorldExtraction=(raw:string,sources:readonly WorldSource[],at=Date.now())=>{
+    const clean=raw.replace(/<think>[\s\S]*?<\/think>/giu,'').replace(/^\s*```(?:json)?\s*|\s*```\s*$/giu,'').trim();
+    const data:unknown=JSON.parse(clean);
+    if(!object(data)||!Array.isArray(data.observations)||data.observations.length>200)throw Error('模型未返回完整世界紀錄 JSON');
+    const aliases=new Map<string,WorldSource>();
+    sources.forEach((s,i)=>{if(eligible(s)){aliases.set('s'+(i+1),s);aliases.set(s.id!,s);}});
+    const index=new Map(sources.filter(eligible).map(s=>[s.id!,s]));
+    const reviewed=new Set<string>();
+    const invalid=new Set<string>();
+    const issues:WorldExtractionIssue[]=[];
+    const bySource=new Map<string,Observation[]>();
+    let unattributed=false;
+    const mark=(sourceId:string|undefined,reason:string)=>{
+        issues.push({sourceId,reason});
+        if(sourceId)invalid.add(sourceId);else unattributed=true;
+    };
+    if(Array.isArray(data.reviewedSourceIds))for(const id of data.reviewedSourceIds){
+        const s=typeof id==='string'?aliases.get(id):undefined;
+        if(s)reviewed.add(s.id!);else mark(undefined,'未知已審閱訊息 ID');
+    }
+    for(const item of data.observations){
+        const source=object(item)&&typeof item.sourceId==='string'?aliases.get(item.sourceId):undefined;
+        if(!source){mark(undefined,'未知引用訊息 ID');continue;}
+        const id=source.id!;
+        const row=readObservation({...item as Record<string,unknown>,sourceId:id});
+        if(!row){mark(id,'欄位或分類不正確');continue;}
+        const quote=restoreExactQuote(source.content.text!,row.quote);
+        if(!quote){mark(id,'引文與原文不符');continue;}
+        row.quote=quote;
+        if(row.kind==='alias'&&(!quote.includes(row.subject)||!quote.includes(row.value))){mark(id,'別名引文未同時支持兩個名稱');continue;}
+        const list=bySource.get(id)||[];
+        if(!list.some(x=>JSON.stringify(x)===JSON.stringify(row)))list.push(row);
+        bySource.set(id,list);
+        // Older model format may omit coverage; do not mark empty messages reviewed.
+        if(!Array.isArray(data.reviewedSourceIds))reviewed.add(id);
+    }
+    const rows:WorldBatch[]=[];
+    for(const [id,source] of index){
+        const observations=bySource.get(id)||[];
+        const complete=reviewed.has(id)&&!invalid.has(id)&&!unattributed;
+        if(!reviewed.has(id))issues.push({sourceId:id,reason:'模型未確認已審閱'});
+        if(complete||observations.length)rows.push({sourceId:id,fingerprint:sourceFingerprint(source),at,observations,...(!complete?{incomplete:true as const}:{})});
+    }
+    return {rows,issues};
+};
+/** Bounded adaptive retry: save good sources, retry a smaller prefix if none
+ * complete, and defer a stubborn single source without claiming success.
+ * Transport/storage errors remain visible; never burn unlimited API calls.
+ */
+export const recoverWorldExtraction=async(
+    initial:readonly WorldSource[],
+    request:(batch:readonly WorldSource[])=>Promise<string>,
+):Promise<WorldRecoveryResult>=>{
+    let batch=[...initial],attempts=0;
+    const rows=new Map<string,WorldBatch>(),issues:WorldExtractionIssue[]=[];
+    if(!batch.length)return {rows:[],deferred:[],issues,attempts};
+    while(batch.length){
+        attempts++;
+        const output=await request(batch);
+        try{
+            const result=parseRecoverableWorldExtraction(output,batch);
+            for(const r of result.rows)rows.set(r.sourceId,mergeWorldBatch(rows.get(r.sourceId),r));
+            issues.push(...result.issues);
+            if(result.rows.some(r=>!r.incomplete))return {rows:[...rows.values()],deferred:[],issues,attempts};
+        }catch(error){issues.push({reason:error instanceof Error?error.message:'JSON 解析失敗'});}
+        if(batch.length===1)return {rows:[...rows.values()],deferred:[batch[0].id!],issues,attempts};
+        batch=batch.slice(0,Math.ceil(batch.length/2));
+    }
+    return {rows:[...rows.values()],deferred:[],issues,attempts};
+};
+
 export const appendWorldBatches=(raw:unknown,key:string,batches:readonly WorldBatch[],history:readonly WorldSource[]):Ledger=>{
     if(!safe(key))throw Error('INVALID_WORLD_KEY');
     const next=parseLedger(raw),current=next.worlds[key]||(next.worlds[key]=Object.create(null));
@@ -121,7 +228,7 @@ export const appendWorldBatches=(raw:unknown,key:string,batches:readonly WorldBa
     for(const b of batches){
         const source=byId.get(b.sourceId);
         if(!source||sourceFingerprint(source)!==b.fingerprint||!b.observations.every(o=>o.sourceId===b.sourceId&&source.content.text!.includes(o.quote)))continue;
-        if(!current[b.sourceId]||b.at>=current[b.sourceId].at)current[b.sourceId]=b;
+        current[b.sourceId]=mergeWorldBatch(current[b.sourceId],b);
     }
     return next;
 };
@@ -156,11 +263,11 @@ export const projectWorld=(raw:unknown,key:string,history:readonly WorldSource[]
     }
     const open=[...current.values()].filter(o=>['thread','research','goal','faction'].includes(o.kind)&&o.state!=='resolved');
     const uncertain=timeline.filter(o=>['claim','plan','hypothesis'].includes(o.state));
-    return {timeline,current:[...current.values()],open,uncertain,conflicts,aliases:[...names.entries()],ambiguous:[...ambiguous],processed:batches.length,total:history.filter(eligible).length};
+    return {timeline,current:[...current.values()],open,uncertain,conflicts,aliases:[...names.entries()],ambiguous:[...ambiguous],processed:batches.filter(b=>!b.incomplete).length,partial:batches.filter(b=>b.incomplete).length,total:history.filter(eligible).length};
 };
 export const compileWorldLedger=(raw:unknown,key:string,history:readonly WorldSource[],query:string,budget=10000)=>{
     const p=projectWorld(raw,key,history);
-    if(!p.processed)return '';
+    if(!p.processed&&!p.partial)return '';
     const q=norm(query);
     const mentions=new Set<string>();
     for(const o of p.current)if(q.includes(norm(o.subject)))mentions.add(o.entityId);

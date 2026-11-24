@@ -18,7 +18,7 @@ export interface WorldlineUiDeps {
     afterWorldlineChange:()=>void;
     generateRandomQuest:(input:RandomMainQuestInput)=>Promise<string>;
     getWorldLedger:(key:string)=>ReturnType<typeof projectWorld>;
-    rebuildWorldLedger:(key:string)=>Promise<boolean>;
+    rebuildWorldLedger:(key:string,skipIds:readonly string[])=>Promise<{advanced:number;deferred:string[];issueCount:number}>;
 }
 const genres: Array<[WorldlineGenre,string]>=[
     ['xianxia','修仙／玄幻'],['isekai','穿越異世界'],
@@ -261,7 +261,7 @@ const openManage=(deps:WorldlineUiDeps,key:string,world:Worldline)=>{
     dialog.addEventListener('close',()=>{stopped=true;sectionClosed=true;},{once:true});
     const renderOs=()=>{
         const state=deps.getWorldLedger(key);
-        osStatus.textContent='已分析 '+state.processed+' / '+state.total+' 則原始訊息；'+state.current.length+' 項狀態，'+state.open.length+' 項未完成線索，'+state.conflicts.length+' 項待核對衝突。';
+        osStatus.textContent='已完整分析 '+state.processed+' / '+state.total+' 則原始訊息；'+(state.partial?'另有 '+state.partial+' 則已保存部分證據，待補核；':'')+state.current.length+' 項狀態，'+state.open.length+' 項未完成線索，'+state.conflicts.length+' 項待核對衝突。';
         const query=search.value.trim().normalize('NFKC').toLocaleLowerCase();
         rows.replaceChildren();
         const categories=[
@@ -289,17 +289,29 @@ const openManage=(deps:WorldlineUiDeps,key:string,world:Worldline)=>{
     const rebuild=actionButton('重建原有故事（自動分批）',()=>{
         if(rebuilding){stopped=true;rebuild.textContent='正在停止…';return;}
         rebuilding=true;stopped=false;rebuild.textContent='停止重建';
+        const deferred=new Set<string>();let blocked=0;
         void (async()=>{
             try{
                 while(!stopped&&!sectionClosed){
                     const before=deps.getWorldLedger(key);
                     if(before.processed>=before.total)break;
-                    osStatus.textContent='分析原始故事中… '+before.processed+' / '+before.total+'。每批會使用一次 AI 文字請求，已完成結果會保存。';
-                    const did=await deps.rebuildWorldLedger(key);
+                    osStatus.textContent='分析原始故事中… '+before.processed+' / '+before.total+'。細批核對，失敗會自動縮批重試。已保存紀錄保留。';
+                    const result=await deps.rebuildWorldLedger(key,[...deferred]);
                     if(sectionClosed)break;
                     const after=deps.getWorldLedger(key);
+                    result.deferred.forEach(id=>deferred.add(id));
                     renderOs();
-                    if(!did||after.processed<=before.processed)break;
+                    if(after.processed>before.processed){blocked=0;continue;}
+                    if(result.deferred.length){
+                        blocked++;
+                        if(blocked>=3){
+                            osStatus.textContent='重建暫停：連續三則訊息未能完整核對。已完成 '+after.processed+' / '+after.total+'，未核對部分保留，可再重試。';
+                            break;
+                        }
+                        continue;
+                    }
+                    if(after.processed<after.total)osStatus.textContent='本輪完成可核對部分：'+after.processed+' / '+after.total+'；'+deferred.size+' 則需重新核對，按繼續可再試。';
+                    break;
                 }
             }catch(e){if(!sectionClosed)osStatus.textContent='重建暫停：'+(e instanceof Error?e.message:'未能核對資料')+'。已完成批次保留，可再繼續。';}
             finally{rebuilding=false;rebuild.textContent='繼續／重建原有故事';}
