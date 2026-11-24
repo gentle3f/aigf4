@@ -305,7 +305,7 @@ test('production strict-review source records one terminal attempt per reviewer 
     assert.equal((reviewRequest.match(/runPreparedStrictReviewAttempt\(/g) || []).length, 1);
     assert.match(reviewRequest, /applyChatRuntimeState\('retrying', isFallback \? '重新檢查中\.\.\.' : '檢查回覆中\.\.\.'\);/);
     assert.match(reviewRequest, /promptCacheKey = createConversationPromptCacheKey\(request\.conversationKey, 'review'\)/);
-    assert.match(reviewRequest, /getReviewHistory: \(\) => getStrictReviewHistory\(request, latestUserMessage\),[\s\S]*requestText: generateChatTextWithTimeout,[\s\S]*recordAttempt: attempt => recordStrictReviewAttempt\(trace, attempt\),[\s\S]*classifyFailure: error => getStrictReviewAttemptFailure\(request, error\),[\s\S]*shouldRethrow: error => isAbortError\(error\) && request\.controller\.signal\.aborted,/);
+    assert.match(reviewRequest, /getReviewHistory: \(\) => getStrictReviewHistory\(request, latestUserMessage\),[\s\S]*requestText: \(options\)=>generateChatTextWithTimeout\(options,undefined,[^\n]+\),[\s\S]*recordAttempt: attempt => recordStrictReviewAttempt\(trace, attempt\),[\s\S]*classifyFailure: error => getStrictReviewAttemptFailure\(request, error\),[\s\S]*shouldRethrow: error => isAbortError\(error\) && request\.controller\.signal\.aborted,/);
     assert.doesNotMatch(reviewRequest, /buildStrictReviewRequest\(|requestStrictReviewCompletion\(|runStrictReviewAttempt\(/);
     assert.match(reviewRequest, /onSuccess: \(result, decision\) => \{[\s\S]*markStrictReview\(trace,[\s\S]*console\.info\('\[aigf4 strict review\]'/);
     assert.match(reviewRequest, /onFailure: handleNonFatalFailure,/);

@@ -22,6 +22,7 @@ import { initializeCloudBackupState } from './cloudBackupState.js';
 import { createComposerAutoSize } from './composerAutoSize.js';
 import { WORLDLINE_SETTING_KEY, getWorldline, recordWorldlineTurn, updateWorldlineRegistry, buildWorldlinePrompt } from './worldline.js';
 import { buildWorldReadModel, compileWorldRecall } from './worldOs.js';
+import { recordWorldResearch, captureResearchMessages, researchText, type ResearchContext } from './worldResearch.js';
 import { WORLD_LEDGER_KEY, appendWorldBatches, buildWorldExtractionMessages, compileWorldLedger, parseWorldExtraction, pendingWorldSources, projectWorld, selectWorldBatch } from './worldLedger.js';
 import { GROUP_V2_OWNER_PERSONAL_GUIDANCE, isGroupV2PersonalTrialEnabled, normalizeGroupV2OwnerReply, setGroupV2PersonalTrialEnabled } from './groupV2PersonalTrial.js';
 import { formatOwnerProfileForGroup, loadOwnerProfile } from './ownerProfile.js';
@@ -6090,7 +6091,10 @@ const mergeReplySegments = (baseText: string, continuationText: string) => {
 const generateChatTextWithTimeout = async (
     options: Parameters<typeof generateVeniceText>[0],
     timeoutMs = CHAT_MODEL_ATTEMPT_TIMEOUT_MS,
+    research?: ResearchContext,
 ) => {
+    const researchStarted=Date.now();
+    if(research)recordWorldResearch(research,{kind:'model-input',startedAt:researchStarted,model:options.model,messages:captureResearchMessages(options.messages),temperature:options.temperature,topP:options.topP,maxCompletionTokens:options.maxCompletionTokens});
     // Preserve fast-model budgets while allowing DeepSeek/uncensored models to finish.
     const effectiveTimeoutMs = /deepseek|uncensored|reasoner|thinking/i.test(options.model)
         ? Math.max(timeoutMs, CHAT_SLOW_MODEL_ATTEMPT_TIMEOUT_MS)
@@ -6127,8 +6131,10 @@ const generateChatTextWithTimeout = async (
             rows.push({ at: Date.now(), model: result.model, input: result.promptTokens || 0, output: result.completionTokens || 0, phase: chatRuntimeState });
             localStorage.setItem('wetappUsageV1', JSON.stringify(rows.slice(-300)));
         } catch { /* Usage reporting must never block a completed reply. */ }
+        if(research)recordWorldResearch(research,{kind:'model-output',startedAt:researchStarted,elapsedMs:Date.now()-researchStarted,model:result.model,promptTokens:result.promptTokens??null,completionTokens:result.completionTokens??null,output:researchText(result.text)});
         return result;
     } catch (error) {
+        if(research)recordWorldResearch(research,{kind:'model-error',startedAt:researchStarted,elapsedMs:Date.now()-researchStarted,model:options.model,error:researchText(error instanceof Error?error.message:String(error)),timedOut});
         if (timedOut && !upstreamSignal?.aborted) {
             throw new Error(CHAT_MODEL_TIMEOUT_ERROR);
         }
@@ -6635,13 +6641,16 @@ const syncWorldLedger = (key: string, recent = false): Promise<boolean> => {
             maxCompletionTokens: 5000,
             temperature: 0.2,
             stop: [],
-        }, 90000);
-        const rows = parseWorldExtraction(result.text, batch);
+        }, 90000,{conversationKey:key,stage:recent?'ledger-new-turn':'ledger-rebuild',sourceIds:batch.flatMap(m=>m.id?[m.id]:[])});
+        let rows:ReturnType<typeof parseWorldExtraction>;
+        try{rows=parseWorldExtraction(result.text,batch);}
+        catch(error){recordWorldResearch({conversationKey:key,stage:'ledger-validation',sourceIds:batch.flatMap(m=>m.id?[m.id]:[])},{kind:'rejected',error:researchText(error instanceof Error?error.message:String(error))});throw error;}
         if (!getActiveWorldline(key)) return false;
         const latestHistory = memoryManager.peekChatHistory(key);
         const next = appendWorldBatches(localStorage.getItem(WORLD_LEDGER_KEY), key, rows, latestHistory);
-        setPersistedAppSetting(WORLD_LEDGER_KEY, JSON.stringify(next));
-        return true;
+        const saved=setPersistedAppSetting(WORLD_LEDGER_KEY, JSON.stringify(next));
+        recordWorldResearch({conversationKey:key,stage:'ledger-validation',sourceIds:rows.map(row=>row.sourceId)},{kind:'validated',saved,observations:rows.map(row=>({sourceId:row.sourceId,observations:row.observations})),stateCoverage:{processed:projectWorld(next,key,latestHistory).processed,total:latestHistory.filter(m=>m.role!=='system'&&m.id&&m.content.text?.trim()).length}});
+        return saved;
     })().finally(() => worldLedgerJobs.delete(key));
     worldLedgerJobs.set(key, job);
     return job;
@@ -6830,7 +6839,7 @@ const runConversationGeneration = async (
                     signal: request.controller.signal,
                     onTextDelta: assistantMode ? text => showAssistantStreamPreview(request, text) : undefined,
                     enableWebSearch: assistantMode && isVeniceAssistantWebSearchEnabled(),
-                });
+                }, undefined, getActiveWorldline(request.conversationKey)?{conversationKey:request.conversationKey,requestId:request.id,stage:generationPhase}:undefined);
                 markChatPerformance(
                     index === 0 && !isRepairAttempt
                         ? 'generation:primary'
@@ -7404,7 +7413,7 @@ const runRoomConversationGeneration = async (
                     stop: [],
                     promptCacheKey,
                     signal: request.controller.signal,
-                });
+                },undefined,getActiveWorldline(request.conversationKey)?{conversationKey:request.conversationKey,requestId:request.id,stage:isRetry?'group-repair':'group-generation'}:undefined);
                 markChatPerformance(isRetry ? 'generation:repair' : 'generation:primary', generationStartedAt);
                 markVeniceRequestAggregate(
                     `${isRetry ? 'generation:repair' : 'generation:primary'}:response-meta`,
@@ -7610,7 +7619,7 @@ const requestStrictReviewDecision = async (
             responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,
         }, {
             getReviewHistory: () => getStrictReviewHistory(request, latestUserMessage),
-            requestText: generateChatTextWithTimeout,
+            requestText: (options)=>generateChatTextWithTimeout(options,undefined,getActiveWorldline(request.conversationKey)?{conversationKey:request.conversationKey,requestId:request.id,stage:'strict-review'}:undefined),
             recordAttempt: attempt => recordStrictReviewAttempt(trace, attempt),
             classifyFailure: error => getStrictReviewAttemptFailure(request, error),
             shouldRethrow: error => isAbortError(error) && request.controller.signal.aborted,
@@ -8790,6 +8799,10 @@ const getResponse = async (
         }
         const persistStartedAt = performance.now();
         memoryManager.addMessage(request.conversationKey, 'model', botContent);
+        if(getActiveWorldline(request.conversationKey)){
+            const latest=memoryManager.peekChatHistory(request.conversationKey).at(-1);
+            recordWorldResearch({conversationKey:request.conversationKey,requestId:request.id,stage:'final-persist',sourceIds:latest?.id?[latest.id]:[]},{kind:'final-story',reply:researchText(botContent.text||''),elapsedMs:Math.round(performance.now()-request.startedAt)});
+        }
         if (request.mode === 'character') {
             try {
                 const world = getActiveWorldline(request.conversationKey);

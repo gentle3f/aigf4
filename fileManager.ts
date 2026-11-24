@@ -27,6 +27,7 @@ import type { StoredPersonaAvatar } from './avatarStore.js';
 import { beginLocalCloudChangeBatch } from './cloudSyncEvents.js';
 import { loadJsZip } from './jsZipLoader.js';
 import { WORLDLINE_SETTING_KEY, parseWorldlineRegistry, scopedWorldlineRegistry, updateWorldlineRegistry, emptyWorldlineRegistry } from './worldline.js';
+import { buildWorldResearchExport } from './worldResearch.js';
 import { WORLD_LEDGER_KEY, scopedWorldLedger, getValidBatches, appendWorldBatches, emptyLedger } from './worldLedger.js';
 import {
     PERSISTED_APP_SETTING_KEYS,
@@ -912,6 +913,7 @@ export class FileManager {
         }
         await this.addChatAttachmentsToZip(zip, { [personaKey]: exportChatHistory });
         this.addMemoryMarkdownToZip(zip, room?.id, room ? undefined : personaKey);
+        try{zip.file('research/worldline-diagnostics.json',JSON.stringify(await buildWorldResearchExport(personaKey),null,2));}catch(error){zip.file('research/diagnostics-unavailable.txt','Diagnostics could not be read from this browser. '+String(error));}
         zip.file("all_data.json", JSON.stringify({ ...saveData, mediaSummary }, null, 2));
 
         const content = await zip.generateAsync({
@@ -989,6 +991,7 @@ export class FileManager {
         }
         await this.addChatAttachmentsToZip(zip, exportChatHistories);
         this.addMemoryMarkdownToZip(zip);
+        try{zip.file('research/worldline-diagnostics.json',JSON.stringify(await buildWorldResearchExport(),null,2));}catch(error){zip.file('research/diagnostics-unavailable.txt','Diagnostics could not be read from this browser. '+String(error));}
         zip.file("all_data.json", JSON.stringify({ ...saveData, mediaSummary }, null, 2));
 
         return zip.generateAsync({
