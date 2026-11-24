@@ -21,6 +21,7 @@ import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
 import { createComposerAutoSize } from './composerAutoSize.js';
 import { WORLDLINE_SETTING_KEY, getWorldline, recordWorldlineTurn, updateWorldlineRegistry, buildWorldlinePrompt } from './worldline.js';
+import { buildWorldReadModel, compileWorldRecall } from './worldOs.js';
 import { GROUP_V2_OWNER_PERSONAL_GUIDANCE, isGroupV2PersonalTrialEnabled, normalizeGroupV2OwnerReply, setGroupV2PersonalTrialEnabled } from './groupV2PersonalTrial.js';
 import { formatOwnerProfileForGroup, loadOwnerProfile } from './ownerProfile.js';
 import { formatRelationshipMeaningsForV2, loadMeaningLedger } from './relationshipMeaning.js';
@@ -5923,6 +5924,8 @@ const buildChatSystemPrompt = (
             'Maintain living factions, major quests, golden-finger abilities, consequences, relationships, secrets and time continuity. Never reduce the story to a rigid list of options.',
             'The attached Worldline system state is the source of persistent world rules and confirmed facts; invent new unconfirmed details freely without overwriting canon.',
             `World director voice: ${persona.prompt}`,
+            compileWorldRecall(buildWorldReadModel(memoryManager.peekChatHistory(conversationKey), persona.memories || []), latestUserMessage),
+            formatSessionMemoryPrompt(conversationKey),
             narratorWardrobe,
         ].filter(Boolean).join('\n\n');
     }
@@ -6627,7 +6630,7 @@ const runConversationGeneration = async (
         ? ''
         : buildArchivedRecallPrompt(request.conversationKey, latestUserMessage, request.room);
     const recentAssistantReplies = getRecentAssistantRepliesForPersona(request.conversationKey, assistantMode);
-    const establishedNpcNames = assistantMode
+    const establishedNpcNames = assistantMode || isWorldlineNarrator(request)
         ? []
         : mergeEstablishedNpcNamesForTurn(
             request.establishedNpcNames,
@@ -6646,7 +6649,7 @@ const runConversationGeneration = async (
             true,
             request.conversationKey,
         );
-    const addressedNpcNames = assistantMode
+    const addressedNpcNames = assistantMode || isWorldlineNarrator(request)
         ? []
         : inferNpcSpeakersForTurn(latestUserMessage, request.persona.name, establishedNpcNames);
     const npcSpeechRequirement = buildNpcSpeechRequirement(addressedNpcNames);
@@ -7665,12 +7668,13 @@ const strictReviewSingleReply = async (
     trace?: GenerationTrace,
 ) => {
     const history = memoryManager.getChatHistory(request.conversationKey);
-    const establishedNpcNames = collectEstablishedNpcNames(
+    const narrator = isWorldlineNarrator(request);
+    const establishedNpcNames = narrator ? [] : collectEstablishedNpcNames(
         history,
         request.persona.name,
         latestUserMessage,
     );
-    const addressedNpcNames = inferNpcSpeakersForTurn(
+    const addressedNpcNames = narrator ? [] : inferNpcSpeakersForTurn(
         latestUserMessage,
         request.persona.name,
         establishedNpcNames,
@@ -8815,7 +8819,7 @@ const getResponse = async (
                 if (currentConversationKey === request.conversationKey) appendMessage(proposalContent, 'system', undefined, 'none');
             }
         }
-        if (typeof generated === 'string' && !request.room && request.mode === 'character') {
+        if (typeof generated === 'string' && !request.room && request.mode === 'character' && !isWorldlineNarrator(request)) {
             const proposals = createObservedNpcPromotionProposals(
                 request.conversationKey,
                 request.persona,
