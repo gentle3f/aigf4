@@ -10372,6 +10372,42 @@ const setupEventListeners = () => {
         homeMenu.classList.add('hidden');
     });
     createGroupRoomBtn.addEventListener('click', () => { void openCreateGroup(); });
+    if(!document.getElementById('aigf-predictive-lab-btn')){
+        const button=document.createElement('button');
+        button.id='aigf-predictive-lab-btn';button.type='button';button.className='dropdown-item';
+        button.dataset.v2Icon='↯';button.textContent='預判式對話（沿用聊天記憶）';
+        button.addEventListener('click',()=>{
+            if(activeChatRequest||!currentConversationKey||!currentPersona||isAssistantPersonaKey(currentPersonaKey))return;
+            const key=currentConversationKey;
+            const persona=structuredClone(currentPersona);
+            const room=currentRoom?cloneRoomSnapshot(currentRoom):undefined;
+            const history=getRecentChatMessages(key,undefined,false,persona,room);
+            const rawCount=memoryManager.peekChatHistory(key).length;
+            const memoryCount=(persona.memories?.length||0)+(persona.soul?.length||0);
+            const label=room?.title||persona.name;
+            const members=room?.members.map(m=>m.persona.name).join('、');
+            moreOptionsMenu.classList.add('hidden');
+            void import('./predictiveLab.js').then(({openPredictiveLab})=>openPredictiveLab(async(labHistory,signal)=>{
+                const draft=labHistory.at(-1)?.content||'';
+                const memory=[
+                    'This is a non-explicit fictional conversational timing experiment. Maintain ordinary natural dialogue and continuity, respecting established character identity. Do not invent the user’s actions or private real-world facts. Keep replies concise.',
+                    'Current conversation: '+label,
+                    members?'Participants: '+members:'',
+                    persona.description||'',
+                    formatPersonaMemoryPrompt(persona,'soul',draft),
+                    formatPersonaMemoryPrompt(persona,'memory',draft),
+                    buildArchivedRecallPrompt(key,draft,room),
+                ].filter(Boolean).join('\n\n');
+                return generateChatTextWithTimeout({
+                    model:DEFAULT_CHAT_MODEL_SETTINGS.primary||VENICE_CHAT_MODEL,
+                    messages:[{role:'system',content:memory},...history,...labHistory],
+                    signal,maxCompletionTokens:400,temperature:0.75,stop:[],
+                });
+            },{label,historyCount:rawCount,memoryCount})).catch(error=>console.warn('Predictive lab could not open',error));
+        });
+        moreOptionsMenu.prepend(button);
+        moreOptionsMenu.querySelector('.v2-more-options-section-interaction .v2-more-options-grid')?.appendChild(button);
+    }
     closeSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     cancelSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     confirmSurpriseEventOptionsBtn.addEventListener('click', confirmSurpriseEventOptions);
