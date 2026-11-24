@@ -26,6 +26,8 @@ import {
 import type { StoredPersonaAvatar } from './avatarStore.js';
 import { beginLocalCloudChangeBatch } from './cloudSyncEvents.js';
 import { loadJsZip } from './jsZipLoader.js';
+import { WORLDLINE_SETTING_KEY, parseWorldlineRegistry, scopedWorldlineRegistry, updateWorldlineRegistry, emptyWorldlineRegistry } from './worldline.js';
+import { WORLD_LEDGER_KEY, scopedWorldLedger, getValidBatches, appendWorldBatches, emptyLedger } from './worldLedger.js';
 import {
     PERSISTED_APP_SETTING_KEYS,
     restorePersistedAppSettings,
@@ -888,6 +890,10 @@ export class FileManager {
             interests: { [personaKey]: interests },
             customPersonas: persona ? { [personaKey]: this.createExportSafePersona(persona) } : {},
             rooms: room ? this.createExportSafeRooms(room.id) : undefined,
+            appSettings: {
+                [WORLDLINE_SETTING_KEY]:JSON.stringify(scopedWorldlineRegistry(localStorage.getItem(WORLDLINE_SETTING_KEY),personaKey)),
+                [WORLD_LEDGER_KEY]:JSON.stringify(scopedWorldLedger(localStorage.getItem(WORLD_LEDGER_KEY),personaKey)),
+            },
         };
 
         const avatarUrl = persona?.avatarUrl;
@@ -1206,7 +1212,21 @@ export class FileManager {
                         prepared.skippedSourceKeys,
                         transaction,
                     );
-                    this.restoreAppSettings(rawAllData.appSettings);
+                    const importedSettings=rawAllData.appSettings;
+                    if(importedSettings&&typeof importedSettings==='object'){
+                        const settings={...importedSettings};
+                        let worlds=emptyWorldlineRegistry(),ledger=emptyLedger();
+                        for(const [source,target] of prepared.keyMap){
+                            if(prepared.skippedSourceKeys.has(source))continue;
+                            const record=parseWorldlineRegistry(importedSettings[WORLDLINE_SETTING_KEY]).records[source];
+                            if(record?.world)worlds=updateWorldlineRegistry(worlds,target,{...record.world,conversationKey:target},record.updatedAt);
+                            const history=this.memoryManager.peekChatHistory(target);
+                            ledger=appendWorldBatches(ledger,target,getValidBatches(importedSettings[WORLD_LEDGER_KEY],source,history),history);
+                        }
+                        if(typeof importedSettings[WORLDLINE_SETTING_KEY]==='string')settings[WORLDLINE_SETTING_KEY]=JSON.stringify(worlds);
+                        if(typeof importedSettings[WORLD_LEDGER_KEY]==='string')settings[WORLD_LEDGER_KEY]=JSON.stringify(ledger);
+                        this.restoreAppSettings(settings);
+                    }
                     return {
                         memory: transaction.memory,
                         rooms: transaction.rooms,

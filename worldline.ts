@@ -50,8 +50,6 @@ export interface WorldlineStartOptions {
     relationshipMode?: WorldlineRelationshipMode;
     tone?: WorldlineTone;
 }
-const MAX_WORLDS = 16;
-const MAX_JSON_CHARS = 280_000;
 const genres: readonly WorldlineGenre[] = [
     'xianxia','isekai','system','rebirth','apocalypse','fantasy','custom',
 ];
@@ -127,7 +125,6 @@ export const emptyWorldlineRegistry=():WorldlineRegistry=>({schema:WORLDLINE_SCH
 export const parseWorldlineRegistry=(raw:unknown):WorldlineRegistry=>{
     let input:unknown=raw;
     if(typeof raw==='string') {
-        if(raw.length>MAX_JSON_CHARS)return emptyWorldlineRegistry();
         try{input=JSON.parse(raw);}catch{return emptyWorldlineRegistry();}
     }
     if(!input||typeof input!=='object'||Array.isArray(input))return emptyWorldlineRegistry();
@@ -145,7 +142,7 @@ export const parseWorldlineRegistry=(raw:unknown):WorldlineRegistry=>{
         rows.push([key,{updatedAt,world:normalizeWorldline(entry.world)}]);
     }
     rows.sort((a,b)=>b[1].updatedAt-a[1].updatedAt || a[0].localeCompare(b[0]));
-    return {schema:WORLDLINE_SCHEMA,records:Object.fromEntries(rows.slice(0,MAX_WORLDS))};
+    return {schema:WORLDLINE_SCHEMA,records:Object.fromEntries(rows)};
 };
 export const mergeWorldlineRegistries=(local:unknown,remote:unknown):WorldlineRegistry=>{
     const left=parseWorldlineRegistry(local).records;
@@ -177,6 +174,28 @@ export const updateWorldlineRegistry=(register:unknown,key:string,world:Worldlin
         ...base.records,[key]:{updatedAt:nextTime,world:normalized},
     }});
 };
+
+/** Fork from the historical opening, never copy today's mutable state to a past point. */
+export const forkWorldlineAt=(source:Worldline,key:string,prefix:readonly {role:string;content:{text?:string}}[]):Worldline=>{
+    const opening=prefix.find(m=>m.role==='user'&&m.content.text?.includes('【世界線開局】'))?.content.text||'';
+    const find=(label:string)=>opening.split('\n').find(line=>line.startsWith(label))?.slice(label.length).trim()||'';
+    const identity=find('主角身份：');
+    const separator=identity.indexOf('。金手指：');
+    return makeWorldline(key,{
+        title:source.title,genre:source.genre,
+        premise:find('我嘅設定：')||'延續分支點之前已發生的世界；以原始對話與事件紀錄為準。',
+        protagonist:separator>=0?identity.slice(0,separator):'由分支前對話確認',
+        goldenFinger:separator>=0?identity.slice(separator+'。金手指：'.length):'以分支前已確立的能力為準',
+        mainQuest:find('主線方向：')||'沿用分支前的主線及未解決事件',
+        tone:source.tone,relationshipMode:source.relationshipMode,
+    });
+};
+export const scopedWorldlineRegistry=(raw:unknown,key:string):WorldlineRegistry=>{
+    const registry=parseWorldlineRegistry(raw);
+    const item=registry.records[key];
+    return {schema:WORLDLINE_SCHEMA,records:item?{[key]:item}:{}};
+};
+
 export const recordWorldlineTurn=(world:Worldline,userInput:string,modelText:string,now=Date.now()):Worldline=>{
     const turn=world.turnCount+1;
     return normalizeWorldline({...world,turnCount:turn,updatedAt:now,
@@ -219,7 +238,7 @@ export const buildWorldlinePrompt=(world:Worldline):string=>{
         '- New NPCs can be friends, rivals, family, mentors, strangers, villains and adult love interests of different genders. Their existence does not require joining the fixed group roster.',
         '- Romance and adult intimacy are optional narrative paths and can influence loyalties and story consequences, but characters do not exist solely to serve the protagonist.',
         '- Preserve the existing characters, speech styles and memories if this world is attached to an existing group. They may acquire new in-world identities without erasing their existing selves.',
-        '- The world-state panel contains PLAYER-EDITED confirmed facts. Never claim a newly invented location, item, relationship, victory or mission is already saved there. If the player wants it recorded, they can update the ledger.',
+        '- The original world panel stores the initial premise and explicit player edits; placeholder or stale progress fields are not evidence of current conditions. The source-linked World OS ledger and newest explicit story events describe actual changes. Preserve explicit player corrections. Never claim an invented event has already been verified or saved.',
         '- When the scene naturally warrants it, have the setting or an NPC initiate change without waiting for a special random-event button. Quiet chapters are also valuable.',
         '- Reply in natural Traditional Chinese, reflect the user\'s stated language style, and keep a clear distinction between narration, in-world dialogue and optional system notifications.',
     ].join('\n');

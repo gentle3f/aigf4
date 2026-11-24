@@ -16,7 +16,7 @@ import type { StoredChatAttachment } from './chatMediaStore.js';
 import { filterRemoteStateEntities, findLocallyDeletedIndexedKeys, mergeChatHistoryMaps } from './cloudMessageMerge.js';
 import { readCloudSyncIndex, writeCloudSyncIndex } from './cloudSyncIndexStore.js';
 import { isLocalCloudChangeBatchActive, LOCAL_CLOUD_CHANGE_EVENT, LocalCloudChangeScope } from './cloudSyncEvents.js';
-import { isPersistedAppSettingKey, PERSISTED_APP_SETTING_KEYS } from './appSettings.js';
+import { isPersistedAppSettingKey, PERSISTED_APP_SETTING_KEYS, mergeStructuredAppSetting } from './appSettings.js';
 import {
     buildResearchCloudProjection,
     listPendingResearchTurnRecords,
@@ -1905,11 +1905,12 @@ export class SupabaseCloudSyncManager {
             this.roomManager.restorePrivateAvatars(),
         ]);
         Object.entries(payload.appSettings || {}).forEach(([key, value]) => {
-            if (
-                isPersistedAppSettingKey(key)
-                && typeof value === 'string'
-                && (!mergeLocal || localStorage.getItem(key) === null)
-            ) localStorage.setItem(key, value);
+            if (!isPersistedAppSettingKey(key) || typeof value !== 'string') return;
+            const local=localStorage.getItem(key);
+            const merged=mergeStructuredAppSetting(key,local,value);
+            if(merged!==null){
+                if(merged!==local)localStorage.setItem(key,merged);
+            }else if(!mergeLocal||local===null)localStorage.setItem(key,value);
         });
     }
 

@@ -22,6 +22,7 @@ import { initializeCloudBackupState } from './cloudBackupState.js';
 import { createComposerAutoSize } from './composerAutoSize.js';
 import { WORLDLINE_SETTING_KEY, getWorldline, recordWorldlineTurn, updateWorldlineRegistry, buildWorldlinePrompt } from './worldline.js';
 import { buildWorldReadModel, compileWorldRecall } from './worldOs.js';
+import { WORLD_LEDGER_KEY, appendWorldBatches, buildWorldExtractionMessages, compileWorldLedger, parseWorldExtraction, pendingWorldSources, projectWorld, selectWorldBatch } from './worldLedger.js';
 import { GROUP_V2_OWNER_PERSONAL_GUIDANCE, isGroupV2PersonalTrialEnabled, normalizeGroupV2OwnerReply, setGroupV2PersonalTrialEnabled } from './groupV2PersonalTrial.js';
 import { formatOwnerProfileForGroup, loadOwnerProfile } from './ownerProfile.js';
 import { formatRelationshipMeaningsForV2, loadMeaningLedger } from './relationshipMeaning.js';
@@ -6610,6 +6611,41 @@ const getActiveWorldline = (conversationKey: string) => {
         return world && !world.paused ? world : null;
     } catch { return null; }
 };
+const buildWorldlineRuntimeContext = (key:string,query:string) => {
+    const world=getActiveWorldline(key);
+    if(!world)return '';
+    return [buildWorldlinePrompt(world),compileWorldLedger(localStorage.getItem(WORLD_LEDGER_KEY),key,memoryManager.peekChatHistory(key),query)].filter(Boolean).join('\n\n');
+};
+const worldLedgerJobs = new Map<string, Promise<boolean>>();
+const syncWorldLedger = (key: string, recent = false): Promise<boolean> => {
+    const running = worldLedgerJobs.get(key);
+    if (running) return running;
+    const job = (async () => {
+        if (!getActiveWorldline(key)) return false;
+        const history = memoryManager.peekChatHistory(key);
+        const raw = localStorage.getItem(WORLD_LEDGER_KEY);
+        const batch = selectWorldBatch(pendingWorldSources(raw, key, history), recent);
+        if (!batch.length) return false;
+        // Historical extraction must not see later events when replaying an old batch.
+        const first = history.findIndex(m => m.id === batch[0].id);
+        const context = compileWorldLedger(raw, key, history.slice(0, Math.max(0, first)), '', 4200);
+        const result = await generateChatTextWithTimeout({
+            model: DEFAULT_CHAT_MODEL_SETTINGS.primary || VENICE_CHAT_MODEL,
+            messages: buildWorldExtractionMessages(batch, context),
+            maxCompletionTokens: 5000,
+            temperature: 0.2,
+            stop: [],
+        }, 90000);
+        const rows = parseWorldExtraction(result.text, batch);
+        if (!getActiveWorldline(key)) return false;
+        const latestHistory = memoryManager.peekChatHistory(key);
+        const next = appendWorldBatches(localStorage.getItem(WORLD_LEDGER_KEY), key, rows, latestHistory);
+        setPersistedAppSetting(WORLD_LEDGER_KEY, JSON.stringify(next));
+        return true;
+    })().finally(() => worldLedgerJobs.delete(key));
+    worldLedgerJobs.set(key, job);
+    return job;
+};
 const isWorldlineNarrator = (request: ActiveChatRequest) => (
     request.persona.name === '世界敘述者'
     && request.persona.prompt.includes('disembodied narrator')
@@ -6663,7 +6699,7 @@ const runConversationGeneration = async (
         ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
         : '';
     const activeWorld = assistantMode ? null : getActiveWorldline(request.conversationKey);
-    const worldlineContext = activeWorld ? buildWorldlinePrompt(activeWorld) : '';
+    const worldlineContext = activeWorld ? buildWorldlineRuntimeContext(request.conversationKey,latestUserMessage) : '';
     const systemPromptParts = [
         baseSystemPrompt,
         archivedRecall,
@@ -7283,7 +7319,7 @@ const runRoomConversationGeneration = async (
                     ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
                     : '';
                 const world = getActiveWorldline(request.conversationKey);
-                const worldlineContext = world ? buildWorldlinePrompt(world) : '';
+                const worldlineContext = world ? buildWorldlineRuntimeContext(request.conversationKey,latestUserMessage) : '';
                 const roomSystemPrompt = [
                     groupSystemPrompt,
                     archivedRecall,
@@ -7692,7 +7728,7 @@ const strictReviewSingleReply = async (
         request.surpriseEvent
             ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
             : '',
-        (() => { const world = getActiveWorldline(request.conversationKey); return world ? buildWorldlinePrompt(world) : ''; })(),
+        buildWorldlineRuntimeContext(request.conversationKey,latestUserMessage),
         isWorldlineNarrator(request)
             ? '' : buildImmediateTurnOwnershipRequirement(request.persona.name, latestUserMessage),
         buildNpcContinuityRequirement(establishedNpcNames),
@@ -7775,7 +7811,7 @@ const strictReviewGroupReply = async (
         request.surpriseEvent
             ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
             : '',
-        (() => { const world = getActiveWorldline(request.conversationKey); return world ? buildWorldlinePrompt(world) : ''; })(),
+        buildWorldlineRuntimeContext(request.conversationKey,latestUserMessage),
         'STRICT REVISION FORMAT: revised_response must contain one complete <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate> envelope.',
     ].join('\n\n');
 
@@ -8831,6 +8867,9 @@ const getResponse = async (
             });
         }
         finishChatRequest(request);
+        if (request.mode === 'character' && getActiveWorldline(request.conversationKey)) {
+            void syncWorldLedger(request.conversationKey, true).catch(error => console.warn('World OS extraction pending:', error));
+        }
         completeChatPerformanceTurn('response:final-visible');
         schedulePersonaListRefreshAfterPaint();
         if (request.room) void maybeSummarizeRoomMemory(request.room.id);
@@ -9970,6 +10009,8 @@ const openWorldline = async (source: 'new' | 'current' = 'current') => {
                 }, 65_000);
                 return normalizeRandomMainQuest(result.text);
             },
+            getWorldLedger: key => projectWorld(localStorage.getItem(WORLD_LEDGER_KEY), key, memoryManager.peekChatHistory(key)),
+            rebuildWorldLedger: key => syncWorldLedger(key, false),
             afterWorldlineChange: () => {
                 renderPersonaList();
                 if (currentConversationKey) {

@@ -3,6 +3,9 @@ import type { ChatRoom, RoomManager } from '../roomManager.js';
 import { cloneRoomSnapshot } from '../roomManager.js';
 import { deleteCharacterPhotoAsset } from '../photoStore.js';
 import { deleteChatAttachment } from '../chatMediaStore.js';
+import { WORLDLINE_SETTING_KEY, getWorldline, forkWorldlineAt, updateWorldlineRegistry } from '../worldline.js';
+import { WORLD_LEDGER_KEY, copyWorldLedgerAt } from '../worldLedger.js';
+import { setPersistedAppSetting } from '../appSettings.js';
 
 export type ConversationActionsDependencies = {
     memoryManager: MemoryManager;
@@ -231,7 +234,8 @@ const createTimelineBranch = async (messageId: string) => {
     const branchPoint = history[branchPointIndex];
     const branchPointText = branchPoint.content.text || '';
     const fullPrefix = history.slice(0, branchPointIndex);
-    const prefix = cloneRoomSnapshot(fullPrefix.slice(-TIMELINE_BRANCH_HISTORY_LIMIT));
+    const sourceWorldline = getWorldline(localStorage.getItem(WORLDLINE_SETTING_KEY), sourceConversationKey);
+    const prefix = cloneRoomSnapshot(sourceWorldline ? fullPrefix : fullPrefix.slice(-TIMELINE_BRANCH_HISTORY_LIMIT));
     const omittedMessageCount = Math.max(0, fullPrefix.length - prefix.length);
     const includedMessageIds = new Set(fullPrefix
         .map(message => message.id)
@@ -302,6 +306,19 @@ const createTimelineBranch = async (messageId: string) => {
 
         if (!branchConversationKey) throw new Error('無法建立分支對話。');
         deps.memoryManager.setChatHistory(branchConversationKey, [...prefix, marker], true);
+        if (sourceWorldline) {
+            const beforeWorld=localStorage.getItem(WORLDLINE_SETTING_KEY);
+            const beforeLedger=localStorage.getItem(WORLD_LEDGER_KEY);
+            try {
+                setPersistedAppSetting(WORLD_LEDGER_KEY,JSON.stringify(copyWorldLedgerAt(beforeLedger,sourceConversationKey,branchConversationKey,prefix)));
+                setPersistedAppSetting(WORLDLINE_SETTING_KEY,JSON.stringify(updateWorldlineRegistry(beforeWorld,branchConversationKey,forkWorldlineAt(sourceWorldline,branchConversationKey,prefix))));
+            } catch(error) {
+                for(const [key,old] of [[WORLDLINE_SETTING_KEY,beforeWorld],[WORLD_LEDGER_KEY,beforeLedger]] as const){
+                    if(old===null)localStorage.removeItem(key);else localStorage.setItem(key,old);
+                }
+                throw error;
+            }
+        }
         deps.renderPersonaList();
         deps.startChat(branchConversationKey, null, 'push');
         const draft = branchPoint.content.attachments?.length

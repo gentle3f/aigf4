@@ -4,6 +4,7 @@
  */
 import { setPersistedAppSetting } from '../appSettings.js';
 import type { RandomMainQuestInput } from '../worldlineRandomQuest.js';
+import type { projectWorld } from '../worldLedger.js';
 import {
     WORLDLINE_SETTING_KEY,getWorldline,makeWorldline,normalizeWorldline,updateWorldlineRegistry,
     worldlineGenreLabel,buildWorldlineOpening,
@@ -16,6 +17,8 @@ export interface WorldlineUiDeps {
     dispatchText:(text:string)=>void;
     afterWorldlineChange:()=>void;
     generateRandomQuest:(input:RandomMainQuestInput)=>Promise<string>;
+    getWorldLedger:(key:string)=>ReturnType<typeof projectWorld>;
+    rebuildWorldLedger:(key:string)=>Promise<boolean>;
 }
 const genres: Array<[WorldlineGenre,string]>=[
     ['xianxia','修仙／玄幻'],['isekai','穿越異世界'],
@@ -243,6 +246,69 @@ const openManage=(deps:WorldlineUiDeps,key:string,world:Worldline)=>{
     const summary=element('p','wl-note',
         '以下係世界長期紀錄。你可以改動已確定嘅規則、主線同人物；唔會重新寫你之前嘅聊天紀錄。');
     body.appendChild(summary);
+    const os=element('details','wl-cast');
+    os.open=true;
+    os.appendChild(element('summary','','World OS · 世界百科與歷史重建'));
+    const osStatus=element('p','wl-note');
+    osStatus.setAttribute('aria-live','polite');
+    const search=element('input','wl-input');
+    search.placeholder='搜尋人物、能力、研究、主線、情報…';
+    search.type='search';
+    const rows=element('div','wl-cast-body');
+    let stopped=false;
+    let rebuilding=false;
+    let sectionClosed=false;
+    dialog.addEventListener('close',()=>{stopped=true;sectionClosed=true;},{once:true});
+    const renderOs=()=>{
+        const state=deps.getWorldLedger(key);
+        osStatus.textContent='已分析 '+state.processed+' / '+state.total+' 則原始訊息；'+state.current.length+' 項狀態，'+state.open.length+' 項未完成線索，'+state.conflicts.length+' 項待核對衝突。';
+        const query=search.value.trim().normalize('NFKC').toLocaleLowerCase();
+        rows.replaceChildren();
+        const categories=[
+            ['當前人物與世界狀態',state.current],
+            ['未完成研究／故事線',state.open],
+            ['假設、計劃及未證實說法',state.uncertain],
+            ['衝突：保留原有資料，待核對',state.conflicts],
+            ['歷史事件紀錄',state.timeline],
+        ] as const;
+        for(const [label,items] of categories){
+            const filtered=items.filter(x=>!query||[x.subject,x.key,x.value,x.kind,x.state].join(' ').normalize('NFKC').toLocaleLowerCase().includes(query));
+            if(!filtered.length)continue;
+            const group=element('details','wl-chronicle');
+            group.open=Boolean(query)||label==='未完成研究／故事線';
+            group.appendChild(element('summary','',label+'（'+filtered.length+'）'));
+            for(const item of filtered.slice().reverse().slice(0,query?100:30)){
+                const row=element('details','wl-chronicle');
+                row.appendChild(element('summary','',item.subject+' · '+item.key+'：'+item.value+' ['+item.state+']'));
+                row.appendChild(element('p','','原文 #'+(item.position+1)+'：'+item.quote));
+                group.appendChild(row);
+            }
+            rows.appendChild(group);
+        }
+    };
+    const rebuild=actionButton('重建原有故事（自動分批）',()=>{
+        if(rebuilding){stopped=true;rebuild.textContent='正在停止…';return;}
+        rebuilding=true;stopped=false;rebuild.textContent='停止重建';
+        void (async()=>{
+            try{
+                while(!stopped&&!sectionClosed){
+                    const before=deps.getWorldLedger(key);
+                    if(before.processed>=before.total)break;
+                    osStatus.textContent='分析原始故事中… '+before.processed+' / '+before.total+'。每批會使用一次 AI 文字請求，已完成結果會保存。';
+                    const did=await deps.rebuildWorldLedger(key);
+                    if(sectionClosed)break;
+                    const after=deps.getWorldLedger(key);
+                    renderOs();
+                    if(!did||after.processed<=before.processed)break;
+                }
+            }catch(e){if(!sectionClosed)osStatus.textContent='重建暫停：'+(e instanceof Error?e.message:'未能核對資料')+'。已完成批次保留，可再繼續。';}
+            finally{rebuilding=false;rebuild.textContent='繼續／重建原有故事';}
+        })();
+    });
+    search.addEventListener('input',renderOs);
+    os.append(osStatus,rebuild,search,rows);
+    body.appendChild(os);
+    renderOs();
     const chapter=control(body,'章節','input',world.chapter);
     const location=control(body,'所在地','input',world.location);
     const ability=control(body,'目前境界／能力','input',world.ability);
