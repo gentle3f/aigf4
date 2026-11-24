@@ -10639,6 +10639,23 @@ const setupEventListeners = () => {
         moreOptionsMenu.prepend(button);
         moreOptionsMenu.querySelector('.v2-more-options-section-interaction .v2-more-options-grid')?.appendChild(button);
     }
+    if(!document.getElementById('aigf-predictive-lab-btn')){
+        const button=document.createElement('button');
+        button.id='aigf-predictive-lab-btn';button.type='button';button.className='dropdown-item aigf-worldline-entry';
+        button.dataset.v2Icon='↯';button.textContent='預判式對話實驗室';
+        button.addEventListener('click',()=>{
+            moreOptionsMenu.classList.add('hidden');
+            void import('./predictiveLab.js').then(({openPredictiveLab})=>openPredictiveLab(async(history,signal)=>{
+                return generateChatTextWithTimeout({
+                    model:DEFAULT_CHAT_MODEL_SETTINGS.primary||VENICE_CHAT_MODEL,
+                    messages:[{role:'system',content:'You are a fictional conversational partner in an isolated timing experiment. Reply in natural, brief Traditional Chinese or the language the user uses. Use one or two conversational sentences. This is not the existing story or persona.'},...history],
+                    signal,maxCompletionTokens:160,temperature:0.75,stop:[],
+                });
+            }));
+        });
+        moreOptionsMenu.prepend(button);
+        moreOptionsMenu.querySelector('.v2-more-options-section-interaction .v2-more-options-grid')?.appendChild(button);
+    }
     closeSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     cancelSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     confirmSurpriseEventOptionsBtn.addEventListener('click', confirmSurpriseEventOptions);
