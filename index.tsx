@@ -204,6 +204,9 @@ import type {
 } from "./engine/observability/generationTrace.js";
 import { scheduleReplyVisibleHaptic } from "./chatHaptics.js";
 import { createVisibilityAwareTimeout } from "./visibilityAwareTimeout.js";
+import { appendStoryInline } from './storyInline.js';
+import { createBackgroundMedia } from './backgroundMedia.js';
+const worldlineBackgroundMedia = createBackgroundMedia();
 import {
     shouldCancelActiveRequestForConversation,
     shouldRenderCompletedReplyInConversation,
@@ -1864,6 +1867,7 @@ const beginChatRequest = (
     };
     nextChatRequestId += 1;
     activeChatRequest = request;
+    if(mode==='character'&&getActiveWorldline(conversationKey))worldlineBackgroundMedia.start(request.id);
     updateSendButtonState();
     assistantModelUi?.setBusy(true);
     return request;
@@ -1874,6 +1878,7 @@ const isActiveChatRequest = (request: ActiveChatRequest) => activeChatRequest?.i
 const finishChatRequest = (request: ActiveChatRequest, state: RequestState = 'idle') => {
     if (!isActiveChatRequest(request)) return;
     activeChatRequest = null;
+    worldlineBackgroundMedia.stop(request.id);
     applyChatRuntimeState(state);
     updateSendButtonState();
     assistantModelUi?.setBusy(false);
@@ -1884,6 +1889,7 @@ const cancelActiveChatRequest = () => {
     const request = activeChatRequest;
     activeChatRequest = null;
     request.controller.abort();
+    worldlineBackgroundMedia.stop(request.id);
     clearAssistantStreamPreview(request);
     if (request.surpriseEvent) {
         updateSurpriseEventProposal(request.conversationKey, request.surpriseEvent.id, {
@@ -4690,7 +4696,7 @@ const appendMessage = (
             if (segment.type === 'narration') {
                 speaker.textContent = '[旁白]';
                 text.className = 'group-story-narration-text';
-                text.textContent = segment.text;
+                appendStoryInline(text, segment.text);
                 line.append(speaker, text);
                 storyBubble.appendChild(line);
                 return;
@@ -4714,7 +4720,7 @@ const appendMessage = (
             speakerLabel.textContent = `[${member.persona.name}]`;
             speaker.append(speakerAvatar, speakerLabel);
             text.className = 'group-story-dialogue-text';
-            text.textContent = segment.text;
+            appendStoryInline(text, segment.text);
             line.append(speaker, text);
             storyBubble.appendChild(line);
         });
@@ -4782,7 +4788,8 @@ const appendMessage = (
                 renderAssistantMarkdown(bubble, content.text);
             } else {
                 const textElement = document.createElement('p');
-                textElement.textContent = content.text;
+                if(sender === 'bot') appendStoryInline(textElement,content.text);
+                else textElement.textContent = content.text;
                 bubble.appendChild(textElement);
             }
         }
@@ -9714,6 +9721,12 @@ const sendMessage = async ({
 };
 
 const dispatchSendMessage = (options: Parameters<typeof sendMessage>[0] = {}) => {
+    // Start from the actual send gesture before asynchronous attachment preparation.
+    const mediaOwner = !activeChatRequest && currentConversationKey
+        && getActiveWorldline(currentConversationKey)
+        && !isGodModeActive && Boolean((options?.messageText ?? messageInput.value).trim())
+        && worldlineBackgroundMedia.enabled() ? nextChatRequestId : null;
+    if(mediaOwner!==null)worldlineBackgroundMedia.start(mediaOwner);
     void sendMessage(options).catch(error => {
         console.error('Unexpected send failure:', error);
         if (activeChatRequest) cancelActiveChatRequest();
@@ -9727,6 +9740,8 @@ const dispatchSendMessage = (options: Parameters<typeof sendMessage>[0] = {}) =>
         updateSendButtonState();
         showError(message);
         if (currentConversationKey) appendMessage({ text: `[系統] ${message}` }, 'system');
+    }).finally(()=>{
+        if(mediaOwner!==null&&activeChatRequest?.id!==mediaOwner)worldlineBackgroundMedia.stop(mediaOwner);
     });
 };
 
@@ -10604,6 +10619,26 @@ const setupEventListeners = () => {
         moreOptionsMenu.querySelector('.v2-more-options-section-interaction .v2-more-options-grid')
             ?.appendChild(worldlineMenuButton);
     }
+    if(!document.getElementById('worldline-background-media-btn')){
+        const button=document.createElement('button');
+        button.id='worldline-background-media-btn';button.type='button';
+        button.className='dropdown-item aigf-worldline-entry';button.dataset.v2Icon='♪';
+        const refresh=()=>{
+            const state=worldlineBackgroundMedia.getState();
+            button.textContent='靜音背景生成（實驗）：'+(worldlineBackgroundMedia.enabled()?'開':'關');
+            button.setAttribute('aria-pressed',String(worldlineBackgroundMedia.enabled()));
+            button.title='只在 Worldline 生成期間嘗試播放靜音音訊；不保證手機鎖屏後繼續。狀態：'+state;
+        };
+        refresh();
+        button.addEventListener('click',()=>{
+            const enabled=!worldlineBackgroundMedia.enabled();
+            if(!worldlineBackgroundMedia.setEnabled(enabled)){alert('未能保存背景生成設定。');return;}
+            if(enabled&&activeChatRequest&&getActiveWorldline(activeChatRequest.conversationKey))worldlineBackgroundMedia.start(activeChatRequest.id);
+            refresh();
+        });
+        moreOptionsMenu.prepend(button);
+        moreOptionsMenu.querySelector('.v2-more-options-section-interaction .v2-more-options-grid')?.appendChild(button);
+    }
     closeSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     cancelSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     confirmSurpriseEventOptionsBtn.addEventListener('click', confirmSurpriseEventOptions);
@@ -10628,6 +10663,7 @@ const setupEventListeners = () => {
     });
     window.addEventListener('beforeunload', () => {
         flushPendingRoomPersistence();
+        worldlineBackgroundMedia.stop();
         imageStudioUi?.cleanup();
         characterPhotoObjectUrls.forEach(url => URL.revokeObjectURL(url));
         chatAttachmentObjectUrls.forEach(url => URL.revokeObjectURL(url));
