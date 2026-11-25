@@ -5,6 +5,6 @@
 </style></head><body><h1>AIGF VPS 測試</h1><p>獨立測試頁，唔會讀取或修改原有聊天紀錄。</p>
 <section id="login"><form id="unlock"><label>現有 AIGF 密碼 <input type="password" id="password" autocomplete="current-password" required></label><button type="submit">登入測試頁</button></form></section>
 <section id="panel" hidden><button id="probe">檢查 Gateway（不扣費）</button><label>模型 <select id="model"><option>glm-5-3-flash-uncensored</option><option>deepseek-v4-1-flash-1017-uncensored</option><option>qwen-3-6-plus</option></select></label>
-<button id="submit">提交背景任務（一次生成）</button><button id="resume">取回原有任務</button><button id="ack" disabled>確認結果及清除本機任務編號</button><p><small>提交後立即鎖屏、關閉分頁或斷網；重新打開同一網址後按取回。唔會自動重新生成。結果在 VPS 保存約 24 小時。</small></p></section>
+<button id="submit">提交背景任務（一次生成）</button><button id="resume">取回原有任務</button><button id="ack" disabled>確認結果及清除本機任務編號</button><p><small>提交後立即鎖屏、關閉分頁或斷網；重新打開同一網址後按取回。唔會自動重新生成。結果在 VPS 保存約 24 小時。</small></p><hr><h2>真實 API 綜合驗收</h2><p>七項固定合成文字測試；不讀取聊天或媒體。完成或斷線後可取回同一任務，不會自動重複提交。</p><button id="acceptance-run">執行／繼續綜合驗收（少量 API 費用）</button><pre id="acceptance-report" aria-live="polite"></pre></section>
 <section><strong>測試狀態</strong><pre id="status" role="status" aria-live="polite">正在檢查登入…</pre><pre id="result"></pre></section>
 <script type="module" src="/generationPilotPage.ts"></script></body></html>

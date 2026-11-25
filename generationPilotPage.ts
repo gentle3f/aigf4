@@ -1,3 +1,5 @@
+import {acceptanceCases,createAcceptanceRunner} from './vpsAcceptance.js';
+import {createVpsChatTransport} from './vpsCharacterTransport.js';
 import {createQueuePilotClient} from './generationQueuePilot';
 import type {PilotJob} from './generationQueuePilot';
 const el=<T extends HTMLElement>(id:string)=>document.getElementById(id) as T;
@@ -16,3 +18,9 @@ submit.onclick=()=>void action(async()=>{result.textContent='';last=null;show(aw
 resume.onclick=()=>void action(async()=>show(await client.resume()));
 ack.onclick=()=>{if(last){client.acknowledge(last.job_id);last=null;status.textContent='已確認結果；本機任務編號已清除。';update();}};
 session().catch(()=>{status.textContent='無法檢查登入狀態。';});
+
+const acceptanceButton=el<HTMLButtonElement>('acceptance-run'),acceptanceReport=el<HTMLElement>('acceptance-report');
+const suite=createAcceptanceRunner({storage:localStorage,transport:createVpsChatTransport(),lock:async work=>{if(!navigator.locks)throw Error('WEB_LOCKS_REQUIRED');return navigator.locks.request('aigf-vps-acceptance-v1',work);}});
+function renderSuite(){const j=suite.read();acceptanceReport.textContent=acceptanceCases.map((c,i)=>{const row=j.rows[i];return c.title+': '+(row?row.status.toUpperCase()+(row.detail?' — '+row.detail:'')+' ['+row.jobId+']':'未測試');}).join('\n');acceptanceButton.disabled=j.rows.length===acceptanceCases.length&&j.rows.every(r=>r.status!=='pending');}
+acceptanceButton.onclick=()=>void action(async()=>{if(!confirm('執行固定合成文字測試，會使用少量 Venice API 額度。不會讀取私人聊天。繼續？'))return;acceptanceButton.disabled=true;try{const deadline=Date.now()+600000;while(Date.now()<deadline){const next=await suite.step();renderSuite();acceptanceButton.disabled=true;if(next==='complete'){status.textContent='綜合驗收完成，請查看及複製報告。';return;}if(next==='pending')await new Promise(r=>setTimeout(r,1800));}status.textContent='測試未完成，按同一按鈕繼續取回，唔會重發原任務。';}finally{renderSuite();}});
+try{renderSuite();}catch(e){acceptanceReport.textContent='驗收紀錄無效，請保留原紀錄以供排查。';acceptanceButton.disabled=true;}
