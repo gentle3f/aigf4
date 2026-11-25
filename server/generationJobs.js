@@ -4,6 +4,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MODELS = new Set(['glm-5-3-flash-uncensored','deepseek-v4-1-flash-1017-uncensored','qwen-3-6-plus']);
 const REVIEW_MODELS=new Set(["glm-5-3-flash-uncensored","deepseek-v4-1-flash-1017-uncensored"]);
 const REVIEW_FORMAT={"type":"json_schema","json_schema":{"name":"strict_chat_review","strict":true,"schema":{"type":"object","additionalProperties":false,"required":["decision","issues","revised_response"],"properties":{"decision":{"type":"string","enum":["keep","revise"]},"issues":{"type":"array","maxItems":8,"items":{"type":"string","enum":["request_mismatch","identity","speaker_ownership","continuity","reality_layer","wardrobe","state","replayed_beat","persona_voice","third_party_speech","user_agency","incomplete_ending","group_narration","other"]}},"revised_response":{"type":"string"}}}}};
+const PERSONA_MEMORY_FORMAT={"type":"json_schema","json_schema":{"name":"persona_memory_update_v3","strict":true,"schema":{"type":"object","additionalProperties":false,"required":["memories"],"properties":{"memories":{"type":"array","maxItems":12,"items":{"type":"object","additionalProperties":false,"required":["kind","title","summary","importance","unresolved","scene_id","source_message_ids","search_tags"],"properties":{"kind":{"type":"string","enum":["relationship","vulnerability","promise","preference","event","boundary"]},"title":{"type":"string"},"summary":{"type":"string"},"importance":{"type":"integer","minimum":1,"maximum":5},"unresolved":{"type":"boolean"},"scene_id":{"type":"string"},"source_message_ids":{"type":"array","minItems":1,"items":{"type":"string"}},"search_tags":{"type":"array","minItems":2,"maxItems":10,"items":{"type":"string"}}}}}}}}};
 const canonical=value=>JSON.stringify(value,(_k,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])):v);
 const LIMIT = 256 * 1024;
 const SAFE_ERRORS = /^(?:EMPTY_VISIBLE_REPLY(?:_TOKEN_LIMIT)?|INVALID_PROVIDER_(?:RESPONSE|JSON)|WORKFLOW_(?:TRUNCATED|REVIEW_INVALID)|PROVIDER_(?:HTTP_[1-5][0-9]{2}|TIMEOUT|DNS_ERROR|TLS_ERROR|NETWORK_ERROR|RESPONSE_TOO_LARGE|FAILURE)); no automatic retry$/;
@@ -16,7 +17,7 @@ function validateTextPayload(p) {
     ||p.messages.some(m=>!m||!['system','user','assistant'].includes(m.role)||typeof m.content!=='string'||Object.keys(m).some(k=>!['role','content'].includes(k)))) return 'UNSUPPORTED_PILOT_REQUEST';
   if(p.reasoning_effort!==undefined&&p.reasoning_effort!=='none') return 'UNSUPPORTED_REASONING_EFFORT';
   if(p.prompt_cache_key!==undefined&&(typeof p.prompt_cache_key!=='string'||!/^wetapp-(chat|review)-v1-[a-z0-9]{1,32}$/.test(p.prompt_cache_key))) return 'INVALID_PROMPT_CACHE_KEY';
-  if(p.response_format!==undefined&&(!REVIEW_MODELS.has(p.model)||canonical(p.response_format)!==canonical(REVIEW_FORMAT))) return 'UNSUPPORTED_REVIEW_SCHEMA';
+  if(p.response_format!==undefined&&(!REVIEW_MODELS.has(p.model)||![canonical(REVIEW_FORMAT),canonical(PERSONA_MEMORY_FORMAT)].includes(canonical(p.response_format)))) return 'UNSUPPORTED_REVIEW_SCHEMA';
   const max=p.max_completion_tokens??p.max_tokens??4096;
   if(!Number.isInteger(max)||max<1||max>8192) return 'INVALID_OUTPUT_LIMIT';
   const vp=p.venice_parameters??{};

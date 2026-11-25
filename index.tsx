@@ -20,6 +20,7 @@ import {
 import { createDurableChatTurn, browserTurnLock, type TurnIdentity, type TurnReceipt } from './durableChatTurn.js';
 import { runDurableChatStage } from './vpsStageRunner.js';
 import { buildVpsWorkflowPayload, decodeVpsWorkflow } from './vpsWorkflow.js';
+import { createDurableMemoryTask, browserMemoryLock, type MemoryContext } from './durablePersonaMemory.js';
 import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult, VPS_REVIEW_MODELS } from './vpsCharacterTransport.js';
 import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
 import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, VPS_CHAT_MODELS, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
@@ -5152,7 +5153,7 @@ const submitUnlock = async () => {
         setUnlockedState(true);
         void startSupabaseCloudSync();
         void resumePendingVideoJobIfAny();
-        if (VPS_CHAT_BUILD) void resumeVpsChatTurn(true);
+        if (VPS_CHAT_BUILD) { void resumeVpsChatTurn(true); void resumeVpsPersonaMemory(); }
     } catch (error) {
         setUnlockedState(false);
         showAuthError(
@@ -8947,7 +8948,10 @@ const getResponse = async (
         completeChatPerformanceTurn('response:final-visible');
         schedulePersonaListRefreshAfterPaint();
         if (request.room) void maybeSummarizeRoomMemory(request.room.id);
-        else if (request.mode === 'character' && !request.vpsTurn) void maybeSummarizePersonaMemory(request.personaKey);
+        else if (request.mode === 'character') {
+            if (request.vpsTurn) void startVpsPersonaMemory(request.personaKey);
+            else void maybeSummarizePersonaMemory(request.personaKey);
+        }
     } catch (error) {
         clearAssistantStreamPreview(request);
         if (isAbortError(error)) {
@@ -9335,6 +9339,92 @@ const maybeSummarizePersonaMemory = async (
         personaSummaryInFlight.delete(personaKey);
         if (!currentRoom && currentPersonaKey === personaKey) refreshRoomMemoryIfOpen();
     }
+};
+
+// Separate durable memory job. Ordinary one-batch automatic summaries only;
+// historical multi-batch recovery is left to the existing manual workflow.
+const vpsMemorySnapshot = (context: MemoryContext) => {
+    const persona=memoryManager.getPersona(context.personaKey);
+    if (!persona) throw Error('MEMORY_PERSONA_MISSING');
+    const history=memoryManager.peekChatHistory(context.personaKey);
+    if (history.length<context.historyLength) throw Error('MEMORY_HISTORY_CHANGED');
+    return JSON.stringify({
+        name:persona.name,prompt:persona.prompt,memory:persona.memory,soul:persona.soul||[],memories:persona.memories||[],
+        count:Number(persona.lastMemorySummaryUserMessageCount||0),version:Number(persona.memorySummaryVersion||0),
+        history:history.slice(0,context.historyLength),
+        controlled:[...getManualMemoryControlledSourceIds(history)].sort(),
+        exclusions:getManualMemoryLongTermExclusionSummaries(history),
+    });
+};
+const makeVpsMemoryTask = async () => {
+    const autoMemory=await loadAutoMemoryModule();
+    return createDurableMemoryTask({
+        storage:localStorage,transport:createVpsChatTransport(),lock:browserMemoryLock,snapshot:vpsMemorySnapshot,
+        parse:(r,text)=>autoMemory.parsePersonaAutoMemoryResponse(text,new Set(r.sourceIds)),
+        confirmed:r=>memoryManager.confirmVpsMemoryCommit(r.personaKey,r.jobId),
+        commit:(r,memories)=>{
+            const history=memoryManager.peekChatHistory(r.personaKey);
+            const messageIds=createMemoryMessageIdMap(r.personaKey,history);
+            const existingIds=new Set(history.map(m=>m.id?.trim()||messageIds.get(m)).filter(Boolean));
+            const exclusions=getManualMemoryLongTermExclusionSummaries(history);
+            const controlled=getManualMemoryControlledSourceIds(history);
+            const scenes=new Set(r.sceneIds);
+            const normalized=memories.filter(m=>m.sourceMessageIds?.every(id=>existingIds.has(id)&&!controlled.has(id)))
+                .filter(m=>Number(m.importance??3)>=AUTO_MEMORY_MIN_IMPORTANCE)
+                .filter(m=>!autoMemoryMatchesManualDecision(m.summary,exclusions))
+                .map(m=>({...m,sceneId:m.sceneId&&scenes.has(m.sceneId)?m.sceneId:r.sceneIds.at(-1)||'main'}));
+            return memoryManager.applyPersonaMemorySummary(r.personaKey,normalized,r.checkpoint,r.summaryVersion,r.jobId);
+        },
+    });
+};
+let vpsMemoryBusy=false;
+const resumeVpsPersonaMemory = async () => {
+    if (!VPS_CHAT_BUILD||!isUnlocked||vpsMemoryBusy||activeChatRequest) return;
+    vpsMemoryBusy=true;
+    try {
+        const task=await makeVpsMemoryTask();
+        const receipt=task.pending();
+        if(!receipt)return;
+        const deadline=Date.now()+300000;
+        let state=await task.resume();
+        while(state.status==='pending'&&Date.now()<deadline&&isUnlocked&&!activeChatRequest){
+            await new Promise(resolve=>setTimeout(resolve,2000));
+            if(activeChatRequest||!isUnlocked)break;
+            state=await task.resume();
+        }
+        if(state.status==='applied'&&currentPersonaKey===receipt.personaKey&&!currentRoom)refreshRoomMemoryIfOpen();
+    }catch(error){console.warn('[aigf4 VPS memory pending]',error instanceof Error?error.message:'UNKNOWN');}
+    finally{vpsMemoryBusy=false;}
+};
+const startVpsPersonaMemory = async (personaKey:string) => {
+    if(!VPS_CHAT_BUILD||!isUnlocked||vpsMemoryBusy||activeChatRequest)return;
+    vpsMemoryBusy=true;
+    try {
+        const task=await makeVpsMemoryTask();
+        if(task.pending())return;
+        const persona=memoryManager.getPersona(personaKey);
+        if(!persona||isAssistantPersonaKey(personaKey)||personaSummaryInFlight.has(personaKey))return;
+        const history=memoryManager.peekChatHistory(personaKey);
+        const userCount=history.filter(m=>m.role==='user').length;
+        const checkpoint=Number(persona.lastMemorySummaryUserMessageCount||0);
+        const needsRecovery=Number(persona.memorySummaryVersion||0)<AUTO_MEMORY_SUMMARY_VERSION&&userCount>=AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES;
+        if(!needsRecovery&&userCount-checkpoint<ROOM_MEMORY_SUMMARY_TURN_INTERVAL)return;
+        const autoMemory=await loadAutoMemoryModule();
+        const batches=autoMemory.buildMemoryTurnBatches(history,checkpoint,needsRecovery?'recovery':'auto');
+        if(batches.length!==1)return;
+        const batch=batches[0];
+        const evidence=buildPersonaMemoryTranscript(persona,batch.messages,createMemoryMessageIdMap(personaKey,history),getManualMemoryControlledSourceIds(history));
+        if(!evidence.transcript)return;
+        const context:MemoryContext={personaKey,historyLength:history.length,checkpoint:batch.throughUserMessageCount,summaryVersion:AUTO_MEMORY_SUMMARY_VERSION,sourceIds:[...evidence.sourceMessageIds],sceneIds:evidence.sceneIds};
+        const expectedSnapshot=vpsMemorySnapshot(context);
+        const existing=formatExistingMemoryForExtractor(persona.memories||[],64);
+        const payload=buildVpsCharacterPayload({
+            model:VPS_REVIEW_MODELS[0],messages:autoMemory.buildPersonaAutoMemoryMessages(persona.name,existing,evidence.transcript),
+            maxCompletionTokens:4200,temperature:0.2,topP:0.85,repetitionPenalty:1.04,stop:[],responseFormat:autoMemory.PERSONA_MEMORY_RESPONSE_FORMAT,
+        });
+        await task.submit(context,payload,expectedSnapshot);
+    }catch(error){console.warn('[aigf4 VPS memory submit]',error instanceof Error?error.message:'UNKNOWN');}
+    finally{vpsMemoryBusy=false;void resumeVpsPersonaMemory();}
 };
 
 const continuePendingConversationTurn = async (triggeringMessage: string) => {
@@ -10624,10 +10714,12 @@ const setupEventListeners = () => {
         select.addEventListener('change',()=>{if(activeChatRequest||pendingVpsTurn()){select.value=selectedVpsChatModel()||'';alert('先處理原有任務。');return;}localStorage.setItem(VPS_CHAT_MODE_KEY,select.value);});
         const resume=document.createElement('button');resume.type='button';resume.textContent='取回 VPS 回覆';resume.onclick=()=>void resumeVpsChatTurn(true);
         const abandon=document.createElement('button');abandon.type='button';abandon.textContent='放棄待處理回覆';abandon.onclick=()=>{if(activeChatRequest||resumingVpsTurn)return;const p=pendingVpsTurn();if(p&&confirm('放棄本機待處理回覆？VPS 已開始的生成可能仍會扣費；此操作不會取消伺服器任務。'))void makeVpsTurnController().abandon(p.jobId).then(()=>{hideError();updateSendButtonState();}).catch(()=>showError('未能放棄原任務。'));};
-        controls.append(label,select,resume,abandon);chatView.prepend(controls);
-        window.addEventListener('online',()=>void resumeVpsChatTurn());
-        window.addEventListener('pageshow',()=>void resumeVpsChatTurn());
-        document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')void resumeVpsChatTurn();});
+        const memoryResume=document.createElement('button');memoryResume.type='button';memoryResume.textContent='取回記憶摘要';memoryResume.onclick=()=>void resumeVpsPersonaMemory();
+        const memoryAbandon=document.createElement('button');memoryAbandon.type='button';memoryAbandon.textContent='放棄待處理摘要';memoryAbandon.onclick=()=>{if(vpsMemoryBusy)return;void makeVpsMemoryTask().then(async task=>{const p=task.pending();if(p&&confirm('放棄本機待處理摘要？已開始的生成可能仍會扣費。'))await task.abandon(p.jobId);}).catch(()=>showError('未能放棄記憶摘要。'));};
+        controls.append(label,select,resume,abandon,memoryResume,memoryAbandon);chatView.prepend(controls);
+        window.addEventListener('online',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();});
+        window.addEventListener('pageshow',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();});
+        document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){void resumeVpsChatTurn();void resumeVpsPersonaMemory();}});
     }
     closeSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     cancelSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
@@ -10870,7 +10962,7 @@ const init = async () => {
     if (unlocked) {
         await startSupabaseCloudSync();
         void resumePendingVideoJobIfAny();
-        if (VPS_CHAT_BUILD) void resumeVpsChatTurn(true);
+        if (VPS_CHAT_BUILD) { void resumeVpsChatTurn(true); void resumeVpsPersonaMemory(); }
     }
 };
 

@@ -401,6 +401,7 @@ export interface Persona {
     memories?: PersonaMemoryEntry[];
     lastMemorySummaryUserMessageCount?: number;
     memorySummaryVersion?: number;
+    lastVpsMemoryJobId?: string;
     favoritePhotoPrompt?: string;
     publicIdentityEnabled?: boolean;
     publicIdentity?: PublicIdentity;
@@ -545,6 +546,7 @@ export class MemoryManager {
                     JSON.stringify(currentPersona.memories || []) !== JSON.stringify(originalPersona.memories || []) ||
                     Number(currentPersona.lastMemorySummaryUserMessageCount || 0) !== Number(originalPersona.lastMemorySummaryUserMessageCount || 0) ||
                     Number(currentPersona.memorySummaryVersion || 0) !== Number(originalPersona.memorySummaryVersion || 0) ||
+                    currentPersona.lastVpsMemoryJobId !== originalPersona.lastVpsMemoryJobId ||
                     currentPersona.favoritePhotoPrompt !== originalPersona.favoritePhotoPrompt ||
                     JSON.stringify(currentPersona.chatPreferences || null) !== JSON.stringify(originalPersona.chatPreferences || null) ||
                     Boolean(currentPersona.publicIdentityEnabled) !== Boolean(originalPersona.publicIdentityEnabled) ||
@@ -1355,12 +1357,15 @@ export class MemoryManager {
         entries: Array<Omit<PersonaMemoryEntry, 'id' | 'createdAt' | 'pinned'>>,
         userMessageCount: number,
         summaryVersion: number,
+        vpsJobId?: string,
     ) {
         const persona = this.personas[key];
         if (!persona) return 0;
         const previousMemories = structuredClone(persona.memories || []);
         const previousCount = persona.lastMemorySummaryUserMessageCount;
         const previousVersion = persona.memorySummaryVersion;
+        const previousVpsJobId = persona.lastVpsMemoryJobId;
+        if (vpsJobId && previousVpsJobId === vpsJobId) return 0;
         const target = (persona.memories ||= []);
         const fingerprint = (entry: Pick<PersonaMemoryEntry, 'kind' | 'title' | 'summary' | 'sourceMessageIds'>) => {
             const sources = [...(entry.sourceMessageIds || [])].sort().join('|');
@@ -1412,6 +1417,7 @@ export class MemoryManager {
         });
         persona.lastMemorySummaryUserMessageCount = userMessageCount;
         persona.memorySummaryVersion = summaryVersion;
+        if (vpsJobId) persona.lastVpsMemoryJobId = vpsJobId;
         try {
             this.persistModifiedPersonas(true);
             return added;
@@ -1419,8 +1425,16 @@ export class MemoryManager {
             persona.memories = previousMemories;
             persona.lastMemorySummaryUserMessageCount = previousCount;
             persona.memorySummaryVersion = previousVersion;
+            persona.lastVpsMemoryJobId = previousVpsJobId;
             throw error;
         }
+    }
+
+    confirmVpsMemoryCommit(key: string, jobId: string): boolean {
+        const raw = localStorage.getItem('customPersonas');
+        if (!raw) return false;
+        const persisted = JSON.parse(raw) as Record<string, Persona>;
+        return persisted[key]?.lastVpsMemoryJobId === jobId && this.personas[key]?.lastVpsMemoryJobId === jobId;
     }
 
     updatePersonaMemory(
