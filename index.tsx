@@ -546,7 +546,7 @@ const loadSupabaseCloudSyncManager = async () => {
                             updateSendButtonState();
                         }
                     },
-                });
+                }, VPS_CHAT_BUILD,()=>!activeChatRequest&&!resumingVpsTurn&&!pendingVpsTurn());
                 supabaseCloudSyncManager = manager;
                 return manager;
             })
@@ -1540,9 +1540,8 @@ const loadLiveCloudUi = async (): Promise<LiveCloudUiHandle> => {
 };
 
 const openSupabaseCloud = () => {
-    if (VPS_CHAT_BUILD) { alert('VPS 測試版：雲端同步已停用。'); return; }
     void loadLiveCloudUi()
-        .then(ui => ui.open())
+        .then(async ui => {if(VPS_CHAT_BUILD)await (await loadSupabaseCloudSyncManager()).start();ui.open();})
         .catch(error => console.error('Failed to load Live Cloud UI', error));
 };
 const PIXEL_IMAGE_DIMENSIONS: Record<string, { width: number; height: number }> = {
@@ -10885,7 +10884,7 @@ const setupEventListeners = () => {
     if (VPS_CHAT_BUILD) {
         const controls = document.createElement('div');
         controls.style.cssText='display:flex;flex-wrap:wrap;gap:6px;padding:8px;align-items:center;background:var(--surface, #222);color:var(--text,#fff);font-size:12px';
-        const label=document.createElement('span');label.textContent='VPS Preview（本機測試，無雲端同步）';
+        const label=document.createElement('span');label.textContent='VPS Preview（雲端只讀還原）';
         const select=document.createElement('select');select.setAttribute('aria-label','VPS 生成模式');
         [['','原有直連'],...VPS_CHAT_MODELS.map(m=>[m,m])].forEach(([value,text])=>{const option=document.createElement('option');option.value=value;option.textContent=text;select.append(option);});
         select.value=selectedVpsChatModel()||'';
