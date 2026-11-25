@@ -1,4 +1,6 @@
 import { VPS_CHAT_BUILD } from '../vpsChatMode.js';
+import { getSavedStudioImage,persistStudioImage,listSavedStudioImages,deleteSavedStudioImage } from '../studioMediaStore.js';
+import type { CharacterPhotoAsset } from '../photoStore.js';
 import { IMAGE_RECEIPT_KEY,readImageReceipt,createVpsImageTransport,submitDurableImage,type ImageReceipt } from '../vpsImageJob.js';
 import type {
     VeniceImageMode,
@@ -30,6 +32,7 @@ export type ImageStudioPhotoContext = {
 
 export type ImageStudioResult = {
     id: string;
+    savedAssetId?: string;
     blob: Blob;
     url: string;
     prompt: string;
@@ -524,6 +527,11 @@ const renderImageResults = () => {
         ].filter(Boolean).join(' · ');
 
         actions.append(downloadButton, editButton);
+        if(result.savedAssetId){
+            const remove=document.createElement('button');remove.type='button';remove.className='image-result-action';remove.textContent='刪除已保存圖片';
+            remove.onclick=()=>{if(isImageRequestRunning||!confirm('刪除這張本機保存圖片？'))return;void deleteSavedStudioImage(result.savedAssetId!).then(()=>{URL.revokeObjectURL(result.url);imageResults=imageResults.filter(r=>r.id!==result.id);renderImageResults();}).catch(()=>showImageStudioError('未能刪除已保存圖片。'));};
+            actions.append(remove);
+        }
         card.append(image, actions, meta);
         imageStudioResults.appendChild(card);
     });
@@ -533,7 +541,7 @@ const clearImageResults = () => {
     imageResults.forEach(result => URL.revokeObjectURL(result.url));
     imageResults = [];
     renderImageResults();
-    imageStudioStatus.textContent = '作品已清除';
+    imageStudioStatus.textContent = VPS_CHAT_BUILD?'本頁顯示已清除；已保存圖片可重新進入工作室取回。':'作品已清除';
 };
 
 const cancelImageRequest = () => {
@@ -545,20 +553,33 @@ const cancelImageRequest = () => {
     }
 };
 
+const showSavedStudioImage=(asset:CharacterPhotoAsset)=>{
+    if(imageResults.some(r=>r.id===asset.id))return;
+    imageResults=[{id:asset.id,savedAssetId:asset.id,blob:asset.blob,url:URL.createObjectURL(asset.blob),prompt:asset.prompt,model:asset.studio?.modelName||'Qwen Image 3',modelId:'qwen-image-3',mode:'generate',aspectRatio:asset.studio?.aspectRatio||'1:1',resolution:asset.studio?.resolution,seed:asset.studio?.seed,createdAt:new Date(asset.createdAt)},...imageResults];
+};
+const restoreSavedStudioImages=async()=>{
+    try{for(const asset of await listSavedStudioImages())showSavedStudioImage(asset);renderImageResults();}
+    catch{showImageStudioError('未能讀取本機已保存圖片。');}
+};
 const receiveVpsImage=async(receipt:ImageReceipt,signal:AbortSignal)=>{
     const transport=createVpsImageTransport();
     const deadline=Date.now()+300000;
     while(Date.now()<deadline){
         if(signal.aborted)throw new DOMException('Aborted','AbortError');
-        const blob=await transport.retrieve(receipt,signal);
+        const saved=await getSavedStudioImage(receipt);
+        const blob=saved?.blob||await transport.retrieve(receipt,signal);
         if(signal.aborted)throw new DOMException('Aborted','AbortError');
         if(blob){
-            if(readImageReceipt(localStorage)?.jobId!==receipt.jobId)throw Error('VPS_IMAGE_RECEIPT_CHANGED');
-            if(!imageResults.some(r=>r.id===receipt.jobId)){
-                imageResults=[{id:receipt.jobId,blob,url:URL.createObjectURL(blob),prompt:receipt.prompt,model:receipt.modelName,modelId:'qwen-image-3',mode:'generate',aspectRatio:receipt.aspectRatio||'1:1',resolution:receipt.resolution,seed:receipt.seed,createdAt:new Date(receipt.createdAt)},...imageResults];
+            if(!navigator.locks)throw Error('VPS_IMAGE_WEB_LOCKS_REQUIRED');
+            await navigator.locks.request('aigf-vps-image-v1',async()=>{
+                if(readImageReceipt(localStorage)?.jobId!==receipt.jobId||signal.aborted)throw Error('VPS_IMAGE_RECEIPT_CHANGED');
+                const asset=await persistStudioImage(receipt,blob);
+                if(signal.aborted||readImageReceipt(localStorage)?.jobId!==receipt.jobId)throw Error('VPS_IMAGE_RECEIPT_CHANGED');
+                showSavedStudioImage(asset);
                 renderImageResults();
-            }
-            imageStudioStatus.textContent='背景圖片已取回及核對；請下載，然後清除背景任務紀錄。';
+                localStorage.removeItem(IMAGE_RECEIPT_KEY);
+                imageStudioStatus.textContent='圖片已保存至本機相片庫，可重新開啟工作室取回。';
+            });
             return;
         }
         imageStudioStatus.textContent='VPS 背景生成中；可關閉手機，稍後取回。';
@@ -755,7 +776,7 @@ const attachListeners = () => {
                 if(confirm('清除本機背景任務紀錄？遠端工作不會取消；尚未下載的圖片可能無法再取回。')){localStorage.removeItem(IMAGE_RECEIPT_KEY);imageStudioStatus.textContent='本機背景任務紀錄已清除';}
             });
         };
-        const note=document.createElement('p');note.textContent='VPS Preview：Qwen Image 3 單張文字生圖，背景模式，24 小時內取回。';
+        const note=document.createElement('p');note.textContent='VPS Preview：單張背景圖片須於 24 小時內取回，成功後自動保存本機。';
         controls.append(note,resume,abandon);imageStudioStatus.after(controls);
     }
 };
@@ -777,7 +798,7 @@ export const createImageStudio = (deps: ImageStudioDependencies): ImageStudioHan
             renderImageResults();
             void loadModelsAndRender(imageStudioMode);
             updateImageGenerateButton();
-            if(VPS_CHAT_BUILD)void resumeVpsImage();
+            if(VPS_CHAT_BUILD){void restoreSavedStudioImages();void resumeVpsImage();}
         },
         hide: () => {
             imageStudioView.classList.add('hidden');

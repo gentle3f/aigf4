@@ -24,6 +24,8 @@ import {
 import type { PersistedVideoJob } from '../videoStudioPersistence.js';
 import { setPersistedAppSetting } from '../appSettings.js';
 import { VPS_CHAT_BUILD } from '../vpsChatMode.js';
+import { getSavedStudioVideo,persistStudioVideo,listSavedStudioVideos,deleteSavedStudioVideo } from '../studioMediaStore.js';
+import type { StoredChatAttachment } from '../chatMediaStore.js';
 import { VPS_VIDEO_MODEL,createVpsVideoSubmission,submitDurableVideo } from '../vpsVideoSubmission.js';
 
 export type VideoStudioHistoryMode = 'push' | 'replace' | 'skip';
@@ -114,6 +116,7 @@ type VideoStudioSource = {
 
 type VideoStudioResult = {
     id: string;
+    savedAssetId?: string;
     url: string;
     isObjectUrl: boolean;
     prompt: string;
@@ -1231,8 +1234,12 @@ const cleanupVideoResult = (result: VideoStudioResult) => {
     }
 };
 
-const removeVideoResult = (id: string) => {
+const removeVideoResult = async (id: string) => {
     const result = videoResults.find(item => item.id === id);
+    if(result?.savedAssetId){
+        if(isVideoRequestRunning||!confirm('刪除這段本機保存影片？'))return;
+        try{await deleteSavedStudioVideo(result.savedAssetId);}catch{showVideoStudioError('未能刪除本機影片。');return;}
+    }
     if (result) cleanupVideoResult(result);
     videoResults = videoResults.filter(item => item.id !== id);
     renderVideoResults();
@@ -1293,7 +1300,7 @@ const clearVideoResults = () => {
     videoResults.forEach(cleanupVideoResult);
     videoResults = [];
     renderVideoResults();
-    videoStudioStatus.textContent = '本次影片已清除';
+    videoStudioStatus.textContent = VPS_CHAT_BUILD?'本頁顯示已清除；已保存影片可重新進入工作室取回。':'本次影片已清除';
 };
 
 const cancelVideoRequest = () => {
@@ -1321,6 +1328,27 @@ const cancelVideoRequest = () => {
     setVideoStudioBusy(false);
 };
 
+const showSavedStudioVideo=(asset:StoredChatAttachment)=>{
+    if(!asset.studio||videoResults.some(r=>r.id===asset.id))return;
+    videoResults=[{id:asset.id,savedAssetId:asset.id,url:URL.createObjectURL(asset.blob),isObjectUrl:true,prompt:asset.studio.prompt,model:asset.studio.modelName,modelId:asset.studio.model,queueId:asset.studio.queueId,createdAt:new Date(asset.createdAt),needsRemoteCleanup:false},...videoResults];
+};
+const restoreSavedStudioVideos=async()=>{
+    try{for(const asset of await listSavedStudioVideos())showSavedStudioVideo(asset);renderVideoResults();}
+    catch{showVideoStudioError('未能讀取本機已保存影片。');}
+};
+const finishSavedStudioVideo=async(job:PersistedVideoJob,asset:StoredChatAttachment,controller:AbortController)=>{
+    if(!navigator.locks)throw Error('VPS_VIDEO_WEB_LOCKS_REQUIRED');
+    await navigator.locks.request('aigf-vps-video-submit-v1',async()=>{
+        const receipt=readPersistedVideoJobFromStorage();
+        if(receipt?.queueId!==job.queueId||receipt.model!==job.model||controller.signal.aborted)throw Error('VPS_VIDEO_RECEIPT_CHANGED');
+        showSavedStudioVideo(asset);
+        renderVideoResults();
+        clearPersistedVideoJob();
+        setVideoProgressState('completed');
+        videoStudioStatus.textContent='影片已保存至本機媒體庫，可重新開啟工作室播放。';
+    });
+    void completeVeniceVideo(job.model,job.queueId).catch(()=>console.warn('Unable to clean up completed Venice video media.'));
+};
 const pollPersistedVideoJob = async (job: PersistedVideoJob, controller: AbortController) => {
     if(job.submissionId){
         if(!VPS_CHAT_BUILD)throw Error('請在 VPS 測試版恢復影片提交。');
@@ -1348,6 +1376,10 @@ const pollPersistedVideoJob = async (job: PersistedVideoJob, controller: AbortCo
         }
         if(job.submissionId)throw Error('VPS 提交仍待取回；原任務已保存。');
     }
+    if(VPS_CHAT_BUILD){
+        const existing=await getSavedStudioVideo(job);
+        if(existing){await finishSavedStudioVideo(job,existing,controller);return;}
+    }
     const pollingStartedAt = performance.now();
     let consecutivePollErrors = 0;
 
@@ -1372,6 +1404,16 @@ const pollPersistedVideoJob = async (job: PersistedVideoJob, controller: AbortCo
         }
 
         if (retrieved.kind === 'completed') {
+            if(VPS_CHAT_BUILD&&retrieved.blob){
+                if(!navigator.locks)throw Error('VPS_VIDEO_WEB_LOCKS_REQUIRED');
+                const asset=await navigator.locks.request('aigf-vps-video-submit-v1',async()=>{
+                    const receipt=readPersistedVideoJobFromStorage();
+                    if(receipt?.queueId!==job.queueId||receipt.model!==job.model||controller.signal.aborted)throw Error('VPS_VIDEO_RECEIPT_CHANGED');
+                    return persistStudioVideo(job,retrieved.blob!);
+                });
+                await finishSavedStudioVideo(job,asset,controller);
+                return;
+            }
             const url = retrieved.blob
                 ? URL.createObjectURL(retrieved.blob)
                 : retrieved.downloadUrl;
@@ -1388,6 +1430,13 @@ const pollPersistedVideoJob = async (job: PersistedVideoJob, controller: AbortCo
                 createdAt: now,
                 needsRemoteCleanup: Boolean(retrieved.downloadUrl),
             }, ...videoResults];
+            if(VPS_CHAT_BUILD&&!retrieved.blob){
+                videoResults[0].needsRemoteCleanup=false;
+                renderVideoResults();
+                setVideoProgressState('completed');
+                videoStudioStatus.textContent='影片只有遠端下載連結；請下載，未完成紀錄會保留。';
+                return;
+            }
             clearPersistedVideoJob();
             renderVideoResults();
             setVideoProgressState('completed');
@@ -1552,6 +1601,7 @@ const showVideoStudio = (historyMode: VideoStudioHistoryMode = 'push') => {
     renderVideoResults();
     void loadVideoModels(videoStudioMode);
     updateVideoGenerateButton();
+    if(VPS_CHAT_BUILD)void restoreSavedStudioVideos();
     if (pendingVideoJob && !isVideoRequestRunning && deps.isUnlocked()) {
         void resumePendingVideoJob('auto');
     }

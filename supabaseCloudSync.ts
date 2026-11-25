@@ -34,6 +34,7 @@ import {
     saveCharacterPhotoAsset,
 } from './photoStore.js';
 import type { CharacterPhotoAsset } from './photoStore.js';
+import { readStudioImageMetadata,readStudioVideoMetadata } from './studioMediaStore.js';
 import { ChatRoom, resolveRoomAvatarStorageKey, RoomManager } from './roomManager.js';
 import type { RoomImportSnapshot } from './roomManager.js';
 
@@ -1556,6 +1557,7 @@ export class SupabaseCloudSyncManager {
             });
         });
         photoAssets.forEach(asset => {
+            const studio=readStudioImageMetadata(asset.personaKey,asset.id,asset.studio);
             const assetId = `character-photo:${asset.id}`;
             result.push({
                 user_id: userId,
@@ -1565,14 +1567,15 @@ export class SupabaseCloudSyncManager {
                 storage_path: `${userId}/character_photo/${safeAssetPath(assetId)}`,
                 mime_type: asset.blob.type || 'image/jpeg',
                 byte_size: asset.blob.size,
-                signature: `${asset.blob.size}:${asset.blob.type}:${asset.createdAt}:${hashText(asset.prompt || '')}`,
-                metadata: { id: asset.id, personaKey: asset.personaKey, prompt: asset.prompt },
+                signature: `${asset.blob.size}:${asset.blob.type}:${asset.createdAt}:${hashText(asset.prompt || '')}${studio?':'+hashText(JSON.stringify(studio)):''}`,
+                metadata: { id: asset.id, personaKey: asset.personaKey, prompt: asset.prompt,...(studio?{studio}:{}) },
                 source_device_id: this.deviceId,
                 created_at_ms: asset.createdAt,
                 blob: asset.blob,
             });
         });
         attachmentAssets.forEach(asset => {
+            const studio=readStudioVideoMetadata(asset.conversationKey,asset.id,asset.studio);
             const assetId = `attachment:${asset.id}`;
             result.push({
                 user_id: userId,
@@ -1582,11 +1585,12 @@ export class SupabaseCloudSyncManager {
                 storage_path: `${userId}/attachment/${safeAssetPath(assetId)}`,
                 mime_type: asset.mimeType || asset.blob.type || 'application/octet-stream',
                 byte_size: asset.blob.size,
-                signature: `${asset.blob.size}:${asset.mimeType}:${asset.createdAt}:${asset.name}`,
+                signature: `${asset.blob.size}:${asset.mimeType}:${asset.createdAt}:${asset.name}${studio?':'+hashText(JSON.stringify(studio)):''}`,
                 metadata: {
                     id: asset.id,
                     conversationKey: asset.conversationKey,
                     name: asset.name,
+                    ...(studio?{studio}:{}),
                 },
                 source_device_id: this.deviceId,
                 created_at_ms: asset.createdAt,
@@ -1780,6 +1784,7 @@ export class SupabaseCloudSyncManager {
                 await saveCharacterPhotoAsset({
                     id,
                     personaKey: String(metadata.personaKey || row.conversation_key || ''),
+                    studio:readStudioImageMetadata(String(metadata.personaKey || row.conversation_key || ''),id,metadata.studio),
                     prompt: String(metadata.prompt || ''),
                     createdAt: row.created_at_ms,
                     blob: download.data,
@@ -1790,6 +1795,7 @@ export class SupabaseCloudSyncManager {
                 await saveChatAttachment({
                     id,
                     conversationKey: String(metadata.conversationKey || row.conversation_key || ''),
+                    studio:readStudioVideoMetadata(String(metadata.conversationKey || row.conversation_key || ''),id,metadata.studio),
                     name: String(metadata.name || 'attachment'),
                     mimeType: row.mime_type,
                     createdAt: row.created_at_ms,

@@ -10,6 +10,7 @@ export interface CharacterPhotoAsset {
     blob: Blob;
     prompt: string;
     createdAt: number;
+    studio?: import('./studioMediaStore.js').StudioImageMetadata;
 }
 
 let databasePromise: Promise<IDBDatabase> | null = null;
