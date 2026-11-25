@@ -1,7 +1,7 @@
 // Isolated pilot: persist a job ID before submission; recover by GET only.
 export type PilotJobStatus = 'queued'|'running'|'done'|'failed'|'interrupted'|'cancelled';
 export type PilotJob = {job_id:string;status:PilotJobStatus;reused?:boolean;result?:{model?:string;usage?:{prompt_tokens?:number;completion_tokens?:number;prompt_tokens_details?:{cached_tokens?:number;cache_creation_input_tokens?:number}};choices:{message:{content:string};finish_reason?:string|null}[]};error?:string};
-export type PilotRequest = {model:string;messages:{role:'system'|'user'|'assistant';content:string}[];max_completion_tokens?:number;temperature?:number;top_p?:number;repetition_penalty?:number;stop?:string[];seed?:number;reasoning_effort?:'none';prompt_cache_key?:string;venice_parameters?:Record<string,boolean|string>};
+export type PilotRequest = {model:string;messages:{role:'system'|'user'|'assistant';content:string}[];max_completion_tokens?:number;temperature?:number;top_p?:number;repetition_penalty?:number;stop?:string[];seed?:number;reasoning_effort?:'none';prompt_cache_key?:string;response_format?:import('./venice.js').VeniceJsonSchemaResponseFormat;venice_parameters?:Record<string,boolean|string>};
 export type PilotReceipt = {jobId:string;createdAt:number;};
 export type PilotStorage = Pick<Storage,'getItem'|'setItem'|'removeItem'>;
 const KEY='aigfVpsPilotPendingV1';

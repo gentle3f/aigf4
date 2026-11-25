@@ -19,7 +19,7 @@ import {
 } from "./managers.js";
 import { createDurableChatTurn, browserTurnLock, type TurnIdentity, type TurnReceipt } from './durableChatTurn.js';
 import { runDurableChatStage } from './vpsStageRunner.js';
-import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult } from './vpsCharacterTransport.js';
+import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult, VPS_REVIEW_MODELS } from './vpsCharacterTransport.js';
 import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
 import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, VPS_CHAT_MODELS, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
@@ -7610,7 +7610,7 @@ const requestStrictReviewDecision = async (
     trace?: GenerationTrace,
 ) => {
     const preparationStartedAt = performance.now();
-    const reviewerModels = buildStrictReviewModelRoute(chatModelSettings, request.personaKey === 'cc');
+    const reviewerModels = request.vpsTurn ? VPS_REVIEW_MODELS : buildStrictReviewModelRoute(chatModelSettings, request.personaKey === 'cc');
     const promptCacheKey = createConversationPromptCacheKey(request.conversationKey, 'review');
     const runAttempt = async ({ model, attemptIndex, isFallback }: ReviewPipelineAttemptContext) => {
         applyChatRuntimeState('retrying', isFallback ? '重新檢查中...' : '檢查回覆中...');
@@ -7636,10 +7636,26 @@ const requestStrictReviewDecision = async (
             responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,
         }, {
             getReviewHistory: () => getStrictReviewHistory(request, latestUserMessage),
-            requestText: generateChatTextWithTimeout,
+            requestText: request.vpsTurn ? async options => {
+                const parent = request.vpsTurn?.receipt;
+                if (!parent || (attemptIndex !== 1 && attemptIndex !== 2)) throw Error('TURN_REVIEW_STAGE_INVALID');
+                const controller = makeVpsTurnController();
+                const job = await runDurableChatStage({
+                    parent, phase: attemptIndex === 1 ? 'review-1' : 'review-2',
+                    payload: buildVpsCharacterPayload(options), signal: request.controller.signal,
+                    stage: controller.stage,
+                    verifyContext: async () => {
+                        if (!isActiveChatRequest(request) || await digestVpsHistory(memoryManager.peekChatHistory(parent.conversationKey)) !== parent.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+                    },
+                    onPending: () => applyChatRuntimeState('retrying', 'VPS 背景審核中…'),
+                });
+                const result = decodeVpsCharacterResult(job, options.model);
+                if (result.finishReason === 'length') throw Error('Invalid strict review from ' + model + '.');
+                return result;
+            } : generateChatTextWithTimeout,
             recordAttempt: attempt => recordStrictReviewAttempt(trace, attempt),
             classifyFailure: error => getStrictReviewAttemptFailure(request, error),
-            shouldRethrow: error => isAbortError(error) && request.controller.signal.aborted,
+            shouldRethrow: error => request.vpsTurn ? !(error instanceof Error && error.message === 'Invalid strict review from ' + model + '.') : isAbortError(error) && request.controller.signal.aborted,
             onPrepare: () => markChatPerformance('strict-review:prepare', preparationStartedAt),
             onRequestStarted: () => markChatPerformance('strict-review:request-start'),
             onRequestPrepared: prepared => {
@@ -7757,7 +7773,7 @@ const strictReviewSingleReply = async (
         buildNpcContinuityRequirement(establishedNpcNames),
         buildNpcSpeechRequirement(addressedNpcNames),
     ].filter(Boolean).join('\n\n');
-    const shadow = startStrictReviewShadow(request, latestUserMessage, candidate, 'single');
+    const shadow = request.vpsTurn ? null : startStrictReviewShadow(request, latestUserMessage, candidate, 'single');
     let decision;
     try {
         decision = await requestStrictReviewDecision(
@@ -7768,10 +7784,11 @@ const strictReviewSingleReply = async (
             trace,
         );
     } catch (error) {
-        shadow.recordGemmaDecision('unavailable');
+        shadow?.recordGemmaDecision('unavailable');
         throw error;
     }
-    shadow.recordGemmaDecision(decision?.decision || 'unavailable', decision?.issues);
+    shadow?.recordGemmaDecision(decision?.decision || 'unavailable', decision?.issues);
+    if (request.vpsTurn && !decision) throw Error('VPS_REVIEW_INVALID');
     return applySingleStrictReview(candidate, decision, revisedResponse => {
         const revisedWardrobe = extractWardrobeEnvelope(
             revisedResponse,
@@ -7986,7 +8003,10 @@ const runCharacterChatGeneration = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
 ): Promise<string | GroupGenerationResult> => {
-    if (request.vpsTurn) return runConversationGeneration(request, latestUserMessage, [request.vpsTurn.model], false);
+    if (request.vpsTurn) return runSingleTurnAdapter({
+        generateCandidate: () => runConversationGeneration(request, latestUserMessage, [request.vpsTurn!.model], false),
+        reviewCandidate: candidate => strictReviewSingleReply(request, latestUserMessage, candidate),
+    });
     const models = buildCharacterModelRoute(chatModelSettings, request.personaKey === 'cc');
     if (request.room) {
         const trace = createGenerationTrace(String(request.id), 'group', request.conversationKey);

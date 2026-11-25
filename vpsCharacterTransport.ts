@@ -1,11 +1,14 @@
 import {buildVeniceTextPayload,type VeniceTextGenerationOptions,type VeniceTextGenerationResult} from './venice.js';
+import {STRICT_REVIEW_RESPONSE_FORMAT} from './strictReview.js';
+export const VPS_REVIEW_MODELS=["glm-5-3-flash-uncensored","deepseek-v4-1-flash-1017-uncensored"] as const;
+const canonical=(value:unknown)=>JSON.stringify(value,(_k,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])):v);
 import {parseVenicePromptCacheUsage} from './veniceCache.js';
 import {QueuePilotError,type PilotJob,type PilotRequest} from './generationQueuePilot.js';
 import type {TurnTransport} from './durableChatTurn.js';
 
 const MODELS=new Set(['glm-5-3-flash-uncensored','deepseek-v4-1-flash-1017-uncensored','qwen-3-6-plus']);
 export function buildVpsCharacterPayload(options:VeniceTextGenerationOptions):PilotRequest{
- if(!MODELS.has(options.model)||options.onTextDelta||options.responseFormat||options.enableWebSearch||options.messages.some(m=>typeof m.content!=='string'))throw Error('UNSUPPORTED_VPS_CHARACTER_REQUEST');
+ if(!MODELS.has(options.model)||options.onTextDelta||(options.responseFormat&&(!VPS_REVIEW_MODELS.some(m=>m===options.model)||canonical(options.responseFormat)!==canonical(STRICT_REVIEW_RESPONSE_FORMAT)))||options.enableWebSearch||options.messages.some(m=>typeof m.content!=='string'))throw Error('UNSUPPORTED_VPS_CHARACTER_REQUEST');
  const raw=buildVeniceTextPayload(options);
  const payload=JSON.parse(JSON.stringify(raw)) as PilotRequest;
  if(payload.max_completion_tokens!==undefined&&(!Number.isInteger(payload.max_completion_tokens)||payload.max_completion_tokens<1||payload.max_completion_tokens>8192))throw Error('VPS_OUTPUT_LIMIT');

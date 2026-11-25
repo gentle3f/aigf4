@@ -2,6 +2,9 @@ import { requireAuthenticatedRequest } from '../api/_auth.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MODELS = new Set(['glm-5-3-flash-uncensored','deepseek-v4-1-flash-1017-uncensored','qwen-3-6-plus']);
+const REVIEW_MODELS=new Set(["glm-5-3-flash-uncensored","deepseek-v4-1-flash-1017-uncensored"]);
+const REVIEW_FORMAT={"type":"json_schema","json_schema":{"name":"strict_chat_review","strict":true,"schema":{"type":"object","additionalProperties":false,"required":["decision","issues","revised_response"],"properties":{"decision":{"type":"string","enum":["keep","revise"]},"issues":{"type":"array","maxItems":8,"items":{"type":"string","enum":["request_mismatch","identity","speaker_ownership","continuity","reality_layer","wardrobe","state","replayed_beat","persona_voice","third_party_speech","user_agency","incomplete_ending","group_narration","other"]}},"revised_response":{"type":"string"}}}}};
+const canonical=value=>JSON.stringify(value,(_k,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])):v);
 const LIMIT = 256 * 1024;
 const SAFE_ERRORS = /^(?:EMPTY_VISIBLE_REPLY(?:_TOKEN_LIMIT)?|INVALID_PROVIDER_(?:RESPONSE|JSON)|PROVIDER_(?:HTTP_[1-5][0-9]{2}|TIMEOUT|DNS_ERROR|TLS_ERROR|NETWORK_ERROR|RESPONSE_TOO_LARGE|FAILURE)); no automatic retry$/;
 
@@ -32,12 +35,13 @@ export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAu
     if(method==='POST') {
       // Text-only pilot. Explicitly reject incompatible payloads before dispatch.
       const p=req.body?.request;
-      const allowed=new Set(['model','messages','max_completion_tokens','max_tokens','temperature','top_p','repetition_penalty','stop','seed','venice_parameters','reasoning_effort','prompt_cache_key']);
+      const allowed=new Set(['model','messages','max_completion_tokens','max_tokens','temperature','top_p','repetition_penalty','stop','seed','venice_parameters','reasoning_effort','prompt_cache_key','response_format']);
       if(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).some(k=>!allowed.has(k))||!MODELS.has(p.model)
         ||!Array.isArray(p.messages)||p.messages.length<1||p.messages.length>300
         ||p.messages.some(m=>!m||!['system','user','assistant'].includes(m.role)||typeof m.content!=='string'||Object.keys(m).some(k=>!['role','content'].includes(k)))) return res.status(400).json({error:'UNSUPPORTED_PILOT_REQUEST'});
       if(p.reasoning_effort!==undefined&&p.reasoning_effort!=='none') return res.status(400).json({error:'UNSUPPORTED_REASONING_EFFORT'});
       if(p.prompt_cache_key!==undefined&&(typeof p.prompt_cache_key!=='string'||!/^wetapp-(chat|review)-v1-[a-z0-9]{1,32}$/.test(p.prompt_cache_key))) return res.status(400).json({error:'INVALID_PROMPT_CACHE_KEY'});
+      if(p.response_format!==undefined&&(!REVIEW_MODELS.has(p.model)||canonical(p.response_format)!==canonical(REVIEW_FORMAT))) return res.status(400).json({error:'UNSUPPORTED_REVIEW_SCHEMA'});
       const max=p.max_completion_tokens??p.max_tokens??4096;
       if(!Number.isInteger(max)||max<1||max>8192) return res.status(400).json({error:'INVALID_OUTPUT_LIMIT'});
       const vp=p.venice_parameters??{};
