@@ -5,7 +5,7 @@ import {getSavedStudioImage,persistStudioImage,getSavedStudioVideo,persistStudio
 import type {VeniceVideoRetrieveResult} from './veniceVideo.js';
 const PREFIX='aigfAcceptanceMediaV1:';
 export const IMAGE_OPTIONS={mode:'generate' as const,model:'qwen-image-3',prompt:'A peaceful empty lake at sunrise, landscape photograph, mountains and soft clouds, no people, no text.',aspectRatio:'1:1',resolution:'1K',variants:1,adultConfirmed:true};
-export const VIDEO_OPTIONS={model:VPS_VIDEO_MODEL,prompt:'Five second static-camera nature shot of gentle ripples on an empty mountain lake at sunrise. No people, no text.',duration:'5s' as const,resolution:'720p',aspectRatio:'16:9',audio:false,adultConfirmed:true};
+export const VIDEO_OPTIONS={model:VPS_VIDEO_MODEL,prompt:'Five second static-camera nature shot of gentle ripples on an empty mountain lake at sunrise. No people, no text.',duration:'5s' as const,resolution:'720p',aspectRatio:'16:9',adultConfirmed:true};
 type Store=Pick<Storage,'getItem'|'setItem'|'removeItem'>;
 type Report={id:string;size:number;mime:string;sha256:string;cloudSizeEligible:boolean};
 const digest=async(b:Blob)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await b.arrayBuffer())),n=>n.toString(16).padStart(2,'0')).join('');

@@ -28,8 +28,9 @@ acceptanceButton.onclick=()=>void action(async()=>{if(!confirm('執行固定合�
 try{renderSuite();}catch(e){acceptanceReport.textContent='驗收紀錄無效，請保留原紀錄以供排查。';acceptanceButton.disabled=true;}
 
 const media=createMediaAcceptance({storage:localStorage,lock:async fn=>{if(!navigator.locks)throw Error('WEB_LOCKS_REQUIRED');return navigator.locks.request('aigf-media-acceptance-v1',fn);},retrieveVideo:j=>retrieveVeniceVideo(j.model,j.queueId,j.downloadUrl),cleanupVideo:j=>completeVeniceVideo(j.model,j.queueId)});
+const videoOnly=el<HTMLButtonElement>('video-only');
 const mediaButton=el<HTMLButtonElement>('media-run'),mediaReport=el<HTMLElement>('media-report');
-function renderMedia(){const r=media.read();const line=(label:string,v:typeof r.image,p:string|null)=>label+': '+(v?'PASS · '+v.size+' bytes · '+v.mime+' · '+(v.cloudSizeEligible?'50 MiB 內':'超出雲端上限')+'\nSHA-256 '+v.sha256:p?'PENDING · '+p:'未測試');mediaReport.textContent=line('圖片',r.image,r.imagePending)+'\n'+line('影片',r.video,r.videoPending);mediaButton.disabled=!!r.image&&!!r.video;}
+function renderMedia(){const r=media.read();const line=(label:string,v:typeof r.image,p:string|null)=>label+': '+(v?'PASS · '+v.size+' bytes · '+v.mime+' · '+(v.cloudSizeEligible?'50 MiB 內':'超出雲端上限')+'\nSHA-256 '+v.sha256:p?'PENDING · '+p:'未測試');mediaReport.textContent=line('圖片',r.image,r.imagePending)+'\n'+line('影片',r.video,r.videoPending);mediaButton.disabled=!!r.image&&!!r.video;videoOnly.disabled=!!r.video;}
 mediaButton.onclick=()=>void action(async()=>{
  const state=media.read();let allowVideo=!!state.videoPending;
  if(!state.video&&!state.videoPending){
@@ -46,3 +47,5 @@ mediaButton.onclick=()=>void action(async()=>{
  }finally{renderMedia();}
 });
 try{renderMedia();}catch{mediaReport.textContent='媒體驗收紀錄無效；保留原紀錄。';mediaButton.disabled=true;}
+
+videoOnly.onclick=()=>void action(async()=>{const r=media.read();if(r.video)return;let allow=!!r.videoPending;if(!allow){const quote=await quoteVeniceVideo(VIDEO_OPTIONS);if(!Number.isFinite(quote)||quote<0||quote>5)throw Error('影片報價無效或超出上限；未提交。');if(!confirm('只生成一段 5 秒 Wan Enhanced 影片（模型固定原生聲音），報價 US$'+quote+'。繼續？'))return;allow=true;}videoOnly.disabled=true;try{const deadline=Date.now()+600000;while(Date.now()<deadline){const next=await media.videoStep(allow);renderMedia();videoOnly.disabled=true;if(next==='done'){status.textContent='影片驗收完成，毋須再生成圖片。';return;}await new Promise(r=>setTimeout(r,2500));}status.textContent='按同一按鈕取回影片，不會重複提交。';}finally{renderMedia();}});

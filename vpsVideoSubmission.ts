@@ -19,7 +19,7 @@ export function createVpsVideoSubmission(fetchImpl:typeof fetch=fetch){
    if(!pending.submissionId||pending.submissionId!==pending.queueId)throw Error('VPS_VIDEO_INVALID_RECEIPT');
    const j=await call(pending.submissionId,undefined,signal);
    if(j.status==='queued'||j.status==='running')return null;
-   if(j.status!=='done')throw Error('VPS_VIDEO_'+j.status.toUpperCase());
+   if(j.status!=='done')throw Error('VPS_VIDEO_'+j.status.toUpperCase()+(typeof j.error==='string'&&/^(?:PROVIDER_HTTP_[1-5][0-9]{2}|PROVIDER_(?:TIMEOUT|DNS_ERROR|TLS_ERROR|NETWORK_ERROR|FAILURE)|INVALID_PROVIDER_(?:RESPONSE|JSON)); no automatic retry$/.test(j.error)?' — '+j.error:''));
    const content=j.result?.choices?.[0]?.message?.content;
    if(typeof content!=='string'||j.result?.workflow)throw Error('VPS_VIDEO_INVALID_RESULT');
    let d;try{d=JSON.parse(content);}catch{throw Error('VPS_VIDEO_INVALID_RESULT');}
