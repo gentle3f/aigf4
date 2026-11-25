@@ -1,3 +1,5 @@
+import { VPS_CHAT_BUILD } from '../vpsChatMode.js';
+import { IMAGE_RECEIPT_KEY,readImageReceipt,createVpsImageTransport,submitDurableImage,type ImageReceipt } from '../vpsImageJob.js';
 import type {
     VeniceImageMode,
     VeniceImageModelSummary,
@@ -543,7 +545,43 @@ const cancelImageRequest = () => {
     }
 };
 
+const receiveVpsImage=async(receipt:ImageReceipt,signal:AbortSignal)=>{
+    const transport=createVpsImageTransport();
+    const deadline=Date.now()+300000;
+    while(Date.now()<deadline){
+        if(signal.aborted)throw new DOMException('Aborted','AbortError');
+        const blob=await transport.retrieve(receipt,signal);
+        if(signal.aborted)throw new DOMException('Aborted','AbortError');
+        if(blob){
+            if(readImageReceipt(localStorage)?.jobId!==receipt.jobId)throw Error('VPS_IMAGE_RECEIPT_CHANGED');
+            if(!imageResults.some(r=>r.id===receipt.jobId)){
+                imageResults=[{id:receipt.jobId,blob,url:URL.createObjectURL(blob),prompt:receipt.prompt,model:receipt.modelName,modelId:'qwen-image-3',mode:'generate',aspectRatio:receipt.aspectRatio||'1:1',resolution:receipt.resolution,seed:receipt.seed,createdAt:new Date(receipt.createdAt)},...imageResults];
+                renderImageResults();
+            }
+            imageStudioStatus.textContent='背景圖片已取回及核對；請下載，然後清除背景任務紀錄。';
+            return;
+        }
+        imageStudioStatus.textContent='VPS 背景生成中；可關閉手機，稍後取回。';
+        await new Promise(resolve=>setTimeout(resolve,2000));
+    }
+    throw Error('背景工作仍待取回，原任務已保存。');
+};
+const resumeVpsImage=async()=>{
+    if(!VPS_CHAT_BUILD||isImageRequestRunning)return;
+    let receipt:ImageReceipt|null;
+    try{receipt=readImageReceipt(localStorage);}catch{showImageStudioError('背景圖片紀錄無效；請清除紀錄後再試。');return;}
+    if(!receipt)return;
+    const controller=new AbortController();
+    imageRequestController=controller;setImageStudioBusy(true);clearImageStudioError();
+    try{await receiveVpsImage(receipt,controller.signal);}
+    catch(e){if(!controller.signal.aborted){const message=e instanceof Error?e.message:'背景圖片取回失敗';showImageStudioError(message);if(message===VENICE_AUTH_REQUIRED_ERROR)getDeps().handleAuthRequired();}imageStudioStatus.textContent='背景任務紀錄已保留，沒有重新提交。';}
+    finally{if(imageRequestController===controller){imageRequestController=null;setImageStudioBusy(false);}}
+};
 const runImageGeneration = async () => {
+    if(VPS_CHAT_BUILD){
+        try{if(readImageReceipt(localStorage)){await resumeVpsImage();return;}}
+        catch{showImageStudioError('背景圖片紀錄無效；請清除紀錄後再試。');return;}
+    }
     const prompt = imagePrompt.value.trim();
     const model = getSelectedImageModel();
     clearImageStudioError();
@@ -576,7 +614,7 @@ const runImageGeneration = async () => {
             ? getDeps().resolveSharedSeed()
             : undefined;
         imageSeed.value = typeof seedValue === 'number' ? String(seedValue) : imageSeed.value;
-        const result = await getDeps().requestImage({
+        const options:VeniceImageRequest = {
             mode: imageStudioMode,
             model: model.id,
             prompt,
@@ -591,7 +629,14 @@ const runImageGeneration = async () => {
             seed: Number.isFinite(seedValue) ? seedValue : undefined,
             adultConfirmed: true,
             signal: controller.signal,
-        });
+        };
+        if(VPS_CHAT_BUILD&&options.mode==='generate'&&options.model==='qwen-image-3'&&options.variants===1){
+            if(!navigator.locks)throw Error('VPS_IMAGE_WEB_LOCKS_REQUIRED');
+            const receipt=await submitDurableImage({options:{...options,sourceImageBase64:undefined},modelName:model.name,storage:localStorage,lock:async work=>await navigator.locks.request('aigf-vps-image-v1',work),transport:createVpsImageTransport()});
+            await receiveVpsImage(receipt,controller.signal);
+            return;
+        }
+        const result=await getDeps().requestImage(options);
 
         const now = new Date();
         const newResults: ImageStudioResult[] = result.blobs.map((blob, index) => ({
@@ -700,6 +745,19 @@ const attachListeners = () => {
         void runImageGeneration();
     });
     clearImageResultsBtn.addEventListener('click', clearImageResults);
+    if(VPS_CHAT_BUILD){
+        const controls=document.createElement('div');
+        const resume=document.createElement('button');resume.type='button';resume.textContent='取回背景圖片';resume.onclick=()=>void resumeVpsImage();
+        const abandon=document.createElement('button');abandon.type='button';abandon.textContent='清除背景任務紀錄';abandon.onclick=()=>{
+            if(isImageRequestRunning||!navigator.locks)return;
+            void navigator.locks.request('aigf-vps-image-v1',()=>{
+                if(!localStorage.getItem(IMAGE_RECEIPT_KEY))return;
+                if(confirm('清除本機背景任務紀錄？遠端工作不會取消；尚未下載的圖片可能無法再取回。')){localStorage.removeItem(IMAGE_RECEIPT_KEY);imageStudioStatus.textContent='本機背景任務紀錄已清除';}
+            });
+        };
+        const note=document.createElement('p');note.textContent='VPS Preview：Qwen Image 3 單張文字生圖，背景模式，24 小時內取回。';
+        controls.append(note,resume,abandon);imageStudioStatus.after(controls);
+    }
 };
 
 export const createImageStudio = (deps: ImageStudioDependencies): ImageStudioHandle => {
@@ -719,6 +777,7 @@ export const createImageStudio = (deps: ImageStudioDependencies): ImageStudioHan
             renderImageResults();
             void loadModelsAndRender(imageStudioMode);
             updateImageGenerateButton();
+            if(VPS_CHAT_BUILD)void resumeVpsImage();
         },
         hide: () => {
             imageStudioView.classList.add('hidden');

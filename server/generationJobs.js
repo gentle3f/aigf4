@@ -62,6 +62,22 @@ function validateVideoSubmission(p){
   if(p.audio!==undefined&&p.audio!==false)return 'INVALID_VIDEO_SUBMISSION';
   return null;
 }
+const MEDIA_CHUNK=256*1024,MEDIA_MAX=8*1024*1024;
+function validateImageSubmission(p){
+  if(!p||typeof p!=='object'||Array.isArray(p)||p.image_submit_version!==1||p.model!=='qwen-image-3'||Object.keys(p).some(k=>!['image_submit_version','model','prompt','negative_prompt','aspect_ratio','resolution','width','height','steps','seed'].includes(k)))return 'UNSUPPORTED_IMAGE_SUBMISSION';
+  if(typeof p.prompt!=='string'||!p.prompt.trim()||p.prompt.length>10000)return 'INVALID_IMAGE_SUBMISSION';
+  if(p.negative_prompt!==undefined&&(typeof p.negative_prompt!=='string'||p.negative_prompt.length>7500))return 'INVALID_IMAGE_SUBMISSION';
+  if(p.aspect_ratio!==undefined&&!['1:1','3:2','2:3','4:3','3:4','4:5','16:9','9:16','21:9'].includes(p.aspect_ratio))return 'INVALID_IMAGE_SUBMISSION';
+  if(p.resolution!==undefined&&!['1K','2K','1k','2k','1024','2048'].includes(p.resolution))return 'INVALID_IMAGE_SUBMISSION';
+  for(const [k,lo,hi] of [['width',256,1280],['height',256,1280],['steps',1,50],['seed',-999999999,999999999]])if(p[k]!==undefined&&(!Number.isInteger(p[k])||p[k]<lo||p[k]>hi))return 'INVALID_IMAGE_SUBMISSION';
+  return null;
+}
+function safeMediaChunk(d,id,offset){
+  if(!d||d.job_id!==id||d.offset!==offset||!Number.isInteger(d.size)||d.size<512||d.size>MEDIA_MAX||offset>=d.size||typeof d.sha256!=='string'||!/^[a-f0-9]{64}$/.test(d.sha256)||typeof d.data!=='string'||d.data.length>Math.ceil(MEDIA_CHUNK/3)*4||!/^[A-Za-z0-9+/]+={0,2}$/.test(d.data))return null;
+  const data=Buffer.from(d.data,'base64');
+  if(data.toString('base64')!==d.data||data.length!==Math.min(MEDIA_CHUNK,d.size-offset))return null;
+  return {job_id:id,offset,size:d.size,sha256:d.sha256,data:d.data};
+}
 export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAuthenticatedRequest, env=process.env}={}) {
   return async function handler(req,res) {
     res.setHeader('Cache-Control','no-store');
@@ -85,23 +101,34 @@ export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAu
     if(accessId){headers['CF-Access-Client-Id']=accessId;headers['CF-Access-Client-Secret']=accessSecret;}
     const jobId=method==='POST'?req.body?.job_id:req.query?.job_id;
     if(typeof jobId!=='string'||!UUID.test(jobId)) return res.status(400).json({error:'INVALID_JOB_ID'});
+    const offsetRaw=req.query?.media_offset;
+    let offset;
+    if(offsetRaw!==undefined){
+      if(method!=='GET'||typeof offsetRaw!=='string'||!/^(0|[1-9][0-9]{0,7})$/.test(offsetRaw))return res.status(400).json({error:'INVALID_MEDIA_OFFSET'});
+      offset=Number(offsetRaw);
+      if(offset>=MEDIA_MAX||offset%MEDIA_CHUNK!==0)return res.status(400).json({error:'INVALID_MEDIA_OFFSET'});
+    }
     let body;
     if(method==='POST') {
       // Text-only pilot. Explicitly reject incompatible payloads before dispatch.
       const p=req.body?.request;
-      const validation=p&&typeof p==='object'&&'video_submit_version' in p?validateVideoSubmission(p):p&&typeof p==='object'&&'workflow_version' in p?validateWorkflowPayload(p):validateTextPayload(p);
+      const validation=p&&typeof p==='object'&&'image_submit_version' in p?validateImageSubmission(p):p&&typeof p==='object'&&'video_submit_version' in p?validateVideoSubmission(p):p&&typeof p==='object'&&'workflow_version' in p?validateWorkflowPayload(p):validateTextPayload(p);
       if(validation)return res.status(400).json({error:validation});
       body=JSON.stringify({job_id:jobId,request:p});
       if(Buffer.byteLength(body)>LIMIT) return res.status(413).json({error:'REQUEST_TOO_LARGE'});
     }
     try {
-      const path=method==='POST'?'/v1/jobs':'/v1/jobs/'+jobId;
+      const path=method==='POST'?'/v1/jobs':'/v1/jobs/'+jobId+(offset!==undefined?'/media/'+offset:'');
       const upstream=await fetchImpl(new URL(path,base),{method,headers,body,redirect:'error',signal:AbortSignal.timeout(10000),cache:'no-store'});
       if(!upstream.ok) {
         const code=upstream.status;
         return res.status([400,404,409,413,429].includes(code)?code:502).json({error:'QUEUE_HTTP_'+code});
       }
       const d=await upstream.json();
+      if(offset!==undefined){
+        const chunk=safeMediaChunk(d,jobId,offset);
+        return chunk?res.status(200).json(chunk):res.status(502).json({error:'INVALID_MEDIA_CHUNK'});
+      }
       if(d.job_id!==jobId||!['queued','running','done','failed','interrupted','cancelled'].includes(d.status)) return res.status(502).json({error:'INVALID_QUEUE_RESPONSE'});
       const result=d.result;
       const choice=result?.choices?.[0];
