@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createGenerationHandler} from '../api/generation-jobs.js';
+import {createGenerationHandler} from '../server/generationJobs.js';
 const id='12345678-1234-4234-8234-123456789abc';
 const env={AIGF_VPS_QUEUE_ENABLED:'1',AIGF_VPS_QUEUE_URL:'https://queue.example.invalid/',AIGF_VPS_QUEUE_TOKEN:'x'.repeat(64)};
 const payload={job_id:id,request:{model:'glm-5-3-flash-uncensored',messages:[{role:'user',content:'Synthetic'}],max_completion_tokens:128}};

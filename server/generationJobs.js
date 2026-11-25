@@ -1,4 +1,4 @@
-import { requireAuthenticatedRequest } from './_auth.js';
+import { requireAuthenticatedRequest } from '../api/_auth.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MODELS = new Set(['glm-5-3-flash-uncensored','deepseek-v4-1-flash-1017-uncensored','qwen-3-6-plus']);

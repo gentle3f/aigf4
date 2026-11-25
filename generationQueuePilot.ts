@@ -19,7 +19,7 @@ export function createQueuePilotClient({storage,fetchImpl=fetch,newId=()=>crypto
   }
   async function request(jobId:string,method:'GET'|'POST',payload?:PilotRequest):Promise<PilotJob>{
     let r:Response;
-    try {r=await fetchImpl(method==='POST'?'/api/generation-jobs':'/api/generation-jobs?job_id='+encodeURIComponent(jobId),{
+    try {r=await fetchImpl(method==='POST'?'/api/venice-chat?queue=1':'/api/venice-chat?queue=1&job_id='+encodeURIComponent(jobId),{
       method,credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},
       ...(payload?{body:JSON.stringify({job_id:jobId,request:payload})}:{})
     });} catch {throw new QueuePilotError('QUEUE_TRANSPORT_UNCERTAIN',jobId);}
