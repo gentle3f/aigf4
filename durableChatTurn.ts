@@ -1,11 +1,11 @@
 // G7A: durable logical chat-turn receipt. No provider calls without a durable user message.
-import type {PilotJob, PilotRequest, PilotStorage} from './generationQueuePilot.js';
+import type {PilotJob, PilotRequest, PilotSubmission, PilotStorage} from './generationQueuePilot.js';
 const KEY='aigfVpsChatTurnV1';
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export type TurnIdentity={conversationKey:string;personaKey:string;userMessageId:string;contextDigest?:string};
 export type TurnStage='continuation-1'|'continuation-2'|'review-1'|'review-2'|'review-3';
 export type StageReceipt={jobId:string;requestDigest:string;model:string};
-export type TurnReceipt=TurnIdentity&{jobId:string;replyId:string;createdAt:number;model:string;stages?:Partial<Record<TurnStage,StageReceipt>>};
+export type TurnReceipt=TurnIdentity&{jobId:string;replyId:string;createdAt:number;model:string;workflowVersion?:1;stages?:Partial<Record<TurnStage,StageReceipt>>};
 const STAGES=new Set<string>(['continuation-1','continuation-2','review-1','review-2','review-3']);
 const validStages=(r:TurnReceipt)=>{
  if(r.stages===undefined)return true;
@@ -27,10 +27,10 @@ export type DurableHistory={
   // Must also confirm a pre-existing reply is durable before receipt removal.
   confirmReply:(receipt:TurnReceipt)=>Promise<void>;
 };
-export type TurnTransport={submit:(id:string,payload:PilotRequest)=>Promise<PilotJob>;get:(id:string)=>Promise<PilotJob>};
+export type TurnTransport={submit:(id:string,payload:PilotSubmission)=>Promise<PilotJob>;get:(id:string)=>Promise<PilotJob>};
 type Lock=<T>(work:()=>Promise<T>)=>Promise<T>;
 const same=(a:TurnIdentity,b:TurnIdentity)=>a.conversationKey===b.conversationKey&&a.personaKey===b.personaKey&&a.userMessageId===b.userMessageId&&a.contextDigest===b.contextDigest;
-const valid=(r:TurnReceipt)=>!!r&&typeof r.conversationKey==='string'&&!!r.conversationKey&&typeof r.personaKey==='string'&&!!r.personaKey&&UUID.test(r.userMessageId)&&UUID.test(r.jobId)&&UUID.test(r.replyId)&&r.jobId!==r.replyId&&Number.isFinite(r.createdAt)&&typeof r.model==='string'&&!!r.model&&(r.contextDigest===undefined||/^[a-f0-9]{64}$/.test(r.contextDigest))&&validStages(r);
+const valid=(r:TurnReceipt)=>!!r&&typeof r.conversationKey==='string'&&!!r.conversationKey&&typeof r.personaKey==='string'&&!!r.personaKey&&UUID.test(r.userMessageId)&&UUID.test(r.jobId)&&UUID.test(r.replyId)&&r.jobId!==r.replyId&&Number.isFinite(r.createdAt)&&typeof r.model==='string'&&!!r.model&&(r.contextDigest===undefined||/^[a-f0-9]{64}$/.test(r.contextDigest))&&validStages(r)&&(r.workflowVersion===undefined||(r.workflowVersion===1&&r.stages===undefined));
 export function createDurableChatTurn({storage,history,transport,lock,newId=()=>crypto.randomUUID(),now=Date.now}:{
  storage:PilotStorage;history:DurableHistory;transport:TurnTransport;lock:Lock;newId?:()=>string;now?:()=>number;
 }){
@@ -68,14 +68,14 @@ export function createDurableChatTurn({storage,history,transport,lock,newId=()=>
      const r=pending();if(!r||r.jobId!==jobId)throw Error('TURN_RECEIPT_CHANGED');
      clear(r);
    }),
-   submit:(turn:TurnIdentity,payload:PilotRequest)=>lock(async()=>{
+   submit:(turn:TurnIdentity,payload:PilotSubmission)=>lock(async()=>{
      const prior=pending();
      if(prior){
        if(!same(prior,turn))throw Error('OTHER_CHAT_TURN_PENDING');
        // A lost POST response is ambiguous; do not resubmit even if GET is 404.
        return fetchStatus(prior);
      }
-     const r:TurnReceipt={...turn,jobId:newId(),replyId:newId(),createdAt:now(),model:payload.model};
+     const r:TurnReceipt={...turn,jobId:newId(),replyId:newId(),createdAt:now(),model:'workflow_version' in payload?payload.primary.model:payload.model,...('workflow_version' in payload?{workflowVersion:1 as const}:{})};
      if(!valid(r))throw Error('TURN_RECEIPT_INVALID');
      if(inspect(r)!=='ready')throw Error('TURN_HISTORY_CHANGED');
      await history.persistUser(turn);
@@ -99,6 +99,7 @@ export function createDurableChatTurn({storage,history,transport,lock,newId=()=>
        const current=pending();
        if(!current||current.jobId!==parent.jobId||!same(current,parent)||current.replyId!==parent.replyId)throw Error('TURN_RECEIPT_CHANGED');
        if(inspect(current)!=='ready')throw Error('TURN_HISTORY_CHANGED');
+       if(current.workflowVersion===1)throw Error('TURN_WORKFLOW_NO_CLIENT_STAGE');
        const existing=current.stages?.[phase];
        if(existing){
          if(existing.requestDigest!==digest||existing.model!==payload.model)throw Error('TURN_STAGE_REQUEST_CHANGED');
@@ -119,6 +120,7 @@ export function createDurableChatTurn({storage,history,transport,lock,newId=()=>
      const current=pending();
      if(!current||current.jobId!==r.jobId||!same(current,r)||current.replyId!==r.replyId)throw Error('TURN_RECEIPT_CHANGED');
      if(job.job_id!==current.jobId||job.status!=='done'||!job.result?.choices?.[0]?.message?.content?.trim())throw Error('TURN_RESULT_NOT_READY');
+     if((current.workflowVersion===1)!==(job.result?.workflow?.version===1))throw Error('TURN_WORKFLOW_RESULT_MISMATCH');
      if(!acceptedText.trim())throw Error('TURN_REPLY_REJECTED');
      const state=inspect(current);
      if(state==='already-applied'){

@@ -19,6 +19,7 @@ import {
 } from "./managers.js";
 import { createDurableChatTurn, browserTurnLock, type TurnIdentity, type TurnReceipt } from './durableChatTurn.js';
 import { runDurableChatStage } from './vpsStageRunner.js';
+import { buildVpsWorkflowPayload, decodeVpsWorkflow } from './vpsWorkflow.js';
 import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult, VPS_REVIEW_MODELS } from './vpsCharacterTransport.js';
 import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
 import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, VPS_CHAT_MODELS, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
@@ -1881,7 +1882,10 @@ const makeVpsTurnController = (replyContent?: Content) => createDurableChatTurn(
     lock: browserTurnLock,
     history: {
         read: key => memoryManager.peekChatHistory(key),
-        persistUser: async t => memoryManager.persistVpsChatTurnUser(t.conversationKey, t.userMessageId),
+        persistUser: async t => {
+            memoryManager.persistVpsChatTurnUser(t.conversationKey, t.userMessageId);
+            if (t.contextDigest && await digestVpsHistory(memoryManager.peekChatHistory(t.conversationKey)) !== t.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+        },
         persistReply: async (r, text) => {
             if (await digestVpsHistory(memoryManager.peekChatHistory(r.conversationKey)) !== r.contextDigest) throw Error('TURN_HISTORY_CHANGED');
             memoryManager.persistVpsChatTurnReply(r.conversationKey, r.userMessageId, r.replyId, { ...replyContent, text });
@@ -6838,11 +6842,20 @@ const runConversationGeneration = async (
                         turn.receipt = recovered.receipt;
                         turn.job = recovered.job;
                     } else {
-                        turn.job = await controller.submit(turn.identity, buildVpsCharacterPayload(generationOptions));
+                        const reviewContext = buildSingleReviewContext(request, latestUserMessage);
+                        const plan = buildVpsWorkflowPayload(generationOptions, {
+                            editorPrompt: STRICT_REVIEW_EDITOR_PROMPT,
+                            authoritativePrompt: reviewContext.authoritativePrompt,
+                            reviewHistory: getStrictReviewHistory(request, latestUserMessage),
+                            latestUserMessage,
+                            promptCacheKey: createConversationPromptCacheKey(request.conversationKey, 'review'),
+                        });
+                        if (!isActiveChatRequest(request) || request.controller.signal.aborted || await digestVpsHistory(memoryManager.peekChatHistory(request.conversationKey)) !== turn.identity.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+                        turn.job = await controller.submit(turn.identity, plan);
                         turn.receipt = controller.pending() || undefined;
                     }
                     if (!turn.receipt) throw Error('TURN_RECEIPT_MISSING');
-                    const deadline = Date.now() + 300000;
+                    const deadline = Date.now() + (turn.receipt.workflowVersion === 1 ? 1500000 : 300000);
                     // A completed duplicate POST has only a receipt; always GET the full result.
                     while (turn.job.status === 'queued' || turn.job.status === 'running' || (turn.job.status === 'done' && !turn.job.result)) {
                         if (request.controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -6855,7 +6868,11 @@ const runConversationGeneration = async (
                     }
                     if (turn.job.status !== 'done') throw Error('VPS_' + turn.job.status.toUpperCase());
                     result = decodeVpsCharacterResult(turn.job, model);
-                    // A length-limited result is continued through journaled child jobs below.
+                    if (turn.receipt.workflowVersion === 1) {
+                        const workflow = decodeVpsWorkflow(turn.job);
+                        result = { ...result, text: workflow.parts[0], finishReason: 'stop' };
+                    } else if (turn.job.result?.workflow) throw Error('TURN_WORKFLOW_RESULT_MISMATCH');
+                    // Legacy in-flight turns retain their original per-stage recovery path.
                 } else {
                     result = await generateChatTextWithTimeout(generationOptions);
                 }
@@ -6923,6 +6940,14 @@ const runConversationGeneration = async (
 
                 let continuationCount = 0;
                 let finishReason = result.finishReason;
+                if (request.vpsTurn?.receipt?.workflowVersion === 1) {
+                    const workflow = decodeVpsWorkflow(request.vpsTurn.job!);
+                    for (const part of workflow.parts.slice(1)) {
+                        const continuation = cleanVeniceChatReply(part);
+                        if (!continuation || isInvalidVeniceChatReply(continuation)) throw Error('VPS_INVALID_CONTINUATION');
+                        cleanedText = mergeReplySegments(cleanedText, continuation);
+                    }
+                }
                 while (
                     continuationCount < CHAT_MAX_AUTO_CONTINUES &&
                     finishReason === 'length'
@@ -7609,6 +7634,10 @@ const requestStrictReviewDecision = async (
     candidateResponse: string,
     trace?: GenerationTrace,
 ) => {
+    if (request.vpsTurn?.receipt?.workflowVersion === 1) {
+        if (!request.vpsTurn.job) throw Error('TURN_RESULT_NOT_READY');
+        return decodeVpsWorkflow(request.vpsTurn.job).decision;
+    }
     const preparationStartedAt = performance.now();
     const reviewerModels = request.vpsTurn ? VPS_REVIEW_MODELS : buildStrictReviewModelRoute(chatModelSettings, request.personaKey === 'cc');
     const promptCacheKey = createConversationPromptCacheKey(request.conversationKey, 'review');
@@ -7739,12 +7768,7 @@ const startStrictReviewShadow = (
     onRecordUpdate,
 });
 
-const strictReviewSingleReply = async (
-    request: ActiveChatRequest,
-    latestUserMessage: string,
-    candidate: string,
-    trace?: GenerationTrace,
-) => {
+const buildSingleReviewContext = (request: ActiveChatRequest, latestUserMessage: string) => {
     const history = memoryManager.getChatHistory(request.conversationKey);
     const establishedNpcNames = collectEstablishedNpcNames(
         history,
@@ -7773,6 +7797,16 @@ const strictReviewSingleReply = async (
         buildNpcContinuityRequirement(establishedNpcNames),
         buildNpcSpeechRequirement(addressedNpcNames),
     ].filter(Boolean).join('\n\n');
+    return { establishedNpcNames, addressedNpcNames, authoritativePrompt };
+};
+
+const strictReviewSingleReply = async (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+    candidate: string,
+    trace?: GenerationTrace,
+) => {
+    const { establishedNpcNames, addressedNpcNames, authoritativePrompt } = buildSingleReviewContext(request, latestUserMessage);
     const shadow = request.vpsTurn ? null : startStrictReviewShadow(request, latestUserMessage, candidate, 'single');
     let decision;
     try {

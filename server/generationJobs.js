@@ -6,7 +6,47 @@ const REVIEW_MODELS=new Set(["glm-5-3-flash-uncensored","deepseek-v4-1-flash-101
 const REVIEW_FORMAT={"type":"json_schema","json_schema":{"name":"strict_chat_review","strict":true,"schema":{"type":"object","additionalProperties":false,"required":["decision","issues","revised_response"],"properties":{"decision":{"type":"string","enum":["keep","revise"]},"issues":{"type":"array","maxItems":8,"items":{"type":"string","enum":["request_mismatch","identity","speaker_ownership","continuity","reality_layer","wardrobe","state","replayed_beat","persona_voice","third_party_speech","user_agency","incomplete_ending","group_narration","other"]}},"revised_response":{"type":"string"}}}}};
 const canonical=value=>JSON.stringify(value,(_k,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])):v);
 const LIMIT = 256 * 1024;
-const SAFE_ERRORS = /^(?:EMPTY_VISIBLE_REPLY(?:_TOKEN_LIMIT)?|INVALID_PROVIDER_(?:RESPONSE|JSON)|PROVIDER_(?:HTTP_[1-5][0-9]{2}|TIMEOUT|DNS_ERROR|TLS_ERROR|NETWORK_ERROR|RESPONSE_TOO_LARGE|FAILURE)); no automatic retry$/;
+const SAFE_ERRORS = /^(?:EMPTY_VISIBLE_REPLY(?:_TOKEN_LIMIT)?|INVALID_PROVIDER_(?:RESPONSE|JSON)|WORKFLOW_(?:TRUNCATED|REVIEW_INVALID)|PROVIDER_(?:HTTP_[1-5][0-9]{2}|TIMEOUT|DNS_ERROR|TLS_ERROR|NETWORK_ERROR|RESPONSE_TOO_LARGE|FAILURE)); no automatic retry$/;
+
+const CANDIDATE_MARKER='__AIGF_CANDIDATE_V1__';
+function validateTextPayload(p) {
+  const allowed=new Set(['model','messages','max_completion_tokens','max_tokens','temperature','top_p','repetition_penalty','stop','seed','venice_parameters','reasoning_effort','prompt_cache_key','response_format']);
+  if(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).some(k=>!allowed.has(k))||!MODELS.has(p.model)
+    ||!Array.isArray(p.messages)||p.messages.length<1||p.messages.length>300
+    ||p.messages.some(m=>!m||!['system','user','assistant'].includes(m.role)||typeof m.content!=='string'||Object.keys(m).some(k=>!['role','content'].includes(k)))) return 'UNSUPPORTED_PILOT_REQUEST';
+  if(p.reasoning_effort!==undefined&&p.reasoning_effort!=='none') return 'UNSUPPORTED_REASONING_EFFORT';
+  if(p.prompt_cache_key!==undefined&&(typeof p.prompt_cache_key!=='string'||!/^wetapp-(chat|review)-v1-[a-z0-9]{1,32}$/.test(p.prompt_cache_key))) return 'INVALID_PROMPT_CACHE_KEY';
+  if(p.response_format!==undefined&&(!REVIEW_MODELS.has(p.model)||canonical(p.response_format)!==canonical(REVIEW_FORMAT))) return 'UNSUPPORTED_REVIEW_SCHEMA';
+  const max=p.max_completion_tokens??p.max_tokens??4096;
+  if(!Number.isInteger(max)||max<1||max>8192) return 'INVALID_OUTPUT_LIMIT';
+  const vp=p.venice_parameters??{};
+  const allowedVP=new Set(['include_venice_system_prompt','disable_thinking','strip_thinking_response','enable_web_search','enable_web_scraping','enable_web_citations']);
+  if(typeof vp!=='object'||Array.isArray(vp)||Object.keys(vp).some(k=>!allowedVP.has(k))||Object.entries(vp).some(([k,v])=>k==='enable_web_search'?v!=='off':typeof v!=='boolean')) return 'UNSUPPORTED_VENICE_PARAMETERS';
+  if(vp.enable_web_scraping===true||vp.enable_web_citations===true) return 'UNSUPPORTED_VENICE_PARAMETERS';
+  return null;
+}
+function validateWorkflowPayload(p) {
+  if(!p||typeof p!=='object'||Array.isArray(p)||p.workflow_version!==1||Object.keys(p).sort().join(',')!=='primary,review,workflow_version')return 'UNSUPPORTED_WORKFLOW';
+  const primaryError=validateTextPayload(p.primary),reviewError=validateTextPayload(p.review);
+  if(primaryError||reviewError)return primaryError||reviewError;
+  if(p.primary.response_format!==undefined||p.review.model!=='glm-5-3-flash-uncensored'||canonical(p.review.response_format)!==canonical(REVIEW_FORMAT))return 'UNSUPPORTED_WORKFLOW';
+  if(p.primary.messages.at(-1).role!=='user'||p.review.messages.at(-1).role!=='user')return 'UNSUPPORTED_WORKFLOW';
+  const occurrences=p.review.messages.reduce((n,m)=>n+m.content.split(CANDIDATE_MARKER).length-1,0);
+  if(occurrences!==1||!p.review.messages.at(-1).content.includes(CANDIDATE_MARKER))return 'INVALID_WORKFLOW_MARKER';
+  return null;
+}
+const safeUsage=u=>u&&typeof u==='object'?Object.fromEntries(Object.entries(u).filter(([k,v])=>['prompt_tokens','completion_tokens','total_tokens'].includes(k)&&Number.isFinite(v)&&v>=0)):undefined;
+const safeCost=c=>c&&typeof c==='object'?Object.fromEntries(Object.entries(c).filter(([k,v])=>['usd','diem'].includes(k)&&Number.isFinite(v)&&v>=0)):undefined;
+function safeWorkflow(w) {
+  if(!w||w.version!==1||!Array.isArray(w.parts)||w.parts.length<1||w.parts.length>3||w.parts.some(p=>typeof p!=='string'||!p.trim())||!Array.isArray(w.stages)||w.stages.length<2||w.stages.length>5)return null;
+  const review=w.review?.choices?.[0],content=review?.message?.content;
+  if(typeof content!=='string'||!content.trim())return null;
+  const phases=w.stages.map(s=>s?.phase);
+  const expected=['primary',...(w.parts.length>=2?['continuation-1']:[]),...(w.parts.length===3?['continuation-2']:[]),'review-1'];
+  if(phases.length===expected.length+1)expected.push('review-2');
+  if(phases.join(',')!==expected.join(','))return null;
+  return {version:1,parts:w.parts,review:{model:typeof w.review.model==='string'?w.review.model:undefined,choices:[{message:{content},finish_reason:typeof review.finish_reason==='string'?review.finish_reason:null}],usage:safeUsage(w.review.usage),cost:safeCost(w.review.cost)},stages:w.stages.map(s=>({phase:s.phase,model:typeof s.model==='string'?s.model:undefined,finish_reason:typeof s.finish_reason==='string'?s.finish_reason:null,usage:safeUsage(s.usage),cost:safeCost(s.cost)}))};
+}
 
 export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAuthenticatedRequest, env=process.env}={}) {
   return async function handler(req,res) {
@@ -35,19 +75,8 @@ export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAu
     if(method==='POST') {
       // Text-only pilot. Explicitly reject incompatible payloads before dispatch.
       const p=req.body?.request;
-      const allowed=new Set(['model','messages','max_completion_tokens','max_tokens','temperature','top_p','repetition_penalty','stop','seed','venice_parameters','reasoning_effort','prompt_cache_key','response_format']);
-      if(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).some(k=>!allowed.has(k))||!MODELS.has(p.model)
-        ||!Array.isArray(p.messages)||p.messages.length<1||p.messages.length>300
-        ||p.messages.some(m=>!m||!['system','user','assistant'].includes(m.role)||typeof m.content!=='string'||Object.keys(m).some(k=>!['role','content'].includes(k)))) return res.status(400).json({error:'UNSUPPORTED_PILOT_REQUEST'});
-      if(p.reasoning_effort!==undefined&&p.reasoning_effort!=='none') return res.status(400).json({error:'UNSUPPORTED_REASONING_EFFORT'});
-      if(p.prompt_cache_key!==undefined&&(typeof p.prompt_cache_key!=='string'||!/^wetapp-(chat|review)-v1-[a-z0-9]{1,32}$/.test(p.prompt_cache_key))) return res.status(400).json({error:'INVALID_PROMPT_CACHE_KEY'});
-      if(p.response_format!==undefined&&(!REVIEW_MODELS.has(p.model)||canonical(p.response_format)!==canonical(REVIEW_FORMAT))) return res.status(400).json({error:'UNSUPPORTED_REVIEW_SCHEMA'});
-      const max=p.max_completion_tokens??p.max_tokens??4096;
-      if(!Number.isInteger(max)||max<1||max>8192) return res.status(400).json({error:'INVALID_OUTPUT_LIMIT'});
-      const vp=p.venice_parameters??{};
-      const allowedVP=new Set(['include_venice_system_prompt','disable_thinking','strip_thinking_response','enable_web_search','enable_web_scraping','enable_web_citations']);
-      if(typeof vp!=='object'||Array.isArray(vp)||Object.keys(vp).some(k=>!allowedVP.has(k))||Object.entries(vp).some(([k,v])=>k==='enable_web_search'?v!=='off':typeof v!=='boolean')) return res.status(400).json({error:'UNSUPPORTED_VENICE_PARAMETERS'});
-      if(vp.enable_web_scraping===true||vp.enable_web_citations===true) return res.status(400).json({error:'UNSUPPORTED_VENICE_PARAMETERS'});
+      const validation=p&&typeof p==='object'&&'workflow_version' in p?validateWorkflowPayload(p):validateTextPayload(p);
+      if(validation)return res.status(400).json({error:validation});
       body=JSON.stringify({job_id:jobId,request:p});
       if(Buffer.byteLength(body)>LIMIT) return res.status(413).json({error:'REQUEST_TOO_LARGE'});
     }
@@ -69,6 +98,11 @@ export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAu
         const content=choice?.message?.content;
         if(typeof content!=='string'||!content.trim()) return res.status(502).json({error:'INVALID_QUEUE_RESPONSE'});
         safe.result={model:result.model,choices:[{message:{content},finish_reason:choice.finish_reason??null}],usage:result.usage,cost:result.cost};
+        if(result.workflow!==undefined){
+          const workflow=safeWorkflow(result.workflow);
+          if(!workflow||workflow.parts.join('\n')!==content)return res.status(502).json({error:'INVALID_QUEUE_RESPONSE'});
+          safe.result.workflow=workflow;
+        }
       }
       if(d.status==='failed'||d.status==='interrupted'||d.status==='cancelled') safe.error=typeof d.error==='string'&&SAFE_ERRORS.test(d.error)?d.error:'JOB_'+d.status.toUpperCase();
       return res.status(method==='POST'?202:200).json(safe);
