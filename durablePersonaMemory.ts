@@ -7,17 +7,17 @@ export type MemoryReceipt=MemoryContext&{jobId:string;digest:string;createdAt:nu
 type Lock=<T>(work:()=>Promise<T>)=>Promise<T>;
 const valid=(r:MemoryReceipt)=>r&&typeof r.personaKey==='string'&&!!r.personaKey&&UUID.test(r.jobId)&&/^[a-f0-9]{64}$/.test(r.digest)&&Number.isSafeInteger(r.historyLength)&&r.historyLength>0&&Number.isSafeInteger(r.checkpoint)&&r.checkpoint>0&&Number.isSafeInteger(r.summaryVersion)&&r.summaryVersion>0&&Number.isFinite(r.createdAt)&&[r.sourceIds,r.sceneIds].every(a=>Array.isArray(a)&&a.length>0&&a.every(s=>typeof s==='string'&&!!s));
 const hash=async(s:string)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s))),n=>n.toString(16).padStart(2,'0')).join('');
-export function createDurableMemoryTask<T>({storage,transport,lock,snapshot,parse,commit,confirmed,newId=()=>crypto.randomUUID(),now=Date.now}:{
+export function createDurableMemoryTask<T>({storage,transport,lock,snapshot,parse,commit,confirmed,newId=()=>crypto.randomUUID(),now=Date.now,storageKey=KEY}:{
  storage:PilotStorage;transport:TurnTransport;lock:Lock;
  snapshot:(context:MemoryContext)=>string;
  parse:(r:MemoryReceipt,text:string)=>T|null;
  // Synchronous commit; marker and memory state must share one durable write.
  commit:(r:MemoryReceipt,result:T)=>number;
  confirmed:(r:MemoryReceipt)=>boolean;
- newId?:()=>string;now?:()=>number;
+ newId?:()=>string;now?:()=>number;storageKey?:string;
 }){
- function pending():MemoryReceipt|null{const raw=storage.getItem(KEY);if(!raw)return null;const r=JSON.parse(raw);if(!valid(r))throw Error('MEMORY_RECEIPT_INVALID');return r;}
- function clear(r:MemoryReceipt){if(pending()?.jobId!==r.jobId)throw Error('MEMORY_RECEIPT_CHANGED');storage.removeItem(KEY);}
+ function pending():MemoryReceipt|null{const raw=storage.getItem(storageKey);if(!raw)return null;const r=JSON.parse(raw);if(!valid(r))throw Error('MEMORY_RECEIPT_INVALID');return r;}
+ function clear(r:MemoryReceipt){if(pending()?.jobId!==r.jobId)throw Error('MEMORY_RECEIPT_CHANGED');storage.removeItem(storageKey);}
  async function verify(r:MemoryReceipt){const s=snapshot(r);if(await hash(s)!==r.digest||snapshot(r)!==s)throw Error('MEMORY_CONTEXT_CHANGED');}
  return {
   pending,
@@ -27,7 +27,7 @@ export function createDurableMemoryTask<T>({storage,transport,lock,snapshot,pars
    const r:MemoryReceipt={...context,jobId:newId(),digest:await hash(expectedSnapshot),createdAt:now()};
    if(!valid(r))throw Error('MEMORY_RECEIPT_INVALID');
    if(snapshot(context)!==expectedSnapshot)throw Error('MEMORY_CONTEXT_CHANGED');
-   storage.setItem(KEY,JSON.stringify(r));
+   storage.setItem(storageKey,JSON.stringify(r));
    const job=await transport.submit(r.jobId,payload);
    if(job.job_id!==r.jobId)throw Error('MEMORY_JOB_ID_MISMATCH');
    return job;

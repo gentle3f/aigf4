@@ -21,6 +21,7 @@ import { createDurableChatTurn, browserTurnLock, type TurnIdentity, type TurnRec
 import { runDurableChatStage } from './vpsStageRunner.js';
 import { buildVpsWorkflowPayload, decodeVpsWorkflow } from './vpsWorkflow.js';
 import { createGroupCommit, digestGroupContext } from './durableGroupTurn.js';
+import { GROUP_MEMORY_KEY, roomMemorySnapshot, groupMemoryAliases, groupMemoryPresence, constrainGroupMemories } from './durableGroupMemory.js';
 import { createDurableMemoryTask, browserMemoryLock, type MemoryContext } from './durablePersonaMemory.js';
 import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult, VPS_REVIEW_MODELS } from './vpsCharacterTransport.js';
 import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
@@ -5180,7 +5181,7 @@ const submitUnlock = async () => {
         setUnlockedState(true);
         void startSupabaseCloudSync();
         void resumePendingVideoJobIfAny();
-        if (VPS_CHAT_BUILD) { void resumeVpsChatTurn(true); void resumeVpsPersonaMemory(); }
+        if (VPS_CHAT_BUILD) { void resumeVpsChatTurn(true); void resumeVpsPersonaMemory(); void resumeVpsGroupMemory(); }
     } catch (error) {
         setUnlockedState(false);
         showAuthError(
@@ -9034,7 +9035,7 @@ const getResponse = async (
         finishChatRequest(request);
         completeChatPerformanceTurn('response:final-visible');
         schedulePersonaListRefreshAfterPaint();
-        if (request.room) { if(!request.vpsTurn)void maybeSummarizeRoomMemory(request.room.id); }
+        if (request.room) { if(request.vpsTurn)void startVpsGroupMemory(request.room.id);else void maybeSummarizeRoomMemory(request.room.id); }
         else if (request.mode === 'character') {
             if (request.vpsTurn) void startVpsPersonaMemory(request.personaKey);
             else void maybeSummarizePersonaMemory(request.personaKey);
@@ -9512,6 +9513,93 @@ const startVpsPersonaMemory = async (personaKey:string) => {
         await task.submit(context,payload,expectedSnapshot);
     }catch(error){console.warn('[aigf4 VPS memory submit]',error instanceof Error?error.message:'UNKNOWN');}
     finally{vpsMemoryBusy=false;void resumeVpsPersonaMemory();}
+};
+
+const vpsGroupMemorySnapshot=(context:MemoryContext)=>{
+    const room=roomManager.getRoom(context.personaKey);
+    if(!room)throw Error('MEMORY_ROOM_MISSING');
+    const history=memoryManager.peekChatHistory(room.id);
+    return roomMemorySnapshot(room,history,context,[...getManualMemoryControlledSourceIds(history)],getManualMemoryLongTermExclusionSummaries(history));
+};
+const makeVpsGroupMemoryTask=async()=>{
+    const autoMemory=await loadAutoMemoryModule();
+    return createDurableMemoryTask({
+        storage:localStorage,storageKey:GROUP_MEMORY_KEY,transport:createVpsChatTransport(),lock:browserMemoryLock,snapshot:vpsGroupMemorySnapshot,
+        parse:(r,text)=>{
+            const room=roomManager.getRoom(r.personaKey);
+            if(!room)throw Error('MEMORY_ROOM_MISSING');
+            return autoMemory.parseRoomAutoMemoryResponse(text,groupMemoryAliases(room),new Set(r.sourceIds));
+        },
+        confirmed:r=>roomManager.confirmVpsMemoryCommit(r.personaKey,r.jobId),
+        commit:(r,memories)=>{
+            if(activeChatRequest)throw Error('MEMORY_WAIT_FOR_CHAT');
+            const room=roomManager.getRoom(r.personaKey);
+            if(!room)throw Error('MEMORY_ROOM_MISSING');
+            const history=memoryManager.peekChatHistory(room.id);
+            const prefix=history.slice(0,r.historyLength);
+            const ids=createMemoryMessageIdMap(room.id,history);
+            const presence=groupMemoryPresence(prefix,ids,new Set(r.sourceIds));
+            const controlled=getManualMemoryControlledSourceIds(history);
+            const exclusions=getManualMemoryLongTermExclusionSummaries(history);
+            const normalized=constrainGroupMemories(memories,presence,room,r).filter(m=>m.sourceMessageIds?.every(id=>!controlled.has(id)))
+                .filter(m=>Number(m.importance??3)>=AUTO_MEMORY_MIN_IMPORTANCE)
+                .filter(m=>!autoMemoryMatchesManualDecision(m.summary,exclusions));
+            return roomManager.applyEpisodicMemorySummary(room.id,normalized,r.checkpoint,r.summaryVersion,r.jobId);
+        },
+    });
+};
+let vpsGroupMemoryBusy=false;
+const resumeVpsGroupMemory=async()=>{
+    if(!VPS_CHAT_BUILD||!isUnlocked||vpsGroupMemoryBusy||activeChatRequest)return;
+    vpsGroupMemoryBusy=true;
+    try{
+        const task=await makeVpsGroupMemoryTask();
+        const receipt=task.pending();
+        if(!receipt)return;
+        const deadline=Date.now()+300000;
+        let state=await task.resume();
+        while(state.status==='pending'&&Date.now()<deadline&&isUnlocked&&!activeChatRequest){
+            await new Promise(resolve=>setTimeout(resolve,2000));
+            if(activeChatRequest||!isUnlocked)break;
+            state=await task.resume();
+        }
+        if(state.status==='applied'&&currentRoom?.id===receipt.personaKey){refreshCurrentRoom();refreshRoomMemoryIfOpen();}
+    }catch(error){console.warn('[aigf4 VPS group memory pending]',error instanceof Error?error.message:'UNKNOWN');}
+    finally{vpsGroupMemoryBusy=false;}
+};
+const startVpsGroupMemory=async(roomId:string)=>{
+    if(!VPS_CHAT_BUILD||!isUnlocked||vpsGroupMemoryBusy||activeChatRequest)return;
+    vpsGroupMemoryBusy=true;
+    try{
+        const task=await makeVpsGroupMemoryTask();
+        if(task.pending())return;
+        const room=roomManager.getRoom(roomId);
+        if(!room||roomSummaryInFlight.has(roomId))return;
+        const history=memoryManager.peekChatHistory(roomId);
+        const count=history.filter(m=>m.role==='user').length;
+        const checkpoint=Number(room.lastSummarizedUserMessageCount||0);
+        const needsRecovery=Number(room.memorySummaryVersion||0)<AUTO_MEMORY_SUMMARY_VERSION&&count>=AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES;
+        if(!needsRecovery&&count-checkpoint<ROOM_MEMORY_SUMMARY_TURN_INTERVAL)return;
+        const autoMemory=await loadAutoMemoryModule();
+        const batches=autoMemory.buildMemoryTurnBatches(history,checkpoint,needsRecovery?'recovery':'auto');
+        if(batches.length!==1)return;
+        const batch=batches[0];
+        const ids=createMemoryMessageIdMap(roomId,history);
+        const evidence=buildRoomMemoryTranscript(room,batch.messages,ids,getManualMemoryControlledSourceIds(history));
+        if(!evidence.transcript)return;
+        groupMemoryAliases(room);
+        groupMemoryPresence(history,ids,evidence.sourceMessageIds);
+        const context:MemoryContext={personaKey:roomId,historyLength:history.length,checkpoint:batch.throughUserMessageCount,summaryVersion:AUTO_MEMORY_SUMMARY_VERSION,sourceIds:[...evidence.sourceMessageIds],sceneIds:evidence.sceneIds};
+        const snapshot=vpsGroupMemorySnapshot(context);
+        const ledger=room.members.map(m=>m.id+'='+m.persona.name).join(', ');
+        const existing=formatExistingMemoryForExtractor(room.sharedMemories,64);
+        const payload=buildVpsCharacterPayload({
+            model:VPS_REVIEW_MODELS[0],messages:autoMemory.buildRoomAutoMemoryMessages(ledger,existing,evidence.transcript),
+            maxCompletionTokens:4200,temperature:0.2,topP:0.85,repetitionPenalty:1.04,stop:[],responseFormat:autoMemory.ROOM_MEMORY_RESPONSE_FORMAT,
+        });
+        await task.submit(context,payload,snapshot);
+    }catch(error){console.warn('[aigf4 VPS group memory submit]',error instanceof Error?error.message:'UNKNOWN');}
+    finally{vpsGroupMemoryBusy=false;void resumeVpsGroupMemory();}
 };
 
 const continuePendingConversationTurn = async (triggeringMessage: string) => {
@@ -10803,12 +10891,13 @@ const setupEventListeners = () => {
         select.addEventListener('change',()=>{if(activeChatRequest||pendingVpsTurn()){select.value=selectedVpsChatModel()||'';alert('先處理原有任務。');return;}localStorage.setItem(VPS_CHAT_MODE_KEY,select.value);});
         const resume=document.createElement('button');resume.type='button';resume.textContent='取回 VPS 回覆';resume.onclick=()=>void resumeVpsChatTurn(true);
         const abandon=document.createElement('button');abandon.type='button';abandon.textContent='放棄待處理回覆';abandon.onclick=()=>{if(activeChatRequest||resumingVpsTurn)return;const p=pendingVpsTurn();if(p&&confirm('放棄本機待處理回覆？VPS 已開始的生成可能仍會扣費；此操作不會取消伺服器任務。'))void makeVpsTurnController().abandon(p.jobId).then(()=>{hideError();updateSendButtonState();}).catch(()=>showError('未能放棄原任務。'));};
-        const memoryResume=document.createElement('button');memoryResume.type='button';memoryResume.textContent='取回記憶摘要';memoryResume.onclick=()=>void resumeVpsPersonaMemory();
+        const memoryResume=document.createElement('button');memoryResume.type='button';memoryResume.textContent='取回記憶摘要';memoryResume.onclick=()=>{void resumeVpsPersonaMemory();void resumeVpsGroupMemory();};
         const memoryAbandon=document.createElement('button');memoryAbandon.type='button';memoryAbandon.textContent='放棄待處理摘要';memoryAbandon.onclick=()=>{if(vpsMemoryBusy)return;void makeVpsMemoryTask().then(async task=>{const p=task.pending();if(p&&confirm('放棄本機待處理摘要？已開始的生成可能仍會扣費。'))await task.abandon(p.jobId);}).catch(()=>showError('未能放棄記憶摘要。'));};
-        controls.append(label,select,resume,abandon,memoryResume,memoryAbandon);chatView.prepend(controls);
-        window.addEventListener('online',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();});
-        window.addEventListener('pageshow',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();});
-        document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){void resumeVpsChatTurn();void resumeVpsPersonaMemory();}});
+        const groupMemoryAbandon=document.createElement('button');groupMemoryAbandon.type='button';groupMemoryAbandon.textContent='放棄群組待處理摘要';groupMemoryAbandon.onclick=()=>{if(vpsGroupMemoryBusy)return;void makeVpsGroupMemoryTask().then(async task=>{const p=task.pending();if(p&&confirm('放棄本機群組待處理摘要？已開始的生成可能仍會扣費。'))await task.abandon(p.jobId);}).catch(()=>showError('未能放棄群組摘要。'));};
+        controls.append(label,select,resume,abandon,memoryResume,memoryAbandon,groupMemoryAbandon);chatView.prepend(controls);
+        window.addEventListener('online',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();});
+        window.addEventListener('pageshow',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();});
+        document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();}});
     }
     closeSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     cancelSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
@@ -11051,7 +11140,7 @@ const init = async () => {
     if (unlocked) {
         await startSupabaseCloudSync();
         void resumePendingVideoJobIfAny();
-        if (VPS_CHAT_BUILD) { void resumeVpsChatTurn(true); void resumeVpsPersonaMemory(); }
+        if (VPS_CHAT_BUILD) { void resumeVpsChatTurn(true); void resumeVpsPersonaMemory(); void resumeVpsGroupMemory(); }
     }
 };
 
