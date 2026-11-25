@@ -1,3 +1,4 @@
+import {createAutoVideoAcceptance} from './autoVideoAcceptance.js';
 import {createSameKeyVideoRetrieval} from './sameKeyVideoRetrieval.js';
 import {createMediaAcceptance,VIDEO_OPTIONS} from './mediaAcceptance.js';
 import {quoteVeniceVideo,retrieveVeniceVideo,completeVeniceVideo} from './veniceVideo.js';
@@ -54,3 +55,8 @@ videoOnly.onclick=()=>void action(async()=>{const r=media.read();if(r.video)retu
 const existingId=el<HTMLInputElement>('existing-video-id'),recoverVideo=el<HTMLButtonElement>('recover-video');
 existingId.value=new URLSearchParams(location.search).get('video_id')||'';
 recoverVideo.onclick=()=>void action(async()=>{const id=existingId.value.trim(),r=media.read();if(r.video){status.textContent='已有保存影片。';return;}if(r.videoPending&&r.videoPending!==id)throw Error('已有其他影片任務，不能覆蓋。');if(!r.videoPending){if(!confirm('只取回已有 Venice 影片 '+id+'；不會提交生成。繼續？'))return;await media.adoptProviderVideo(id);}renderMedia();recoverVideo.disabled=true;try{const deadline=Date.now()+600000;while(Date.now()<deadline){const next=await media.videoStep(false);renderMedia();if(next==='done'){status.textContent='影片取回及保存 PASS。';return;}await new Promise(r=>setTimeout(r,5000));}status.textContent='仍未完成；可按原按鈕繼續取回。';}finally{recoverVideo.disabled=false;}});
+
+const autoButton=el<HTMLButtonElement>('auto-video-run'),autoReport=el<HTMLElement>('auto-video-report');
+const autoVideo=createAutoVideoAcceptance(localStorage,async fn=>{if(!navigator.locks)throw Error('WEB_LOCKS_REQUIRED');return navigator.locks.request('aigf-auto-video-acceptance-v1',fn);});
+try{const r=autoVideo.read();if(r)autoReport.textContent='原有任務 '+r.id+'；按同一按鈕只取回。';}catch(e){autoReport.textContent=String(e);autoButton.disabled=true;}
+autoButton.onclick=()=>void action(async()=>{autoButton.disabled=true;try{if(!autoVideo.read()){const quote=await quoteVeniceVideo(VIDEO_OPTIONS);if(!Number.isFinite(quote)||quote<0||quote>5)throw Error('報價無效或超出上限');if(!confirm('提交一段全新 5 秒測試影片，報價 US$'+quote+'。VPS 會自主保存；不需要開住瀏覽器。確認？'))return;await autoVideo.start();}const r=autoVideo.read();autoReport.textContent='已記錄任務 '+r?.id+'；可以關閉頁面。';const result=await autoVideo.poll();autoReport.textContent=JSON.stringify(result,null,2);status.textContent=result.status==='PASS'?'自主影片驗收 PASS。':result.status==='queued'||result.status==='running'?'VPS 仍在處理；稍後按同一按鈕取回，不會再生成。':'影片任務未成功；保留原任務編號。';}finally{autoButton.disabled=false;}});
