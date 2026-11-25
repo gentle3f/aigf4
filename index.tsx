@@ -21,6 +21,7 @@ import { createDurableChatTurn, browserTurnLock, type TurnIdentity, type TurnRec
 import { runDurableChatStage } from './vpsStageRunner.js';
 import { buildVpsWorkflowPayload, decodeVpsWorkflow } from './vpsWorkflow.js';
 import { createGroupCommit, digestGroupContext } from './durableGroupTurn.js';
+import { listVpsRecovery,readVpsRecoveryText } from './vpsRecovery.js';
 import { GROUP_MEMORY_KEY, roomMemorySnapshot, groupMemoryAliases, groupMemoryPresence, constrainGroupMemories } from './durableGroupMemory.js';
 import { createDurableMemoryTask, browserMemoryLock, type MemoryContext } from './durablePersonaMemory.js';
 import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult, VPS_REVIEW_MODELS } from './vpsCharacterTransport.js';
@@ -10894,7 +10895,39 @@ const setupEventListeners = () => {
         const memoryResume=document.createElement('button');memoryResume.type='button';memoryResume.textContent='取回記憶摘要';memoryResume.onclick=()=>{void resumeVpsPersonaMemory();void resumeVpsGroupMemory();};
         const memoryAbandon=document.createElement('button');memoryAbandon.type='button';memoryAbandon.textContent='放棄待處理摘要';memoryAbandon.onclick=()=>{if(vpsMemoryBusy)return;void makeVpsMemoryTask().then(async task=>{const p=task.pending();if(p&&confirm('放棄本機待處理摘要？已開始的生成可能仍會扣費。'))await task.abandon(p.jobId);}).catch(()=>showError('未能放棄記憶摘要。'));};
         const groupMemoryAbandon=document.createElement('button');groupMemoryAbandon.type='button';groupMemoryAbandon.textContent='放棄群組待處理摘要';groupMemoryAbandon.onclick=()=>{if(vpsGroupMemoryBusy)return;void makeVpsGroupMemoryTask().then(async task=>{const p=task.pending();if(p&&confirm('放棄本機群組待處理摘要？已開始的生成可能仍會扣費。'))await task.abandon(p.jobId);}).catch(()=>showError('未能放棄群組摘要。'));};
-        controls.append(label,select,resume,abandon,memoryResume,memoryAbandon,groupMemoryAbandon);chatView.prepend(controls);
+        const findRecovery=document.createElement('button');findRecovery.type='button';findRecovery.textContent='尋找其他裝置任務';
+        findRecovery.onclick=async()=>{
+            if(activeChatRequest||resumingVpsTurn||!isUnlocked)return;
+            findRecovery.disabled=true;
+            try{
+                const rows=await listVpsRecovery();
+                const dialog=document.createElement('dialog');dialog.style.cssText='max-width:min(95vw,640px);max-height:80vh;overflow:auto;padding:16px';
+                const title=document.createElement('h3');title.textContent='最近 VPS 聊天任務（約24小時）';
+                const note=document.createElement('p');note.textContent='相同私人 App 登入可查看；必須有相同聊天紀錄才可恢復寫入。手動查看只展示未經本機驗證的生成文字。';
+                const close=document.createElement('button');close.textContent='關閉';close.onclick=()=>dialog.close();dialog.addEventListener('close',()=>dialog.remove());
+                dialog.append(title,note,close);
+                if(!rows.length){const empty=document.createElement('p');empty.textContent='沒有可恢復的新版任務。';dialog.append(empty);}
+                for(const row of rows){
+                    const item=document.createElement('section');item.style.cssText='border-top:1px solid #8885;padding:8px 0';
+                    const label=document.createElement('p');label.textContent=new Date(row.receipt.createdAt).toLocaleString()+' · '+row.receipt.personaKey+' · '+row.status+' · '+row.receipt.jobId;
+                    item.append(label);
+                    if(['queued','running','done'].includes(row.status)){
+                        const adopt=document.createElement('button');adopt.textContent='恢復至本機對話';
+                        adopt.onclick=async()=>{if(activeChatRequest||resumingVpsTurn||!isUnlocked)return;adopt.disabled=true;try{const outcome=await makeVpsTurnController().adoptRecovery(row.receipt);dialog.close();if(outcome==='already-applied'){alert('本機已有此回覆。');return;}await resumeVpsChatTurn(true);}catch(e){alert('未能恢復：'+(e instanceof Error?e.message:'UNKNOWN')+'。請先還原相同聊天紀錄；不會重新生成。');adopt.disabled=false;}};
+                        item.append(adopt);
+                    }
+                    if(row.status==='done'){
+                        const raw=document.createElement('button');raw.textContent='只查看生成文字';
+                        raw.onclick=async()=>{raw.disabled=true;try{const text=await readVpsRecoveryText(row);const pre=document.createElement('pre');pre.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere';pre.textContent=text;item.append(pre);}catch(e){alert('未能讀取：'+(e instanceof Error?e.message:'UNKNOWN'));raw.disabled=false;}};
+                        item.append(raw);
+                    }
+                    dialog.append(item);
+                }
+                document.body.append(dialog);dialog.showModal();
+            }catch(e){showError('未能查找 VPS 任務：'+(e instanceof Error?e.message:'UNKNOWN'));}
+            finally{findRecovery.disabled=false;}
+        };
+        controls.append(label,select,resume,abandon,memoryResume,memoryAbandon,groupMemoryAbandon,findRecovery);chatView.prepend(controls);
         window.addEventListener('online',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();});
         window.addEventListener('pageshow',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();});
         document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();}});

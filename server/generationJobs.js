@@ -1,3 +1,4 @@
+import {createHmac} from 'node:crypto';
 import { requireAuthenticatedRequest } from '../api/_auth.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -78,6 +79,13 @@ function safeMediaChunk(d,id,offset){
   if(data.toString('base64')!==d.data||data.length!==Math.min(MEDIA_CHUNK,d.size-offset))return null;
   return {job_id:id,offset,size:d.size,sha256:d.sha256,data:d.data};
 }
+const recoveryStatuses=new Set(['queued','running','done','failed','interrupted','cancelled']);
+function validRecoveryReceipt(r){
+ const short=v=>typeof v==='string'&&v.length>0&&v.length<=256;
+ const digest=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
+ const uuid=v=>typeof v==='string'&&UUID.test(v);
+ return r&&typeof r==='object'&&!Array.isArray(r)&&Object.keys(r).every(k=>['jobId','replyId','createdAt','model','workflowVersion','conversationKey','personaKey','userMessageId','contextDigest','roomDigest','roomMemberId'].includes(k))&&[1,2,3].includes(r.workflowVersion)&&MODELS.has(r.model)&&[r.jobId,r.replyId,r.userMessageId].every(uuid)&&new Set([r.jobId,r.replyId,r.userMessageId]).size===3&&short(r.conversationKey)&&short(r.personaKey)&&digest(r.contextDigest)&&Number.isSafeInteger(r.createdAt)&&r.createdAt>0&&r.createdAt<100000000000000&&(r.workflowVersion===3?digest(r.roomDigest)&&short(r.roomMemberId):r.roomDigest===undefined&&r.roomMemberId===undefined);
+}
 export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAuthenticatedRequest, env=process.env}={}) {
   return async function handler(req,res) {
     res.setHeader('Cache-Control','no-store');
@@ -99,6 +107,23 @@ export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAu
     const accessId=env.AIGF_VPS_ACCESS_CLIENT_ID, accessSecret=env.AIGF_VPS_ACCESS_CLIENT_SECRET;
     if (Boolean(accessId)!==Boolean(accessSecret)) return res.status(503).json({error:'QUEUE_NOT_CONFIGURED'});
     if(accessId){headers['CF-Access-Client-Id']=accessId;headers['CF-Access-Client-Secret']=accessSecret;}
+    const listing=req.query?.recovery==='1';
+    const receipt=method==='POST'?req.body?.recovery_receipt:undefined;
+    let scope;
+    if(listing||receipt!==undefined){
+      if(!env.APP_SESSION_SECRET)return res.status(503).json({error:'RECOVERY_NOT_CONFIGURED'});
+      scope=createHmac('sha256',env.APP_SESSION_SECRET).update('aigf-vps-private-app-recovery-v1').digest('hex');
+    }
+    if(listing){
+      if(method!=='GET'||req.query?.job_id!==undefined||req.query?.media_offset!==undefined)return res.status(400).json({error:'INVALID_RECOVERY_QUERY'});
+      try{
+        const upstream=await fetchImpl(new URL('/v1/recovery/'+scope,base),{method:'GET',headers,redirect:'error',signal:AbortSignal.timeout(10000),cache:'no-store'});
+        if(!upstream.ok)return res.status(502).json({error:'RECOVERY_HTTP_'+upstream.status});
+        const d=await upstream.json();
+        if(!Array.isArray(d.receipts)||d.receipts.length>50||d.receipts.some(x=>!validRecoveryReceipt(x?.receipt)||!recoveryStatuses.has(x.status)||!Number.isFinite(x.updated)))return res.status(502).json({error:'INVALID_RECOVERY_LIST'});
+        return res.status(200).json({receipts:d.receipts.map(x=>({receipt:x.receipt,status:x.status,updated:x.updated}))});
+      }catch{return res.status(503).json({error:'RECOVERY_UNAVAILABLE'});}
+    }
     const jobId=method==='POST'?req.body?.job_id:req.query?.job_id;
     if(typeof jobId!=='string'||!UUID.test(jobId)) return res.status(400).json({error:'INVALID_JOB_ID'});
     const offsetRaw=req.query?.media_offset;
@@ -114,7 +139,8 @@ export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAu
       const p=req.body?.request;
       const validation=p&&typeof p==='object'&&'image_submit_version' in p?validateImageSubmission(p):p&&typeof p==='object'&&'video_submit_version' in p?validateVideoSubmission(p):p&&typeof p==='object'&&'workflow_version' in p?validateWorkflowPayload(p):validateTextPayload(p);
       if(validation)return res.status(400).json({error:validation});
-      body=JSON.stringify({job_id:jobId,request:p});
+      if(receipt!==undefined&&(!validRecoveryReceipt(receipt)||receipt.jobId!==jobId||receipt.workflowVersion!==p.workflow_version||receipt.model!==p.primary?.model))return res.status(400).json({error:'INVALID_RECOVERY_RECEIPT'});
+      body=JSON.stringify({job_id:jobId,request:p,...(receipt!==undefined?{recovery:{scope,receipt}}:{})});
       if(Buffer.byteLength(body)>LIMIT) return res.status(413).json({error:'REQUEST_TOO_LARGE'});
     }
     try {

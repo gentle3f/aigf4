@@ -5,7 +5,7 @@ export const VPS_REVIEW_MODELS=["glm-5-3-flash-uncensored","deepseek-v4-1-flash-
 const canonical=(value:unknown)=>JSON.stringify(value,(_k,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])):v);
 import {parseVenicePromptCacheUsage} from './veniceCache.js';
 import {QueuePilotError,type PilotJob,type PilotRequest,type PilotSubmission} from './generationQueuePilot.js';
-import type {TurnTransport} from './durableChatTurn.js';
+import type {TurnTransport,TurnReceipt} from './durableChatTurn.js';
 
 const MODELS=new Set(['glm-5-3-flash-uncensored','deepseek-v4-1-flash-1017-uncensored','qwen-3-6-plus']);
 export function buildVpsCharacterPayload(options:VeniceTextGenerationOptions):PilotRequest{
@@ -18,9 +18,9 @@ export function buildVpsCharacterPayload(options:VeniceTextGenerationOptions):Pi
  return payload;
 }
 export function createVpsChatTransport(fetchImpl:typeof fetch=fetch):TurnTransport{
- async function call(id:string,payload?:PilotSubmission):Promise<PilotJob>{
+ async function call(id:string,payload?:PilotSubmission,recovery?:TurnReceipt):Promise<PilotJob>{
   let res:Response;
-  try{res=await fetchImpl('/api/venice-chat?queue=1'+(payload?'':'&job_id='+encodeURIComponent(id)),{method:payload?'POST':'GET',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},...(payload?{body:JSON.stringify({job_id:id,request:payload})}:{})});}
+  try{res=await fetchImpl('/api/venice-chat?queue=1'+(payload?'':'&job_id='+encodeURIComponent(id)),{method:payload?'POST':'GET',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},...(payload?{body:JSON.stringify({job_id:id,request:payload,...(recovery?{recovery_receipt:recovery}:{})})}:{})});}
   catch{throw new QueuePilotError('QUEUE_TRANSPORT_UNCERTAIN',id);}
   if(!res.ok)throw new QueuePilotError('QUEUE_HTTP_'+res.status,id,res.status);
   let j:PilotJob;
@@ -28,7 +28,7 @@ export function createVpsChatTransport(fetchImpl:typeof fetch=fetch):TurnTranspo
   if(j.job_id!==id||!['queued','running','done','failed','interrupted','cancelled'].includes(j.status))throw new QueuePilotError('INVALID_QUEUE_RESPONSE',id);
   return j;
  }
- return {submit:(id,payload)=>call(id,payload),get:id=>call(id)};
+ return {submit:(id,payload,recovery)=>call(id,payload,recovery),get:id=>call(id)};
 }
 export function decodeVpsCharacterResult(job:PilotJob,model:string):VeniceTextGenerationResult{
  const result=job.result,choice=result?.choices?.[0];

@@ -27,7 +27,7 @@ export type DurableHistory={
   // Must also confirm a pre-existing reply is durable before receipt removal.
   confirmReply:(receipt:TurnReceipt)=>Promise<void>;
 };
-export type TurnTransport={submit:(id:string,payload:PilotSubmission)=>Promise<PilotJob>;get:(id:string)=>Promise<PilotJob>};
+export type TurnTransport={submit:(id:string,payload:PilotSubmission,recovery?:TurnReceipt)=>Promise<PilotJob>;get:(id:string)=>Promise<PilotJob>};
 type Lock=<T>(work:()=>Promise<T>)=>Promise<T>;
 const same=(a:TurnIdentity,b:TurnIdentity)=>a.conversationKey===b.conversationKey&&a.personaKey===b.personaKey&&a.userMessageId===b.userMessageId&&a.contextDigest===b.contextDigest&&a.roomDigest===b.roomDigest&&a.roomMemberId===b.roomMemberId;
 const valid=(r:TurnReceipt)=>!!r&&typeof r.conversationKey==='string'&&!!r.conversationKey&&typeof r.personaKey==='string'&&!!r.personaKey&&UUID.test(r.userMessageId)&&UUID.test(r.jobId)&&UUID.test(r.replyId)&&r.jobId!==r.replyId&&Number.isFinite(r.createdAt)&&typeof r.model==='string'&&!!r.model&&(r.contextDigest===undefined||/^[a-f0-9]{64}$/.test(r.contextDigest))&&(r.roomDigest===undefined?r.roomMemberId===undefined:/^[a-f0-9]{64}$/.test(r.roomDigest)&&typeof r.roomMemberId==='string'&&!!r.roomMemberId)&&validStages(r)&&(r.workflowVersion===undefined||([1,2,3].includes(r.workflowVersion)&&r.stages===undefined));
@@ -60,6 +60,17 @@ export function createDurableChatTurn({storage,history,transport,lock,newId=()=>
  }
  return {
    pending,
+   adoptRecovery:(r:TurnReceipt)=>lock(async()=>{
+     if(!valid(r)||!r.contextDigest||r.workflowVersion===undefined)throw Error('TURN_RECOVERY_INVALID');
+     if(pending())throw Error('OTHER_CHAT_TURN_PENDING');
+     const state=inspect(r);
+     if(state==='already-applied'){await history.confirmReply(r);return 'already-applied' as const;}
+     if(state!=='ready')throw Error('TURN_RECOVERY_HISTORY_MISSING');
+     await history.persistUser(r);
+     if(inspect(r)!=='ready')throw Error('TURN_HISTORY_CHANGED');
+     storage.setItem(KEY,JSON.stringify(r));
+     return 'adopted' as const;
+   }),
    reconcileApplied:()=>lock(async()=>{
      const r=pending();if(!r||inspect(r)!=='already-applied')return false;
      await history.confirmReply(r);clear(r);return true;
@@ -81,7 +92,7 @@ export function createDurableChatTurn({storage,history,transport,lock,newId=()=>
      await history.persistUser(turn);
      if(inspect(r)!=='ready')throw Error('TURN_HISTORY_CHANGED');
      storage.setItem(KEY,JSON.stringify(r));
-     const j=await transport.submit(r.jobId,payload);
+     const j=await transport.submit(r.jobId,payload,r.workflowVersion!==undefined&&r.contextDigest?r:undefined);
      if(j.job_id!==r.jobId)throw Error('TURN_JOB_ID_MISMATCH');
      return j;
    }),
