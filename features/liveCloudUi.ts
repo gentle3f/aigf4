@@ -153,7 +153,7 @@ const syncSupabaseCloudNow = async () => {
 const reloadSupabaseCloud = async () => {
     const recovery=supabaseCloudSyncManager.isRecoveryOnly();
     supabaseCloudControlsError.textContent='';
-    if (!confirm(recovery?'只讀還原至空白測試裝置，會覆蓋本機角色設定；不會上傳。繼續嗎？':'會先上傳尚未同步的本機變更，再重新載入雲端最新資料。繼續嗎？')) return;
+    if (!confirm(recovery?'只讀還原至空白測試裝置（容許預設開場白），會覆蓋本機角色設定及預設開場白；不會上傳。繼續嗎？':'會先上傳尚未同步的本機變更，再重新載入雲端最新資料。繼續嗎？')) return;
     supabaseCloudReload.disabled=true;
     supabaseCloudControlsError.textContent='正在檢查本機還原條件…';
     try {

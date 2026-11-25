@@ -36,3 +36,5 @@ test('cloud revision changed during read: block apply and preserve empty local s
 });
 
 test('restore verification catches a missing message and rolls back local transaction',async()=>{const f=fixture();await f.sync.applySession(f.session);const apply=f.sync.applyRemoteData.bind(f.sync);f.sync.applyRemoteData=async(...args:any[])=>{await apply(...args);f.memory.setChatHistory('cc',[],true);};await assert.rejects(f.sync.reloadFromCloud(),/MESSAGE_COUNT_MISMATCH/);assert.equal(f.applied(),0);assert.equal(f.memory.peekChatHistory('cc').length,0);});
+
+test('fresh default greeting is allowed, real local message is protected',async()=>{const f=fixture();const greeting=f.memory.getChatHistory('cc');assert.equal(greeting.length,1);assert.equal(f.sync.hasRecoveryLocalChat(),false);await f.sync.applySession(f.session);await f.sync.reloadFromCloud();assert.match(f.sync.getState().detail,/CLOUD RESTORE PASS/);assert.equal(f.sync.hasRecoveryLocalChat(),true);});

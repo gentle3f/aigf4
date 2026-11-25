@@ -1,3 +1,4 @@
+import {createSameKeyVideoRetrieval} from './sameKeyVideoRetrieval.js';
 import {createMediaAcceptance,VIDEO_OPTIONS} from './mediaAcceptance.js';
 import {quoteVeniceVideo,retrieveVeniceVideo,completeVeniceVideo} from './veniceVideo.js';
 import {acceptanceCases,createAcceptanceRunner} from './vpsAcceptance.js';
@@ -27,7 +28,7 @@ function renderSuite(){const j=suite.read();acceptanceReport.textContent=accepta
 acceptanceButton.onclick=()=>void action(async()=>{if(!confirm('執行固定合成文字測試，會使用少量 Venice API 額度。不會讀取私人聊天。繼續？'))return;acceptanceButton.disabled=true;try{const deadline=Date.now()+600000;while(Date.now()<deadline){const next=await suite.step();renderSuite();acceptanceButton.disabled=true;if(next==='complete'){status.textContent='綜合驗收完成，請查看及複製報告。';return;}if(next==='pending')await new Promise(r=>setTimeout(r,1800));}status.textContent='測試未完成，按同一按鈕繼續取回，唔會重發原任務。';}finally{renderSuite();}});
 try{renderSuite();}catch(e){acceptanceReport.textContent='驗收紀錄無效，請保留原紀錄以供排查。';acceptanceButton.disabled=true;}
 
-const media=createMediaAcceptance({storage:localStorage,lock:async fn=>{if(!navigator.locks)throw Error('WEB_LOCKS_REQUIRED');return navigator.locks.request('aigf-media-acceptance-v1',fn);},retrieveVideo:j=>retrieveVeniceVideo(j.model,j.queueId,j.downloadUrl,AbortSignal.timeout(90000)),cleanupVideo:j=>completeVeniceVideo(j.model,j.queueId),onProgress:message=>{status.textContent=message;renderMedia();}});
+const media=createMediaAcceptance({storage:localStorage,lock:async fn=>{if(!navigator.locks)throw Error('WEB_LOCKS_REQUIRED');return navigator.locks.request('aigf-media-acceptance-v1',fn);},retrieveVideo:createSameKeyVideoRetrieval(localStorage),cleanupVideo:j=>completeVeniceVideo(j.model,j.queueId),onProgress:message=>{status.textContent=message;renderMedia();}});
 const videoOnly=el<HTMLButtonElement>('video-only');
 const mediaButton=el<HTMLButtonElement>('media-run'),mediaReport=el<HTMLElement>('media-report');
 function renderMedia(){const r=media.read();const line=(label:string,v:typeof r.image,p:string|null)=>label+': '+(v?'PASS · '+v.size+' bytes · '+v.mime+' · '+(v.cloudSizeEligible?'50 MiB 內':'超出雲端上限')+'\nSHA-256 '+v.sha256:p?'PENDING · '+p:'未測試');mediaReport.textContent=line('圖片',r.image,r.imagePending)+'\n'+line('影片',r.video,r.videoPending);mediaButton.disabled=!!r.image&&!!r.video;videoOnly.disabled=!!r.video;}

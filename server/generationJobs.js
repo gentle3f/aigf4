@@ -54,6 +54,9 @@ function safeWorkflow(w) {
   return {version:w.version,parts:w.parts,...(w.version===2?{polished:w.polished}:{}),review:{model:typeof w.review.model==='string'?w.review.model:undefined,choices:[{message:{content},finish_reason:typeof review.finish_reason==='string'?review.finish_reason:null}],usage:safeUsage(w.review.usage),cost:safeCost(w.review.cost)},stages:w.stages.map(s=>({phase:s.phase,model:typeof s.model==='string'?s.model:undefined,finish_reason:typeof s.finish_reason==='string'?s.finish_reason:null,usage:safeUsage(s.usage),cost:safeCost(s.cost)}))};
 }
 
+function validateVideoRetrieval(p){
+ return p&&p.video_retrieve_version===1&&p.model==='wan-2-7-enhanced-text-to-video'&&typeof p.queue_id==='string'&&/^[A-Za-z0-9_-]{1,200}$/.test(p.queue_id)&&Object.keys(p).sort().join(',')==='model,queue_id,video_retrieve_version'?null:'INVALID_VIDEO_RETRIEVAL';
+}
 function validateVideoSubmission(p){
   if(!p||typeof p!=='object'||Array.isArray(p)||p.video_submit_version!==1||p.model!=='wan-2-7-enhanced-text-to-video'||p.adultConfirmed!==true||Object.keys(p).some(k=>!['video_submit_version','model','prompt','negative_prompt','duration','resolution','aspect_ratio','audio','adultConfirmed'].includes(k)))return 'UNSUPPORTED_VIDEO_SUBMISSION';
   if(typeof p.prompt!=='string'||!p.prompt.trim()||p.prompt.length>10000||!['5s','10s','15s'].includes(p.duration))return 'INVALID_VIDEO_SUBMISSION';
@@ -137,7 +140,7 @@ export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAu
     if(method==='POST') {
       // Text-only pilot. Explicitly reject incompatible payloads before dispatch.
       const p=req.body?.request;
-      const validation=p&&typeof p==='object'&&'image_submit_version' in p?validateImageSubmission(p):p&&typeof p==='object'&&'video_submit_version' in p?validateVideoSubmission(p):p&&typeof p==='object'&&'workflow_version' in p?validateWorkflowPayload(p):validateTextPayload(p);
+      const validation=p&&typeof p==='object'&&'video_retrieve_version' in p?validateVideoRetrieval(p):p&&typeof p==='object'&&'image_submit_version' in p?validateImageSubmission(p):p&&typeof p==='object'&&'video_submit_version' in p?validateVideoSubmission(p):p&&typeof p==='object'&&'workflow_version' in p?validateWorkflowPayload(p):validateTextPayload(p);
       if(validation)return res.status(400).json({error:validation});
       if(receipt!==undefined&&(!validRecoveryReceipt(receipt)||receipt.jobId!==jobId||receipt.workflowVersion!==p.workflow_version||receipt.model!==p.primary?.model))return res.status(400).json({error:'INVALID_RECOVERY_RECEIPT'});
       body=JSON.stringify({job_id:jobId,request:p,...(receipt!==undefined?{recovery:{scope,receipt}}:{})});
