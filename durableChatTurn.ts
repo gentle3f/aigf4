@@ -2,10 +2,10 @@
 import type {PilotJob, PilotRequest, PilotSubmission, PilotStorage} from './generationQueuePilot.js';
 const KEY='aigfVpsChatTurnV1';
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-export type TurnIdentity={conversationKey:string;personaKey:string;userMessageId:string;contextDigest?:string};
+export type TurnIdentity={conversationKey:string;personaKey:string;userMessageId:string;contextDigest?:string;roomDigest?:string;roomMemberId?:string};
 export type TurnStage='continuation-1'|'continuation-2'|'review-1'|'review-2'|'review-3';
 export type StageReceipt={jobId:string;requestDigest:string;model:string};
-export type TurnReceipt=TurnIdentity&{jobId:string;replyId:string;createdAt:number;model:string;workflowVersion?:1|2;stages?:Partial<Record<TurnStage,StageReceipt>>};
+export type TurnReceipt=TurnIdentity&{jobId:string;replyId:string;createdAt:number;model:string;workflowVersion?:1|2|3;stages?:Partial<Record<TurnStage,StageReceipt>>};
 const STAGES=new Set<string>(['continuation-1','continuation-2','review-1','review-2','review-3']);
 const validStages=(r:TurnReceipt)=>{
  if(r.stages===undefined)return true;
@@ -29,8 +29,8 @@ export type DurableHistory={
 };
 export type TurnTransport={submit:(id:string,payload:PilotSubmission)=>Promise<PilotJob>;get:(id:string)=>Promise<PilotJob>};
 type Lock=<T>(work:()=>Promise<T>)=>Promise<T>;
-const same=(a:TurnIdentity,b:TurnIdentity)=>a.conversationKey===b.conversationKey&&a.personaKey===b.personaKey&&a.userMessageId===b.userMessageId&&a.contextDigest===b.contextDigest;
-const valid=(r:TurnReceipt)=>!!r&&typeof r.conversationKey==='string'&&!!r.conversationKey&&typeof r.personaKey==='string'&&!!r.personaKey&&UUID.test(r.userMessageId)&&UUID.test(r.jobId)&&UUID.test(r.replyId)&&r.jobId!==r.replyId&&Number.isFinite(r.createdAt)&&typeof r.model==='string'&&!!r.model&&(r.contextDigest===undefined||/^[a-f0-9]{64}$/.test(r.contextDigest))&&validStages(r)&&(r.workflowVersion===undefined||([1,2].includes(r.workflowVersion)&&r.stages===undefined));
+const same=(a:TurnIdentity,b:TurnIdentity)=>a.conversationKey===b.conversationKey&&a.personaKey===b.personaKey&&a.userMessageId===b.userMessageId&&a.contextDigest===b.contextDigest&&a.roomDigest===b.roomDigest&&a.roomMemberId===b.roomMemberId;
+const valid=(r:TurnReceipt)=>!!r&&typeof r.conversationKey==='string'&&!!r.conversationKey&&typeof r.personaKey==='string'&&!!r.personaKey&&UUID.test(r.userMessageId)&&UUID.test(r.jobId)&&UUID.test(r.replyId)&&r.jobId!==r.replyId&&Number.isFinite(r.createdAt)&&typeof r.model==='string'&&!!r.model&&(r.contextDigest===undefined||/^[a-f0-9]{64}$/.test(r.contextDigest))&&(r.roomDigest===undefined?r.roomMemberId===undefined:/^[a-f0-9]{64}$/.test(r.roomDigest)&&typeof r.roomMemberId==='string'&&!!r.roomMemberId)&&validStages(r)&&(r.workflowVersion===undefined||([1,2,3].includes(r.workflowVersion)&&r.stages===undefined));
 export function createDurableChatTurn({storage,history,transport,lock,newId=()=>crypto.randomUUID(),now=Date.now}:{
  storage:PilotStorage;history:DurableHistory;transport:TurnTransport;lock:Lock;newId?:()=>string;now?:()=>number;
 }){

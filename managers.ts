@@ -320,6 +320,7 @@ export interface Content {
     surpriseEvent?: SurpriseEventProposal;
     contextBridge?: ChatContextBridge;
     roomSceneBeforeTurn?: ChatSceneSnapshot;
+    vpsGroupSceneCommit?: import('./durableGroupTurn.js').GroupSceneCommit;
     wardrobeState?: WardrobeState;
     legacy?: boolean;
 }

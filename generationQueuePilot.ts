@@ -1,10 +1,10 @@
 // Isolated pilot: persist a job ID before submission; recover by GET only.
 export type PilotJobStatus = 'queued'|'running'|'done'|'failed'|'interrupted'|'cancelled';
 export type PilotCompletion={model?:string;usage?:{prompt_tokens?:number;completion_tokens?:number;prompt_tokens_details?:{cached_tokens?:number;cache_creation_input_tokens?:number}};choices:{message:{content:string};finish_reason?:string|null}[]};
-export type PilotWorkflowResult={version:1|2;parts:string[];polished?:string|null;review:PilotCompletion;stages:{phase:string;model?:string;finish_reason?:string|null;usage?:PilotCompletion['usage']}[]};
+export type PilotWorkflowResult={version:1|2|3;parts:string[];polished?:string|null;review:PilotCompletion;stages:{phase:string;model?:string;finish_reason?:string|null;usage?:PilotCompletion['usage']}[]};
 export type PilotJob = {job_id:string;status:PilotJobStatus;reused?:boolean;result?:PilotCompletion&{workflow?:PilotWorkflowResult};error?:string};
 export type PilotRequest = {model:string;messages:{role:'system'|'user'|'assistant';content:string}[];max_completion_tokens?:number;temperature?:number;top_p?:number;repetition_penalty?:number;stop?:string[];seed?:number;reasoning_effort?:'none';prompt_cache_key?:string;response_format?:import('./venice.js').VeniceJsonSchemaResponseFormat;venice_parameters?:Record<string,boolean|string>};
-export type PilotWorkflowRequest={workflow_version:1;primary:PilotRequest;review:PilotRequest}|{workflow_version:2;primary:PilotRequest;review:PilotRequest;polish:PilotRequest};
+export type PilotWorkflowRequest={workflow_version:1|3;primary:PilotRequest;review:PilotRequest}|{workflow_version:2;primary:PilotRequest;review:PilotRequest;polish:PilotRequest};
 export type PilotSubmission=PilotRequest|PilotWorkflowRequest;
 export type PilotReceipt = {jobId:string;createdAt:number;};
 export type PilotStorage = Pick<Storage,'getItem'|'setItem'|'removeItem'>;

@@ -6,6 +6,7 @@ import { decodeRoomStorage, encodeRoomStorage } from './roomStorage.js';
 import { readRoomRecovery, saveRoomRecovery } from './roomRecoveryStore.js';
 import { emptyWardrobeState, normalizeWardrobeState } from './wardrobe.js';
 import { buildMemorySearchTags, mergeMemorySearchTags } from './memoryIndex.js';
+import { groupContextSnapshot } from './durableGroupTurn.js';
 
 const ROOM_STORAGE_KEY = 'aigf4RoomsV2';
 const DELETED_ROOM_IDS_STORAGE_KEY = 'aigf4DeletedRoomIdsV1';
@@ -110,6 +111,7 @@ export interface ChatRoom {
     createdAt: number;
     updatedAt: number;
     lastSummarizedUserMessageCount: number;
+    lastVpsSceneJobId?: string;
     memorySummaryVersion?: number;
     legacySourcePersonaKey?: string;
     migrationVersion?: number;
@@ -981,6 +983,26 @@ export class RoomManager {
             this.rooms[id] = previous;
             throw error;
         }
+    }
+
+    confirmVpsSceneCommit(id: string, jobId: string) {
+        const raw = localStorage.getItem(ROOM_STORAGE_KEY);
+        if (!raw) return false;
+        const parsed = decodeRoomStorage<RoomExportData | ChatRoom[]>(raw);
+        const rooms = Array.isArray(parsed) ? parsed : parsed.rooms;
+        return rooms.find(room => room.id === id)?.lastVpsSceneJobId === jobId
+            && this.rooms[id]?.lastVpsSceneJobId === jobId;
+    }
+
+    persistVpsSceneCommit(id: string, jobId: string, expectedSnapshot: string, scene: RoomSceneState) {
+        if (this.confirmVpsSceneCommit(id, jobId)) return;
+        const room = this.rooms[id];
+        if (!room || groupContextSnapshot(room) !== expectedSnapshot) throw Error('GROUP_CONTEXT_CHANGED');
+        const stored = this.updateRoom(id, next => {
+            next.scene = cloneRoom(scene);
+            next.lastVpsSceneJobId = jobId;
+        });
+        if (!stored || !this.confirmVpsSceneCommit(id, jobId)) throw Error('GROUP_SCENE_NOT_DURABLE');
     }
 
     updateRoomSceneDeferred(id: string, scene: RoomSceneState) {

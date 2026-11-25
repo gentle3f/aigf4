@@ -20,6 +20,7 @@ import {
 import { createDurableChatTurn, browserTurnLock, type TurnIdentity, type TurnReceipt } from './durableChatTurn.js';
 import { runDurableChatStage } from './vpsStageRunner.js';
 import { buildVpsWorkflowPayload, decodeVpsWorkflow } from './vpsWorkflow.js';
+import { createGroupCommit, digestGroupContext } from './durableGroupTurn.js';
 import { createDurableMemoryTask, browserMemoryLock, type MemoryContext } from './durablePersonaMemory.js';
 import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult, VPS_REVIEW_MODELS } from './vpsCharacterTransport.js';
 import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
@@ -1877,21 +1878,39 @@ const beginChatRequest = (
 };
 
 // This preview intentionally uses one durable paid request per ordinary character turn.
-const makeVpsTurnController = (replyContent?: Content) => createDurableChatTurn({
+const makeVpsGroupCommit = () => createGroupCommit({
+    readRoom: id => roomManager.getRoom(id),
+    readHistory: id => memoryManager.peekChatHistory(id),
+    writeReply: (r, content) => memoryManager.persistVpsChatTurnReply(r.conversationKey,r.userMessageId,r.replyId,content),
+    confirmReply: r => memoryManager.confirmVpsChatTurnMessage(r.conversationKey,r.replyId,'model'),
+    confirmScene: (id,jobId) => roomManager.confirmVpsSceneCommit(id,jobId),
+    writeScene: (id,jobId,expected,scene) => roomManager.persistVpsSceneCommit(id,jobId,expected,scene),
+});
+const makeVpsTurnController = (replyContent?: Content, groupScene?: GroupGenerationResult['scene']) => createDurableChatTurn({
     storage: localStorage,
     transport: createVpsChatTransport(),
     lock: browserTurnLock,
     history: {
         read: key => memoryManager.peekChatHistory(key),
         persistUser: async t => {
+            if (t.roomDigest) {
+                const room=roomManager.getRoom(t.conversationKey);
+                if (!room || await digestGroupContext(room)!==t.roomDigest) throw Error('GROUP_CONTEXT_CHANGED');
+            }
             memoryManager.persistVpsChatTurnUser(t.conversationKey, t.userMessageId);
             if (t.contextDigest && await digestVpsHistory(memoryManager.peekChatHistory(t.conversationKey)) !== t.contextDigest) throw Error('TURN_HISTORY_CHANGED');
         },
         persistReply: async (r, text) => {
             if (await digestVpsHistory(memoryManager.peekChatHistory(r.conversationKey)) !== r.contextDigest) throw Error('TURN_HISTORY_CHANGED');
-            memoryManager.persistVpsChatTurnReply(r.conversationKey, r.userMessageId, r.replyId, { ...replyContent, text });
+            if (r.roomDigest) {
+                if(!groupScene)throw Error('GROUP_SCENE_RECEIPT_MISSING');
+                await makeVpsGroupCommit().persistReply(r,{...replyContent,text},groupScene);
+            } else memoryManager.persistVpsChatTurnReply(r.conversationKey, r.userMessageId, r.replyId, { ...replyContent, text });
         },
-        confirmReply: async r => memoryManager.confirmVpsChatTurnMessage(r.conversationKey, r.replyId, 'model'),
+        confirmReply: async r => {
+            if(r.roomDigest)await makeVpsGroupCommit().confirm(r);
+            else memoryManager.confirmVpsChatTurnMessage(r.conversationKey,r.replyId,'model');
+        },
     },
 });
 const pendingVpsTurn = () => VPS_CHAT_BUILD ? makeVpsTurnController().pending() : null;
@@ -1909,6 +1928,10 @@ const resumeVpsChatTurn = async (openConversation = false) => {
         const pending = controller.pending();
         if (!pending) return;
         if (await controller.reconcileApplied()) {
+            if (pending.roomDigest && currentRoom?.id===pending.conversationKey) {
+                const room=roomManager.getRoom(pending.conversationKey);
+                if(room){currentRoom=room;renderUiV2ImmersiveSceneChrome();}
+            }
             if (currentConversationKey === pending.conversationKey) {
                 chatContainer.replaceChildren(); resetRenderedChatHistoryWindow();
                 renderChatHistoryWindow(pending.conversationKey, memoryManager.peekChatHistory(pending.conversationKey));
@@ -1919,7 +1942,11 @@ const resumeVpsChatTurn = async (openConversation = false) => {
             if (!openConversation && currentConversationKey) return;
             startChat(pending.conversationKey, null, 'replace');
         }
-        if (currentConversationKey !== pending.conversationKey || !currentPersona || currentRoom || currentPersonaKey !== pending.personaKey) throw Error('TURN_CONVERSATION_CHANGED');
+        if (pending.roomDigest) {
+            const room=roomManager.getRoom(pending.conversationKey);
+            if(!room||await digestGroupContext(room)!==pending.roomDigest||!pending.roomMemberId||!selectActiveRoomMember(pending.roomMemberId))throw Error('GROUP_CONTEXT_CHANGED');
+        }
+        if (currentConversationKey !== pending.conversationKey || !currentPersona || Boolean(currentRoom)!==Boolean(pending.roomDigest) || currentPersonaKey !== pending.personaKey) throw Error('TURN_CONVERSATION_CHANGED');
         const history = memoryManager.peekChatHistory(pending.conversationKey);
         const user = history.at(-1);
         if (user?.id !== pending.userMessageId || user.role !== 'user' || !user.content.text || await digestVpsHistory(history) !== pending.contextDigest) throw Error('TURN_HISTORY_CHANGED');
@@ -7459,16 +7486,50 @@ const runRoomConversationGeneration = async (
                     }] : []),
                 ], messages.length, isRetry ? 2 : 1);
                 requestStartedAt = performance.now();
-                result = await generateChatTextWithTimeout({
-                    model,
-                    messages,
-                    temperature: 0.78,
-                    topP: 0.92,
-                    repetitionPenalty: 1.1,
-                    stop: [],
-                    promptCacheKey,
-                    signal: request.controller.signal,
-                });
+                const options: Parameters<typeof generateVeniceText>[0] = {
+                    model,messages,temperature:0.78,topP:0.92,repetitionPenalty:1.1,stop:[],promptCacheKey,signal:request.controller.signal,
+                };
+                if(request.vpsTurn){
+                    const turn=request.vpsTurn;
+                    const controller=makeVpsTurnController();
+                    const check=async()=>{
+                        const room=roomManager.getRoom(request.conversationKey);
+                        if(!isActiveChatRequest(request)||request.controller.signal.aborted||!room||await digestGroupContext(room)!==turn.identity.roomDigest||await digestVpsHistory(memoryManager.peekChatHistory(request.conversationKey))!==turn.identity.contextDigest)throw Error('GROUP_CONTEXT_CHANGED');
+                    };
+                    await check();
+                    const prior=controller.pending();
+                    if(!prior&&turn.receipt)throw Error('TURN_RECEIPT_MISSING');
+                    if(prior){
+                        const recovered=await controller.resume(turn.identity);
+                        if(!recovered||recovered.historyState!=='ready')throw Error('TURN_HISTORY_CHANGED');
+                        turn.receipt=recovered.receipt;turn.job=recovered.job;
+                    }else{
+                        const plan=buildVpsWorkflowPayload(options,{
+                            editorPrompt:STRICT_REVIEW_EDITOR_PROMPT,
+                            authoritativePrompt:await buildGroupReviewContext(request,latestUserMessage),
+                            reviewHistory:getStrictReviewHistory(request,latestUserMessage),
+                            latestUserMessage,promptCacheKey:createConversationPromptCacheKey(request.conversationKey,'review'),
+                        },undefined,true);
+                        await check();
+                        turn.job=await controller.submit(turn.identity,plan);turn.receipt=controller.pending()||undefined;
+                    }
+                    if(turn.receipt?.workflowVersion!==3)throw Error('TURN_WORKFLOW_RESULT_MISMATCH');
+                    const deadline=Date.now()+1500000;
+                    while(turn.job.status==='queued'||turn.job.status==='running'||(turn.job.status==='done'&&!turn.job.result)){
+                        await check();if(Date.now()>=deadline)throw Error('VPS_PENDING');
+                        applyChatRuntimeState('generating','VPS 群組背景生成中…');
+                        await new Promise(resolve=>setTimeout(resolve,1600));
+                        await check();
+                        const recovered=await controller.resume(turn.identity);
+                        if(!recovered||recovered.historyState!=='ready')throw Error('TURN_HISTORY_CHANGED');
+                        turn.job=recovered.job;
+                    }
+                    await check();
+                    if(turn.job.status!=='done')throw Error('VPS_'+turn.job.status.toUpperCase());
+                    const workflow=decodeVpsWorkflow(turn.job);
+                    if(workflow.version!==3)throw Error('TURN_WORKFLOW_RESULT_MISMATCH');
+                    result=decodeVpsCharacterResult(turn.job,model);
+                }else result=await generateChatTextWithTimeout(options);
                 markChatPerformance(isRetry ? 'generation:repair' : 'generation:primary', generationStartedAt);
                 markVeniceRequestAggregate(
                     `${isRetry ? 'generation:repair' : 'generation:primary'}:response-meta`,
@@ -7567,7 +7628,7 @@ const runRoomConversationGeneration = async (
                     }
                     attemptRecorded = true;
                 }
-                if (isAbortError(error)) throw error;
+                if (request.vpsTurn || isAbortError(error)) throw error;
                 lastError = error instanceof Error ? error : new Error(String(error));
                 console.warn('[aigf4 group attempt rejected]', {
                     requestId: request.id,
@@ -7880,18 +7941,11 @@ const strictReviewSingleReply = async (
     });
 };
 
-const strictReviewGroupReply = async (
-    request: ActiveChatRequest,
-    latestUserMessage: string,
-    candidate: GroupGenerationResult,
-    trace?: GenerationTrace,
-) => {
-    if (!request.room) return candidate;
+const buildGroupReviewContext = async (request:ActiveChatRequest,latestUserMessage:string) => {
     const { buildGroupSystemPrompt } = await loadGroupChatPromptModule();
-    const serializedCandidate = serializeGroupGenerationForReview(candidate);
-    const authoritativePrompt = [
+    return [
         buildGroupSystemPrompt(
-            request.room,
+            request.room!,
             latestUserMessage,
             formatSessionMemoryPrompt(request.conversationKey),
         ),
@@ -7900,6 +7954,18 @@ const strictReviewGroupReply = async (
             : '',
         'STRICT REVISION FORMAT: revised_response must contain one complete <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate> envelope.',
     ].join('\n\n');
+
+};
+
+const strictReviewGroupReply = async (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+    candidate: GroupGenerationResult,
+    trace?: GenerationTrace,
+) => {
+    if (!request.room) return candidate;
+    const serializedCandidate = serializeGroupGenerationForReview(candidate);
+    const authoritativePrompt=await buildGroupReviewContext(request,latestUserMessage);
 
     let researchRecordId = '';
     let researchModule: Awaited<ReturnType<typeof loadResearchCaptureModule>> | null = null;
@@ -7923,7 +7989,7 @@ const strictReviewGroupReply = async (
             });
     };
 
-    if (isResearchCaptureEnabledForTurn()) {
+    if (!request.vpsTurn && isResearchCaptureEnabledForTurn()) {
         try {
             researchModule = await loadResearchCaptureModule();
             researchRecordId = researchModule.createResearchRecordId();
@@ -7969,7 +8035,7 @@ const strictReviewGroupReply = async (
         }
     }
 
-    const shadow = startStrictReviewShadow(
+    const shadow = request.vpsTurn ? null : startStrictReviewShadow(
         request,
         latestUserMessage,
         serializedCandidate,
@@ -7990,11 +8056,12 @@ const strictReviewGroupReply = async (
             trace,
         );
     } catch (error) {
-        shadow.recordGemmaDecision('unavailable');
+        shadow?.recordGemmaDecision('unavailable');
         queueResearchPatch(module => module.buildFailedResearchPatch('strict-review', error));
         throw error;
     }
-    shadow.recordGemmaDecision(decision?.decision || 'unavailable', decision?.issues);
+    shadow?.recordGemmaDecision(decision?.decision || 'unavailable', decision?.issues);
+    if(request.vpsTurn&&!decision)throw Error('VPS_REVIEW_INVALID');
     const reviewed = applyGroupStrictReview(candidate, decision, revisedResponse => {
         try {
             const revision = normalizeGroupGenerationTraditional(
@@ -8050,6 +8117,10 @@ const runCharacterChatGeneration = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
 ): Promise<string | GroupGenerationResult> => {
+    if(request.vpsTurn&&request.room)return runGroupTurnAdapter({
+        generateCandidate:()=>runRoomConversationGeneration(request,latestUserMessage,[request.vpsTurn!.model]),
+        reviewCandidate:candidate=>strictReviewGroupReply(request,latestUserMessage,candidate),
+    });
     if (request.vpsTurn) return runSingleTurnAdapter({
         generateCandidate: () => runConversationGeneration(request, latestUserMessage, [request.vpsTurn!.model], false),
         reviewCandidate: candidate => strictReviewSingleReply(request, latestUserMessage, candidate),
@@ -8856,7 +8927,7 @@ const getResponse = async (
                 segments: generated.segments,
                 wardrobeState: normalizeWardrobeState(generated.scene.wardrobe),
         };
-        if (typeof generated !== 'string' && request.room) {
+        if (typeof generated !== 'string' && request.room && !request.vpsTurn) {
             const groupScenePersistStartedAt = performance.now();
             let persistedScene = generated.scene;
             try {
@@ -8882,8 +8953,12 @@ const getResponse = async (
         let replyId: string | undefined;
         if (request.vpsTurn) {
             const {receipt,job}=request.vpsTurn;
-            if (!receipt || !job || typeof generated !== 'string') throw Error('TURN_RESULT_NOT_READY');
-            const applied=await makeVpsTurnController(botContent).apply(receipt,job,generated);
+            if (!receipt || !job) throw Error('TURN_RESULT_NOT_READY');
+            const applied=await makeVpsTurnController(botContent,typeof generated==='string'?undefined:generated.scene).apply(receipt,job,typeof generated==='string'?generated:generated.text);
+            if(request.room){
+                const stored=roomManager.getRoom(request.room.id);
+                if(stored){request.room.scene=stored.scene;if(currentRoom?.id===stored.id){currentRoom=stored;renderUiV2ImmersiveSceneChrome();}}
+            }
             replyId=receipt.replyId;
             if (applied === 'already-applied') {
                 if (currentConversationKey === request.conversationKey) {
@@ -8959,7 +9034,7 @@ const getResponse = async (
         finishChatRequest(request);
         completeChatPerformanceTurn('response:final-visible');
         schedulePersonaListRefreshAfterPaint();
-        if (request.room) void maybeSummarizeRoomMemory(request.room.id);
+        if (request.room) { if(!request.vpsTurn)void maybeSummarizeRoomMemory(request.room.id); }
         else if (request.mode === 'character') {
             if (request.vpsTurn) void startVpsPersonaMemory(request.personaKey);
             else void maybeSummarizePersonaMemory(request.personaKey);
@@ -9880,7 +9955,9 @@ const sendMessage = async ({
         try {
             if (!navigator.locks || !crypto.subtle) throw Error('VPS_BROWSER_SUPPORT_REQUIRED');
             request.vpsTurn = {
-                identity: { conversationKey, personaKey, userMessageId: userMessageMeta.id, contextDigest: await digestVpsHistory(memoryManager.peekChatHistory(conversationKey)) },
+                identity: { conversationKey, personaKey, userMessageId: userMessageMeta.id, contextDigest: await digestVpsHistory(memoryManager.peekChatHistory(conversationKey)),
+                    ...(request.room?{roomDigest:await digestGroupContext(roomManager.getRoom(conversationKey)!),roomMemberId:request.roomMemberId}:{}),
+                },
                 model: vpsModel,
             };
         } catch (error) {
