@@ -497,7 +497,11 @@ export class SupabaseCloudSyncManager {
     async reloadFromCloud() {
         if(this.recoveryOnly){
             if(!this.session)throw Error('請先登入私人雲端。');
-            if(!this.canRestore()||Object.values(this.memoryManager.getAllChatHistories()).some(rows=>rows.length>0))throw Error('只讀還原只限未有聊天紀錄的測試裝置。');
+            if(!this.canRestore())throw Error('CLOUD_RESTORE_BUSY：有未完成聊天任務，不能還原。');
+            const localCount=Object.values(this.memoryManager.getAllChatHistories()).reduce((n,rows)=>n+rows.length,0);
+            if(localCount>0)throw Error('CLOUD_RESTORE_LOCAL_NOT_EMPTY：本機已有 '+localCount+' 則訊息；只限未有聊天紀錄的測試裝置。');
+            if(this.pulling||this.pushing)throw Error('CLOUD_RESTORE_BUSY：已有同步操作。');
+            if(isLocalCloudChangeBatchActive())throw Error('CLOUD_RESTORE_LOCAL_BATCH_ACTIVE：本機資料正在更新。');
             const completed=await this.pullCloudToLocal(true,false);
             if(!completed)throw Error(this.state.detail);
             return;

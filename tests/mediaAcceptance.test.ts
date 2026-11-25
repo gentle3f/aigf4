@@ -28,6 +28,8 @@ test('lost image/video dispatch recovered by GET; actual durable stores and repo
  await assert.rejects(make().videoStep(false),/URL_ONLY/);assert.equal(cleanup,0);
  urlOnly=false;assert.equal(await make().videoStep(false),'done');
  const report=make().read().video!;assert.equal(report.size,1024);assert.equal((await getChatAttachment(report.id))?.blob.size,1024);
- assert.equal(await make().videoStep(false),'done');assert.equal(cleanup,1);assert.equal(retrieves,2);
+ assert.equal(await make().videoStep(false),'done');assert.equal(cleanup,0);assert.equal(retrieves,2);
  assert.equal(calls.filter(c=>c==='POST').length,2);assert.equal(IMAGE_OPTIONS.variants,1);assert.equal(VIDEO_OPTIONS.duration,'5s');
 });
+
+test('adopt existing provider ID without new generation',async()=>{const m=new Map<string,string>();let calls=0,gets=0;const media=createMediaAcceptance({storage:{getItem:k=>m.get(k)??null,setItem:(k,v)=>{m.set(k,v)},removeItem:k=>m.delete(k)},lock:fn=>fn(),fetchImpl:async()=>{calls++;throw Error('NO_NEW_REQUEST')},retrieveVideo:async j=>{gets++;assert.equal(j.queueId,'existing-queue-fixture');return {kind:'processing',status:'PROCESSING'}},cleanupVideo:async()=>{throw Error('NO_DELETE')}});await media.adoptProviderVideo('existing-queue-fixture');assert.equal(await media.videoStep(false),'pending');assert.equal(calls,0);assert.equal(gets,1);await assert.rejects(media.adoptProviderVideo('different'),/ADOPTION_BLOCKED/);});

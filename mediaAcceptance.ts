@@ -9,7 +9,7 @@ export const VIDEO_OPTIONS={model:VPS_VIDEO_MODEL,prompt:'Five second static-cam
 type Store=Pick<Storage,'getItem'|'setItem'|'removeItem'>;
 type Report={id:string;size:number;mime:string;sha256:string;cloudSizeEligible:boolean};
 const digest=async(b:Blob)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await b.arrayBuffer())),n=>n.toString(16).padStart(2,'0')).join('');
-export function createMediaAcceptance({storage,lock,fetchImpl=fetch,retrieveVideo,cleanupVideo}:{storage:Store;lock:<T>(work:()=>Promise<T>)=>Promise<T>;fetchImpl?:typeof fetch;retrieveVideo:(job:PersistedVideoJob)=>Promise<VeniceVideoRetrieveResult>;cleanupVideo:(job:PersistedVideoJob)=>Promise<void>}){
+export function createMediaAcceptance({storage,lock,fetchImpl=fetch,retrieveVideo,cleanupVideo,onProgress=()=>{}}:{storage:Store;lock:<T>(work:()=>Promise<T>)=>Promise<T>;fetchImpl?:typeof fetch;retrieveVideo:(job:PersistedVideoJob)=>Promise<VeniceVideoRetrieveResult>;cleanupVideo:(job:PersistedVideoJob)=>Promise<void>;onProgress?:(message:string)=>void}){
  const store:Store={getItem:k=>storage.getItem(PREFIX+k),setItem:(k,v)=>{storage.setItem(PREFIX+k,v);if(storage.getItem(PREFIX+k)!==v)throw Error('MEDIA_ACCEPTANCE_JOURNAL_FAILED');},removeItem:k=>storage.removeItem(PREFIX+k)};
  const images=createVpsImageTransport(fetchImpl),videos=createVpsVideoSubmission(fetchImpl);
  const videoKey='video-receipt';
@@ -18,6 +18,10 @@ export function createMediaAcceptance({storage,lock,fetchImpl=fetch,retrieveVide
  const report=(k:string):Report|null=>{const raw=store.getItem(k);if(!raw)return null;const r=JSON.parse(raw);if(typeof r?.id!=='string'||!Number.isSafeInteger(r.size)||r.size<=0||typeof r.mime!=='string'||! /^[a-f0-9]{64}$/.test(r.sha256)||typeof r.cloudSizeEligible!=='boolean')throw Error('MEDIA_ACCEPTANCE_REPORT_INVALID');return r;};
  async function saveReport(key:string,id:string,blob:Blob){const r:Report={id,size:blob.size,mime:blob.type,sha256:await digest(blob),cloudSizeEligible:blob.size<=50*1024*1024};store.setItem(key,JSON.stringify(r));return r;}
  return {read:()=>({image:report('image-report'),video:report('video-report'),imagePending:readImageReceipt(store)?.jobId??null,videoPending:readVideo()?.queueId??null}),
+  adoptProviderVideo:(queueId:string)=>lock(async()=>{
+   if(!/^[a-z0-9_-]{1,200}$/i.test(queueId)||report('video-report')||readVideo())throw Error('MEDIA_VIDEO_ADOPTION_BLOCKED');
+   writeVideo({version:1,model:VPS_VIDEO_MODEL,modelName:'Wan (acceptance)',queueId,prompt:VIDEO_OPTIONS.prompt,mode:'text-to-video',queuedAt:Date.now()});
+  }),
   imageStep:()=>lock(async()=>{
    if(report('image-report'))return 'done';
    let r=readImageReceipt(store);
@@ -37,17 +41,17 @@ export function createMediaAcceptance({storage,lock,fetchImpl=fetch,retrieveVide
     await submitDurableVideo({options:VIDEO_OPTIONS,modelName:'Wan (acceptance)',storage:{read:readVideo,write:writeVideo},lock:fn=>fn(),transport:videos,onStored:()=>{}});
     return 'pending';
    }
-   if(j.submissionId){const resolved=await videos.resolve(j);if(!resolved)return 'pending';writeVideo(resolved);j=resolved;}
+   if(j.submissionId){onProgress('正在查詢 VPS 提交結果…');const resolved=await videos.resolve(j);if(!resolved)return 'pending';writeVideo(resolved);j=resolved;onProgress('Venice 已接收任務：'+j.queueId);}
    const existing=await getSavedStudioVideo(j);
    if(existing){await saveReport('video-report',existing.id,existing.blob);return 'done';}
-   const v=await retrieveVideo(j);
-   if(v.kind==='processing')return 'pending';
+   onProgress('正在向 Venice 查詢／下載影片：'+j.queueId);const v=await retrieveVideo(j);
+   if(v.kind==='processing'){onProgress('Venice 狀態：'+v.status+'（尚未完成）');return 'pending';}
    if(!v.blob)throw Error('MEDIA_VIDEO_URL_ONLY_NO_DURABLE_BLOB');
    const b=new Uint8Array(await v.blob.slice(0,12).arrayBuffer());
    if(b.length<12||String.fromCharCode(...b.slice(4,8))!=='ftyp')throw Error('MEDIA_VIDEO_MP4_HEADER_INVALID');
-   const saved=await persistStudioVideo(j,v.blob);
+   onProgress('已收到影片，正在保存及核對 '+v.blob.size+' bytes…');const saved=await persistStudioVideo(j,v.blob);
    await saveReport('video-report',saved.id,saved.blob);
-   try{await cleanupVideo(j);}catch{/* local artifact already durable; cleanup is not part of acceptance */}
+   // Retain provider media for recovery from another preview origin. No remote deletion in acceptance.
    return 'done';
   })
  };
