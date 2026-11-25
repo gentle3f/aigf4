@@ -32,10 +32,12 @@ export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAu
     if(method==='POST') {
       // Text-only pilot. Explicitly reject incompatible payloads before dispatch.
       const p=req.body?.request;
-      const allowed=new Set(['model','messages','max_completion_tokens','max_tokens','temperature','top_p','repetition_penalty','stop','seed','venice_parameters']);
+      const allowed=new Set(['model','messages','max_completion_tokens','max_tokens','temperature','top_p','repetition_penalty','stop','seed','venice_parameters','reasoning_effort','prompt_cache_key']);
       if(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).some(k=>!allowed.has(k))||!MODELS.has(p.model)
         ||!Array.isArray(p.messages)||p.messages.length<1||p.messages.length>300
         ||p.messages.some(m=>!m||!['system','user','assistant'].includes(m.role)||typeof m.content!=='string'||Object.keys(m).some(k=>!['role','content'].includes(k)))) return res.status(400).json({error:'UNSUPPORTED_PILOT_REQUEST'});
+      if(p.reasoning_effort!==undefined&&p.reasoning_effort!=='none') return res.status(400).json({error:'UNSUPPORTED_REASONING_EFFORT'});
+      if(p.prompt_cache_key!==undefined&&(typeof p.prompt_cache_key!=='string'||!/^wetapp-(chat|review)-v1-[a-z0-9]{1,32}$/.test(p.prompt_cache_key))) return res.status(400).json({error:'INVALID_PROMPT_CACHE_KEY'});
       const max=p.max_completion_tokens??p.max_tokens??4096;
       if(!Number.isInteger(max)||max<1||max>8192) return res.status(400).json({error:'INVALID_OUTPUT_LIMIT'});
       const vp=p.venice_parameters??{};

@@ -1547,6 +1547,53 @@ export class MemoryManager {
         return this.chatHistories;
     }
 
+    /** Opt-in VPS turn boundary: flush the existing history synchronously before dispatch. */
+    persistVpsChatTurnUser(key: string, userMessageId: string) {
+        const history = this.peekChatHistory(key);
+        if (history.at(-1)?.role !== 'user' || history.at(-1)?.id !== userMessageId) {
+            throw new Error('TURN_HISTORY_CHANGED');
+        }
+        this.persistChatHistories(true, true);
+        this.confirmVpsChatTurnMessage(key, userMessageId, 'user');
+    }
+
+    /** Commit a validated reply with its stable ID, never append a second copy. */
+    persistVpsChatTurnReply(key: string, userMessageId: string, replyId: string, content: Content) {
+        const history = this.peekChatHistory(key);
+        const userIndex = history.findIndex(message => message.id === userMessageId && message.role === 'user');
+        const existingIndex = history.findIndex(message => message.id === replyId);
+        if (existingIndex >= 0) {
+            if (userIndex < 0 || existingIndex <= userIndex || history[existingIndex].role !== 'model') {
+                throw new Error('TURN_REPLY_ID_CONFLICT');
+            }
+            this.confirmVpsChatTurnMessage(key, replyId, 'model');
+            return;
+        }
+        if (userIndex < 0 || userIndex !== history.length - 1 || !content.text?.trim()) {
+            throw new Error('TURN_HISTORY_CHANGED');
+        }
+        const message: ChatMessage = { id: replyId, createdAt: Date.now(), role: 'model', content };
+        history.push(message);
+        try {
+            this.persistChatHistories(true, true);
+        } catch (error) {
+            // A retry will reconcile against durable history. Do not claim success on quota failure.
+            const position = history.indexOf(message);
+            if (position >= 0) history.splice(position, 1);
+            throw error;
+        }
+        this.confirmVpsChatTurnMessage(key, replyId, 'model');
+    }
+
+    confirmVpsChatTurnMessage(key: string, id: string, role: 'user' | 'model') {
+        const raw = localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
+        if (!raw) throw new Error('TURN_MESSAGE_NOT_DURABLE');
+        const histories = decodeChatHistoryStorage<Record<string, ChatMessage[]>>(raw);
+        if (!histories[key]?.some(message => message.id === id && message.role === role)) {
+            throw new Error('TURN_MESSAGE_NOT_DURABLE');
+        }
+    }
+
     addMessage(
         key: string,
         role: 'user' | 'model' | 'system',

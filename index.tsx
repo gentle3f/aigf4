@@ -17,6 +17,10 @@ import {
     WardrobeState,
     cleanAiResponse,
 } from "./managers.js";
+import { createDurableChatTurn, browserTurnLock, type TurnIdentity, type TurnReceipt } from './durableChatTurn.js';
+import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult } from './vpsCharacterTransport.js';
+import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
+import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, VPS_CHAT_MODELS, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
 import { createComposerAutoSize } from './composerAutoSize.js';
@@ -549,6 +553,7 @@ const loadSupabaseCloudSyncManager = async () => {
 };
 
 const startSupabaseCloudSync = async () => {
+    if (VPS_CHAT_BUILD) return;
     const manager = await loadSupabaseCloudSyncManager();
     await manager.start();
 };
@@ -702,6 +707,7 @@ type ActiveChatRequest = {
     pendingWardrobeState?: WardrobeState;
     controller: AbortController;
     startedAt: number;
+    vpsTurn?: { identity: TurnIdentity; model: string; receipt?: TurnReceipt; job?: PilotJob };
     /** Temporary DOM only. Never persisted until the full streamed answer finishes. */
     streamPreview?: HTMLElement;
 };
@@ -1502,6 +1508,7 @@ const loadCloudBackupUi = async (): Promise<CloudBackupUiHandle> => {
 };
 
 const openCloudBackup = () => {
+    if (VPS_CHAT_BUILD) { alert('VPS 測試版：雲端備份已停用。'); return; }
     void loadCloudBackupUi()
         .then(ui => ui.open())
         .catch(error => console.error('Failed to load Cloud Backup UI', error));
@@ -1527,6 +1534,7 @@ const loadLiveCloudUi = async (): Promise<LiveCloudUiHandle> => {
 };
 
 const openSupabaseCloud = () => {
+    if (VPS_CHAT_BUILD) { alert('VPS 測試版：雲端同步已停用。'); return; }
     void loadLiveCloudUi()
         .then(ui => ui.open())
         .catch(error => console.error('Failed to load Live Cloud UI', error));
@@ -1865,6 +1873,58 @@ const beginChatRequest = (
     return request;
 };
 
+// This preview intentionally uses one durable paid request per ordinary character turn.
+const makeVpsTurnController = (replyContent?: Content) => createDurableChatTurn({
+    storage: localStorage,
+    transport: createVpsChatTransport(),
+    lock: browserTurnLock,
+    history: {
+        read: key => memoryManager.peekChatHistory(key),
+        persistUser: async t => memoryManager.persistVpsChatTurnUser(t.conversationKey, t.userMessageId),
+        persistReply: async (r, text) => {
+            if (await digestVpsHistory(memoryManager.peekChatHistory(r.conversationKey)) !== r.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+            memoryManager.persistVpsChatTurnReply(r.conversationKey, r.userMessageId, r.replyId, { ...replyContent, text });
+        },
+        confirmReply: async r => memoryManager.confirmVpsChatTurnMessage(r.conversationKey, r.replyId, 'model'),
+    },
+});
+const pendingVpsTurn = () => VPS_CHAT_BUILD ? makeVpsTurnController().pending() : null;
+const selectedVpsChatModel = () => {
+    if (!VPS_CHAT_BUILD) return null;
+    const value = localStorage.getItem(VPS_CHAT_MODE_KEY);
+    return VPS_CHAT_MODELS.find(model => model === value) || null;
+};
+let resumingVpsTurn = false;
+const resumeVpsChatTurn = async (openConversation = false) => {
+    if (!VPS_CHAT_BUILD || !isUnlocked || activeChatRequest || resumingVpsTurn) return;
+    resumingVpsTurn = true;
+    try {
+        const controller = makeVpsTurnController();
+        const pending = controller.pending();
+        if (!pending) return;
+        if (await controller.reconcileApplied()) {
+            if (currentConversationKey === pending.conversationKey) {
+                chatContainer.replaceChildren(); resetRenderedChatHistoryWindow();
+                renderChatHistoryWindow(pending.conversationKey, memoryManager.peekChatHistory(pending.conversationKey));
+            }
+            return;
+        }
+        if (currentConversationKey !== pending.conversationKey) {
+            if (!openConversation && currentConversationKey) return;
+            startChat(pending.conversationKey, null, 'replace');
+        }
+        if (currentConversationKey !== pending.conversationKey || !currentPersona || currentRoom || currentPersonaKey !== pending.personaKey) throw Error('TURN_CONVERSATION_CHANGED');
+        const history = memoryManager.peekChatHistory(pending.conversationKey);
+        const user = history.at(-1);
+        if (user?.id !== pending.userMessageId || user.role !== 'user' || !user.content.text || await digestVpsHistory(history) !== pending.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+        const request = beginChatRequest(pending.personaKey, currentPersona, 'character', pending.conversationKey);
+        request.vpsTurn = { identity: pending, model: pending.model, receipt: pending };
+        startChatPerformanceTurn();
+        await getResponse(request, user.content.text);
+    } catch (error) {
+        showError('VPS 任務尚未恢復：' + (error instanceof Error ? error.message : 'UNKNOWN') + '。原任務仍保留，可在選單取回或放棄。');
+    } finally { resumingVpsTurn = false; updateSendButtonState(); }
+};
 const isActiveChatRequest = (request: ActiveChatRequest) => activeChatRequest?.id === request.id;
 
 const finishChatRequest = (request: ActiveChatRequest, state: RequestState = 'idle') => {
@@ -2827,6 +2887,7 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
         conversationKey: key,
         personaKey: currentPersonaKey || undefined,
     }, historyMode);
+    if (VPS_CHAT_BUILD) void resumeVpsChatTurn();
 };
 
 const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
@@ -5086,6 +5147,7 @@ const submitUnlock = async () => {
         setUnlockedState(true);
         void startSupabaseCloudSync();
         void resumePendingVideoJobIfAny();
+        if (VPS_CHAT_BUILD) void resumeVpsChatTurn(true);
     } catch (error) {
         setUnlockedState(false);
         showAuthError(
@@ -6741,7 +6803,7 @@ const runConversationGeneration = async (
                 ], messages.length, isRepairAttempt ? 2 : 1);
 
                 requestStartedAt = performance.now();
-                const result = await generateChatTextWithTimeout({
+                const generationOptions: Parameters<typeof generateVeniceText>[0] = {
                     model,
                     messages,
                     temperature: assistantMode ? 0.7 : 0.82,
@@ -6751,7 +6813,40 @@ const runConversationGeneration = async (
                     signal: request.controller.signal,
                     onTextDelta: assistantMode ? text => showAssistantStreamPreview(request, text) : undefined,
                     enableWebSearch: assistantMode && isVeniceAssistantWebSearchEnabled(),
-                });
+                };
+                let result;
+                if (request.vpsTurn) {
+                    const turn = request.vpsTurn;
+                    const controller = makeVpsTurnController();
+                    const prior = controller.pending();
+                    if (!prior && turn.receipt) throw Error('TURN_RECEIPT_MISSING');
+                    if (prior) {
+                        const recovered = await controller.resume(turn.identity);
+                        if (!recovered || recovered.historyState !== 'ready') throw Error('TURN_HISTORY_CHANGED');
+                        turn.receipt = recovered.receipt;
+                        turn.job = recovered.job;
+                    } else {
+                        turn.job = await controller.submit(turn.identity, buildVpsCharacterPayload(generationOptions));
+                        turn.receipt = controller.pending() || undefined;
+                    }
+                    if (!turn.receipt) throw Error('TURN_RECEIPT_MISSING');
+                    const deadline = Date.now() + 300000;
+                    // A completed duplicate POST has only a receipt; always GET the full result.
+                    while (turn.job.status === 'queued' || turn.job.status === 'running' || (turn.job.status === 'done' && !turn.job.result)) {
+                        if (request.controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+                        if (Date.now() >= deadline) throw Error('VPS_PENDING');
+                        applyChatRuntimeState('generating', 'VPS 背景生成中…');
+                        await new Promise(resolve => setTimeout(resolve, 1600));
+                        const recovered = await controller.resume(turn.identity);
+                        if (!recovered || recovered.historyState !== 'ready') throw Error('TURN_HISTORY_CHANGED');
+                        turn.job = recovered.job;
+                    }
+                    if (turn.job.status !== 'done') throw Error('VPS_' + turn.job.status.toUpperCase());
+                    result = decodeVpsCharacterResult(turn.job, model);
+                    if (result.finishReason === 'length') throw Error('VPS_TRUNCATED_REPLY');
+                } else {
+                    result = await generateChatTextWithTimeout(generationOptions);
+                }
                 markChatPerformance(
                     index === 0 && !isRepairAttempt
                         ? 'generation:primary'
@@ -6817,7 +6912,7 @@ const runConversationGeneration = async (
                 let continuationCount = 0;
                 let finishReason = result.finishReason;
                 while (
-                    continuationCount < CHAT_MAX_AUTO_CONTINUES &&
+                    !request.vpsTurn && continuationCount < CHAT_MAX_AUTO_CONTINUES &&
                     finishReason === 'length'
                 ) {
                     continuationCount += 1;
@@ -6861,7 +6956,7 @@ const runConversationGeneration = async (
                     throw new Error(`Repeated reply from ${model}.`);
                 }
 
-                if (!assistantMode && request.personaKey === 'cc') {
+                if (!request.vpsTurn && !assistantMode && request.personaKey === 'cc') {
                     cleanedText = await polishCcReply(request, cleanedText);
                 }
 
@@ -6915,7 +7010,7 @@ const runConversationGeneration = async (
                         ...failure,
                     });
                 }
-                if (isAbortError(error)) {
+                if (request.vpsTurn || isAbortError(error)) {
                     throw error;
                 }
                 lastError = error instanceof Error ? error : new Error(String(error));
@@ -7877,6 +7972,7 @@ const runCharacterChatGeneration = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
 ): Promise<string | GroupGenerationResult> => {
+    if (request.vpsTurn) return runConversationGeneration(request, latestUserMessage, [request.vpsTurn.model], false);
     const models = buildCharacterModelRoute(chatModelSettings, request.personaKey === 'cc');
     if (request.room) {
         const trace = createGenerationTrace(String(request.id), 'group', request.conversationKey);
@@ -8702,11 +8798,25 @@ const getResponse = async (
             markChatPerformance('response:group-scene-persist', groupScenePersistStartedAt);
         }
         const persistStartedAt = performance.now();
-        memoryManager.addMessage(request.conversationKey, 'model', botContent);
+        let replyId: string | undefined;
+        if (request.vpsTurn) {
+            const {receipt,job}=request.vpsTurn;
+            if (!receipt || !job || typeof generated !== 'string') throw Error('TURN_RESULT_NOT_READY');
+            const applied=await makeVpsTurnController(botContent).apply(receipt,job,generated);
+            replyId=receipt.replyId;
+            if (applied === 'already-applied') {
+                if (currentConversationKey === request.conversationKey) {
+                    chatContainer.replaceChildren(); resetRenderedChatHistoryWindow();
+                    renderChatHistoryWindow(request.conversationKey, memoryManager.peekChatHistory(request.conversationKey));
+                }
+                finishChatRequest(request);
+                return;
+            }
+        } else memoryManager.addMessage(request.conversationKey, 'model', botContent);
         markChatPerformance('response:final-persist', persistStartedAt);
         if (shouldRenderCompletedReplyInConversation(currentConversationKey, request.conversationKey)) {
             const renderStartedAt = performance.now();
-            appendMessage(botContent, 'bot');
+            appendMessage(botContent, 'bot', replyId ? { id: replyId } : undefined);
             markChatPerformance('response:final-render', renderStartedAt);
             scheduleReplyVisibleHaptic();
         }
@@ -8769,7 +8879,7 @@ const getResponse = async (
         completeChatPerformanceTurn('response:final-visible');
         schedulePersonaListRefreshAfterPaint();
         if (request.room) void maybeSummarizeRoomMemory(request.room.id);
-        else if (request.mode === 'character') void maybeSummarizePersonaMemory(request.personaKey);
+        else if (request.mode === 'character' && !request.vpsTurn) void maybeSummarizePersonaMemory(request.personaKey);
     } catch (error) {
         clearAssistantStreamPreview(request);
         if (isAbortError(error)) {
@@ -8781,6 +8891,13 @@ const getResponse = async (
             }
             finishChatRequest(request);
             cancelChatPerformanceTurn('send:aborted');
+            return;
+        }
+        if (request.vpsTurn) {
+            finishChatRequest(request, 'error');
+            if (error instanceof QueuePilotError && error.httpStatus === 401) handleAuthRequired();
+            else if (currentConversationKey === request.conversationKey) showError('VPS：' + (error instanceof Error ? error.message : 'UNKNOWN') + '。未自動重試；如有待處理任務，請用選單取回。');
+            cancelChatPerformanceTurn('send:vps-error');
             return;
         }
         console.error('Venice response error:', error);
@@ -9410,6 +9527,10 @@ const sendMessage = async ({
         return;
     }
 
+    if (VPS_CHAT_BUILD && (resumingVpsTurn || pendingVpsTurn())) {
+        showError('有未完成的 VPS 回覆。請先取回原任務，或在選單確認放棄。');
+        return;
+    }
     const typedMessage = (messageText ?? messageInput.value).trim();
     if (!typedMessage && pendingChatAttachments.length === 0) return;
     const userMessage = typedMessage || '請查看附件。';
@@ -9581,6 +9702,23 @@ const sendMessage = async ({
     request.photoSubjectMemberIds = photoSubjectMemberIds;
     request.attachments = attachmentBundle.attachments;
     request.attachmentParts = attachmentBundle.contentParts;
+    const vpsModel = selectedVpsChatModel();
+    if (vpsModel && userMessageMeta?.id && isVpsChatEligible({
+        room: Boolean(request.room), assistant: assistantMode, special: characterPhotoRequest || isGodModeActive,
+        attachments: attachmentBundle.attachments.length, personaKey,
+    })) {
+        try {
+            if (!navigator.locks || !crypto.subtle) throw Error('VPS_BROWSER_SUPPORT_REQUIRED');
+            request.vpsTurn = {
+                identity: { conversationKey, personaKey, userMessageId: userMessageMeta.id, contextDigest: await digestVpsHistory(memoryManager.peekChatHistory(conversationKey)) },
+                model: vpsModel,
+            };
+        } catch (error) {
+            finishChatRequest(request, 'error');
+            showError('VPS 測試模式未能開始；未提交任何生成任務。');
+            return;
+        }
+    }
     await getResponse(request, userMessage, assistantMode ? selectedAssistantModel : undefined);
 };
 
@@ -10408,6 +10546,21 @@ const setupEventListeners = () => {
         moreOptionsMenu.prepend(button);
         moreOptionsMenu.querySelector('.v2-more-options-section-interaction .v2-more-options-grid')?.appendChild(button);
     }
+    if (VPS_CHAT_BUILD) {
+        const controls = document.createElement('div');
+        controls.style.cssText='display:flex;flex-wrap:wrap;gap:6px;padding:8px;align-items:center;background:var(--surface, #222);color:var(--text,#fff);font-size:12px';
+        const label=document.createElement('span');label.textContent='VPS Preview（本機測試，無雲端同步）';
+        const select=document.createElement('select');select.setAttribute('aria-label','VPS 生成模式');
+        [['','原有直連'],...VPS_CHAT_MODELS.map(m=>[m,m])].forEach(([value,text])=>{const option=document.createElement('option');option.value=value;option.textContent=text;select.append(option);});
+        select.value=selectedVpsChatModel()||'';
+        select.addEventListener('change',()=>{if(activeChatRequest||pendingVpsTurn()){select.value=selectedVpsChatModel()||'';alert('先處理原有任務。');return;}localStorage.setItem(VPS_CHAT_MODE_KEY,select.value);});
+        const resume=document.createElement('button');resume.type='button';resume.textContent='取回 VPS 回覆';resume.onclick=()=>void resumeVpsChatTurn(true);
+        const abandon=document.createElement('button');abandon.type='button';abandon.textContent='放棄待處理回覆';abandon.onclick=()=>{if(activeChatRequest||resumingVpsTurn)return;const p=pendingVpsTurn();if(p&&confirm('放棄本機待處理回覆？VPS 已開始的生成可能仍會扣費；此操作不會取消伺服器任務。'))void makeVpsTurnController().abandon(p.jobId).then(()=>{hideError();updateSendButtonState();}).catch(()=>showError('未能放棄原任務。'));};
+        controls.append(label,select,resume,abandon);chatView.prepend(controls);
+        window.addEventListener('online',()=>void resumeVpsChatTurn());
+        window.addEventListener('pageshow',()=>void resumeVpsChatTurn());
+        document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')void resumeVpsChatTurn();});
+    }
     closeSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     cancelSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     confirmSurpriseEventOptionsBtn.addEventListener('click', confirmSurpriseEventOptions);
@@ -10638,7 +10791,7 @@ const init = async () => {
     }
     renderPersonaList();
     setupEventListeners();
-    if (cloudBackupStartupState.enabled) {
+    if (!VPS_CHAT_BUILD && cloudBackupStartupState.enabled) {
         void loadCloudBackupManager().catch(error => {
             console.error('Failed to start Cloud Backup manager', error);
         });
@@ -10649,6 +10802,7 @@ const init = async () => {
     if (unlocked) {
         await startSupabaseCloudSync();
         void resumePendingVideoJobIfAny();
+        if (VPS_CHAT_BUILD) void resumeVpsChatTurn(true);
     }
 };
 
