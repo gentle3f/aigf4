@@ -53,6 +53,15 @@ function safeWorkflow(w) {
   return {version:w.version,parts:w.parts,...(w.version===2?{polished:w.polished}:{}),review:{model:typeof w.review.model==='string'?w.review.model:undefined,choices:[{message:{content},finish_reason:typeof review.finish_reason==='string'?review.finish_reason:null}],usage:safeUsage(w.review.usage),cost:safeCost(w.review.cost)},stages:w.stages.map(s=>({phase:s.phase,model:typeof s.model==='string'?s.model:undefined,finish_reason:typeof s.finish_reason==='string'?s.finish_reason:null,usage:safeUsage(s.usage),cost:safeCost(s.cost)}))};
 }
 
+function validateVideoSubmission(p){
+  if(!p||typeof p!=='object'||Array.isArray(p)||p.video_submit_version!==1||p.model!=='wan-2-7-enhanced-text-to-video'||p.adultConfirmed!==true||Object.keys(p).some(k=>!['video_submit_version','model','prompt','negative_prompt','duration','resolution','aspect_ratio','audio','adultConfirmed'].includes(k)))return 'UNSUPPORTED_VIDEO_SUBMISSION';
+  if(typeof p.prompt!=='string'||!p.prompt.trim()||p.prompt.length>10000||!['5s','10s','15s'].includes(p.duration))return 'INVALID_VIDEO_SUBMISSION';
+  if(p.negative_prompt!==undefined&&(typeof p.negative_prompt!=='string'||p.negative_prompt.length>10000))return 'INVALID_VIDEO_SUBMISSION';
+  if(p.resolution!==undefined&&!['720p','1080p'].includes(p.resolution))return 'INVALID_VIDEO_SUBMISSION';
+  if(p.aspect_ratio!==undefined&&!['16:9','9:16','1:1'].includes(p.aspect_ratio))return 'INVALID_VIDEO_SUBMISSION';
+  if(p.audio!==undefined&&p.audio!==false)return 'INVALID_VIDEO_SUBMISSION';
+  return null;
+}
 export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAuthenticatedRequest, env=process.env}={}) {
   return async function handler(req,res) {
     res.setHeader('Cache-Control','no-store');
@@ -80,7 +89,7 @@ export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAu
     if(method==='POST') {
       // Text-only pilot. Explicitly reject incompatible payloads before dispatch.
       const p=req.body?.request;
-      const validation=p&&typeof p==='object'&&'workflow_version' in p?validateWorkflowPayload(p):validateTextPayload(p);
+      const validation=p&&typeof p==='object'&&'video_submit_version' in p?validateVideoSubmission(p):p&&typeof p==='object'&&'workflow_version' in p?validateWorkflowPayload(p):validateTextPayload(p);
       if(validation)return res.status(400).json({error:validation});
       body=JSON.stringify({job_id:jobId,request:p});
       if(Buffer.byteLength(body)>LIMIT) return res.status(413).json({error:'REQUEST_TOO_LARGE'});

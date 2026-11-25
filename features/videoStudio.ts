@@ -23,6 +23,8 @@ import {
 } from '../videoStudioPersistence.js';
 import type { PersistedVideoJob } from '../videoStudioPersistence.js';
 import { setPersistedAppSetting } from '../appSettings.js';
+import { VPS_CHAT_BUILD } from '../vpsChatMode.js';
+import { VPS_VIDEO_MODEL,createVpsVideoSubmission,submitDurableVideo } from '../vpsVideoSubmission.js';
 
 export type VideoStudioHistoryMode = 'push' | 'replace' | 'skip';
 
@@ -1320,6 +1322,32 @@ const cancelVideoRequest = () => {
 };
 
 const pollPersistedVideoJob = async (job: PersistedVideoJob, controller: AbortController) => {
+    if(job.submissionId){
+        if(!VPS_CHAT_BUILD)throw Error('請在 VPS 測試版恢復影片提交。');
+        const transport=createVpsVideoSubmission();
+        const deadline=Date.now()+300000;
+        const submissionId=job.submissionId;
+        while(Date.now()<deadline){
+            if(controller.signal.aborted)throw new DOMException('Aborted','AbortError');
+            const resolved=await transport.resolve(job,controller.signal);
+            if(resolved){
+                if(!navigator.locks)throw Error('VPS_VIDEO_WEB_LOCKS_REQUIRED');
+                await navigator.locks.request('aigf-vps-video-submit-v1',async()=>{
+                    const stored=readPersistedVideoJobFromStorage();
+                    if(stored?.submissionId!==submissionId||controller.signal.aborted)throw Error('VPS_VIDEO_RECEIPT_CHANGED');
+                    if(!writePersistedVideoJobToStorage(resolved))throw Error('VPS_VIDEO_RECEIPT_NOT_DURABLE');
+                    pendingVideoJob=resolved;
+                });
+                job=resolved;
+                updateVideoJobAction();
+                videoStudioStatus.textContent='已取回 Venice queue ID，繼續原有工作';
+                break;
+            }
+            videoStudioStatus.textContent='VPS 正在提交影片工作；可關閉手機，重新進入後取回';
+            await waitForVideoPoll(controller.signal);
+        }
+        if(job.submissionId)throw Error('VPS 提交仍待取回；原任務已保存。');
+    }
     const pollingStartedAt = performance.now();
     let consecutivePollErrors = 0;
 
@@ -1458,14 +1486,24 @@ const runVideoGeneration = async () => {
     videoStudioStatus.textContent = '正在提交一次生成工作；取得 queue ID 後即可安全恢復...';
 
     try {
-        const queued = await queueVeniceVideo({
-            ...pricing,
-            prompt,
-            negativePrompt: videoNegativePrompt.value.trim(),
-            sourceImageDataUrl: videoStudioMode === 'image-to-video' ? videoSource?.dataUrl : undefined,
-            adultConfirmed: true,
-            signal: controller.signal,
-        });
+        const queueOptions={
+            ...pricing,prompt,negativePrompt:videoNegativePrompt.value.trim(),
+            sourceImageDataUrl:videoStudioMode==='image-to-video'?videoSource?.dataUrl:undefined,
+            adultConfirmed:true,signal:controller.signal,
+        };
+        if(VPS_CHAT_BUILD&&videoStudioMode==='text-to-video'&&model.id===VPS_VIDEO_MODEL){
+            if(!navigator.locks)throw Error('VPS_VIDEO_WEB_LOCKS_REQUIRED');
+            const job=await submitDurableVideo({
+                options:queueOptions,modelName:model.name,
+                storage:{read:readPersistedVideoJobFromStorage,write:writePersistedVideoJobToStorage},
+                lock:async work=>await navigator.locks.request('aigf-vps-video-submit-v1',work),
+                transport:createVpsVideoSubmission(),
+                onStored:r=>{pendingVideoJob=r;updateVideoJobAction();},
+            });
+            await pollPersistedVideoJob(job,controller);
+            return;
+        }
+        const queued = await queueVeniceVideo(queueOptions);
         const job: PersistedVideoJob = {
             version: 1,
             model: queued.model,
