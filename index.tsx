@@ -6850,13 +6850,13 @@ const runConversationGeneration = async (
                             reviewHistory: getStrictReviewHistory(request, latestUserMessage),
                             latestUserMessage,
                             promptCacheKey: createConversationPromptCacheKey(request.conversationKey, 'review'),
-                        });
+                        }, request.personaKey === 'cc' ? CC_CANTONESE_POLISH_PROMPT : undefined);
                         if (!isActiveChatRequest(request) || request.controller.signal.aborted || await digestVpsHistory(memoryManager.peekChatHistory(request.conversationKey)) !== turn.identity.contextDigest) throw Error('TURN_HISTORY_CHANGED');
                         turn.job = await controller.submit(turn.identity, plan);
                         turn.receipt = controller.pending() || undefined;
                     }
                     if (!turn.receipt) throw Error('TURN_RECEIPT_MISSING');
-                    const deadline = Date.now() + (turn.receipt.workflowVersion === 1 ? 1500000 : 300000);
+                    const deadline = Date.now() + (turn.receipt.workflowVersion !== undefined ? 1500000 : 300000);
                     // A completed duplicate POST has only a receipt; always GET the full result.
                     while (turn.job.status === 'queued' || turn.job.status === 'running' || (turn.job.status === 'done' && !turn.job.result)) {
                         if (request.controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -6869,8 +6869,9 @@ const runConversationGeneration = async (
                     }
                     if (turn.job.status !== 'done') throw Error('VPS_' + turn.job.status.toUpperCase());
                     result = decodeVpsCharacterResult(turn.job, model);
-                    if (turn.receipt.workflowVersion === 1) {
+                    if (turn.receipt.workflowVersion !== undefined) {
                         const workflow = decodeVpsWorkflow(turn.job);
+                        if (workflow.version !== turn.receipt.workflowVersion) throw Error('TURN_WORKFLOW_RESULT_MISMATCH');
                         result = { ...result, text: workflow.parts[0], finishReason: 'stop' };
                     } else if (turn.job.result?.workflow) throw Error('TURN_WORKFLOW_RESULT_MISMATCH');
                     // Legacy in-flight turns retain their original per-stage recovery path.
@@ -6941,7 +6942,7 @@ const runConversationGeneration = async (
 
                 let continuationCount = 0;
                 let finishReason = result.finishReason;
-                if (request.vpsTurn?.receipt?.workflowVersion === 1) {
+                if (request.vpsTurn?.receipt?.workflowVersion !== undefined) {
                     const workflow = decodeVpsWorkflow(request.vpsTurn.job!);
                     for (const part of workflow.parts.slice(1)) {
                         const continuation = cleanVeniceChatReply(part);
@@ -6996,8 +6997,19 @@ const runConversationGeneration = async (
                     throw new Error(`Repeated reply from ${model}.`);
                 }
 
-                if (!request.vpsTurn && !assistantMode && request.personaKey === 'cc') {
-                    cleanedText = await polishCcReply(request, cleanedText);
+                if (!assistantMode && request.personaKey === 'cc') {
+                    if (!request.vpsTurn) cleanedText = await polishCcReply(request, cleanedText);
+                    else {
+                        if (request.vpsTurn.receipt?.workflowVersion !== 2) throw Error('CC_WORKFLOW_REQUIRED');
+                        const workflow = decodeVpsWorkflow(request.vpsTurn.job!);
+                        if (workflow.polished !== null) {
+                            const polished = normalizeCcCantoneseLeaks(cleanVeniceChatReply(workflow.polished || ''));
+                            const ratio = polished.length / Math.max(cleanedText.length, 1);
+                            const refusal = /(?:無法|不能|唔可以).{0,16}(?:協助|處理|生成|改寫|提供)|(?:I cannot|I can't).{0,24}(?:assist|rewrite)/iu.test(polished);
+                            if (!polished || isInvalidVeniceChatReply(polished) || refusal || ratio < 0.7 || ratio > 1.55) throw Error('VPS_CC_POLISH_INVALID');
+                            cleanedText = polished;
+                        } else cleanedText = normalizeCcCantoneseLeaks(cleanedText);
+                    }
                 }
 
                 if (!assistantMode && replyHasUnconfirmedAddressLabel(
@@ -7635,7 +7647,7 @@ const requestStrictReviewDecision = async (
     candidateResponse: string,
     trace?: GenerationTrace,
 ) => {
-    if (request.vpsTurn?.receipt?.workflowVersion === 1) {
+    if (request.vpsTurn?.receipt?.workflowVersion !== undefined) {
         if (!request.vpsTurn.job) throw Error('TURN_RESULT_NOT_READY');
         return decodeVpsWorkflow(request.vpsTurn.job).decision;
     }

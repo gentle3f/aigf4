@@ -8,5 +8,5 @@ export async function digestVpsHistory(history:readonly TurnHistoryRow[]):Promis
  return Array.from(new Uint8Array(hash),n=>n.toString(16).padStart(2,'0')).join('');
 }
 export function isVpsChatEligible(input:{room:boolean;assistant:boolean;special:boolean;attachments:number;personaKey:string}){
- return !input.room&&!input.assistant&&!input.special&&!input.attachments&&input.personaKey!=='cc';
+ return !input.room&&!input.assistant&&!input.special&&!input.attachments;
 }

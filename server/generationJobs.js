@@ -27,9 +27,10 @@ function validateTextPayload(p) {
   return null;
 }
 function validateWorkflowPayload(p) {
-  if(!p||typeof p!=='object'||Array.isArray(p)||p.workflow_version!==1||Object.keys(p).sort().join(',')!=='primary,review,workflow_version')return 'UNSUPPORTED_WORKFLOW';
+  if(!p||typeof p!=='object'||Array.isArray(p)||![1,2].includes(p.workflow_version)||Object.keys(p).sort().join(',')!==(p.workflow_version===2?'polish,primary,review,workflow_version':'primary,review,workflow_version'))return 'UNSUPPORTED_WORKFLOW';
   const primaryError=validateTextPayload(p.primary),reviewError=validateTextPayload(p.review);
   if(primaryError||reviewError)return primaryError||reviewError;
+  if(p.workflow_version===2){const e=validateTextPayload(p.polish);if(e)return e;if(!REVIEW_MODELS.has(p.polish.model)||p.polish.response_format!==undefined||p.polish.messages.length!==2||p.polish.messages[0].role!=='system'||p.polish.messages[0].content.includes(CANDIDATE_MARKER)||p.polish.messages[1].role!=='user'||p.polish.messages[1].content!==CANDIDATE_MARKER)return 'INVALID_POLISH_PLAN';}
   if(p.primary.response_format!==undefined||p.review.model!=='glm-5-3-flash-uncensored'||canonical(p.review.response_format)!==canonical(REVIEW_FORMAT))return 'UNSUPPORTED_WORKFLOW';
   if(p.primary.messages.at(-1).role!=='user'||p.review.messages.at(-1).role!=='user')return 'UNSUPPORTED_WORKFLOW';
   const occurrences=p.review.messages.reduce((n,m)=>n+m.content.split(CANDIDATE_MARKER).length-1,0);
@@ -39,14 +40,15 @@ function validateWorkflowPayload(p) {
 const safeUsage=u=>u&&typeof u==='object'?Object.fromEntries(Object.entries(u).filter(([k,v])=>['prompt_tokens','completion_tokens','total_tokens'].includes(k)&&Number.isFinite(v)&&v>=0)):undefined;
 const safeCost=c=>c&&typeof c==='object'?Object.fromEntries(Object.entries(c).filter(([k,v])=>['usd','diem'].includes(k)&&Number.isFinite(v)&&v>=0)):undefined;
 function safeWorkflow(w) {
-  if(!w||w.version!==1||!Array.isArray(w.parts)||w.parts.length<1||w.parts.length>3||w.parts.some(p=>typeof p!=='string'||!p.trim())||!Array.isArray(w.stages)||w.stages.length<2||w.stages.length>5)return null;
+  if(!w||![1,2].includes(w.version)||!Array.isArray(w.parts)||w.parts.length<1||w.parts.length>3||w.parts.some(p=>typeof p!=='string'||!p.trim())||!Array.isArray(w.stages)||w.stages.length<2||w.stages.length>(w.version===2?6:5))return null;
+  if(w.version===2&&w.polished!==null&&(typeof w.polished!=='string'||!w.polished.trim()||/<\/?wardrobe/i.test(w.polished)))return null;
   const review=w.review?.choices?.[0],content=review?.message?.content;
   if(typeof content!=='string'||!content.trim())return null;
   const phases=w.stages.map(s=>s?.phase);
-  const expected=['primary',...(w.parts.length>=2?['continuation-1']:[]),...(w.parts.length===3?['continuation-2']:[]),'review-1'];
+  const expected=['primary',...(w.parts.length>=2?['continuation-1']:[]),...(w.parts.length===3?['continuation-2']:[]),...(w.version===2?['cc-polish']:[]),'review-1'];
   if(phases.length===expected.length+1)expected.push('review-2');
   if(phases.join(',')!==expected.join(','))return null;
-  return {version:1,parts:w.parts,review:{model:typeof w.review.model==='string'?w.review.model:undefined,choices:[{message:{content},finish_reason:typeof review.finish_reason==='string'?review.finish_reason:null}],usage:safeUsage(w.review.usage),cost:safeCost(w.review.cost)},stages:w.stages.map(s=>({phase:s.phase,model:typeof s.model==='string'?s.model:undefined,finish_reason:typeof s.finish_reason==='string'?s.finish_reason:null,usage:safeUsage(s.usage),cost:safeCost(s.cost)}))};
+  return {version:w.version,parts:w.parts,...(w.version===2?{polished:w.polished}:{}),review:{model:typeof w.review.model==='string'?w.review.model:undefined,choices:[{message:{content},finish_reason:typeof review.finish_reason==='string'?review.finish_reason:null}],usage:safeUsage(w.review.usage),cost:safeCost(w.review.cost)},stages:w.stages.map(s=>({phase:s.phase,model:typeof s.model==='string'?s.model:undefined,finish_reason:typeof s.finish_reason==='string'?s.finish_reason:null,usage:safeUsage(s.usage),cost:safeCost(s.cost)}))};
 }
 
 export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAuthenticatedRequest, env=process.env}={}) {

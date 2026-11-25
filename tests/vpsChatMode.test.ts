@@ -5,7 +5,7 @@ import {digestVpsHistory,isVpsChatEligible} from '../vpsChatMode.js';
 import {createDurableChatTurn} from '../durableChatTurn.js';
 const id='12345678-1234-4234-8234-123456789abc',job='12345678-1234-4234-8234-123456789abd',reply='12345678-1234-4234-8234-123456789abe';
 const payload={model:'glm-5-3-flash-uncensored',messages:[{role:'user' as const,content:'fixture'}]};
-test('eligibility excludes special multi-step routes and CC polish',()=>{const base={room:false,assistant:false,special:false,attachments:0,personaKey:'custom-fixture'};assert.equal(isVpsChatEligible(base),true);for(const change of [{room:true},{assistant:true},{special:true},{attachments:1},{personaKey:'cc'}])assert.equal(isVpsChatEligible({...base,...change}),false);});
+test('eligibility includes CC while excluding other special routes',()=>{const base={room:false,assistant:false,special:false,attachments:0,personaKey:'custom-fixture'};assert.equal(isVpsChatEligible(base),true);assert.equal(isVpsChatEligible({...base,personaKey:'cc'}),true);for(const change of [{room:true},{assistant:true},{special:true},{attachments:1}])assert.equal(isVpsChatEligible({...base,...change}),false);});
 test('same ID edit invalidates history fingerprint',async()=>{const a=[{id,role:'user',content:{text:'hello'}}],b=JSON.parse(JSON.stringify(a));assert.equal(await digestVpsHistory(a),await digestVpsHistory(b));b[0].content.text='changed';assert.notEqual(await digestVpsHistory(a),await digestVpsHistory(b));});
 test('reconcile durable reply without network call and explicit abandon is local only',async()=>{
  const rows=[{id,role:'user'}];const m=new Map<string,string>();let calls=0,confirmed=0;
