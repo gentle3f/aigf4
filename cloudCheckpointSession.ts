@@ -31,6 +31,35 @@ export function createCloudCheckpointSession(deps:{
  }
  return {pending,
   recover:()=>deps.lock(async()=>{const r=pending();return r?inspect(r):'none' as const;}),
+  // Explicit retry only: the same revision, same baseline and same intended result.
+  // The SQL revision CAS allows at most one of two overlapping attempts to commit.
+  retryPending:()=>deps.lock(async()=>{
+   const r=pending();if(!r)throw Error('CHECKPOINT_NO_PENDING');
+   const status=await inspect(r);
+   if(status!=='not-confirmed')return status;
+   const baseline=await deps.transport.read(r.conversationKey);
+   if(baseline.revision!==r.expectedRevision||await hash(baseline)!==r.baselineHash)throw Error('CHECKPOINT_BASELINE_CHANGED');
+   const plan=prepareAppendCheckpoint({revision:baseline.revision,conversationKey:r.conversationKey,deviceId:deps.deviceId,remoteHistory:baseline.history,localHistory:deps.history(r.conversationKey),payload:baseline.payload});
+   if(await hash({revision:baseline.revision+1,history:[...plan.expected_history,...plan.append_messages],payload:plan.new_payload})!==r.resultHash)throw Error('CHECKPOINT_LOCAL_RESULT_CHANGED');
+   const result=await deps.transport.commit(plan);
+   if(result!==r.expectedRevision+1)throw Error('CHECKPOINT_REVISION_UNEXPECTED');
+   return inspect(r);
+  }),
+  // Retire a conflicting receipt only after the owner explicitly acknowledges the
+  // current remote revision. Local messages are left intact for manual recovery.
+  retireConflict:(observedRevision:number)=>deps.lock(async()=>{
+   const r=pending();if(!r)throw Error('CHECKPOINT_NO_PENDING');
+   const actual=await deps.transport.read(r.conversationKey);
+   if(actual.revision!==observedRevision||actual.revision<=r.expectedRevision)throw Error('CHECKPOINT_CONFLICT_NOT_CONFIRMED');
+   if(actual.revision===r.expectedRevision+1&&await hash(actual)===r.resultHash){deps.storage.removeItem(KEY);return 'confirmed' as const;}
+   const archiveKey=KEY+'Conflict';
+   if(deps.storage.getItem(archiveKey))throw Error('CHECKPOINT_CONFLICT_ARCHIVE_EXISTS');
+   const archive=JSON.stringify({receipt:r,observedRevision,retiredAt:Date.now()});
+   deps.storage.setItem(archiveKey,archive);
+   if(deps.storage.getItem(archiveKey)!==archive)throw Error('CHECKPOINT_ARCHIVE_NOT_DURABLE');
+   deps.storage.removeItem(KEY);
+   return 'retired-local-preserved' as const;
+  }),
   submit:(conversationKey:string,baseline:CheckpointHead)=>deps.lock(async()=>{
    if(pending())throw Error('CHECKPOINT_ALREADY_PENDING');
    const actual=await deps.transport.read(conversationKey);
