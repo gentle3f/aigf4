@@ -507,16 +507,26 @@ export class SupabaseCloudSyncManager {
         });
     }
 
-    async reloadFromCloud() {
+    private recoveryConsentHistory:string|null=null;
+    private recoveryHistoryAllowed(){
+        return this.recoveryConsentHistory!==null
+            ?this.recoveryConsentHistory===JSON.stringify(this.memoryManager.getAllChatHistories())
+            :!this.hasRecoveryLocalChat();
+    }
+
+    async reloadFromCloud(allowReplaceSinglePreviewMessage=false) {
         if(this.recoveryOnly){
             if(!this.session)throw Error('請先登入私人雲端。');
             if(!this.canRestore())throw Error('CLOUD_RESTORE_BUSY：有未完成聊天任務，不能還原。');
             const localCount=Object.values(this.memoryManager.getAllChatHistories()).reduce((n,rows)=>n+rows.length,0);
-            if(this.hasRecoveryLocalChat())throw Error('CLOUD_RESTORE_LOCAL_NOT_EMPTY：本機已有 '+localCount+' 則訊息；只限未有聊天紀錄的測試裝置。');
+            if(this.hasRecoveryLocalChat()&&!(allowReplaceSinglePreviewMessage&&localCount===1))throw Error('CLOUD_RESTORE_LOCAL_NOT_EMPTY：本機已有 '+localCount+' 則訊息；只限未有聊天紀錄的測試裝置。');
             if(this.pulling||this.pushing)throw Error('CLOUD_RESTORE_BUSY：已有同步操作。');
             if(isLocalCloudChangeBatchActive())throw Error('CLOUD_RESTORE_LOCAL_BATCH_ACTIVE：本機資料正在更新。');
-            const completed=await this.pullCloudToLocal(true,false);
-            if(!completed)throw Error(this.state.detail);
+            this.recoveryConsentHistory=JSON.stringify(this.memoryManager.getAllChatHistories());
+            try{
+                const completed=await this.pullCloudToLocal(true,false);
+                if(!completed)throw Error(this.state.detail);
+            }finally{this.recoveryConsentHistory=null;}
             return;
         }
         if (!this.session) throw new Error('請先登入 Supabase 雲端。');
@@ -1182,7 +1192,7 @@ export class SupabaseCloudSyncManager {
     }
 
     private async pullCloudToLocal(force = false, mergeLocal = false): Promise<boolean> {
-        if(this.recoveryOnly&&(!force||mergeLocal||!this.canRestore()||this.hasRecoveryLocalChat()))return false;
+        if(this.recoveryOnly&&(!force||mergeLocal||!this.canRestore()||!this.recoveryHistoryAllowed()))return false;
         if (!this.client || !this.session || this.pulling || this.pushing) return false;
         const sessionUserId = this.session.user.id;
         const sessionGeneration = this.sessionGeneration;
@@ -1266,7 +1276,7 @@ export class SupabaseCloudSyncManager {
             ]);
             this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             if(this.recoveryOnly){
-                if(!this.canRestore()||this.hasRecoveryLocalChat())throw Error('CLOUD_RECOVERY_LOCAL_CHANGED');
+                if(!this.canRestore()||!this.recoveryHistoryAllowed())throw Error('CLOUD_RECOVERY_LOCAL_CHANGED');
                 const head=await this.client.from('wetapp_state').select('revision').maybeSingle();
                 if(head.error||normalizeCloudStateRevision(head.data?.revision)!==this.lastObservedCloudStateRevision)throw Error('CLOUD_RECOVERY_REVISION_CHANGED');
             }
@@ -1278,7 +1288,7 @@ export class SupabaseCloudSyncManager {
                 this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
                 this.setState('pulling', `正在整理 ${messageRows.length.toLocaleString('zh-HK')} 則訊息…`, { progress: 72 });
                 if(this.recoveryOnly){
-                    if(!this.canRestore()||this.hasRecoveryLocalChat())throw Error('CLOUD_RECOVERY_LOCAL_CHANGED');
+                    if(!this.canRestore()||!this.recoveryHistoryAllowed())throw Error('CLOUD_RECOVERY_LOCAL_CHANGED');
                     const head=await this.client.from('wetapp_state').select('revision').maybeSingle();
                     if(head.error||normalizeCloudStateRevision(head.data?.revision)!==this.lastObservedCloudStateRevision)throw Error('CLOUD_RECOVERY_REVISION_CHANGED');
                 }
