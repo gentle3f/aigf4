@@ -18,6 +18,7 @@ import {
     cleanAiResponse,
 } from "./managers.js";
 import { createDurableChatTurn, browserTurnLock, type TurnIdentity, type TurnReceipt } from './durableChatTurn.js';
+import { runDurableChatStage } from './vpsStageRunner.js';
 import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult } from './vpsCharacterTransport.js';
 import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
 import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, VPS_CHAT_MODELS, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
@@ -6534,14 +6535,25 @@ const continueTruncatedChatReply = async (
     const requestStartedAt = performance.now();
     let result: Awaited<ReturnType<typeof generateChatTextWithTimeout>>;
     try {
-        result = await generateChatTextWithTimeout({
-            model,
-            messages,
-            temperature: 0.72,
-            topP: 0.9,
-            repetitionPenalty: 1.02,
-            signal: request.controller.signal,
-        });
+        const options: Parameters<typeof generateVeniceText>[0] = {
+            model, messages, temperature: 0.72, topP: 0.9,
+            repetitionPenalty: 1.02, signal: request.controller.signal,
+        };
+        if (request.vpsTurn) {
+            const parent = request.vpsTurn.receipt;
+            if (!parent || (attemptIndex !== 1 && attemptIndex !== 2)) throw Error('TURN_STAGE_INVALID');
+            const controller = makeVpsTurnController();
+            const job = await runDurableChatStage({
+                parent, phase: attemptIndex === 1 ? 'continuation-1' : 'continuation-2',
+                payload: buildVpsCharacterPayload(options), signal: request.controller.signal,
+                stage: controller.stage,
+                verifyContext: async () => {
+                    if (!isActiveChatRequest(request) || await digestVpsHistory(memoryManager.peekChatHistory(parent.conversationKey)) !== parent.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+                },
+                onPending: () => applyChatRuntimeState('generating', 'VPS 背景續寫中…'),
+            });
+            result = decodeVpsCharacterResult(job, model);
+        } else result = await generateChatTextWithTimeout(options);
     } catch (error) {
         const failure = getSingleGenerationAttemptFailure(error);
         recordSingleGenerationAttempt(trace, {
@@ -6843,7 +6855,7 @@ const runConversationGeneration = async (
                     }
                     if (turn.job.status !== 'done') throw Error('VPS_' + turn.job.status.toUpperCase());
                     result = decodeVpsCharacterResult(turn.job, model);
-                    if (result.finishReason === 'length') throw Error('VPS_TRUNCATED_REPLY');
+                    // A length-limited result is continued through journaled child jobs below.
                 } else {
                     result = await generateChatTextWithTimeout(generationOptions);
                 }
@@ -6912,7 +6924,7 @@ const runConversationGeneration = async (
                 let continuationCount = 0;
                 let finishReason = result.finishReason;
                 while (
-                    !request.vpsTurn && continuationCount < CHAT_MAX_AUTO_CONTINUES &&
+                    continuationCount < CHAT_MAX_AUTO_CONTINUES &&
                     finishReason === 'length'
                 ) {
                     continuationCount += 1;
@@ -6928,6 +6940,7 @@ const runConversationGeneration = async (
                         continuationCount,
                     );
                     if (!continuation) {
+                        if (request.vpsTurn) throw Error('VPS_INVALID_CONTINUATION');
                         break;
                     }
 
@@ -6935,6 +6948,7 @@ const runConversationGeneration = async (
                     finishReason = continuation.finishReason;
                 }
 
+                if (request.vpsTurn && finishReason === 'length') throw Error('VPS_TRUNCATED_REPLY');
                 if (!assistantMode) {
                     cleanedText = normalizeTraditionalChineseLeaks(cleanedText);
                 }

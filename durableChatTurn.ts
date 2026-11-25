@@ -3,7 +3,21 @@ import type {PilotJob, PilotRequest, PilotStorage} from './generationQueuePilot.
 const KEY='aigfVpsChatTurnV1';
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export type TurnIdentity={conversationKey:string;personaKey:string;userMessageId:string;contextDigest?:string};
-export type TurnReceipt=TurnIdentity&{jobId:string;replyId:string;createdAt:number;model:string};
+export type TurnStage='continuation-1'|'continuation-2'|'review-1'|'review-2'|'review-3';
+export type StageReceipt={jobId:string;requestDigest:string;model:string};
+export type TurnReceipt=TurnIdentity&{jobId:string;replyId:string;createdAt:number;model:string;stages?:Partial<Record<TurnStage,StageReceipt>>};
+const STAGES=new Set<string>(['continuation-1','continuation-2','review-1','review-2','review-3']);
+const validStages=(r:TurnReceipt)=>{
+ if(r.stages===undefined)return true;
+ if(!r.stages||typeof r.stages!=='object'||Array.isArray(r.stages))return false;
+ const ids=new Set([r.jobId,r.replyId]);
+ return Object.entries(r.stages).every(([phase,stage])=>{
+   if(!STAGES.has(phase)||!stage||typeof stage.jobId!=='string'||!UUID.test(stage.jobId)||ids.has(stage.jobId)||typeof stage.requestDigest!=='string'||!/^[a-f0-9]{64}$/.test(stage.requestDigest)||typeof stage.model!=='string'||!stage.model)return false;
+   ids.add(stage.jobId);return true;
+ });
+};
+const stableJson=(v:unknown):string=>JSON.stringify(v,(_k,value)=>value&&typeof value==='object'&&!Array.isArray(value)?Object.fromEntries(Object.keys(value).sort().map(k=>[k,value[k]])):value);
+const requestDigest=async(payload:PilotRequest)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(stableJson(payload)))),n=>n.toString(16).padStart(2,'0')).join('');
 export type TurnHistoryRow={id?:string;role:string};
 export type DurableHistory={
   read:(conversationKey:string)=>readonly TurnHistoryRow[];
@@ -16,7 +30,7 @@ export type DurableHistory={
 export type TurnTransport={submit:(id:string,payload:PilotRequest)=>Promise<PilotJob>;get:(id:string)=>Promise<PilotJob>};
 type Lock=<T>(work:()=>Promise<T>)=>Promise<T>;
 const same=(a:TurnIdentity,b:TurnIdentity)=>a.conversationKey===b.conversationKey&&a.personaKey===b.personaKey&&a.userMessageId===b.userMessageId&&a.contextDigest===b.contextDigest;
-const valid=(r:TurnReceipt)=>!!r&&typeof r.conversationKey==='string'&&!!r.conversationKey&&typeof r.personaKey==='string'&&!!r.personaKey&&UUID.test(r.userMessageId)&&UUID.test(r.jobId)&&UUID.test(r.replyId)&&r.jobId!==r.replyId&&Number.isFinite(r.createdAt)&&typeof r.model==='string'&&!!r.model&&(r.contextDigest===undefined||/^[a-f0-9]{64}$/.test(r.contextDigest));
+const valid=(r:TurnReceipt)=>!!r&&typeof r.conversationKey==='string'&&!!r.conversationKey&&typeof r.personaKey==='string'&&!!r.personaKey&&UUID.test(r.userMessageId)&&UUID.test(r.jobId)&&UUID.test(r.replyId)&&r.jobId!==r.replyId&&Number.isFinite(r.createdAt)&&typeof r.model==='string'&&!!r.model&&(r.contextDigest===undefined||/^[a-f0-9]{64}$/.test(r.contextDigest))&&validStages(r);
 export function createDurableChatTurn({storage,history,transport,lock,newId=()=>crypto.randomUUID(),now=Date.now}:{
  storage:PilotStorage;history:DurableHistory;transport:TurnTransport;lock:Lock;newId?:()=>string;now?:()=>number;
 }){
@@ -76,6 +90,31 @@ export function createDurableChatTurn({storage,history,transport,lock,newId=()=>
      if(turn&&!same(r,turn))throw Error('OTHER_CHAT_TURN_PENDING');
      return {receipt:r,job:await fetchStatus(r),historyState:inspect(r)};
    }),
+   // A child operation is journaled in the SAME receipt before its first POST.
+   // An existing stage can only GET; even 404 is not authority to create another job.
+   stage:async(parent:TurnReceipt,phase:TurnStage,payload:PilotRequest)=>{
+     if(!STAGES.has(phase))throw Error('TURN_STAGE_INVALID');
+     const digest=await requestDigest(payload);
+     return lock(async()=>{
+       const current=pending();
+       if(!current||current.jobId!==parent.jobId||!same(current,parent)||current.replyId!==parent.replyId)throw Error('TURN_RECEIPT_CHANGED');
+       if(inspect(current)!=='ready')throw Error('TURN_HISTORY_CHANGED');
+       const existing=current.stages?.[phase];
+       if(existing){
+         if(existing.requestDigest!==digest||existing.model!==payload.model)throw Error('TURN_STAGE_REQUEST_CHANGED');
+         const j=await transport.get(existing.jobId);
+         if(j.job_id!==existing.jobId)throw Error('TURN_JOB_ID_MISMATCH');
+         return j;
+       }
+       const stage={jobId:newId(),requestDigest:digest,model:payload.model};
+       const updated={...current,stages:{...current.stages,[phase]:stage}};
+       if(!valid(updated))throw Error('TURN_STAGE_INVALID');
+       storage.setItem(KEY,JSON.stringify(updated));
+       const j=await transport.submit(stage.jobId,payload);
+       if(j.job_id!==stage.jobId)throw Error('TURN_JOB_ID_MISMATCH');
+       return j;
+     });
+   },
    apply:(r:TurnReceipt,job:PilotJob,acceptedText:string)=>lock(async()=>{
      const current=pending();
      if(!current||current.jobId!==r.jobId||!same(current,r)||current.replyId!==r.replyId)throw Error('TURN_RECEIPT_CHANGED');
