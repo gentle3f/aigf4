@@ -1271,6 +1271,25 @@ export class SupabaseCloudSyncManager {
                     mergeLocal,
                 );
                 this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+                if(this.recoveryOnly){
+                    const histories=this.memoryManager.getAllChatHistories();
+                    const expectedByKey=new Map<string,CloudMessageRow[]>();
+                    for(const row of messageRows){const rows=expectedByKey.get(row.conversation_key)||[];rows.push(row);expectedByKey.set(row.conversation_key,rows);}
+                    if(Object.values(histories).reduce((n,rows)=>n+rows.length,0)!==messageRows.length)throw Error('CLOUD_RECOVERY_MESSAGE_COUNT_MISMATCH');
+                    for(const [key,rows] of expectedByKey){
+                        const restored=histories[key]||[];
+                        if(restored.length!==rows.length||rows.some((row,i)=>restored[i].id!==row.message_id||restored[i].role!==row.role||Number(restored[i].createdAt)!==Number(row.created_at_ms)))throw Error('CLOUD_RECOVERY_MESSAGE_ID_MISMATCH');
+                    }
+                    for(const row of mediaRows){
+                        const metadata=row.metadata||{};
+                        const asset=row.kind==='persona_avatar'||row.kind==='room_avatar'
+                            ?await getPersonaAvatarAsset(String(metadata.localKey||''))
+                            :row.kind==='character_photo'
+                                ?await getCharacterPhotoAsset(String(metadata.id||row.asset_id.replace(/^character-photo:/u,'')))
+                                :await getChatAttachment(String(metadata.id||row.asset_id.replace(/^attachment:/u,'')));
+                        if(!asset||asset.blob.size!==Number(row.byte_size))throw Error('CLOUD_RECOVERY_MEDIA_SIZE_MISMATCH');
+                    }
+                }
                 await this.refreshLocalIndexes(
                     messageRows,
                     mediaRows,
@@ -1297,7 +1316,7 @@ export class SupabaseCloudSyncManager {
             this.setPullRecoveryRequired(false);
             localStorage.setItem(SAFE_MERGE_VERSION_KEY, '2');
             this.callbacks.onRemoteApplied();
-            this.markSynced(this.recoveryOnly?'已只讀還原雲端資料至本機；沒有上傳。':'已載入雲端最新資料。');
+            this.markSynced(this.recoveryOnly?`CLOUD RESTORE PASS：已核對 ${messageRows.length} 則訊息 ID／角色／時間及 ${mediaRows.length} 個媒體檔案大小；雲端版本 ${this.lastObservedCloudStateRevision}。沒有上傳。`:'已載入雲端最新資料。');
             return true;
         } catch (error) {
             if (

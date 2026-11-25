@@ -28,9 +28,11 @@ function fixture(revisionChange=false){
 test('login does not restore or upload; explicit read-only pull restores original message ID; no repeated overwrite',async()=>{
  const f=fixture();await f.sync.applySession(f.session);assert.equal(f.applied(),0);assert.equal(f.sync.getState().phase,'synced');
  await assert.rejects(f.sync.syncNow(),/READ_ONLY/);assert.equal(await f.sync.pushLocalToCloud(),false);assert.equal(await f.sync.recoverCloudSafely(),false);assert.equal(await f.sync.pushPendingResearchTurns(),false);
- await f.sync.reloadFromCloud();assert.equal(f.applied(),1);assert.equal(f.memory.peekChatHistory('cc')[0]?.id,'fixture-id');
+ await f.sync.reloadFromCloud();assert.equal(f.applied(),1);assert.equal(f.memory.peekChatHistory('cc')[0]?.id,'fixture-id');assert.match(f.sync.getState().detail,/CLOUD RESTORE PASS/);
  await assert.rejects(f.sync.reloadFromCloud(),/未有聊天紀錄/);assert.equal(f.applied(),1);
 });
 test('cloud revision changed during read: block apply and preserve empty local state',async()=>{
  const f=fixture(true);await f.sync.applySession(f.session);await assert.rejects(f.sync.reloadFromCloud(),/REVISION_CHANGED/);assert.equal(f.applied(),0);assert.equal(f.memory.peekChatHistory('cc').length,0);
 });
+
+test('restore verification catches a missing message and rolls back local transaction',async()=>{const f=fixture();await f.sync.applySession(f.session);const apply=f.sync.applyRemoteData.bind(f.sync);f.sync.applyRemoteData=async(...args:any[])=>{await apply(...args);f.memory.setChatHistory('cc',[],true);};await assert.rejects(f.sync.reloadFromCloud(),/MESSAGE_COUNT_MISMATCH/);assert.equal(f.applied(),0);assert.equal(f.memory.peekChatHistory('cc').length,0);});

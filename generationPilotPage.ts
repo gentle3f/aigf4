@@ -1,3 +1,5 @@
+import {createMediaAcceptance,VIDEO_OPTIONS} from './mediaAcceptance.js';
+import {quoteVeniceVideo,retrieveVeniceVideo,completeVeniceVideo} from './veniceVideo.js';
 import {acceptanceCases,createAcceptanceRunner} from './vpsAcceptance.js';
 import {createVpsChatTransport} from './vpsCharacterTransport.js';
 import {createQueuePilotClient} from './generationQueuePilot';
@@ -24,3 +26,23 @@ const suite=createAcceptanceRunner({storage:localStorage,transport:createVpsChat
 function renderSuite(){const j=suite.read();acceptanceReport.textContent=acceptanceCases.map((c,i)=>{const row=j.rows[i];return c.title+': '+(row?row.status.toUpperCase()+(row.detail?' — '+row.detail:'')+' ['+row.jobId+']':'未測試');}).join('\n');acceptanceButton.disabled=j.rows.length===acceptanceCases.length&&j.rows.every(r=>r.status!=='pending');}
 acceptanceButton.onclick=()=>void action(async()=>{if(!confirm('執行固定合成文字測試，會使用少量 Venice API 額度。不會讀取私人聊天。繼續？'))return;acceptanceButton.disabled=true;try{const deadline=Date.now()+600000;while(Date.now()<deadline){const next=await suite.step();renderSuite();acceptanceButton.disabled=true;if(next==='complete'){status.textContent='綜合驗收完成，請查看及複製報告。';return;}if(next==='pending')await new Promise(r=>setTimeout(r,1800));}status.textContent='測試未完成，按同一按鈕繼續取回，唔會重發原任務。';}finally{renderSuite();}});
 try{renderSuite();}catch(e){acceptanceReport.textContent='驗收紀錄無效，請保留原紀錄以供排查。';acceptanceButton.disabled=true;}
+
+const media=createMediaAcceptance({storage:localStorage,lock:async fn=>{if(!navigator.locks)throw Error('WEB_LOCKS_REQUIRED');return navigator.locks.request('aigf-media-acceptance-v1',fn);},retrieveVideo:j=>retrieveVeniceVideo(j.model,j.queueId,j.downloadUrl),cleanupVideo:j=>completeVeniceVideo(j.model,j.queueId)});
+const mediaButton=el<HTMLButtonElement>('media-run'),mediaReport=el<HTMLElement>('media-report');
+function renderMedia(){const r=media.read();const line=(label:string,v:typeof r.image,p:string|null)=>label+': '+(v?'PASS · '+v.size+' bytes · '+v.mime+' · '+(v.cloudSizeEligible?'50 MiB 內':'超出雲端上限')+'\nSHA-256 '+v.sha256:p?'PENDING · '+p:'未測試');mediaReport.textContent=line('圖片',r.image,r.imagePending)+'\n'+line('影片',r.video,r.videoPending);mediaButton.disabled=!!r.image&&!!r.video;}
+mediaButton.onclick=()=>void action(async()=>{
+ const state=media.read();let allowVideo=!!state.videoPending;
+ if(!state.video&&!state.videoPending){
+   const quote=await quoteVeniceVideo(VIDEO_OPTIONS);
+   if(!Number.isFinite(quote)||quote<0||quote>5)throw Error('影片報價超出驗收上限或無效；未有提交。');
+   if(!confirm('只生成一張測試圖片及一段 5 秒影片。影片報價 US$'+quote+'，圖片另計。繼續？'))return;
+   allowVideo=true;
+ }else if(!state.image&&!state.imagePending&&!confirm('生成一張測試圖片（會扣費）？'))return;
+ mediaButton.disabled=true;
+ try{
+  const deadline=Date.now()+600000;
+  while(Date.now()<deadline){const r=media.read();if(!r.image)await media.imageStep();else if(!r.video)await media.videoStep(allowVideo);else{status.textContent='媒體驗收完成。報告只包含檔案大小及 SHA-256。';return;}renderMedia();mediaButton.disabled=true;await new Promise(r=>setTimeout(r,2500));}
+  status.textContent='仍未完成，按原按鈕取回；不會重新生成已提交任務。';
+ }finally{renderMedia();}
+});
+try{renderMedia();}catch{mediaReport.textContent='媒體驗收紀錄無效；保留原紀錄。';mediaButton.disabled=true;}
