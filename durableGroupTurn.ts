@@ -1,14 +1,15 @@
 import type {ChatRoom,RoomSceneState} from './roomManager.js';
 import type {ChatMessage,Content} from './managers.js';
 import type {TurnReceipt} from './durableChatTurn.js';
+import {canonicalContextJson,hashContextJson,type ContextDigestVersion} from './contextFingerprint.js';
 export type GroupSceneCommit={jobId:string;roomDigest:string;scene:RoomSceneState};
 // Avatar blobs and volatile display timestamps do not change the generation context.
 export function groupContextSnapshot(room:ChatRoom):string{
  return JSON.stringify({...room,updatedAt:undefined,members:room.members.map(m=>({...m,persona:{...m.persona,avatarUrl:undefined}}))});
 }
-export async function digestGroupContext(room:ChatRoom):Promise<string>{
- const bytes=new TextEncoder().encode(groupContextSnapshot(room));
- return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
+export async function digestGroupContext(room:ChatRoom,version:ContextDigestVersion=1):Promise<string>{
+ const raw=groupContextSnapshot(room);
+ return hashContextJson(version===2?canonicalContextJson(JSON.parse(raw)):raw);
 }
 export function createGroupCommit(deps:{
  readRoom:(id:string)=>ChatRoom|undefined;
@@ -20,9 +21,9 @@ export function createGroupCommit(deps:{
 }){
  async function verifyRoom(r:TurnReceipt){
    const room=deps.readRoom(r.conversationKey);
-   if(!room||!r.roomDigest||await digestGroupContext(room)!==r.roomDigest)throw Error('GROUP_CONTEXT_CHANGED');
+   if(!room||!r.roomDigest||await digestGroupContext(room,r.contextDigestVersion)!==r.roomDigest)throw Error('GROUP_CONTEXT_CHANGED');
    const snapshot=groupContextSnapshot(room);
-   if(deps.readRoom(r.conversationKey)!==room||await digestGroupContext(room)!==r.roomDigest||groupContextSnapshot(room)!==snapshot)throw Error('GROUP_CONTEXT_CHANGED');
+   if(deps.readRoom(r.conversationKey)!==room||await digestGroupContext(room,r.contextDigestVersion)!==r.roomDigest||groupContextSnapshot(room)!==snapshot)throw Error('GROUP_CONTEXT_CHANGED');
    return snapshot;
  }
  return {

@@ -26,6 +26,7 @@ import { GROUP_MEMORY_KEY, roomMemorySnapshot, groupMemoryAliases, groupMemoryPr
 import { createDurableMemoryTask, browserMemoryLock, type MemoryContext } from './durablePersonaMemory.js';
 import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult, VPS_REVIEW_MODELS } from './vpsCharacterTransport.js';
 import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
+import { CURRENT_CONTEXT_DIGEST_VERSION } from './contextFingerprint.js';
 import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, VPS_CHAT_MODELS, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
@@ -1896,13 +1897,13 @@ const makeVpsTurnController = (replyContent?: Content, groupScene?: GroupGenerat
         persistUser: async t => {
             if (t.roomDigest) {
                 const room=roomManager.getRoom(t.conversationKey);
-                if (!room || await digestGroupContext(room)!==t.roomDigest) throw Error('GROUP_CONTEXT_CHANGED');
+                if (!room || await digestGroupContext(room,t.contextDigestVersion)!==t.roomDigest) throw Error('GROUP_CONTEXT_CHANGED');
             }
             memoryManager.persistVpsChatTurnUser(t.conversationKey, t.userMessageId);
-            if (t.contextDigest && await digestVpsHistory(memoryManager.peekChatHistory(t.conversationKey)) !== t.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+            if (t.contextDigest && await digestVpsHistory(memoryManager.peekChatHistory(t.conversationKey),t.contextDigestVersion) !== t.contextDigest) throw Error('TURN_HISTORY_CHANGED');
         },
         persistReply: async (r, text) => {
-            if (await digestVpsHistory(memoryManager.peekChatHistory(r.conversationKey)) !== r.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+            if (await digestVpsHistory(memoryManager.peekChatHistory(r.conversationKey),r.contextDigestVersion) !== r.contextDigest) throw Error('TURN_HISTORY_CHANGED');
             if (r.roomDigest) {
                 if(!groupScene)throw Error('GROUP_SCENE_RECEIPT_MISSING');
                 await makeVpsGroupCommit().persistReply(r,{...replyContent,text},groupScene);
@@ -1945,12 +1946,12 @@ const resumeVpsChatTurn = async (openConversation = false) => {
         }
         if (pending.roomDigest) {
             const room=roomManager.getRoom(pending.conversationKey);
-            if(!room||await digestGroupContext(room)!==pending.roomDigest||!pending.roomMemberId||!selectActiveRoomMember(pending.roomMemberId))throw Error('GROUP_CONTEXT_CHANGED');
+            if(!room||await digestGroupContext(room,pending.contextDigestVersion)!==pending.roomDigest||!pending.roomMemberId||!selectActiveRoomMember(pending.roomMemberId))throw Error('GROUP_CONTEXT_CHANGED');
         }
         if (currentConversationKey !== pending.conversationKey || !currentPersona || Boolean(currentRoom)!==Boolean(pending.roomDigest) || currentPersonaKey !== pending.personaKey) throw Error('TURN_CONVERSATION_CHANGED');
         const history = memoryManager.peekChatHistory(pending.conversationKey);
         const user = history.at(-1);
-        if (user?.id !== pending.userMessageId || user.role !== 'user' || !user.content.text || await digestVpsHistory(history) !== pending.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+        if (user?.id !== pending.userMessageId || user.role !== 'user' || !user.content.text || await digestVpsHistory(history,pending.contextDigestVersion) !== pending.contextDigest) throw Error('TURN_HISTORY_CHANGED');
         const request = beginChatRequest(pending.personaKey, currentPersona, 'character', pending.conversationKey);
         request.vpsTurn = { identity: pending, model: pending.model, receipt: pending };
         startChatPerformanceTurn();
@@ -6581,7 +6582,7 @@ const continueTruncatedChatReply = async (
                 payload: buildVpsCharacterPayload(options), signal: request.controller.signal,
                 stage: controller.stage,
                 verifyContext: async () => {
-                    if (!isActiveChatRequest(request) || await digestVpsHistory(memoryManager.peekChatHistory(parent.conversationKey)) !== parent.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+                    if (!isActiveChatRequest(request) || await digestVpsHistory(memoryManager.peekChatHistory(parent.conversationKey),parent.contextDigestVersion) !== parent.contextDigest) throw Error('TURN_HISTORY_CHANGED');
                 },
                 onPending: () => applyChatRuntimeState('generating', 'VPS 背景續寫中…'),
             });
@@ -6879,7 +6880,7 @@ const runConversationGeneration = async (
                             latestUserMessage,
                             promptCacheKey: createConversationPromptCacheKey(request.conversationKey, 'review'),
                         }, request.personaKey === 'cc' ? CC_CANTONESE_POLISH_PROMPT : undefined);
-                        if (!isActiveChatRequest(request) || request.controller.signal.aborted || await digestVpsHistory(memoryManager.peekChatHistory(request.conversationKey)) !== turn.identity.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+                        if (!isActiveChatRequest(request) || request.controller.signal.aborted || await digestVpsHistory(memoryManager.peekChatHistory(request.conversationKey),turn.identity.contextDigestVersion) !== turn.identity.contextDigest) throw Error('TURN_HISTORY_CHANGED');
                         turn.job = await controller.submit(turn.identity, plan);
                         turn.receipt = controller.pending() || undefined;
                     }
@@ -7495,7 +7496,7 @@ const runRoomConversationGeneration = async (
                     const controller=makeVpsTurnController();
                     const check=async()=>{
                         const room=roomManager.getRoom(request.conversationKey);
-                        if(!isActiveChatRequest(request)||request.controller.signal.aborted||!room||await digestGroupContext(room)!==turn.identity.roomDigest||await digestVpsHistory(memoryManager.peekChatHistory(request.conversationKey))!==turn.identity.contextDigest)throw Error('GROUP_CONTEXT_CHANGED');
+                        if(!isActiveChatRequest(request)||request.controller.signal.aborted||!room||await digestGroupContext(room,turn.identity.contextDigestVersion)!==turn.identity.roomDigest||await digestVpsHistory(memoryManager.peekChatHistory(request.conversationKey),turn.identity.contextDigestVersion)!==turn.identity.contextDigest)throw Error('GROUP_CONTEXT_CHANGED');
                     };
                     await check();
                     const prior=controller.pending();
@@ -7749,7 +7750,7 @@ const requestStrictReviewDecision = async (
                     payload: buildVpsCharacterPayload(options), signal: request.controller.signal,
                     stage: controller.stage,
                     verifyContext: async () => {
-                        if (!isActiveChatRequest(request) || await digestVpsHistory(memoryManager.peekChatHistory(parent.conversationKey)) !== parent.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+                        if (!isActiveChatRequest(request) || await digestVpsHistory(memoryManager.peekChatHistory(parent.conversationKey),parent.contextDigestVersion) !== parent.contextDigest) throw Error('TURN_HISTORY_CHANGED');
                     },
                     onPending: () => applyChatRuntimeState('retrying', 'VPS 背景審核中…'),
                 });
@@ -10043,8 +10044,8 @@ const sendMessage = async ({
         try {
             if (!navigator.locks || !crypto.subtle) throw Error('VPS_BROWSER_SUPPORT_REQUIRED');
             request.vpsTurn = {
-                identity: { conversationKey, personaKey, userMessageId: userMessageMeta.id, contextDigest: await digestVpsHistory(memoryManager.peekChatHistory(conversationKey)),
-                    ...(request.room?{roomDigest:await digestGroupContext(roomManager.getRoom(conversationKey)!),roomMemberId:request.roomMemberId}:{}),
+                identity: { conversationKey, personaKey, userMessageId: userMessageMeta.id, contextDigestVersion:CURRENT_CONTEXT_DIGEST_VERSION,contextDigest: await digestVpsHistory(memoryManager.peekChatHistory(conversationKey),CURRENT_CONTEXT_DIGEST_VERSION),
+                    ...(request.room?{roomDigest:await digestGroupContext(roomManager.getRoom(conversationKey)!,CURRENT_CONTEXT_DIGEST_VERSION),roomMemberId:request.roomMemberId}:{}),
                 },
                 model: vpsModel,
             };
