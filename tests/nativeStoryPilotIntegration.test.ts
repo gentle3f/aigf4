@@ -1,0 +1,35 @@
+import 'fake-indexeddb/auto';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {MemoryManager} from '../managers.js';
+test('fixed test persona does not create a greeting or leak into custom persona export',()=>{
+ const m=new Map<string,string>();
+ Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:(k:string)=>m.get(k)??null,setItem:(k:string,v:string)=>m.set(k,v),removeItem:(k:string)=>m.delete(k)}});
+ const manager=new MemoryManager();
+ manager.installNativeStoryPilotPersona();
+ const k='aigf-sync-pilot-worldline2';
+ assert.equal(manager.getPersona(k)?.name,'世界敘述者');
+ assert.match(manager.getPersona(k)!.prompt,/disembodied narrator/);
+ assert.deepEqual(manager.getChatHistory(k),[]);
+ assert.equal(Object.hasOwn(manager.getModifiedAndCustomPersonas(),k),false);
+ const user='10000000-0000-4000-8000-000000000001',reply='10000000-0000-4000-8000-000000000002';
+ manager.setChatHistory(k,[{id:user,role:'user',createdAt:10,content:{text:'fixture'}}],true);
+ manager.persistVpsChatTurnReply(k,user,reply,{text:'fixture reply',worldlineStoryTurn:true},25);
+ assert.equal(manager.peekChatHistory(k).at(-1)?.createdAt,25);
+});
+test('normal composer and durable controller use scoped bridge; recovery does not submit a new generation',()=>{
+ const s=readFileSync(new URL('../index.tsx',import.meta.url),'utf8');
+ assert.match(s,/if\(key!==NATIVE_SYNC_KEY\)return base/);
+ assert.match(s,/nativeStoryPilot!\.beforeUser\(userMessageMeta!\.id\)/);
+ assert.match(s,/nativeHistoryFor\(makeVpsBaseHistory\(\),conversationKey\)\.persistUser\(request\.vpsTurn\.identity\)/);
+ assert.match(s,/await getResponse\(request, userMessage,/);
+ assert.match(s,/syncPilot\.onclick=\(\)=>\{toolsDialog\.close\(\);openNativeStoryPilot\(\);\}/);
+ const recovery=s.slice(s.indexOf('const syncNativeStoryPilot='),s.indexOf('const openNativeStoryPilot='));
+ assert.match(recovery,/adoptRecovery/);
+ assert.doesNotMatch(recovery,/\.submit\(/);
+ const runtime=readFileSync(new URL('../nativeStoryPilotRuntime.ts',import.meta.url),'utf8');
+ assert.match(runtime,/NATIVE_SYNC_LOCAL_SETTINGS_CONFLICT/);
+ assert.match(runtime,/hmrcvjxdmedrjjcjbtmd\.supabase\.co/);
+ assert.match(runtime,/native-sync-pilot:/);
+});
