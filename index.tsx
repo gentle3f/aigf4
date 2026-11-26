@@ -29,7 +29,7 @@ import { createDurableMemoryTask, browserMemoryLock, type MemoryContext } from '
 import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult, VPS_REVIEW_MODELS } from './vpsCharacterTransport.js';
 import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
 import { CURRENT_CONTEXT_DIGEST_VERSION } from './contextFingerprint.js';
-import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, VPS_CHAT_MODELS, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
+import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, selectVpsModel, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
 import { createComposerAutoSize } from './composerAutoSize.js';
@@ -1959,9 +1959,7 @@ const makeVpsTurnController = (replyContent?: Content, groupScene?: GroupGenerat
 });
 const pendingVpsTurn = () => VPS_CHAT_BUILD ? makeVpsTurnController().pending() : null;
 const selectedVpsChatModel = () => {
-    if (!VPS_CHAT_BUILD) return null;
-    const value = localStorage.getItem(VPS_CHAT_MODE_KEY);
-    return VPS_CHAT_MODELS.find(model => model === value) || null;
+    return selectVpsModel(VPS_CHAT_BUILD,chatModelSettings.primary,localStorage.getItem(VPS_CHAT_MODE_KEY)==='1');
 };
 let resumingVpsTurn = false;
 const resumeVpsChatTurn = async (openConversation = false) => {
@@ -11183,14 +11181,16 @@ const setupEventListeners = () => {
         moreOptionsMenu.querySelector('.v2-more-options-section-interaction .v2-more-options-grid')?.appendChild(button);
     }
     if (VPS_CHAT_BUILD) {
-        const controls = document.createElement('div');
-        controls.style.cssText='display:flex;flex-wrap:wrap;gap:6px;padding:8px;align-items:center;background:var(--surface, #222);color:var(--text,#fff);font-size:12px';
-        const label=document.createElement('span');label.textContent='VPS Preview（雲端只讀還原）';
-        const select=document.createElement('select');select.setAttribute('aria-label','VPS 生成模式');
-        select.style.cssText='color:#171717;background-color:#fff;color-scheme:light;border:1px solid #b5b5b5;border-radius:4px;padding:4px 6px;max-width:100%;font-size:12px';
-        [['','原有直連'],...VPS_CHAT_MODELS.map(m=>[m,m])].forEach(([value,text])=>{const option=document.createElement('option');option.value=value;option.textContent=text;option.style.color='#171717';option.style.backgroundColor='#fff';select.append(option);});
-        select.value=selectedVpsChatModel()||'';
-        select.addEventListener('change',()=>{if(activeChatRequest||pendingVpsTurn()){select.value=selectedVpsChatModel()||'';alert('先處理原有任務。');return;}localStorage.setItem(VPS_CHAT_MODE_KEY,select.value);});
+        // Keep engineering recovery controls out of the ordinary conversation layout.
+        const toolsDialog=document.createElement('dialog');
+        toolsDialog.id='aigf-vps-tools';toolsDialog.style.cssText='width:min(92vw,440px);max-height:80vh;overflow:auto;padding:20px;border-radius:14px;border:1px solid #c9c4bc;background:#fff;color:#252321;color-scheme:light';
+        const heading=document.createElement('h3');heading.textContent='背景生成與任務恢復';heading.style.cssText='font-size:18px;font-weight:600;margin:0 0 12px';
+        const controls=document.createElement('div');controls.style.cssText='display:grid;gap:8px';
+        const label=document.createElement('p');label.style.cssText='font-size:13px;line-height:1.5;color:#555;overflow-wrap:anywhere';
+        const refreshMode=()=>{const model=selectedVpsChatModel();label.textContent=(model?'背景生成：'+model:'目前使用直連：'+chatModelSettings.primary)+'。模型沿用原有設定；預覽版雲端只讀。';};
+        const fallback=document.createElement('button');fallback.type='button';
+        const refreshFallback=()=>{fallback.textContent=localStorage.getItem(VPS_CHAT_MODE_KEY)==='1'?'恢復自動背景生成':'暫用原有直連';};
+        fallback.onclick=()=>{if(activeChatRequest||pendingVpsTurn()){alert('先處理原有任務。');return;}if(localStorage.getItem(VPS_CHAT_MODE_KEY)==='1')localStorage.removeItem(VPS_CHAT_MODE_KEY);else localStorage.setItem(VPS_CHAT_MODE_KEY,'1');refreshMode();refreshFallback();};
         const resume=document.createElement('button');resume.type='button';resume.textContent='取回 VPS 回覆';resume.onclick=()=>void resumeVpsChatTurn(true);
         const abandon=document.createElement('button');abandon.type='button';abandon.textContent='放棄待處理回覆';abandon.onclick=()=>{if(activeChatRequest||resumingVpsTurn)return;const p=pendingVpsTurn();if(p&&confirm('放棄本機待處理回覆？VPS 已開始的生成可能仍會扣費；此操作不會取消伺服器任務。'))void makeVpsTurnController().abandon(p.jobId).then(()=>{hideError();updateSendButtonState();}).catch(()=>showError('未能放棄原任務。'));};
         const memoryResume=document.createElement('button');memoryResume.type='button';memoryResume.textContent='取回記憶摘要';memoryResume.onclick=()=>{void resumeVpsPersonaMemory();void resumeVpsGroupMemory();};
@@ -11200,6 +11200,7 @@ const setupEventListeners = () => {
         findRecovery.onclick=async()=>{
             if(activeChatRequest||resumingVpsTurn||!isUnlocked)return;
             findRecovery.disabled=true;
+            toolsDialog.close();
             try{
                 const rows=await listVpsRecovery();
                 const dialog=document.createElement('dialog');dialog.style.cssText='max-width:min(95vw,640px);max-height:80vh;overflow:auto;padding:16px';
@@ -11228,7 +11229,14 @@ const setupEventListeners = () => {
             }catch(e){showError('未能查找 VPS 任務：'+(e instanceof Error?e.message:'UNKNOWN'));}
             finally{findRecovery.disabled=false;}
         };
-        controls.append(label,select,resume,abandon,memoryResume,memoryAbandon,groupMemoryAbandon,findRecovery);chatView.prepend(controls);
+        controls.append(label,fallback,resume,findRecovery,memoryResume,abandon,memoryAbandon,groupMemoryAbandon);
+        const closeTools=document.createElement('button');closeTools.type='button';closeTools.textContent='關閉';closeTools.onclick=()=>toolsDialog.close();controls.append(closeTools);
+        controls.querySelectorAll('button').forEach(b=>{b.style.cssText='text-align:left;padding:9px 12px;border:1px solid #d9d5ce;background:#f7f6f3;color:#252321;border-radius:8px;font-size:13px;cursor:pointer';});
+        toolsDialog.append(heading,controls);document.body.append(toolsDialog);
+        const toolsEntry=document.createElement('button');toolsEntry.type='button';toolsEntry.id='aigf-vps-tools-entry';toolsEntry.className='dropdown-item';toolsEntry.dataset.v2Icon='↻';toolsEntry.textContent='背景生成與任務恢復';
+        toolsEntry.onclick=()=>{moreOptionsMenu.classList.add('hidden');refreshMode();refreshFallback();toolsDialog.showModal();};
+        moreOptionsMenu.prepend(toolsEntry);
+        moreOptionsMenu.querySelector('.v2-more-options-section-interaction .v2-more-options-grid')?.appendChild(toolsEntry);
         window.addEventListener('online',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();});
         window.addEventListener('pageshow',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();});
         document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();}});
