@@ -3,8 +3,9 @@ import type { ChatRoom, RoomManager } from '../roomManager.js';
 import { cloneRoomSnapshot } from '../roomManager.js';
 import { deleteCharacterPhotoAsset } from '../photoStore.js';
 import { deleteChatAttachment } from '../chatMediaStore.js';
-import { WORLDLINE_SETTING_KEY, getWorldline, forkWorldlineAt, updateWorldlineRegistry } from '../worldline.js';
+import { WORLDLINE_SETTING_KEY, getWorldline, forkWorldlineAt, updateWorldlineRegistry, reconcileWorldlineChronicle } from '../worldline.js';
 import { WORLD_LEDGER_KEY, copyWorldLedgerAt } from '../worldLedger.js';
+import { saveWorldline2Variable } from '../worldline2Prompt.js';
 import { setPersistedAppSetting } from '../appSettings.js';
 
 export type ConversationActionsDependencies = {
@@ -370,6 +371,17 @@ const recallUserMessage = async (messageId: string) => {
         return;
     }
 
+    const worldRegistry=localStorage.getItem(WORLDLINE_SETTING_KEY);
+    const world=getWorldline(worldRegistry,conversationKey);
+    if(world){
+        // Keep manual world settings, but remove generated history no longer backed by chat.
+        const restored=reconcileWorldlineChronicle(world,result.remaining);
+        try{
+            // Numeric turn IDs can be reused after recall; never revive an old manual variable snapshot.
+            saveWorldline2Variable(localStorage,conversationKey,restored.turnCount,undefined);
+            if(restored!==world)setPersistedAppSetting(WORLDLINE_SETTING_KEY,JSON.stringify(updateWorldlineRegistry(worldRegistry,conversationKey,restored)));
+        }catch(error){console.warn('Worldline recall reconciliation persistence deferred',error);}
+    }
     const removedSourceMessageIds = result.removed
         .map(message => message.id)
         .filter((id): id is string => Boolean(id));

@@ -1,5 +1,5 @@
 import {readDirector,formatDirector,consumeDirectorNext,type DirectorPreferences} from './worldlineDirector.js';
-import {editWorldline2Request,getSystemTexts,resolveWorldline2Parts,composeWorldline2Parts,type Worldline2PromptParts} from './worldline2Prompt.js';
+import {editWorldline2Request,getSystemTexts,resolveWorldline2Parts,composeWorldline2Parts,saveWorldline2Variable,type Worldline2PromptParts} from './worldline2Prompt.js';
 
 import {
     CharacterPhotoProposal,
@@ -22,7 +22,7 @@ import {
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
 import { createComposerAutoSize } from './composerAutoSize.js';
-import { WORLDLINE_SETTING_KEY, getWorldline, recordWorldlineTurn, updateWorldlineRegistry, buildWorldlinePrompt, buildWorldlineVariablePrompt, WORLDLINE_FIXED_HEADER, WORLDLINE_FIXED_CONTRACT } from './worldline.js';
+import { WORLDLINE_SETTING_KEY, getWorldline, recordWorldlineTurn, reconcileWorldlineChronicle, updateWorldlineRegistry, buildWorldlinePrompt, buildWorldlineVariablePrompt, WORLDLINE_FIXED_HEADER, WORLDLINE_FIXED_CONTRACT } from './worldline.js';
 import { buildWorldReadModel, compileWorldRecall } from './worldOs.js';
 import { recordWorldResearch, captureResearchMessages, researchText, type ResearchContext } from './worldResearch.js';
 import { WORLD_LEDGER_KEY, appendWorldBatches, buildRecoverableWorldExtractionMessages, compileWorldLedger, recoverWorldExtraction, pendingWorldSources, projectWorld, selectWorldBatch } from './worldLedger.js';
@@ -6625,7 +6625,16 @@ const getWardrobeParticipantsForRequest = (
 const getActiveWorldline = (conversationKey: string) => {
     try {
         const world = getWorldline(localStorage.getItem(WORLDLINE_SETTING_KEY), conversationKey);
-        return world && !world.paused ? world : null;
+        if(!world||world.paused)return null;
+        if(!memoryManager.hasChatHistory(conversationKey))return world;
+        const repaired=reconcileWorldlineChronicle(world,memoryManager.peekChatHistory(conversationKey));
+        if(repaired!==world){
+            try{
+                saveWorldline2Variable(localStorage,conversationKey,repaired.turnCount,undefined);
+                setPersistedAppSetting(WORLDLINE_SETTING_KEY,JSON.stringify(updateWorldlineRegistry(localStorage.getItem(WORLDLINE_SETTING_KEY),conversationKey,repaired)));
+            }catch(error){console.warn('Worldline recall reconciliation persistence deferred',error);}
+        }
+        return repaired;
     } catch { return null; }
 };
 const buildWorldlinePromptParts = (key:string,query:string,director?:DirectorPreferences):Worldline2PromptParts => {
@@ -8848,7 +8857,7 @@ const getResponse = async (
             try {
                 const world = getActiveWorldline(request.conversationKey);
                 if (world) {
-                    const next = recordWorldlineTurn(world, triggeringMessage, botContent.text || '');
+                    const next = recordWorldlineTurn(world, triggeringMessage, botContent.text || '',Date.now(),memoryManager.peekChatHistory(request.conversationKey).at(-1)?.id);
                     const registry = updateWorldlineRegistry(
                         localStorage.getItem(WORLDLINE_SETTING_KEY), request.conversationKey, next,
                     );

@@ -8,7 +8,7 @@ export type WorldlineGenre = 'xianxia' | 'isekai' | 'system' | 'rebirth' | 'apoc
 export type WorldlineTone = 'free' | 'story';
 export type WorldlineRelationshipMode = 'normal' | 'adult';
 export type WorldlineNpc = { id: string; name: string; role: string; motivation: string; relationship: string };
-export type WorldlineChronicle = { id: string; input: string; outcome: string; turn: number };
+export type WorldlineChronicle = { id: string; input: string; outcome: string; turn: number; sourceMessageId?: string };
 export interface Worldline {
     conversationKey: string;
     title: string;
@@ -79,6 +79,7 @@ export const normalizeWorldline = (input: Worldline): Worldline => {
         .slice(-14).filter(v=>v && typeof v==='object')
         .map((v,i)=>({ id:clean(v.id,80)||'turn-'+i,
             input:clean(v.input,170), outcome:clean(v.outcome,270),
+            ...(clean(v.sourceMessageId,180)?{sourceMessageId:clean(v.sourceMessageId,180)}:{}),
             turn:Math.max(0,Math.min(1_000_000,Number.isInteger(v.turn)?v.turn:0))}));
     return {
         conversationKey: clean(input.conversationKey,180),
@@ -196,13 +197,37 @@ export const scopedWorldlineRegistry=(raw:unknown,key:string):WorldlineRegistry=
     return {schema:WORLDLINE_SCHEMA,records:item?{[key]:item}:{}};
 };
 
-export const recordWorldlineTurn=(world:Worldline,userInput:string,modelText:string,now=Date.now()):Worldline=>{
+export const recordWorldlineTurn=(world:Worldline,userInput:string,modelText:string,now=Date.now(),sourceMessageId?:string):Worldline=>{
     const turn=world.turnCount+1;
     return normalizeWorldline({...world,turnCount:turn,updatedAt:now,
         chronicle:[...world.chronicle,{
             id:'turn-'+turn,input:clean(userInput,170),
-            outcome:clean(modelText,270),turn,
+            outcome:clean(modelText,270),turn,...(sourceMessageId?{sourceMessageId}:{}),
         }].slice(-14)});
+};
+type WorldlineHistoryMessage={id?:string;createdAt?:number;role:string;content:{text?:string}};
+/** Retained chat is authoritative for generated chronicle entries. Explicit world-panel edits remain independent. */
+export const reconcileWorldlineChronicle=(world:Worldline,history:readonly WorldlineHistoryMessage[],now=Date.now()):Worldline=>{
+    const replies=history.filter(m=>m.role==='model');
+    let cursor=replies.length-1;
+    const surviving:WorldlineChronicle[]=[];
+    let removed=0;
+    // Reverse chronological matching preserves distinct repeated replies and never reuses a source.
+    for(let i=world.chronicle.length-1;i>=0;i--){
+        const entry=world.chronicle[i];
+        let found=-1;
+        for(let j=cursor;j>=0;j--){
+            const m=replies[j];
+            if(entry.sourceMessageId?m.id===entry.sourceMessageId:clean(m.content.text,270)===entry.outcome){found=j;break;}
+        }
+        if(found<0){removed++;continue;}
+        const m=replies[found];cursor=found-1;
+        surviving.unshift({...entry,...(m.id?{sourceMessageId:m.id}:{})});
+    }
+    if(!removed)return world;
+    const firstTurn=Math.max(0,world.turnCount-world.chronicle.length);
+    const chronicle=surviving.map((entry,i)=>({...entry,turn:firstTurn+i+1,id:'turn-'+(firstTurn+i+1)}));
+    return normalizeWorldline({...world,turnCount:Math.max(0,world.turnCount-removed),chronicle,updatedAt:now});
 };
 const genreNames:Record<WorldlineGenre,string>={
     xianxia:'修仙／玄幻',isekai:'異世界／穿越',system:'系統流',
