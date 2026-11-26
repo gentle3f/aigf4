@@ -11183,7 +11183,8 @@ const setupEventListeners = () => {
         controls.style.cssText='display:flex;flex-wrap:wrap;gap:6px;padding:8px;align-items:center;background:var(--surface, #222);color:var(--text,#fff);font-size:12px';
         const label=document.createElement('span');label.textContent='VPS Preview（雲端只讀還原）';
         const select=document.createElement('select');select.setAttribute('aria-label','VPS 生成模式');
-        [['','原有直連'],...VPS_CHAT_MODELS.map(m=>[m,m])].forEach(([value,text])=>{const option=document.createElement('option');option.value=value;option.textContent=text;select.append(option);});
+        select.style.cssText='color:#171717;background-color:#fff;color-scheme:light;border:1px solid #b5b5b5;border-radius:4px;padding:4px 6px;max-width:100%;font-size:12px';
+        [['','原有直連'],...VPS_CHAT_MODELS.map(m=>[m,m])].forEach(([value,text])=>{const option=document.createElement('option');option.value=value;option.textContent=text;option.style.color='#171717';option.style.backgroundColor='#fff';select.append(option);});
         select.value=selectedVpsChatModel()||'';
         select.addEventListener('change',()=>{if(activeChatRequest||pendingVpsTurn()){select.value=selectedVpsChatModel()||'';alert('先處理原有任務。');return;}localStorage.setItem(VPS_CHAT_MODE_KEY,select.value);});
         const resume=document.createElement('button');resume.type='button';resume.textContent='取回 VPS 回覆';resume.onclick=()=>void resumeVpsChatTurn(true);
