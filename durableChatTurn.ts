@@ -61,6 +61,16 @@ export function createDurableChatTurn({storage,history,transport,lock,newId=()=>
  }
  return {
    pending,
+   // Serialize recall with result application. Only retire a receipt after durable history changes.
+   recall: <T>(conversationKey:string, mutate:()=>T)=>lock(async()=>{
+     const prior=pending();
+     const result=mutate();
+     if(result&&prior?.conversationKey===conversationKey){
+       // Even an earlier recalled turn invalidates the pending request's history context.
+       clear(prior);
+     }
+     return result;
+   }),
    adoptRecovery:(r:TurnReceipt)=>lock(async()=>{
      if(!valid(r)||!r.contextDigest||r.workflowVersion===undefined)throw Error('TURN_RECOVERY_INVALID');
      if(pending())throw Error('OTHER_CHAT_TURN_PENDING');

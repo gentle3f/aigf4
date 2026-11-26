@@ -1541,14 +1541,19 @@ export class MemoryManager {
         }
     }
 
-    removeUserTurn(key: string, messageId: string) {
+    removeUserTurn(key: string, messageId: string, durable = false) {
         const history = this.getChatHistory(key);
         const startIndex = history.findIndex(message => message.id === messageId && message.role === 'user');
         if (startIndex < 0) return null;
         let endIndex = startIndex + 1;
         while (endIndex < history.length && history[endIndex].role !== 'user') endIndex += 1;
         const removed = history.splice(startIndex, endIndex - startIndex);
-        this.persistChatHistories();
+        try {
+            this.persistChatHistories(durable, durable);
+        } catch (error) {
+            history.splice(startIndex,0,...removed);
+            throw error;
+        }
         return { removed, remaining: history, startIndex };
     }
 

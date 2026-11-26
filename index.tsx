@@ -3278,6 +3278,7 @@ const loadConversationActions = async () => {
                             cancelActiveChatRequest();
                         }
                     },
+                    recallVpsTurn: VPS_CHAT_BUILD ? (key,messageId)=>makeVpsTurnController().recall(key,()=>memoryManager.removeUserTurn(key,messageId,true)) : undefined,
                     abortCharacterPhotoRequest: () => characterPhotoRequestController?.abort(),
                     clearSessionMemories,
                     removeSessionMemoriesBySourceMessageIds,

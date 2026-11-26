@@ -18,6 +18,7 @@ export type ConversationActionsDependencies = {
     hasActiveChatRequest: () => boolean;
     cancelRequestForConversation: (conversationKey: string) => void;
     abortCharacterPhotoRequest: () => void;
+    recallVpsTurn?: (key:string,messageId:string)=>Promise<ReturnType<MemoryManager['removeUserTurn']>>;
     clearSessionMemories: (conversationKey: string) => void;
     removeSessionMemoriesBySourceMessageIds: (
         conversationKey: string,
@@ -365,7 +366,14 @@ const recallUserMessage = async (messageId: string) => {
 
     deps.cancelRequestForConversation(conversationKey);
     deps.abortCharacterPhotoRequest();
-    const result = deps.memoryManager.removeUserTurn(conversationKey, messageId);
+    let result:ReturnType<MemoryManager['removeUserTurn']>;
+    try {
+        result = deps.recallVpsTurn ? await deps.recallVpsTurn(conversationKey,messageId) : deps.memoryManager.removeUserTurn(conversationKey, messageId);
+    } catch(error){
+        console.warn('Unable to durably recall turn',error);
+        alert('未能保存收回操作，請重新載入後核對聊天紀錄。');
+        return;
+    }
     if (!result) {
         alert('收回失敗：找不到這則訊息，可能已經被移除。');
         return;

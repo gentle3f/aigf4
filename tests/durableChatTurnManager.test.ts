@@ -34,3 +34,12 @@ test('journal + real MemoryManager survive reload, retain result on failed durab
  f.setFail(false);c=build();r=(await c.resume())!;await c.apply(r.receipt,r.job,'OK');assert.equal(c.pending(),null);
  assert.equal(new MemoryManager().peekChatHistory(key).filter(x=>x.id===reply).length,1);assert.deepEqual(calls,['POST','GET','GET']);
 });
+
+test('durable recall rolls back on quota failure and survives reload after success',()=>{
+ const f=setup();const m=new MemoryManager();m.persistVpsChatTurnReply(key,user,reply,{text:'OK'});
+ f.setFail(true);assert.throws(()=>m.removeUserTurn(key,user,true),/quota/);
+ assert.deepEqual(m.peekChatHistory(key).map(x=>x.id),[user,reply]);
+ f.setFail(false);const removed=m.removeUserTurn(key,user,true);
+ assert.deepEqual(removed?.removed.map(x=>x.id),[user,reply]);
+ assert.equal(new MemoryManager().peekChatHistory(key).some(x=>x.id===user||x.id===reply),false);
+});
