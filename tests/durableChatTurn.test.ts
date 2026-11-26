@@ -62,3 +62,22 @@ test('persistence failure after reply append preserves receipt',async()=>{
  const f=fixture();const a=f.build();await a.submit(turn,payload);const r=(await a.resume())!;f.history.persistReply=async()=>{throw Error('quota')};
  await assert.rejects(a.apply(r.receipt,r.job,'OK'),/quota/);assert.ok(a.pending());assert.equal(f.rows.length,1);
 });
+
+test('recall retires pending job and a late result cannot restore deleted turn',async()=>{
+ const f=fixture();const a=f.build();await a.submit(turn,payload);const r=(await a.resume())!;
+ const result=await a.recall(turn.conversationKey,()=>{f.rows.splice(0);return true;});
+ assert.equal(result,true);assert.equal(a.pending(),null);
+ await assert.rejects(a.apply(r.receipt,r.job,'OK'),/RECEIPT_CHANGED/);
+ assert.equal(f.rows.length,0);assert.equal(f.events.filter(x=>x==='POST').length,1);
+});
+test('recall serializes against result application and never leaves its reply behind',async()=>{
+ const f=fixture();const a=f.build();await a.submit(turn,payload);const r=(await a.resume())!;
+ await Promise.all([a.apply(r.receipt,r.job,'OK'),a.recall(turn.conversationKey,()=>{f.rows.splice(0);return true;})]);
+ assert.equal(f.rows.length,0);assert.equal(a.pending(),null);
+});
+test('failed recall preserves receipt; unrelated recall does not retire it',async()=>{
+ const f=fixture();const a=f.build();await a.submit(turn,payload);
+ await assert.rejects(a.recall(turn.conversationKey,()=>{throw Error('quota')}),/quota/);assert.ok(a.pending());
+ await a.recall('other',()=>true);assert.ok(a.pending());
+ await a.recall(turn.conversationKey,()=>null);assert.ok(a.pending());
+});
