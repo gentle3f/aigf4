@@ -1986,7 +1986,7 @@ const resumeVpsChatTurn = async (openConversation = false) => {
                 chatContainer.replaceChildren(); resetRenderedChatHistoryWindow();
                 renderChatHistoryWindow(pending.conversationKey, memoryManager.peekChatHistory(pending.conversationKey));
             }
-            if(pending.worldDigest&&pending.conversationKey!==NATIVE_SYNC_KEY)void syncWorldLedger(pending.conversationKey,true).catch(error=>console.warn('World OS recovery extraction pending:',error));
+            if(pending.worldDigest){if(pending.conversationKey===NATIVE_SYNC_KEY)maybeSyncNativeLedger();else void syncWorldLedger(pending.conversationKey,true).catch(error=>console.warn('World OS recovery extraction pending:',error));}
             return;
         }
         if (currentConversationKey !== pending.conversationKey) {
@@ -3004,7 +3004,7 @@ const syncNativeStoryPilot=async()=>{
         if(matches.length===1){await makeVpsTurnController().adoptRecovery(matches[0].receipt);await resumeVpsChatTurn();}
         else if(matches.length>1)throw Error('NATIVE_SYNC_MULTIPLE_JOBS');
     }catch(e){if(currentConversationKey===NATIVE_SYNC_KEY)showError('同步暫未完成：'+(e instanceof Error?e.message:'UNKNOWN'));}
-    finally{nativeStoryBusy=false;updateSendButtonState();}
+    finally{nativeStoryBusy=false;updateSendButtonState();maybeSyncNativeLedger();}
 };
 const openNativeStoryPilot=()=>{
     if(!nativePilotEnabled||!isUnlocked||activeChatRequest||resumingVpsTurn||nativeStoryBusy)return;
@@ -6826,19 +6826,35 @@ const buildWorldlineRuntimeContext = (key:string,query:string,director?:Director
 };
 type WorldSyncResult = {advanced:number;deferred:string[];issueCount:number};
 const worldLedgerJobs = new Map<string, Promise<WorldSyncResult>>();
+// One automatic extraction per newly observed pending-source set per page session.
+// Cloud CAS, not this local set, is the authority for accepted ledger writes.
+const nativeLedgerAttempted=new Set<string>();
+const maybeSyncNativeLedger=()=>{
+    if(!nativeStoryPilot||nativeStoryBusy||activeChatRequest||resumingVpsTurn||pendingVpsTurn()||currentConversationKey!==NATIVE_SYNC_KEY||worldLedgerJobs.has(NATIVE_SYNC_KEY)||document.querySelector('dialog[aria-label="旁白導演"][open]'))return;
+    const h=memoryManager.peekChatHistory(NATIVE_SYNC_KEY);
+    if(h.at(-1)?.role!=='model')return;
+    const batch=selectWorldBatch(pendingWorldSources(localStorage.getItem(WORLD_LEDGER_KEY),NATIVE_SYNC_KEY,h),true);
+    if(!batch.length)return;
+    const attempt=batch.map(m=>m.id).join(':');
+    if(nativeLedgerAttempted.has(attempt))return;
+    nativeLedgerAttempted.add(attempt);
+    void syncWorldLedger(NATIVE_SYNC_KEY,true).catch(error=>console.warn('World OS extraction pending:',error));
+};
 const syncWorldLedger = (key: string, recent = false, skipIds:readonly string[]=[]): Promise<WorldSyncResult> => {
-    if(key===NATIVE_SYNC_KEY)return Promise.reject(Error('NATIVE_SYNC_LEDGER_NOT_ENABLED'));
+    if(key===NATIVE_SYNC_KEY&&(!nativeStoryPilot||nativeStoryBusy||currentConversationKey!==key))return Promise.reject(Error('NATIVE_SYNC_LEDGER_NOT_READY'));
     if(pendingVpsTurn()?.conversationKey===key||(activeChatRequest?.conversationKey===key&&activeChatRequest.vpsTurn?.identity.worldDigest))return Promise.reject(Error('WORLDLINE_TURN_PENDING'));
     const running = worldLedgerJobs.get(key);
     if (running) return running;
     const job = (async () => {
         const empty:WorldSyncResult={advanced:0,deferred:[],issueCount:0};
         if (!getActiveWorldline(key)) return empty;
+        const native=key===NATIVE_SYNC_KEY?nativeStoryPilot:null;
         const history = memoryManager.peekChatHistory(key);
         const raw = localStorage.getItem(WORLD_LEDGER_KEY);
         const skip=new Set(skipIds);
         const batch = selectWorldBatch(pendingWorldSources(raw, key, history).filter(m=>!skip.has(m.id!)), recent);
         if (!batch.length) return empty;
+        const baseline=native?await native.beginSnapshotUpdate():null;
         const recovered=await recoverWorldExtraction(batch,async sources=>{
             const first=history.findIndex(m=>m.id===sources[0].id);
             const context=compileWorldLedger(raw,key,history.slice(0,Math.max(0,first)),'',4200);
@@ -6857,7 +6873,14 @@ const syncWorldLedger = (key: string, recent = false, skipIds:readonly string[]=
         const next=appendWorldBatches(currentRaw,key,recovered.rows,latestHistory);
         let saved=false;
         try{
-            if(recovered.rows.length)saved=setPersistedAppSetting(WORLD_LEDGER_KEY,JSON.stringify(next));
+            if(recovered.rows.length){
+                if(native&&baseline){
+                    if(activeChatRequest||resumingVpsTurn||pendingVpsTurn()||nativeStoryBusy||currentConversationKey!==key)throw Error('NATIVE_SYNC_LEDGER_CONTEXT_CHANGED');
+                    nativeStoryBusy=true;
+                    try{await native.commitSnapshotUpdate(baseline,()=>{const merged=appendWorldBatches(localStorage.getItem(WORLD_LEDGER_KEY),key,recovered.rows,memoryManager.peekChatHistory(key));setPersistedAppSetting(WORLD_LEDGER_KEY,JSON.stringify(merged));});saved=true;}
+                    finally{nativeStoryBusy=false;updateSendButtonState();}
+                }else saved=setPersistedAppSetting(WORLD_LEDGER_KEY,JSON.stringify(next));
+            }
         }catch(error){
             const reason=error instanceof Error?error.message:String(error);
             recordWorldResearch({conversationKey:key,stage:'ledger-storage'},{kind:'save-error',error:researchText(reason)});
@@ -9264,8 +9287,8 @@ const getResponse = async (
             });
         }
         finishChatRequest(request);
-        if (request.mode === 'character' && request.conversationKey!==NATIVE_SYNC_KEY && getActiveWorldline(request.conversationKey)) {
-            void syncWorldLedger(request.conversationKey, true).catch(error => console.warn('World OS extraction pending:', error));
+        if (request.mode === 'character' && getActiveWorldline(request.conversationKey)) {
+            if(request.conversationKey===NATIVE_SYNC_KEY)maybeSyncNativeLedger();else void syncWorldLedger(request.conversationKey, true).catch(error => console.warn('World OS extraction pending:', error));
         }
         completeChatPerformanceTurn('response:final-visible');
         schedulePersonaListRefreshAfterPaint();

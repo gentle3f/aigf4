@@ -57,13 +57,17 @@ export function createNativeStoryPilot(deps:{read:()=>ChatMessage[];write:(rows:
   journal.setItem('last-confirmed:'+key,incomingHash);
   return changed;
  };
- return {createBridge,refresh,saveSettings:async(mutate:()=>void)=>{
-  const b=await viewBridge.session.begin(key,true);
-  if(b.rows.at(-1)?.role==='user')throw Error('NATIVE_SYNC_TURN_PENDING');
-  mutate();
-  if(await viewBridge.session.commit(b,{kind:'settings'})!=='confirmed')throw Error('NATIVE_SYNC_SETTINGS_UNCONFIRMED');
+ const beginSnapshotUpdate=async()=>{const b=await viewBridge.session.begin(key,true);if(b.rows.at(-1)?.role==='user')throw Error('NATIVE_SYNC_TURN_PENDING');return b;};
+ const commitSnapshotUpdate=async(b:Awaited<ReturnType<typeof beginSnapshotUpdate>>,mutate:()=>void)=>{
+  const current=await viewBridge.session.begin(key,true);
+  if(!eq(b,current))throw Error('NATIVE_SYNC_SNAPSHOT_BASELINE_CHANGED');
+  const keys=[WORLDLINE_SETTING_KEY,WORLD_LEDGER_KEY,DIRECTOR_KEY+':'+key,'aigfWorldline2FullPrompt:'+key];
+  const before=keys.map(k=>localStorage.getItem(k));
+  try{mutate();if(await viewBridge.session.commit(b,{kind:'settings'})!=='confirmed')throw Error('NATIVE_SYNC_SETTINGS_UNCONFIRMED');}
+  catch(e){if(!viewBridge.session.pending()){for(let i=0;i<keys.length;i++){if(before[i]===null)localStorage.removeItem(keys[i]);else localStorage.setItem(keys[i],before[i]!);}}throw e;}
   await markConfirmed();
- },signIn:async(email:string,password:string)=>{await remote.signIn(email,password);await remote.initialize(site);},beforeUser:(id:string)=>viewBridge.beforeUser(id),recall:async(id:string,mutate:()=>void)=>{
+ };
+ return {createBridge,refresh,beginSnapshotUpdate,commitSnapshotUpdate,saveSettings:async(mutate:()=>void)=>commitSnapshotUpdate(await beginSnapshotUpdate(),mutate),signIn:async(email:string,password:string)=>{await remote.signIn(email,password);await remote.initialize(site);},beforeUser:(id:string)=>viewBridge.beforeUser(id),recall:async(id:string,mutate:()=>void)=>{
   const b=await viewBridge.session.begin(key);
   const i=b.rows.findIndex(r=>r.message_id===id&&r.role==='user');if(i<0||b.rows.slice(i+1).some(r=>r.role==='user'))throw Error('NATIVE_SYNC_RECALL_LATEST_ONLY');
   mutate();

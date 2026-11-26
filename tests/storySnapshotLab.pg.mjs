@@ -145,5 +145,22 @@ try{
   assert.equal((await captureStorySnapshot(b,key,h)).prompt.variableOverride.text,'新的變數測試');
   await assert.rejects(a.commit(baseline,{kind:'settings'}),/BASELINE_CHANGED/);
  });
- console.log('WORLDLINE2_STORY_SQL_PASS '+passed+'/5');
+ await check('evidence-linked ledger-only checkpoint restores on second device; stale extraction cannot survive recall',async()=>{
+  const a=device(),b=device();let h=await restoreHistory(),other=h.slice();const prior=await read();
+  await restoreStorySnapshot(a,key,h,prior.snapshot);await restoreStorySnapshot(b,key,other,prior.snapshot);
+  const x=session(a,()=>h),y=session(b,()=>other),baseline=await x.begin(key),stale=await y.begin(key);
+  const latest=h.at(-1),sourceId=latest.id;
+  const batch=parseWorldExtraction(JSON.stringify({observations:[{sourceId,quote:'走入村落',kind:'location',subject:'旅人',key:'location',value:'村落',state:'established'}]}),[latest],1200);
+  a.setItem(WORLD_LEDGER_KEY,JSON.stringify(appendWorldBatches(a.getItem(WORLD_LEDGER_KEY),key,batch,h)));
+  assert.equal(await x.commit(baseline,{kind:'settings'}),'confirmed');
+  const after=await read();assert.equal(after.head.sha256,prior.head.sha256);assert.equal(after.head.count,prior.head.count);assert.equal(after.snapshot.ledger[sourceId].observations[0].value,'村落');
+  const fresh=device();await restoreStorySnapshot(fresh,key,h,after.snapshot);
+  assert.deepEqual((await captureStorySnapshot(fresh,key,h)).ledger,after.snapshot.ledger);
+  await assert.rejects(y.commit(stale,{kind:'settings'}),/BASELINE_CHANGED/);
+  const base=await x.begin(key);const user=h.at(-2);h=h.slice(0,-2);
+  assert.equal(await x.commit(base,{kind:'recall',userId:user.id}),'confirmed');
+  assert.equal((await read()).snapshot.ledger[sourceId],undefined);
+  await assert.rejects(x.commit(base,{kind:'settings'}),/BASELINE_CHANGED/);
+ });
+ console.log('WORLDLINE2_STORY_SQL_PASS '+passed+'/6');
 }catch(e){console.error('LAB_ERROR',e?.message,e?.code,e?.detail);process.exitCode=1;}finally{await db.close();}
