@@ -11229,7 +11229,7 @@ const setupEventListeners = () => {
         if(import.meta.env?.VITE_AIGF_SYNC_PILOT_KEY){
             const syncPilot=document.createElement('button');syncPilot.type='button';syncPilot.textContent='跨裝置同步試用';
             syncPilot.style.cssText='color:#171717;background:#fff;padding:4px 8px;border-radius:4px';
-            syncPilot.onclick=()=>{toolsDialog.close();void import('./storySyncPilotUi.js').then(m=>m.openStorySyncPilot()).catch(e=>showError('未能開啟同步試用：'+(e instanceof Error?e.message:'UNKNOWN')));};
+            syncPilot.onclick=()=>{toolsDialog.close();void import('./storySyncPilotUi.js').then(m=>m.openStorySyncPilot(selectedVpsChatModel)).catch(e=>showError('未能開啟同步試用：'+(e instanceof Error?e.message:'UNKNOWN')));};
             controls.append(syncPilot);
         }
         const closeTools=document.createElement('button');closeTools.type='button';closeTools.textContent='關閉';closeTools.onclick=()=>toolsDialog.close();controls.append(closeTools);
