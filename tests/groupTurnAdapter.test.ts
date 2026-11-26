@@ -97,5 +97,5 @@ test('group wiring uses the broad trace adapter seam and leaves downstream scene
     assert.match(characterGeneration, /return runSingleTurnAdapter\(createTracedSingleTurnDependencies\(trace,/);
 
     const getResponse = source.slice(source.indexOf('const getResponse'));
-    assert.match(getResponse, /if \(typeof generated !== 'string' && request\.room\) \{[\s\S]*roomManager\.updateRoomSceneDeferred\(\s*request\.room\.id,\s*generated\.scene,/);
+    assert.match(getResponse, /if \(typeof generated !== 'string' && request\.room && !request\.vpsTurn\) \{[\s\S]*roomManager\.updateRoomSceneDeferred\(\s*request\.room\.id,\s*generated\.scene,/);
 });

@@ -239,11 +239,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return parsed as T;
 }
 
-export async function generateVeniceText(
-  options: VeniceTextGenerationOptions,
-): Promise<VeniceTextGenerationResult> {
-  ensureApiKey();
-
+export function buildVeniceTextPayload(options: VeniceTextGenerationOptions) {
   const {
     model,
     messages,
@@ -255,24 +251,12 @@ export async function generateVeniceText(
     seed,
     responseFormat,
     promptCacheKey,
-    signal,
-    onStateChange,
     onTextDelta,
     enableWebSearch = false,
   } = options;
 
-  onStateChange?.('generating', '思考中');
-
-  const endpoint = VENICE_API_BASE.startsWith('/')
-    ? VENICE_API_BASE
-    : `${VENICE_API_BASE}/chat/completions`;
   const requestMessages = ensureStructuredOutputJsonInstruction(messages, responseFormat);
-
-  const requestInit: RequestInit = {
-    method: 'POST',
-    headers: REQUEST_HEADERS(),
-    signal,
-    body: JSON.stringify({
+  return {
       model,
       messages: requestMessages,
       ...(onTextDelta ? { stream: true } : {}),
@@ -295,7 +279,24 @@ export async function generateVeniceText(
         enable_web_scraping: enableWebSearch,
         enable_web_citations: enableWebSearch,
       },
-    }),
+    };
+}
+
+export async function generateVeniceText(
+  options: VeniceTextGenerationOptions,
+): Promise<VeniceTextGenerationResult> {
+  ensureApiKey();
+
+  const {model,signal,onStateChange,onTextDelta}=options;
+  onStateChange?.('generating', '思考中');
+  const endpoint = VENICE_API_BASE.startsWith('/')
+    ? VENICE_API_BASE
+    : `${VENICE_API_BASE}/chat/completions`;
+  const requestInit: RequestInit = {
+    method: 'POST',
+    headers: REQUEST_HEADERS(),
+    signal,
+    body: JSON.stringify(buildVeniceTextPayload(options)),
   };
 
   if (onTextDelta) {

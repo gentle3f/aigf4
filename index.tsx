@@ -20,6 +20,17 @@ import {
     WardrobeState,
     cleanAiResponse,
 } from "./managers.js";
+import { createDurableChatTurn, browserTurnLock, type TurnIdentity, type TurnReceipt } from './durableChatTurn.js';
+import { runDurableChatStage } from './vpsStageRunner.js';
+import { buildVpsWorkflowPayload, decodeVpsWorkflow } from './vpsWorkflow.js';
+import { createGroupCommit, digestGroupContext } from './durableGroupTurn.js';
+import { listVpsRecovery,readVpsRecoveryText } from './vpsRecovery.js';
+import { GROUP_MEMORY_KEY, roomMemorySnapshot, groupMemoryAliases, groupMemoryPresence, constrainGroupMemories } from './durableGroupMemory.js';
+import { createDurableMemoryTask, browserMemoryLock, type MemoryContext } from './durablePersonaMemory.js';
+import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult, VPS_REVIEW_MODELS } from './vpsCharacterTransport.js';
+import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
+import { CURRENT_CONTEXT_DIGEST_VERSION } from './contextFingerprint.js';
+import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, VPS_CHAT_MODELS, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
 import { createComposerAutoSize } from './composerAutoSize.js';
@@ -546,7 +557,7 @@ const loadSupabaseCloudSyncManager = async () => {
                             updateSendButtonState();
                         }
                     },
-                });
+                }, VPS_CHAT_BUILD,()=>!activeChatRequest&&!resumingVpsTurn&&!pendingVpsTurn());
                 supabaseCloudSyncManager = manager;
                 return manager;
             })
@@ -559,6 +570,7 @@ const loadSupabaseCloudSyncManager = async () => {
 };
 
 const startSupabaseCloudSync = async () => {
+    if (VPS_CHAT_BUILD) return;
     const manager = await loadSupabaseCloudSyncManager();
     await manager.start();
 };
@@ -713,6 +725,7 @@ type ActiveChatRequest = {
     pendingWardrobeState?: WardrobeState;
     controller: AbortController;
     startedAt: number;
+    vpsTurn?: { identity: TurnIdentity; model: string; receipt?: TurnReceipt; job?: PilotJob };
     /** Temporary DOM only. Never persisted until the full streamed answer finishes. */
     streamPreview?: HTMLElement;
 };
@@ -1513,6 +1526,7 @@ const loadCloudBackupUi = async (): Promise<CloudBackupUiHandle> => {
 };
 
 const openCloudBackup = () => {
+    if (VPS_CHAT_BUILD) { alert('VPS 測試版：雲端備份已停用。'); return; }
     void loadCloudBackupUi()
         .then(ui => ui.open())
         .catch(error => console.error('Failed to load Cloud Backup UI', error));
@@ -1539,7 +1553,7 @@ const loadLiveCloudUi = async (): Promise<LiveCloudUiHandle> => {
 
 const openSupabaseCloud = () => {
     void loadLiveCloudUi()
-        .then(ui => ui.open())
+        .then(async ui => {if(VPS_CHAT_BUILD)await (await loadSupabaseCloudSyncManager()).start();ui.open();})
         .catch(error => console.error('Failed to load Live Cloud UI', error));
 };
 const PIXEL_IMAGE_DIMENSIONS: Record<string, { width: number; height: number }> = {
@@ -1878,6 +1892,90 @@ const beginChatRequest = (
     return request;
 };
 
+// This preview intentionally uses one durable paid request per ordinary character turn.
+const makeVpsGroupCommit = () => createGroupCommit({
+    readRoom: id => roomManager.getRoom(id),
+    readHistory: id => memoryManager.peekChatHistory(id),
+    writeReply: (r, content) => memoryManager.persistVpsChatTurnReply(r.conversationKey,r.userMessageId,r.replyId,content),
+    confirmReply: r => memoryManager.confirmVpsChatTurnMessage(r.conversationKey,r.replyId,'model'),
+    confirmScene: (id,jobId) => roomManager.confirmVpsSceneCommit(id,jobId),
+    writeScene: (id,jobId,expected,scene) => roomManager.persistVpsSceneCommit(id,jobId,expected,scene),
+});
+const makeVpsTurnController = (replyContent?: Content, groupScene?: GroupGenerationResult['scene']) => createDurableChatTurn({
+    storage: localStorage,
+    transport: createVpsChatTransport(),
+    lock: browserTurnLock,
+    history: {
+        read: key => memoryManager.peekChatHistory(key),
+        persistUser: async t => {
+            if(getActiveWorldline(t.conversationKey))throw Error('WORLDLINE_VPS_INTEGRATION_PENDING');
+            if (t.roomDigest) {
+                const room=roomManager.getRoom(t.conversationKey);
+                if (!room || await digestGroupContext(room,t.contextDigestVersion)!==t.roomDigest) throw Error('GROUP_CONTEXT_CHANGED');
+            }
+            memoryManager.persistVpsChatTurnUser(t.conversationKey, t.userMessageId);
+            if (t.contextDigest && await digestVpsHistory(memoryManager.peekChatHistory(t.conversationKey),t.contextDigestVersion) !== t.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+        },
+        persistReply: async (r, text) => {
+            if(getActiveWorldline(r.conversationKey))throw Error('WORLDLINE_VPS_INTEGRATION_PENDING');
+            if (await digestVpsHistory(memoryManager.peekChatHistory(r.conversationKey),r.contextDigestVersion) !== r.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+            if (r.roomDigest) {
+                if(!groupScene)throw Error('GROUP_SCENE_RECEIPT_MISSING');
+                await makeVpsGroupCommit().persistReply(r,{...replyContent,text},groupScene);
+            } else memoryManager.persistVpsChatTurnReply(r.conversationKey, r.userMessageId, r.replyId, { ...replyContent, text });
+        },
+        confirmReply: async r => {
+            if(r.roomDigest)await makeVpsGroupCommit().confirm(r);
+            else memoryManager.confirmVpsChatTurnMessage(r.conversationKey,r.replyId,'model');
+        },
+    },
+});
+const pendingVpsTurn = () => VPS_CHAT_BUILD ? makeVpsTurnController().pending() : null;
+const selectedVpsChatModel = () => {
+    if (!VPS_CHAT_BUILD) return null;
+    const value = localStorage.getItem(VPS_CHAT_MODE_KEY);
+    return VPS_CHAT_MODELS.find(model => model === value) || null;
+};
+let resumingVpsTurn = false;
+const resumeVpsChatTurn = async (openConversation = false) => {
+    if (!VPS_CHAT_BUILD || !isUnlocked || activeChatRequest || resumingVpsTurn) return;
+    resumingVpsTurn = true;
+    try {
+        const controller = makeVpsTurnController();
+        const pending = controller.pending();
+        if (!pending) return;
+        if(getActiveWorldline(pending.conversationKey))throw Error('WORLDLINE_VPS_INTEGRATION_PENDING');
+        if (await controller.reconcileApplied()) {
+            if (pending.roomDigest && currentRoom?.id===pending.conversationKey) {
+                const room=roomManager.getRoom(pending.conversationKey);
+                if(room){currentRoom=room;renderUiV2ImmersiveSceneChrome();}
+            }
+            if (currentConversationKey === pending.conversationKey) {
+                chatContainer.replaceChildren(); resetRenderedChatHistoryWindow();
+                renderChatHistoryWindow(pending.conversationKey, memoryManager.peekChatHistory(pending.conversationKey));
+            }
+            return;
+        }
+        if (currentConversationKey !== pending.conversationKey) {
+            if (!openConversation && currentConversationKey) return;
+            startChat(pending.conversationKey, null, 'replace');
+        }
+        if (pending.roomDigest) {
+            const room=roomManager.getRoom(pending.conversationKey);
+            if(!room||await digestGroupContext(room,pending.contextDigestVersion)!==pending.roomDigest||!pending.roomMemberId||!selectActiveRoomMember(pending.roomMemberId))throw Error('GROUP_CONTEXT_CHANGED');
+        }
+        if (currentConversationKey !== pending.conversationKey || !currentPersona || Boolean(currentRoom)!==Boolean(pending.roomDigest) || currentPersonaKey !== pending.personaKey) throw Error('TURN_CONVERSATION_CHANGED');
+        const history = memoryManager.peekChatHistory(pending.conversationKey);
+        const user = history.at(-1);
+        if (user?.id !== pending.userMessageId || user.role !== 'user' || !user.content.text || await digestVpsHistory(history,pending.contextDigestVersion) !== pending.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+        const request = beginChatRequest(pending.personaKey, currentPersona, 'character', pending.conversationKey);
+        request.vpsTurn = { identity: pending, model: pending.model, receipt: pending };
+        startChatPerformanceTurn();
+        await getResponse(request, user.content.text);
+    } catch (error) {
+        showError('VPS 任務尚未恢復：' + (error instanceof Error ? error.message : 'UNKNOWN') + '。原任務仍保留，可在選單取回或放棄。');
+    } finally { resumingVpsTurn = false; updateSendButtonState(); }
+};
 const isActiveChatRequest = (request: ActiveChatRequest) => activeChatRequest?.id === request.id;
 
 const finishChatRequest = (request: ActiveChatRequest, state: RequestState = 'idle') => {
@@ -2843,6 +2941,7 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
         conversationKey: key,
         personaKey: currentPersonaKey || undefined,
     }, historyMode);
+    if (VPS_CHAT_BUILD) void resumeVpsChatTurn();
 };
 
 const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
@@ -5103,6 +5202,7 @@ const submitUnlock = async () => {
         setUnlockedState(true);
         void startSupabaseCloudSync();
         void resumePendingVideoJobIfAny();
+        if (VPS_CHAT_BUILD) { void resumeVpsChatTurn(true); void resumeVpsPersonaMemory(); void resumeVpsGroupMemory(); }
     } catch (error) {
         setUnlockedState(false);
         showAuthError(
@@ -6487,14 +6587,25 @@ const continueTruncatedChatReply = async (
     const requestStartedAt = performance.now();
     let result: Awaited<ReturnType<typeof generateChatTextWithTimeout>>;
     try {
-        result = await generateChatTextWithTimeout({
-            model,
-            messages,
-            temperature: 0.72,
-            topP: 0.9,
-            repetitionPenalty: 1.02,
-            signal: request.controller.signal,
-        });
+        const options: Parameters<typeof generateVeniceText>[0] = {
+            model, messages, temperature: 0.72, topP: 0.9,
+            repetitionPenalty: 1.02, signal: request.controller.signal,
+        };
+        if (request.vpsTurn) {
+            const parent = request.vpsTurn.receipt;
+            if (!parent || (attemptIndex !== 1 && attemptIndex !== 2)) throw Error('TURN_STAGE_INVALID');
+            const controller = makeVpsTurnController();
+            const job = await runDurableChatStage({
+                parent, phase: attemptIndex === 1 ? 'continuation-1' : 'continuation-2',
+                payload: buildVpsCharacterPayload(options), signal: request.controller.signal,
+                stage: controller.stage,
+                verifyContext: async () => {
+                    if (!isActiveChatRequest(request) || await digestVpsHistory(memoryManager.peekChatHistory(parent.conversationKey),parent.contextDigestVersion) !== parent.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+                },
+                onPending: () => applyChatRuntimeState('generating', 'VPS 背景續寫中…'),
+            });
+            result = decodeVpsCharacterResult(job, model);
+        } else result = await generateChatTextWithTimeout(options);
     } catch (error) {
         const failure = getSingleGenerationAttemptFailure(error);
         recordSingleGenerationAttempt(trace, {
@@ -6844,7 +6955,7 @@ const runConversationGeneration = async (
                 ], messages.length, isRepairAttempt ? 2 : 1);
 
                 requestStartedAt = performance.now();
-                const result = await generateChatTextWithTimeout({
+                const generationOptions: Parameters<typeof generateVeniceText>[0] = {
                     model,
                     messages,
                     temperature: assistantMode ? 0.7 : 0.82,
@@ -6854,7 +6965,54 @@ const runConversationGeneration = async (
                     signal: request.controller.signal,
                     onTextDelta: assistantMode ? text => showAssistantStreamPreview(request, text) : undefined,
                     enableWebSearch: assistantMode && isVeniceAssistantWebSearchEnabled(),
-                }, undefined, getActiveWorldline(request.conversationKey)?{conversationKey:request.conversationKey,requestId:request.id,stage:generationPhase}:undefined);
+                };
+                let result;
+                if (request.vpsTurn) {
+                    const turn = request.vpsTurn;
+                    const controller = makeVpsTurnController();
+                    const prior = controller.pending();
+                    if (!prior && turn.receipt) throw Error('TURN_RECEIPT_MISSING');
+                    if (prior) {
+                        const recovered = await controller.resume(turn.identity);
+                        if (!recovered || recovered.historyState !== 'ready') throw Error('TURN_HISTORY_CHANGED');
+                        turn.receipt = recovered.receipt;
+                        turn.job = recovered.job;
+                    } else {
+                        const reviewContext = buildSingleReviewContext(request, latestUserMessage);
+                        const plan = buildVpsWorkflowPayload(generationOptions, {
+                            editorPrompt: STRICT_REVIEW_EDITOR_PROMPT,
+                            authoritativePrompt: reviewContext.authoritativePrompt,
+                            reviewHistory: getStrictReviewHistory(request, latestUserMessage),
+                            latestUserMessage,
+                            promptCacheKey: createConversationPromptCacheKey(request.conversationKey, 'review'),
+                        }, request.personaKey === 'cc' ? CC_CANTONESE_POLISH_PROMPT : undefined);
+                        if (!isActiveChatRequest(request) || request.controller.signal.aborted || await digestVpsHistory(memoryManager.peekChatHistory(request.conversationKey),turn.identity.contextDigestVersion) !== turn.identity.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+                        turn.job = await controller.submit(turn.identity, plan);
+                        turn.receipt = controller.pending() || undefined;
+                    }
+                    if (!turn.receipt) throw Error('TURN_RECEIPT_MISSING');
+                    const deadline = Date.now() + (turn.receipt.workflowVersion !== undefined ? 1500000 : 300000);
+                    // A completed duplicate POST has only a receipt; always GET the full result.
+                    while (turn.job.status === 'queued' || turn.job.status === 'running' || (turn.job.status === 'done' && !turn.job.result)) {
+                        if (request.controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+                        if (Date.now() >= deadline) throw Error('VPS_PENDING');
+                        applyChatRuntimeState('generating', 'VPS 背景生成中…');
+                        await new Promise(resolve => setTimeout(resolve, 1600));
+                        const recovered = await controller.resume(turn.identity);
+                        if (!recovered || recovered.historyState !== 'ready') throw Error('TURN_HISTORY_CHANGED');
+                        turn.job = recovered.job;
+                    }
+                    if (turn.job.status !== 'done') throw Error('VPS_' + turn.job.status.toUpperCase());
+                    result = decodeVpsCharacterResult(turn.job, model);
+                    if (turn.receipt.workflowVersion !== undefined) {
+                        const workflow = decodeVpsWorkflow(turn.job);
+                        if (workflow.version !== turn.receipt.workflowVersion) throw Error('TURN_WORKFLOW_RESULT_MISMATCH');
+                        result = { ...result, text: workflow.parts[0], finishReason: 'stop' };
+                    } else if (turn.job.result?.workflow) throw Error('TURN_WORKFLOW_RESULT_MISMATCH');
+                    // Legacy in-flight turns retain their original per-stage recovery path.
+                } else {
+                    result = await generateChatTextWithTimeout(generationOptions,undefined,getActiveWorldline(request.conversationKey)?{conversationKey:request.conversationKey,requestId:request.id,stage:generationPhase}:undefined);
+                }
                 markChatPerformance(
                     index === 0 && !isRepairAttempt
                         ? 'generation:primary'
@@ -6919,6 +7077,14 @@ const runConversationGeneration = async (
 
                 let continuationCount = 0;
                 let finishReason = result.finishReason;
+                if (request.vpsTurn?.receipt?.workflowVersion !== undefined) {
+                    const workflow = decodeVpsWorkflow(request.vpsTurn.job!);
+                    for (const part of workflow.parts.slice(1)) {
+                        const continuation = cleanVeniceChatReply(part);
+                        if (!continuation || isInvalidVeniceChatReply(continuation)) throw Error('VPS_INVALID_CONTINUATION');
+                        cleanedText = mergeReplySegments(cleanedText, continuation);
+                    }
+                }
                 while (
                     continuationCount < CHAT_MAX_AUTO_CONTINUES &&
                     finishReason === 'length'
@@ -6936,6 +7102,7 @@ const runConversationGeneration = async (
                         continuationCount,
                     );
                     if (!continuation) {
+                        if (request.vpsTurn) throw Error('VPS_INVALID_CONTINUATION');
                         break;
                     }
 
@@ -6943,6 +7110,7 @@ const runConversationGeneration = async (
                     finishReason = continuation.finishReason;
                 }
 
+                if (request.vpsTurn && finishReason === 'length') throw Error('VPS_TRUNCATED_REPLY');
                 if (!assistantMode) {
                     cleanedText = normalizeTraditionalChineseLeaks(cleanedText);
                 }
@@ -6965,7 +7133,18 @@ const runConversationGeneration = async (
                 }
 
                 if (!assistantMode && request.personaKey === 'cc') {
-                    cleanedText = await polishCcReply(request, cleanedText);
+                    if (!request.vpsTurn) cleanedText = await polishCcReply(request, cleanedText);
+                    else {
+                        if (request.vpsTurn.receipt?.workflowVersion !== 2) throw Error('CC_WORKFLOW_REQUIRED');
+                        const workflow = decodeVpsWorkflow(request.vpsTurn.job!);
+                        if (workflow.polished !== null) {
+                            const polished = normalizeCcCantoneseLeaks(cleanVeniceChatReply(workflow.polished || ''));
+                            const ratio = polished.length / Math.max(cleanedText.length, 1);
+                            const refusal = /(?:無法|不能|唔可以).{0,16}(?:協助|處理|生成|改寫|提供)|(?:I cannot|I can't).{0,24}(?:assist|rewrite)/iu.test(polished);
+                            if (!polished || isInvalidVeniceChatReply(polished) || refusal || ratio < 0.7 || ratio > 1.55) throw Error('VPS_CC_POLISH_INVALID');
+                            cleanedText = polished;
+                        } else cleanedText = normalizeCcCantoneseLeaks(cleanedText);
+                    }
                 }
 
                 if (!assistantMode && replyHasUnconfirmedAddressLabel(
@@ -7018,7 +7197,7 @@ const runConversationGeneration = async (
                         ...failure,
                     });
                 }
-                if (isAbortError(error)) {
+                if (request.vpsTurn || isAbortError(error)) {
                     throw error;
                 }
                 lastError = error instanceof Error ? error : new Error(String(error));
@@ -7420,16 +7599,50 @@ const runRoomConversationGeneration = async (
                     }] : []),
                 ], messages.length, isRetry ? 2 : 1);
                 requestStartedAt = performance.now();
-                result = await generateChatTextWithTimeout({
-                    model,
-                    messages,
-                    temperature: 0.78,
-                    topP: 0.92,
-                    repetitionPenalty: 1.1,
-                    stop: [],
-                    promptCacheKey,
-                    signal: request.controller.signal,
-                },undefined,getActiveWorldline(request.conversationKey)?{conversationKey:request.conversationKey,requestId:request.id,stage:isRetry?'group-repair':'group-generation'}:undefined);
+                const options: Parameters<typeof generateVeniceText>[0] = {
+                    model,messages,temperature:0.78,topP:0.92,repetitionPenalty:1.1,stop:[],promptCacheKey,signal:request.controller.signal,
+                };
+                if(request.vpsTurn){
+                    const turn=request.vpsTurn;
+                    const controller=makeVpsTurnController();
+                    const check=async()=>{
+                        const room=roomManager.getRoom(request.conversationKey);
+                        if(!isActiveChatRequest(request)||request.controller.signal.aborted||!room||await digestGroupContext(room,turn.identity.contextDigestVersion)!==turn.identity.roomDigest||await digestVpsHistory(memoryManager.peekChatHistory(request.conversationKey),turn.identity.contextDigestVersion)!==turn.identity.contextDigest)throw Error('GROUP_CONTEXT_CHANGED');
+                    };
+                    await check();
+                    const prior=controller.pending();
+                    if(!prior&&turn.receipt)throw Error('TURN_RECEIPT_MISSING');
+                    if(prior){
+                        const recovered=await controller.resume(turn.identity);
+                        if(!recovered||recovered.historyState!=='ready')throw Error('TURN_HISTORY_CHANGED');
+                        turn.receipt=recovered.receipt;turn.job=recovered.job;
+                    }else{
+                        const plan=buildVpsWorkflowPayload(options,{
+                            editorPrompt:STRICT_REVIEW_EDITOR_PROMPT,
+                            authoritativePrompt:await buildGroupReviewContext(request,latestUserMessage),
+                            reviewHistory:getStrictReviewHistory(request,latestUserMessage),
+                            latestUserMessage,promptCacheKey:createConversationPromptCacheKey(request.conversationKey,'review'),
+                        },undefined,true);
+                        await check();
+                        turn.job=await controller.submit(turn.identity,plan);turn.receipt=controller.pending()||undefined;
+                    }
+                    if(turn.receipt?.workflowVersion!==3)throw Error('TURN_WORKFLOW_RESULT_MISMATCH');
+                    const deadline=Date.now()+1500000;
+                    while(turn.job.status==='queued'||turn.job.status==='running'||(turn.job.status==='done'&&!turn.job.result)){
+                        await check();if(Date.now()>=deadline)throw Error('VPS_PENDING');
+                        applyChatRuntimeState('generating','VPS 群組背景生成中…');
+                        await new Promise(resolve=>setTimeout(resolve,1600));
+                        await check();
+                        const recovered=await controller.resume(turn.identity);
+                        if(!recovered||recovered.historyState!=='ready')throw Error('TURN_HISTORY_CHANGED');
+                        turn.job=recovered.job;
+                    }
+                    await check();
+                    if(turn.job.status!=='done')throw Error('VPS_'+turn.job.status.toUpperCase());
+                    const workflow=decodeVpsWorkflow(turn.job);
+                    if(workflow.version!==3)throw Error('TURN_WORKFLOW_RESULT_MISMATCH');
+                    result=decodeVpsCharacterResult(turn.job,model);
+                }else result=await generateChatTextWithTimeout(options,undefined,getActiveWorldline(request.conversationKey)?{conversationKey:request.conversationKey,requestId:request.id,stage:isRetry?'group-repair':'group-generation'}:undefined);
                 markChatPerformance(isRetry ? 'generation:repair' : 'generation:primary', generationStartedAt);
                 markVeniceRequestAggregate(
                     `${isRetry ? 'generation:repair' : 'generation:primary'}:response-meta`,
@@ -7528,7 +7741,7 @@ const runRoomConversationGeneration = async (
                     }
                     attemptRecorded = true;
                 }
-                if (isAbortError(error)) throw error;
+                if (request.vpsTurn || isAbortError(error)) throw error;
                 lastError = error instanceof Error ? error : new Error(String(error));
                 console.warn('[aigf4 group attempt rejected]', {
                     requestId: request.id,
@@ -7608,8 +7821,12 @@ const requestStrictReviewDecision = async (
     candidateResponse: string,
     trace?: GenerationTrace,
 ) => {
+    if (request.vpsTurn?.receipt?.workflowVersion !== undefined) {
+        if (!request.vpsTurn.job) throw Error('TURN_RESULT_NOT_READY');
+        return decodeVpsWorkflow(request.vpsTurn.job).decision;
+    }
     const preparationStartedAt = performance.now();
-    const reviewerModels = buildStrictReviewModelRoute(chatModelSettings, request.personaKey === 'cc');
+    const reviewerModels = request.vpsTurn ? VPS_REVIEW_MODELS : buildStrictReviewModelRoute(chatModelSettings, request.personaKey === 'cc');
     const promptCacheKey = createConversationPromptCacheKey(request.conversationKey, 'review');
     const runAttempt = async ({ model, attemptIndex, isFallback }: ReviewPipelineAttemptContext) => {
         applyChatRuntimeState('retrying', isFallback ? '重新檢查中...' : '檢查回覆中...');
@@ -7635,10 +7852,26 @@ const requestStrictReviewDecision = async (
             responseFormat: STRICT_REVIEW_RESPONSE_FORMAT,
         }, {
             getReviewHistory: () => getStrictReviewHistory(request, latestUserMessage),
-            requestText: (options)=>generateChatTextWithTimeout(options,undefined,getActiveWorldline(request.conversationKey)?{conversationKey:request.conversationKey,requestId:request.id,stage:'strict-review'}:undefined),
+            requestText: request.vpsTurn ? async options => {
+                const parent = request.vpsTurn?.receipt;
+                if (!parent || (attemptIndex !== 1 && attemptIndex !== 2)) throw Error('TURN_REVIEW_STAGE_INVALID');
+                const controller = makeVpsTurnController();
+                const job = await runDurableChatStage({
+                    parent, phase: attemptIndex === 1 ? 'review-1' : 'review-2',
+                    payload: buildVpsCharacterPayload(options), signal: request.controller.signal,
+                    stage: controller.stage,
+                    verifyContext: async () => {
+                        if (!isActiveChatRequest(request) || await digestVpsHistory(memoryManager.peekChatHistory(parent.conversationKey),parent.contextDigestVersion) !== parent.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+                    },
+                    onPending: () => applyChatRuntimeState('retrying', 'VPS 背景審核中…'),
+                });
+                const result = decodeVpsCharacterResult(job, options.model);
+                if (result.finishReason === 'length') throw Error('Invalid strict review from ' + model + '.');
+                return result;
+            } : (options)=>generateChatTextWithTimeout(options,undefined,getActiveWorldline(request.conversationKey)?{conversationKey:request.conversationKey,requestId:request.id,stage:'strict-review'}:undefined),
             recordAttempt: attempt => recordStrictReviewAttempt(trace, attempt),
             classifyFailure: error => getStrictReviewAttemptFailure(request, error),
-            shouldRethrow: error => isAbortError(error) && request.controller.signal.aborted,
+            shouldRethrow: error => request.vpsTurn ? !(error instanceof Error && error.message === 'Invalid strict review from ' + model + '.') : isAbortError(error) && request.controller.signal.aborted,
             onPrepare: () => markChatPerformance('strict-review:prepare', preparationStartedAt),
             onRequestStarted: () => markChatPerformance('strict-review:request-start'),
             onRequestPrepared: prepared => {
@@ -7722,12 +7955,7 @@ const startStrictReviewShadow = (
     onRecordUpdate,
 });
 
-const strictReviewSingleReply = async (
-    request: ActiveChatRequest,
-    latestUserMessage: string,
-    candidate: string,
-    trace?: GenerationTrace,
-) => {
+const buildSingleReviewContext = (request: ActiveChatRequest, latestUserMessage: string) => {
     const history = memoryManager.getChatHistory(request.conversationKey);
     const narrator = isWorldlineNarrator(request);
     const establishedNpcNames = narrator ? [] : collectEstablishedNpcNames(
@@ -7759,7 +7987,17 @@ const strictReviewSingleReply = async (
         buildNpcContinuityRequirement(establishedNpcNames),
         buildNpcSpeechRequirement(addressedNpcNames),
     ].filter(Boolean).join('\n\n');
-    const shadow = startStrictReviewShadow(request, latestUserMessage, candidate, 'single');
+    return { establishedNpcNames, addressedNpcNames, authoritativePrompt };
+};
+
+const strictReviewSingleReply = async (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+    candidate: string,
+    trace?: GenerationTrace,
+) => {
+    const { establishedNpcNames, addressedNpcNames, authoritativePrompt } = buildSingleReviewContext(request, latestUserMessage);
+    const shadow = request.vpsTurn ? null : startStrictReviewShadow(request, latestUserMessage, candidate, 'single');
     let decision;
     try {
         decision = await requestStrictReviewDecision(
@@ -7770,10 +8008,11 @@ const strictReviewSingleReply = async (
             trace,
         );
     } catch (error) {
-        shadow.recordGemmaDecision('unavailable');
+        shadow?.recordGemmaDecision('unavailable');
         throw error;
     }
-    shadow.recordGemmaDecision(decision?.decision || 'unavailable', decision?.issues);
+    shadow?.recordGemmaDecision(decision?.decision || 'unavailable', decision?.issues);
+    if (request.vpsTurn && !decision) throw Error('VPS_REVIEW_INVALID');
     return applySingleStrictReview(candidate, decision, revisedResponse => {
         const revisedWardrobe = extractWardrobeEnvelope(
             revisedResponse,
@@ -7818,18 +8057,11 @@ const strictReviewSingleReply = async (
     });
 };
 
-const strictReviewGroupReply = async (
-    request: ActiveChatRequest,
-    latestUserMessage: string,
-    candidate: GroupGenerationResult,
-    trace?: GenerationTrace,
-) => {
-    if (!request.room) return candidate;
+const buildGroupReviewContext = async (request:ActiveChatRequest,latestUserMessage:string) => {
     const { buildGroupSystemPrompt } = await loadGroupChatPromptModule();
-    const serializedCandidate = serializeGroupGenerationForReview(candidate);
-    const authoritativePrompt = [
+    return [
         buildGroupSystemPrompt(
-            request.room,
+            request.room!,
             latestUserMessage,
             formatSessionMemoryPrompt(request.conversationKey),
         ),
@@ -7839,6 +8071,18 @@ const strictReviewGroupReply = async (
         buildWorldlineRuntimeContext(request.conversationKey,latestUserMessage,request.director),
         'STRICT REVISION FORMAT: revised_response must contain one complete <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate> envelope.',
     ].join('\n\n');
+
+};
+
+const strictReviewGroupReply = async (
+    request: ActiveChatRequest,
+    latestUserMessage: string,
+    candidate: GroupGenerationResult,
+    trace?: GenerationTrace,
+) => {
+    if (!request.room) return candidate;
+    const serializedCandidate = serializeGroupGenerationForReview(candidate);
+    const authoritativePrompt=await buildGroupReviewContext(request,latestUserMessage);
 
     let researchRecordId = '';
     let researchModule: Awaited<ReturnType<typeof loadResearchCaptureModule>> | null = null;
@@ -7862,7 +8106,7 @@ const strictReviewGroupReply = async (
             });
     };
 
-    if (isResearchCaptureEnabledForTurn()) {
+    if (!request.vpsTurn && isResearchCaptureEnabledForTurn()) {
         try {
             researchModule = await loadResearchCaptureModule();
             researchRecordId = researchModule.createResearchRecordId();
@@ -7908,7 +8152,7 @@ const strictReviewGroupReply = async (
         }
     }
 
-    const shadow = startStrictReviewShadow(
+    const shadow = request.vpsTurn ? null : startStrictReviewShadow(
         request,
         latestUserMessage,
         serializedCandidate,
@@ -7929,11 +8173,12 @@ const strictReviewGroupReply = async (
             trace,
         );
     } catch (error) {
-        shadow.recordGemmaDecision('unavailable');
+        shadow?.recordGemmaDecision('unavailable');
         queueResearchPatch(module => module.buildFailedResearchPatch('strict-review', error));
         throw error;
     }
-    shadow.recordGemmaDecision(decision?.decision || 'unavailable', decision?.issues);
+    shadow?.recordGemmaDecision(decision?.decision || 'unavailable', decision?.issues);
+    if(request.vpsTurn&&!decision)throw Error('VPS_REVIEW_INVALID');
     const reviewed = applyGroupStrictReview(candidate, decision, revisedResponse => {
         try {
             const revision = normalizeGroupGenerationTraditional(
@@ -7989,6 +8234,14 @@ const runCharacterChatGeneration = async (
     request: ActiveChatRequest,
     latestUserMessage: string,
 ): Promise<string | GroupGenerationResult> => {
+    if(request.vpsTurn&&request.room)return runGroupTurnAdapter({
+        generateCandidate:()=>runRoomConversationGeneration(request,latestUserMessage,[request.vpsTurn!.model]),
+        reviewCandidate:candidate=>strictReviewGroupReply(request,latestUserMessage,candidate),
+    });
+    if (request.vpsTurn) return runSingleTurnAdapter({
+        generateCandidate: () => runConversationGeneration(request, latestUserMessage, [request.vpsTurn!.model], false),
+        reviewCandidate: candidate => strictReviewSingleReply(request, latestUserMessage, candidate),
+    });
     const models = buildCharacterModelRoute(chatModelSettings, request.personaKey === 'cc');
     if (request.room) {
         const trace = createGenerationTrace(String(request.id), 'group', request.conversationKey);
@@ -8791,7 +9044,7 @@ const getResponse = async (
                 segments: generated.segments,
                 wardrobeState: normalizeWardrobeState(generated.scene.wardrobe),
         };
-        if (typeof generated !== 'string' && request.room) {
+        if (typeof generated !== 'string' && request.room && !request.vpsTurn) {
             const groupScenePersistStartedAt = performance.now();
             let persistedScene = generated.scene;
             try {
@@ -8815,7 +9068,25 @@ const getResponse = async (
         }
         const persistStartedAt = performance.now();
         if(request.mode==='character')botContent.worldlineStoryTurn=Boolean(getActiveWorldline(request.conversationKey));
-        memoryManager.addMessage(request.conversationKey, 'model', botContent);
+        let replyId: string | undefined;
+        if (request.vpsTurn) {
+            const {receipt,job}=request.vpsTurn;
+            if (!receipt || !job) throw Error('TURN_RESULT_NOT_READY');
+            const applied=await makeVpsTurnController(botContent,typeof generated==='string'?undefined:generated.scene).apply(receipt,job,typeof generated==='string'?generated:generated.text);
+            if(request.room){
+                const stored=roomManager.getRoom(request.room.id);
+                if(stored){request.room.scene=stored.scene;if(currentRoom?.id===stored.id){currentRoom=stored;renderUiV2ImmersiveSceneChrome();}}
+            }
+            replyId=receipt.replyId;
+            if (applied === 'already-applied') {
+                if (currentConversationKey === request.conversationKey) {
+                    chatContainer.replaceChildren(); resetRenderedChatHistoryWindow();
+                    renderChatHistoryWindow(request.conversationKey, memoryManager.peekChatHistory(request.conversationKey));
+                }
+                finishChatRequest(request);
+                return;
+            }
+        } else memoryManager.addMessage(request.conversationKey, 'model', botContent);
         if(request.mode==='character'&&request.director?.next){
             try{consumeDirectorNext(localStorage,request.conversationKey,request.director);}
             catch(error){console.warn('Director preference consumption failed',error);}
@@ -8841,7 +9112,7 @@ const getResponse = async (
         markChatPerformance('response:final-persist', persistStartedAt);
         if (shouldRenderCompletedReplyInConversation(currentConversationKey, request.conversationKey)) {
             const renderStartedAt = performance.now();
-            appendMessage(botContent, 'bot');
+            appendMessage(botContent, 'bot', replyId ? { id: replyId } : undefined);
             markChatPerformance('response:final-render', renderStartedAt);
             scheduleReplyVisibleHaptic();
         }
@@ -8906,8 +9177,11 @@ const getResponse = async (
         }
         completeChatPerformanceTurn('response:final-visible');
         schedulePersonaListRefreshAfterPaint();
-        if (request.room) void maybeSummarizeRoomMemory(request.room.id);
-        else if (request.mode === 'character') void maybeSummarizePersonaMemory(request.personaKey);
+        if (request.room) { if(request.vpsTurn)void startVpsGroupMemory(request.room.id);else void maybeSummarizeRoomMemory(request.room.id); }
+        else if (request.mode === 'character') {
+            if (request.vpsTurn) void startVpsPersonaMemory(request.personaKey);
+            else void maybeSummarizePersonaMemory(request.personaKey);
+        }
     } catch (error) {
         clearAssistantStreamPreview(request);
         if (isAbortError(error)) {
@@ -8919,6 +9193,13 @@ const getResponse = async (
             }
             finishChatRequest(request);
             cancelChatPerformanceTurn('send:aborted');
+            return;
+        }
+        if (request.vpsTurn) {
+            finishChatRequest(request, 'error');
+            if (error instanceof QueuePilotError && error.httpStatus === 401) handleAuthRequired();
+            else if (currentConversationKey === request.conversationKey) showError('VPS：' + (error instanceof Error ? error.message : 'UNKNOWN') + '。未自動重試；如有待處理任務，請用選單取回。');
+            cancelChatPerformanceTurn('send:vps-error');
             return;
         }
         console.error('Venice response error:', error);
@@ -9290,6 +9571,179 @@ const maybeSummarizePersonaMemory = async (
     }
 };
 
+// Separate durable memory job. Ordinary one-batch automatic summaries only;
+// historical multi-batch recovery is left to the existing manual workflow.
+const vpsMemorySnapshot = (context: MemoryContext) => {
+    const persona=memoryManager.getPersona(context.personaKey);
+    if (!persona) throw Error('MEMORY_PERSONA_MISSING');
+    const history=memoryManager.peekChatHistory(context.personaKey);
+    if (history.length<context.historyLength) throw Error('MEMORY_HISTORY_CHANGED');
+    return JSON.stringify({
+        name:persona.name,prompt:persona.prompt,memory:persona.memory,soul:persona.soul||[],memories:persona.memories||[],
+        count:Number(persona.lastMemorySummaryUserMessageCount||0),version:Number(persona.memorySummaryVersion||0),
+        history:history.slice(0,context.historyLength),
+        controlled:[...getManualMemoryControlledSourceIds(history)].sort(),
+        exclusions:getManualMemoryLongTermExclusionSummaries(history),
+    });
+};
+const makeVpsMemoryTask = async () => {
+    const autoMemory=await loadAutoMemoryModule();
+    return createDurableMemoryTask({
+        storage:localStorage,transport:createVpsChatTransport(),lock:browserMemoryLock,snapshot:vpsMemorySnapshot,
+        parse:(r,text)=>autoMemory.parsePersonaAutoMemoryResponse(text,new Set(r.sourceIds)),
+        confirmed:r=>memoryManager.confirmVpsMemoryCommit(r.personaKey,r.jobId),
+        commit:(r,memories)=>{
+            const history=memoryManager.peekChatHistory(r.personaKey);
+            const messageIds=createMemoryMessageIdMap(r.personaKey,history);
+            const existingIds=new Set(history.map(m=>m.id?.trim()||messageIds.get(m)).filter(Boolean));
+            const exclusions=getManualMemoryLongTermExclusionSummaries(history);
+            const controlled=getManualMemoryControlledSourceIds(history);
+            const scenes=new Set(r.sceneIds);
+            const normalized=memories.filter(m=>m.sourceMessageIds?.every(id=>existingIds.has(id)&&!controlled.has(id)))
+                .filter(m=>Number(m.importance??3)>=AUTO_MEMORY_MIN_IMPORTANCE)
+                .filter(m=>!autoMemoryMatchesManualDecision(m.summary,exclusions))
+                .map(m=>({...m,sceneId:m.sceneId&&scenes.has(m.sceneId)?m.sceneId:r.sceneIds.at(-1)||'main'}));
+            return memoryManager.applyPersonaMemorySummary(r.personaKey,normalized,r.checkpoint,r.summaryVersion,r.jobId);
+        },
+    });
+};
+let vpsMemoryBusy=false;
+const resumeVpsPersonaMemory = async () => {
+    if (!VPS_CHAT_BUILD||!isUnlocked||vpsMemoryBusy||activeChatRequest) return;
+    vpsMemoryBusy=true;
+    try {
+        const task=await makeVpsMemoryTask();
+        const receipt=task.pending();
+        if(!receipt)return;
+        const deadline=Date.now()+300000;
+        let state=await task.resume();
+        while(state.status==='pending'&&Date.now()<deadline&&isUnlocked&&!activeChatRequest){
+            await new Promise(resolve=>setTimeout(resolve,2000));
+            if(activeChatRequest||!isUnlocked)break;
+            state=await task.resume();
+        }
+        if(state.status==='applied'&&currentPersonaKey===receipt.personaKey&&!currentRoom)refreshRoomMemoryIfOpen();
+    }catch(error){console.warn('[aigf4 VPS memory pending]',error instanceof Error?error.message:'UNKNOWN');}
+    finally{vpsMemoryBusy=false;}
+};
+const startVpsPersonaMemory = async (personaKey:string) => {
+    if(!VPS_CHAT_BUILD||!isUnlocked||vpsMemoryBusy||activeChatRequest)return;
+    vpsMemoryBusy=true;
+    try {
+        const task=await makeVpsMemoryTask();
+        if(task.pending())return;
+        const persona=memoryManager.getPersona(personaKey);
+        if(!persona||isAssistantPersonaKey(personaKey)||personaSummaryInFlight.has(personaKey))return;
+        const history=memoryManager.peekChatHistory(personaKey);
+        const userCount=history.filter(m=>m.role==='user').length;
+        const checkpoint=Number(persona.lastMemorySummaryUserMessageCount||0);
+        const needsRecovery=Number(persona.memorySummaryVersion||0)<AUTO_MEMORY_SUMMARY_VERSION&&userCount>=AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES;
+        if(!needsRecovery&&userCount-checkpoint<ROOM_MEMORY_SUMMARY_TURN_INTERVAL)return;
+        const autoMemory=await loadAutoMemoryModule();
+        const batches=autoMemory.buildMemoryTurnBatches(history,checkpoint,needsRecovery?'recovery':'auto');
+        if(batches.length!==1)return;
+        const batch=batches[0];
+        const evidence=buildPersonaMemoryTranscript(persona,batch.messages,createMemoryMessageIdMap(personaKey,history),getManualMemoryControlledSourceIds(history));
+        if(!evidence.transcript)return;
+        const context:MemoryContext={personaKey,historyLength:history.length,checkpoint:batch.throughUserMessageCount,summaryVersion:AUTO_MEMORY_SUMMARY_VERSION,sourceIds:[...evidence.sourceMessageIds],sceneIds:evidence.sceneIds};
+        const expectedSnapshot=vpsMemorySnapshot(context);
+        const existing=formatExistingMemoryForExtractor(persona.memories||[],64);
+        const payload=buildVpsCharacterPayload({
+            model:VPS_REVIEW_MODELS[0],messages:autoMemory.buildPersonaAutoMemoryMessages(persona.name,existing,evidence.transcript),
+            maxCompletionTokens:4200,temperature:0.2,topP:0.85,repetitionPenalty:1.04,stop:[],responseFormat:autoMemory.PERSONA_MEMORY_RESPONSE_FORMAT,
+        });
+        await task.submit(context,payload,expectedSnapshot);
+    }catch(error){console.warn('[aigf4 VPS memory submit]',error instanceof Error?error.message:'UNKNOWN');}
+    finally{vpsMemoryBusy=false;void resumeVpsPersonaMemory();}
+};
+
+const vpsGroupMemorySnapshot=(context:MemoryContext)=>{
+    const room=roomManager.getRoom(context.personaKey);
+    if(!room)throw Error('MEMORY_ROOM_MISSING');
+    const history=memoryManager.peekChatHistory(room.id);
+    return roomMemorySnapshot(room,history,context,[...getManualMemoryControlledSourceIds(history)],getManualMemoryLongTermExclusionSummaries(history));
+};
+const makeVpsGroupMemoryTask=async()=>{
+    const autoMemory=await loadAutoMemoryModule();
+    return createDurableMemoryTask({
+        storage:localStorage,storageKey:GROUP_MEMORY_KEY,transport:createVpsChatTransport(),lock:browserMemoryLock,snapshot:vpsGroupMemorySnapshot,
+        parse:(r,text)=>{
+            const room=roomManager.getRoom(r.personaKey);
+            if(!room)throw Error('MEMORY_ROOM_MISSING');
+            return autoMemory.parseRoomAutoMemoryResponse(text,groupMemoryAliases(room),new Set(r.sourceIds));
+        },
+        confirmed:r=>roomManager.confirmVpsMemoryCommit(r.personaKey,r.jobId),
+        commit:(r,memories)=>{
+            if(activeChatRequest)throw Error('MEMORY_WAIT_FOR_CHAT');
+            const room=roomManager.getRoom(r.personaKey);
+            if(!room)throw Error('MEMORY_ROOM_MISSING');
+            const history=memoryManager.peekChatHistory(room.id);
+            const prefix=history.slice(0,r.historyLength);
+            const ids=createMemoryMessageIdMap(room.id,history);
+            const presence=groupMemoryPresence(prefix,ids,new Set(r.sourceIds));
+            const controlled=getManualMemoryControlledSourceIds(history);
+            const exclusions=getManualMemoryLongTermExclusionSummaries(history);
+            const normalized=constrainGroupMemories(memories,presence,room,r).filter(m=>m.sourceMessageIds?.every(id=>!controlled.has(id)))
+                .filter(m=>Number(m.importance??3)>=AUTO_MEMORY_MIN_IMPORTANCE)
+                .filter(m=>!autoMemoryMatchesManualDecision(m.summary,exclusions));
+            return roomManager.applyEpisodicMemorySummary(room.id,normalized,r.checkpoint,r.summaryVersion,r.jobId);
+        },
+    });
+};
+let vpsGroupMemoryBusy=false;
+const resumeVpsGroupMemory=async()=>{
+    if(!VPS_CHAT_BUILD||!isUnlocked||vpsGroupMemoryBusy||activeChatRequest)return;
+    vpsGroupMemoryBusy=true;
+    try{
+        const task=await makeVpsGroupMemoryTask();
+        const receipt=task.pending();
+        if(!receipt)return;
+        const deadline=Date.now()+300000;
+        let state=await task.resume();
+        while(state.status==='pending'&&Date.now()<deadline&&isUnlocked&&!activeChatRequest){
+            await new Promise(resolve=>setTimeout(resolve,2000));
+            if(activeChatRequest||!isUnlocked)break;
+            state=await task.resume();
+        }
+        if(state.status==='applied'&&currentRoom?.id===receipt.personaKey){refreshCurrentRoom();refreshRoomMemoryIfOpen();}
+    }catch(error){console.warn('[aigf4 VPS group memory pending]',error instanceof Error?error.message:'UNKNOWN');}
+    finally{vpsGroupMemoryBusy=false;}
+};
+const startVpsGroupMemory=async(roomId:string)=>{
+    if(!VPS_CHAT_BUILD||!isUnlocked||vpsGroupMemoryBusy||activeChatRequest)return;
+    vpsGroupMemoryBusy=true;
+    try{
+        const task=await makeVpsGroupMemoryTask();
+        if(task.pending())return;
+        const room=roomManager.getRoom(roomId);
+        if(!room||roomSummaryInFlight.has(roomId))return;
+        const history=memoryManager.peekChatHistory(roomId);
+        const count=history.filter(m=>m.role==='user').length;
+        const checkpoint=Number(room.lastSummarizedUserMessageCount||0);
+        const needsRecovery=Number(room.memorySummaryVersion||0)<AUTO_MEMORY_SUMMARY_VERSION&&count>=AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES;
+        if(!needsRecovery&&count-checkpoint<ROOM_MEMORY_SUMMARY_TURN_INTERVAL)return;
+        const autoMemory=await loadAutoMemoryModule();
+        const batches=autoMemory.buildMemoryTurnBatches(history,checkpoint,needsRecovery?'recovery':'auto');
+        if(batches.length!==1)return;
+        const batch=batches[0];
+        const ids=createMemoryMessageIdMap(roomId,history);
+        const evidence=buildRoomMemoryTranscript(room,batch.messages,ids,getManualMemoryControlledSourceIds(history));
+        if(!evidence.transcript)return;
+        groupMemoryAliases(room);
+        groupMemoryPresence(history,ids,evidence.sourceMessageIds);
+        const context:MemoryContext={personaKey:roomId,historyLength:history.length,checkpoint:batch.throughUserMessageCount,summaryVersion:AUTO_MEMORY_SUMMARY_VERSION,sourceIds:[...evidence.sourceMessageIds],sceneIds:evidence.sceneIds};
+        const snapshot=vpsGroupMemorySnapshot(context);
+        const ledger=room.members.map(m=>m.id+'='+m.persona.name).join(', ');
+        const existing=formatExistingMemoryForExtractor(room.sharedMemories,64);
+        const payload=buildVpsCharacterPayload({
+            model:VPS_REVIEW_MODELS[0],messages:autoMemory.buildRoomAutoMemoryMessages(ledger,existing,evidence.transcript),
+            maxCompletionTokens:4200,temperature:0.2,topP:0.85,repetitionPenalty:1.04,stop:[],responseFormat:autoMemory.ROOM_MEMORY_RESPONSE_FORMAT,
+        });
+        await task.submit(context,payload,snapshot);
+    }catch(error){console.warn('[aigf4 VPS group memory submit]',error instanceof Error?error.message:'UNKNOWN');}
+    finally{vpsGroupMemoryBusy=false;void resumeVpsGroupMemory();}
+};
+
 const continuePendingConversationTurn = async (triggeringMessage: string) => {
     if (
         activeChatRequest
@@ -9548,6 +10002,10 @@ const sendMessage = async ({
         return;
     }
 
+    if (VPS_CHAT_BUILD && (resumingVpsTurn || pendingVpsTurn())) {
+        showError('有未完成的 VPS 回覆。請先取回原任務，或在選單確認放棄。');
+        return;
+    }
     const typedMessage = (messageText ?? messageInput.value).trim();
     if (!typedMessage && pendingChatAttachments.length === 0) return;
     const userMessage = typedMessage || '請查看附件。';
@@ -9719,6 +10177,25 @@ const sendMessage = async ({
     request.photoSubjectMemberIds = photoSubjectMemberIds;
     request.attachments = attachmentBundle.attachments;
     request.attachmentParts = attachmentBundle.contentParts;
+    const vpsModel = selectedVpsChatModel();
+    if (vpsModel && !getActiveWorldline(conversationKey) && userMessageMeta?.id && isVpsChatEligible({
+        room: Boolean(request.room), assistant: assistantMode, special: characterPhotoRequest || isGodModeActive,
+        attachments: attachmentBundle.attachments.length, personaKey,
+    })) {
+        try {
+            if (!navigator.locks || !crypto.subtle) throw Error('VPS_BROWSER_SUPPORT_REQUIRED');
+            request.vpsTurn = {
+                identity: { conversationKey, personaKey, userMessageId: userMessageMeta.id, contextDigestVersion:CURRENT_CONTEXT_DIGEST_VERSION,contextDigest: await digestVpsHistory(memoryManager.peekChatHistory(conversationKey),CURRENT_CONTEXT_DIGEST_VERSION),
+                    ...(request.room?{roomDigest:await digestGroupContext(roomManager.getRoom(conversationKey)!,CURRENT_CONTEXT_DIGEST_VERSION),roomMemberId:request.roomMemberId}:{}),
+                },
+                model: vpsModel,
+            };
+        } catch (error) {
+            finishChatRequest(request, 'error');
+            showError('VPS 測試模式未能開始；未提交任何生成任務。');
+            return;
+        }
+    }
     await getResponse(request, userMessage, assistantMode ? selectedAssistantModel : undefined);
 };
 
@@ -10664,6 +11141,56 @@ const setupEventListeners = () => {
         moreOptionsMenu.prepend(button);
         moreOptionsMenu.querySelector('.v2-more-options-section-interaction .v2-more-options-grid')?.appendChild(button);
     }
+    if (VPS_CHAT_BUILD) {
+        const controls = document.createElement('div');
+        controls.style.cssText='display:flex;flex-wrap:wrap;gap:6px;padding:8px;align-items:center;background:var(--surface, #222);color:var(--text,#fff);font-size:12px';
+        const label=document.createElement('span');label.textContent='VPS Preview（雲端只讀還原）';
+        const select=document.createElement('select');select.setAttribute('aria-label','VPS 生成模式');
+        [['','原有直連'],...VPS_CHAT_MODELS.map(m=>[m,m])].forEach(([value,text])=>{const option=document.createElement('option');option.value=value;option.textContent=text;select.append(option);});
+        select.value=selectedVpsChatModel()||'';
+        select.addEventListener('change',()=>{if(activeChatRequest||pendingVpsTurn()){select.value=selectedVpsChatModel()||'';alert('先處理原有任務。');return;}localStorage.setItem(VPS_CHAT_MODE_KEY,select.value);});
+        const resume=document.createElement('button');resume.type='button';resume.textContent='取回 VPS 回覆';resume.onclick=()=>void resumeVpsChatTurn(true);
+        const abandon=document.createElement('button');abandon.type='button';abandon.textContent='放棄待處理回覆';abandon.onclick=()=>{if(activeChatRequest||resumingVpsTurn)return;const p=pendingVpsTurn();if(p&&confirm('放棄本機待處理回覆？VPS 已開始的生成可能仍會扣費；此操作不會取消伺服器任務。'))void makeVpsTurnController().abandon(p.jobId).then(()=>{hideError();updateSendButtonState();}).catch(()=>showError('未能放棄原任務。'));};
+        const memoryResume=document.createElement('button');memoryResume.type='button';memoryResume.textContent='取回記憶摘要';memoryResume.onclick=()=>{void resumeVpsPersonaMemory();void resumeVpsGroupMemory();};
+        const memoryAbandon=document.createElement('button');memoryAbandon.type='button';memoryAbandon.textContent='放棄待處理摘要';memoryAbandon.onclick=()=>{if(vpsMemoryBusy)return;void makeVpsMemoryTask().then(async task=>{const p=task.pending();if(p&&confirm('放棄本機待處理摘要？已開始的生成可能仍會扣費。'))await task.abandon(p.jobId);}).catch(()=>showError('未能放棄記憶摘要。'));};
+        const groupMemoryAbandon=document.createElement('button');groupMemoryAbandon.type='button';groupMemoryAbandon.textContent='放棄群組待處理摘要';groupMemoryAbandon.onclick=()=>{if(vpsGroupMemoryBusy)return;void makeVpsGroupMemoryTask().then(async task=>{const p=task.pending();if(p&&confirm('放棄本機群組待處理摘要？已開始的生成可能仍會扣費。'))await task.abandon(p.jobId);}).catch(()=>showError('未能放棄群組摘要。'));};
+        const findRecovery=document.createElement('button');findRecovery.type='button';findRecovery.textContent='尋找其他裝置任務';
+        findRecovery.onclick=async()=>{
+            if(activeChatRequest||resumingVpsTurn||!isUnlocked)return;
+            findRecovery.disabled=true;
+            try{
+                const rows=await listVpsRecovery();
+                const dialog=document.createElement('dialog');dialog.style.cssText='max-width:min(95vw,640px);max-height:80vh;overflow:auto;padding:16px';
+                const title=document.createElement('h3');title.textContent='最近 VPS 聊天任務（約24小時）';
+                const note=document.createElement('p');note.textContent='相同私人 App 登入可查看；必須有相同聊天紀錄才可恢復寫入。手動查看只展示未經本機驗證的生成文字。';
+                const close=document.createElement('button');close.textContent='關閉';close.onclick=()=>dialog.close();dialog.addEventListener('close',()=>dialog.remove());
+                dialog.append(title,note,close);
+                if(!rows.length){const empty=document.createElement('p');empty.textContent='沒有可恢復的新版任務。';dialog.append(empty);}
+                for(const row of rows){
+                    const item=document.createElement('section');item.style.cssText='border-top:1px solid #8885;padding:8px 0';
+                    const label=document.createElement('p');label.textContent=new Date(row.receipt.createdAt).toLocaleString()+' · '+row.receipt.personaKey+' · '+row.status+' · '+row.receipt.jobId;
+                    item.append(label);
+                    if(['queued','running','done'].includes(row.status)){
+                        const adopt=document.createElement('button');adopt.textContent='恢復至本機對話';
+                        adopt.onclick=async()=>{if(activeChatRequest||resumingVpsTurn||!isUnlocked)return;adopt.disabled=true;try{const outcome=await makeVpsTurnController().adoptRecovery(row.receipt);dialog.close();if(outcome==='already-applied'){alert('本機已有此回覆。');return;}await resumeVpsChatTurn(true);}catch(e){alert('未能恢復：'+(e instanceof Error?e.message:'UNKNOWN')+'。請先還原相同聊天紀錄；不會重新生成。');adopt.disabled=false;}};
+                        item.append(adopt);
+                    }
+                    if(row.status==='done'){
+                        const raw=document.createElement('button');raw.textContent='只查看生成文字';
+                        raw.onclick=async()=>{raw.disabled=true;try{const text=await readVpsRecoveryText(row);const pre=document.createElement('pre');pre.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere';pre.textContent=text;item.append(pre);}catch(e){alert('未能讀取：'+(e instanceof Error?e.message:'UNKNOWN'));raw.disabled=false;}};
+                        item.append(raw);
+                    }
+                    dialog.append(item);
+                }
+                document.body.append(dialog);dialog.showModal();
+            }catch(e){showError('未能查找 VPS 任務：'+(e instanceof Error?e.message:'UNKNOWN'));}
+            finally{findRecovery.disabled=false;}
+        };
+        controls.append(label,select,resume,abandon,memoryResume,memoryAbandon,groupMemoryAbandon,findRecovery);chatView.prepend(controls);
+        window.addEventListener('online',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();});
+        window.addEventListener('pageshow',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();});
+        document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();}});
+    }
     closeSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     cancelSurpriseEventOptionsBtn.addEventListener('click', closeSurpriseEventOptions);
     confirmSurpriseEventOptionsBtn.addEventListener('click', confirmSurpriseEventOptions);
@@ -10895,7 +11422,7 @@ const init = async () => {
     }
     renderPersonaList();
     setupEventListeners();
-    if (cloudBackupStartupState.enabled) {
+    if (!VPS_CHAT_BUILD && cloudBackupStartupState.enabled) {
         void loadCloudBackupManager().catch(error => {
             console.error('Failed to start Cloud Backup manager', error);
         });
@@ -10906,6 +11433,7 @@ const init = async () => {
     if (unlocked) {
         await startSupabaseCloudSync();
         void resumePendingVideoJobIfAny();
+        if (VPS_CHAT_BUILD) { void resumeVpsChatTurn(true); void resumeVpsPersonaMemory(); void resumeVpsGroupMemory(); }
     }
 };
 

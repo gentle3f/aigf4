@@ -322,6 +322,7 @@ export interface Content {
     surpriseEvent?: SurpriseEventProposal;
     contextBridge?: ChatContextBridge;
     roomSceneBeforeTurn?: ChatSceneSnapshot;
+    vpsGroupSceneCommit?: import('./durableGroupTurn.js').GroupSceneCommit;
     wardrobeState?: WardrobeState;
     legacy?: boolean;
 }
@@ -403,6 +404,7 @@ export interface Persona {
     memories?: PersonaMemoryEntry[];
     lastMemorySummaryUserMessageCount?: number;
     memorySummaryVersion?: number;
+    lastVpsMemoryJobId?: string;
     favoritePhotoPrompt?: string;
     publicIdentityEnabled?: boolean;
     publicIdentity?: PublicIdentity;
@@ -547,6 +549,7 @@ export class MemoryManager {
                     JSON.stringify(currentPersona.memories || []) !== JSON.stringify(originalPersona.memories || []) ||
                     Number(currentPersona.lastMemorySummaryUserMessageCount || 0) !== Number(originalPersona.lastMemorySummaryUserMessageCount || 0) ||
                     Number(currentPersona.memorySummaryVersion || 0) !== Number(originalPersona.memorySummaryVersion || 0) ||
+                    currentPersona.lastVpsMemoryJobId !== originalPersona.lastVpsMemoryJobId ||
                     currentPersona.favoritePhotoPrompt !== originalPersona.favoritePhotoPrompt ||
                     JSON.stringify(currentPersona.chatPreferences || null) !== JSON.stringify(originalPersona.chatPreferences || null) ||
                     Boolean(currentPersona.publicIdentityEnabled) !== Boolean(originalPersona.publicIdentityEnabled) ||
@@ -1357,12 +1360,15 @@ export class MemoryManager {
         entries: Array<Omit<PersonaMemoryEntry, 'id' | 'createdAt' | 'pinned'>>,
         userMessageCount: number,
         summaryVersion: number,
+        vpsJobId?: string,
     ) {
         const persona = this.personas[key];
         if (!persona) return 0;
         const previousMemories = structuredClone(persona.memories || []);
         const previousCount = persona.lastMemorySummaryUserMessageCount;
         const previousVersion = persona.memorySummaryVersion;
+        const previousVpsJobId = persona.lastVpsMemoryJobId;
+        if (vpsJobId && previousVpsJobId === vpsJobId) return 0;
         const target = (persona.memories ||= []);
         const fingerprint = (entry: Pick<PersonaMemoryEntry, 'kind' | 'title' | 'summary' | 'sourceMessageIds'>) => {
             const sources = [...(entry.sourceMessageIds || [])].sort().join('|');
@@ -1414,6 +1420,7 @@ export class MemoryManager {
         });
         persona.lastMemorySummaryUserMessageCount = userMessageCount;
         persona.memorySummaryVersion = summaryVersion;
+        if (vpsJobId) persona.lastVpsMemoryJobId = vpsJobId;
         try {
             this.persistModifiedPersonas(true);
             return added;
@@ -1421,8 +1428,16 @@ export class MemoryManager {
             persona.memories = previousMemories;
             persona.lastMemorySummaryUserMessageCount = previousCount;
             persona.memorySummaryVersion = previousVersion;
+            persona.lastVpsMemoryJobId = previousVpsJobId;
             throw error;
         }
+    }
+
+    confirmVpsMemoryCommit(key: string, jobId: string): boolean {
+        const raw = localStorage.getItem('customPersonas');
+        if (!raw) return false;
+        const persisted = JSON.parse(raw) as Record<string, Persona>;
+        return persisted[key]?.lastVpsMemoryJobId === jobId && this.personas[key]?.lastVpsMemoryJobId === jobId;
     }
 
     updatePersonaMemory(
@@ -1547,6 +1562,53 @@ export class MemoryManager {
 
     getAllChatHistories(): { [key: string]: ChatMessage[] } {
         return this.chatHistories;
+    }
+
+    /** Opt-in VPS turn boundary: flush the existing history synchronously before dispatch. */
+    persistVpsChatTurnUser(key: string, userMessageId: string) {
+        const history = this.peekChatHistory(key);
+        if (history.at(-1)?.role !== 'user' || history.at(-1)?.id !== userMessageId) {
+            throw new Error('TURN_HISTORY_CHANGED');
+        }
+        this.persistChatHistories(true, true);
+        this.confirmVpsChatTurnMessage(key, userMessageId, 'user');
+    }
+
+    /** Commit a validated reply with its stable ID, never append a second copy. */
+    persistVpsChatTurnReply(key: string, userMessageId: string, replyId: string, content: Content) {
+        const history = this.peekChatHistory(key);
+        const userIndex = history.findIndex(message => message.id === userMessageId && message.role === 'user');
+        const existingIndex = history.findIndex(message => message.id === replyId);
+        if (existingIndex >= 0) {
+            if (userIndex < 0 || existingIndex <= userIndex || history[existingIndex].role !== 'model') {
+                throw new Error('TURN_REPLY_ID_CONFLICT');
+            }
+            this.confirmVpsChatTurnMessage(key, replyId, 'model');
+            return;
+        }
+        if (userIndex < 0 || userIndex !== history.length - 1 || !content.text?.trim()) {
+            throw new Error('TURN_HISTORY_CHANGED');
+        }
+        const message: ChatMessage = { id: replyId, createdAt: Date.now(), role: 'model', content };
+        history.push(message);
+        try {
+            this.persistChatHistories(true, true);
+        } catch (error) {
+            // A retry will reconcile against durable history. Do not claim success on quota failure.
+            const position = history.indexOf(message);
+            if (position >= 0) history.splice(position, 1);
+            throw error;
+        }
+        this.confirmVpsChatTurnMessage(key, replyId, 'model');
+    }
+
+    confirmVpsChatTurnMessage(key: string, id: string, role: 'user' | 'model') {
+        const raw = localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
+        if (!raw) throw new Error('TURN_MESSAGE_NOT_DURABLE');
+        const histories = decodeChatHistoryStorage<Record<string, ChatMessage[]>>(raw);
+        if (!histories[key]?.some(message => message.id === id && message.role === role)) {
+            throw new Error('TURN_MESSAGE_NOT_DURABLE');
+        }
     }
 
     addMessage(

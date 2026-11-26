@@ -1,4 +1,5 @@
 import { createClient, RealtimeChannel, Session, SupabaseClient } from '@supabase/supabase-js';
+import { createCloudRecoveryFetch } from './cloudRecoveryFetch.js';
 import {
     deletePersonaAvatar,
     getPersonaAvatarAsset,
@@ -34,6 +35,7 @@ import {
     saveCharacterPhotoAsset,
 } from './photoStore.js';
 import type { CharacterPhotoAsset } from './photoStore.js';
+import { readStudioImageMetadata,readStudioVideoMetadata } from './studioMediaStore.js';
 import { ChatRoom, resolveRoomAvatarStorageKey, RoomManager } from './roomManager.js';
 import type { RoomImportSnapshot } from './roomManager.js';
 
@@ -275,7 +277,7 @@ export class SupabaseCloudSyncManager {
     private reconciledRemoteStateChangeEpoch = 0;
     private started = false;
 
-    constructor(memoryManager: MemoryManager, roomManager: RoomManager, callbacks: CloudSyncCallbacks) {
+    constructor(memoryManager: MemoryManager, roomManager: RoomManager, callbacks: CloudSyncCallbacks, private readonly recoveryOnly=false, private readonly canRestore=()=>true) {
         this.memoryManager = memoryManager;
         this.roomManager = roomManager;
         this.callbacks = callbacks;
@@ -285,9 +287,11 @@ export class SupabaseCloudSyncManager {
                 auth: {
                     persistSession: true,
                     autoRefreshToken: true,
-                    detectSessionInUrl: true,
+                    detectSessionInUrl: !this.recoveryOnly,
+                    ...(this.recoveryOnly?{storageKey:'aigf-preview-cloud-recovery-auth-v1'}:{}),
                 },
                 realtime: { params: { eventsPerSecond: 4 } },
+                ...(this.recoveryOnly?{global:{fetch:createCloudRecoveryFetch(SUPABASE_URL)}}:{}),
             })
             : null;
         this.state = {
@@ -335,7 +339,9 @@ export class SupabaseCloudSyncManager {
         await this.refreshAuthSession();
     }
 
+    isRecoveryOnly(){return this.recoveryOnly;}
     async sendMagicLink(email: string) {
+        if(this.recoveryOnly)throw Error('只讀還原模式只接受現有雲端密碼登入。');
         if (!this.client) throw new Error('Supabase 尚未設定。');
         const normalized = email.trim().toLocaleLowerCase();
         if (normalized !== OWNER_EMAIL) throw new Error('這個雲端空間只接受已設定的擁有人帳戶。');
@@ -409,6 +415,7 @@ export class SupabaseCloudSyncManager {
     }
 
     async setPassword(password: string) {
+        if(this.recoveryOnly)throw Error('CLOUD_RECOVERY_READ_ONLY');
         if (!this.client || !this.session) throw new Error('請先登入 Supabase 雲端。');
         if (password.length < 8) throw new Error('雲端密碼至少需要 8 個字元。');
         const sessionUserId = this.session.user.id;
@@ -439,6 +446,7 @@ export class SupabaseCloudSyncManager {
     }
 
     async signOut() {
+        if(this.recoveryOnly)throw Error('只讀預覽請關閉並清除該預覽網站資料；不會登出正式裝置。');
         if (!this.client) return;
         const sessionUserId = this.session?.user.id || '';
         const sessionGeneration = this.sessionGeneration;
@@ -473,6 +481,7 @@ export class SupabaseCloudSyncManager {
     }
 
     async syncNow() {
+        if(this.recoveryOnly)throw Error('CLOUD_RECOVERY_READ_ONLY');
         if (!this.session) throw new Error('請先登入 Supabase 雲端。');
         localStorage.setItem(PENDING_KEY, 'true');
         const completed = await this.pushPendingChangesSafely();
@@ -485,7 +494,41 @@ export class SupabaseCloudSyncManager {
         }
     }
 
-    async reloadFromCloud() {
+    // getChatHistory seeds an opening greeting even on a fresh device.
+    // Only allow exact greeting-only histories, never actual chat or attachments.
+    private hasRecoveryLocalChat(){
+        return Object.entries(this.memoryManager.getAllChatHistories()).some(([key,rows])=>{
+            if(!rows.length)return false;
+            const persona=this.memoryManager.getPersona(key);
+            const row=rows[0];
+            return rows.length!==1||!persona||row.role!=='model'||!!row.speakerId||
+                typeof row.content?.text!=='string'||row.content.text!==persona.greeting||
+                Object.keys(row.content).some(k=>k!=='text');
+        });
+    }
+
+    private recoveryConsentHistory:string|null=null;
+    private recoveryHistoryAllowed(){
+        return this.recoveryConsentHistory!==null
+            ?this.recoveryConsentHistory===JSON.stringify(this.memoryManager.getAllChatHistories())
+            :!this.hasRecoveryLocalChat();
+    }
+
+    async reloadFromCloud(allowReplaceSinglePreviewMessage=false) {
+        if(this.recoveryOnly){
+            if(!this.session)throw Error('請先登入私人雲端。');
+            if(!this.canRestore())throw Error('CLOUD_RESTORE_BUSY：有未完成聊天任務，不能還原。');
+            const localCount=Object.values(this.memoryManager.getAllChatHistories()).reduce((n,rows)=>n+rows.length,0);
+            if(this.hasRecoveryLocalChat()&&!(allowReplaceSinglePreviewMessage&&localCount===1))throw Error('CLOUD_RESTORE_LOCAL_NOT_EMPTY：本機已有 '+localCount+' 則訊息；只限未有聊天紀錄的測試裝置。');
+            if(this.pulling||this.pushing)throw Error('CLOUD_RESTORE_BUSY：已有同步操作。');
+            if(isLocalCloudChangeBatchActive())throw Error('CLOUD_RESTORE_LOCAL_BATCH_ACTIVE：本機資料正在更新。');
+            this.recoveryConsentHistory=JSON.stringify(this.memoryManager.getAllChatHistories());
+            try{
+                const completed=await this.pullCloudToLocal(true,false);
+                if(!completed)throw Error(this.state.detail);
+            }finally{this.recoveryConsentHistory=null;}
+            return;
+        }
         if (!this.session) throw new Error('請先登入 Supabase 雲端。');
         const completed = await this.recoverCloudSafely();
         if (!completed) {
@@ -723,6 +766,7 @@ export class SupabaseCloudSyncManager {
         await this.stopRealtime();
         if (!this.isCurrentSession(sessionUserId, sessionGeneration)) return;
         this.initializedUserId = sessionUserId;
+        if(this.recoveryOnly){this.setState('synced','已登入只讀雲端；請手動還原至空白測試裝置。不會上傳。');return;}
         this.setState('connecting', '正在連接私人雲端空間…');
         await this.initialSync(sessionUserId, sessionGeneration);
         if (!this.isCurrentSession(sessionUserId, sessionGeneration)) return;
@@ -796,6 +840,7 @@ export class SupabaseCloudSyncManager {
     }
 
     private schedulePush(delay: number) {
+        if(this.recoveryOnly)return;
         const sessionUserId = this.session?.user.id;
         const sessionGeneration = this.sessionGeneration;
         if (!sessionUserId) return;
@@ -808,6 +853,7 @@ export class SupabaseCloudSyncManager {
     }
 
     private scheduleResearchPush(delay: number) {
+        if(this.recoveryOnly)return;
         const sessionUserId = this.session?.user.id;
         const sessionGeneration = this.sessionGeneration;
         if (!sessionUserId || this.researchCloudUnavailable) return;
@@ -846,6 +892,7 @@ export class SupabaseCloudSyncManager {
     }
 
     private async pushPendingResearchTurns(): Promise<boolean> {
+        if(this.recoveryOnly)return false;
         if (!this.client || !this.session || this.researchPushing || !navigator.onLine) return false;
         const sessionUserId = this.session.user.id;
         const sessionGeneration = this.sessionGeneration;
@@ -907,6 +954,7 @@ export class SupabaseCloudSyncManager {
     }
 
     private schedulePull(delay: number) {
+        if(this.recoveryOnly)return;
         const sessionUserId = this.session?.user.id;
         const sessionGeneration = this.sessionGeneration;
         if (!sessionUserId || this.pullTimer !== null) return;
@@ -943,6 +991,7 @@ export class SupabaseCloudSyncManager {
     }
 
     private scheduleRealtimeRestart() {
+        if(this.recoveryOnly)return;
         const sessionUserId = this.session?.user.id;
         const sessionGeneration = this.sessionGeneration;
         if (
@@ -991,6 +1040,7 @@ export class SupabaseCloudSyncManager {
     }
 
     private async pushPendingChangesSafely(): Promise<boolean> {
+        if(this.recoveryOnly)return false;
         if (!this.client || !this.session || this.pushing || this.pulling) return false;
         const sessionUserId = this.session.user.id;
         const sessionGeneration = this.sessionGeneration;
@@ -1031,6 +1081,7 @@ export class SupabaseCloudSyncManager {
     }
 
     private async recoverCloudSafely() {
+        if(this.recoveryOnly)return false;
         if (!this.client || !this.session || this.pushing || this.pulling) return false;
         const sessionUserId = this.session.user.id;
         const sessionGeneration = this.sessionGeneration;
@@ -1049,6 +1100,7 @@ export class SupabaseCloudSyncManager {
     }
 
     private async pushLocalToCloud(initial = false, preserveRemote = false, expectedStateRevision?: number, forceFullSnapshot = false): Promise<boolean> {
+        if(this.recoveryOnly)return false;
         if (!this.client || !this.session || this.pushing || this.pulling) return false;
         const sessionUserId = this.session.user.id;
         const sessionGeneration = this.sessionGeneration;
@@ -1140,6 +1192,7 @@ export class SupabaseCloudSyncManager {
     }
 
     private async pullCloudToLocal(force = false, mergeLocal = false): Promise<boolean> {
+        if(this.recoveryOnly&&(!force||mergeLocal||!this.canRestore()||!this.recoveryHistoryAllowed()))return false;
         if (!this.client || !this.session || this.pulling || this.pushing) return false;
         const sessionUserId = this.session.user.id;
         const sessionGeneration = this.sessionGeneration;
@@ -1211,6 +1264,7 @@ export class SupabaseCloudSyncManager {
                 .select('payload,revision,updated_at,source_device_id')
                 .maybeSingle();
             if (stateResponse.error) throw stateResponse.error;
+            if(this.recoveryOnly&&(!stateResponse.data||!stateResponse.data.payload))throw Error('CLOUD_RECOVERY_EMPTY');
             this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             this.lastObservedCloudStateRevision = normalizeCloudStateRevision(stateResponse.data?.revision);
             const [messageRows, mediaRows] = await Promise.all([
@@ -1221,6 +1275,11 @@ export class SupabaseCloudSyncManager {
                 this.fetchAllRows<CloudMediaRow>('wetapp_media', [['created_at_ms', true]]),
             ]);
             this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+            if(this.recoveryOnly){
+                if(!this.canRestore()||!this.recoveryHistoryAllowed())throw Error('CLOUD_RECOVERY_LOCAL_CHANGED');
+                const head=await this.client.from('wetapp_state').select('revision').maybeSingle();
+                if(head.error||normalizeCloudStateRevision(head.data?.revision)!==this.lastObservedCloudStateRevision)throw Error('CLOUD_RECOVERY_REVISION_CHANGED');
+            }
             const localTransaction = await this.createCloudPullTransactionSnapshot();
             this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             try {
@@ -1228,12 +1287,36 @@ export class SupabaseCloudSyncManager {
                 await this.pullMedia(mediaRows, mergeLocal, localTransaction);
                 this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
                 this.setState('pulling', `正在整理 ${messageRows.length.toLocaleString('zh-HK')} 則訊息…`, { progress: 72 });
+                if(this.recoveryOnly){
+                    if(!this.canRestore()||!this.recoveryHistoryAllowed())throw Error('CLOUD_RECOVERY_LOCAL_CHANGED');
+                    const head=await this.client.from('wetapp_state').select('revision').maybeSingle();
+                    if(head.error||normalizeCloudStateRevision(head.data?.revision)!==this.lastObservedCloudStateRevision)throw Error('CLOUD_RECOVERY_REVISION_CHANGED');
+                }
                 await this.applyRemoteData(
                     (stateResponse.data?.payload || {}) as Partial<CloudStatePayload>,
                     messageRows,
                     mergeLocal,
                 );
                 this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+                if(this.recoveryOnly){
+                    const histories=this.memoryManager.getAllChatHistories();
+                    const expectedByKey=new Map<string,CloudMessageRow[]>();
+                    for(const row of messageRows){const rows=expectedByKey.get(row.conversation_key)||[];rows.push(row);expectedByKey.set(row.conversation_key,rows);}
+                    if(Object.values(histories).reduce((n,rows)=>n+rows.length,0)!==messageRows.length)throw Error('CLOUD_RECOVERY_MESSAGE_COUNT_MISMATCH');
+                    for(const [key,rows] of expectedByKey){
+                        const restored=histories[key]||[];
+                        if(restored.length!==rows.length||rows.some((row,i)=>restored[i].id!==row.message_id||restored[i].role!==row.role||Number(restored[i].createdAt)!==Number(row.created_at_ms)))throw Error('CLOUD_RECOVERY_MESSAGE_ID_MISMATCH');
+                    }
+                    for(const row of mediaRows){
+                        const metadata=row.metadata||{};
+                        const asset=row.kind==='persona_avatar'||row.kind==='room_avatar'
+                            ?await getPersonaAvatarAsset(String(metadata.localKey||''))
+                            :row.kind==='character_photo'
+                                ?await getCharacterPhotoAsset(String(metadata.id||row.asset_id.replace(/^character-photo:/u,'')))
+                                :await getChatAttachment(String(metadata.id||row.asset_id.replace(/^attachment:/u,'')));
+                        if(!asset||asset.blob.size!==Number(row.byte_size))throw Error('CLOUD_RECOVERY_MEDIA_SIZE_MISMATCH');
+                    }
+                }
                 await this.refreshLocalIndexes(
                     messageRows,
                     mediaRows,
@@ -1260,7 +1343,7 @@ export class SupabaseCloudSyncManager {
             this.setPullRecoveryRequired(false);
             localStorage.setItem(SAFE_MERGE_VERSION_KEY, '2');
             this.callbacks.onRemoteApplied();
-            this.markSynced('已載入雲端最新資料。');
+            this.markSynced(this.recoveryOnly?`CLOUD RESTORE PASS：已核對 ${messageRows.length} 則訊息 ID／角色／時間及 ${mediaRows.length} 個媒體檔案大小；雲端版本 ${this.lastObservedCloudStateRevision}。沒有上傳。`:'已載入雲端最新資料。');
             return true;
         } catch (error) {
             if (
@@ -1556,6 +1639,7 @@ export class SupabaseCloudSyncManager {
             });
         });
         photoAssets.forEach(asset => {
+            const studio=readStudioImageMetadata(asset.personaKey,asset.id,asset.studio);
             const assetId = `character-photo:${asset.id}`;
             result.push({
                 user_id: userId,
@@ -1565,14 +1649,15 @@ export class SupabaseCloudSyncManager {
                 storage_path: `${userId}/character_photo/${safeAssetPath(assetId)}`,
                 mime_type: asset.blob.type || 'image/jpeg',
                 byte_size: asset.blob.size,
-                signature: `${asset.blob.size}:${asset.blob.type}:${asset.createdAt}:${hashText(asset.prompt || '')}`,
-                metadata: { id: asset.id, personaKey: asset.personaKey, prompt: asset.prompt },
+                signature: `${asset.blob.size}:${asset.blob.type}:${asset.createdAt}:${hashText(asset.prompt || '')}${studio?':'+hashText(JSON.stringify(studio)):''}`,
+                metadata: { id: asset.id, personaKey: asset.personaKey, prompt: asset.prompt,...(studio?{studio}:{}) },
                 source_device_id: this.deviceId,
                 created_at_ms: asset.createdAt,
                 blob: asset.blob,
             });
         });
         attachmentAssets.forEach(asset => {
+            const studio=readStudioVideoMetadata(asset.conversationKey,asset.id,asset.studio);
             const assetId = `attachment:${asset.id}`;
             result.push({
                 user_id: userId,
@@ -1582,11 +1667,12 @@ export class SupabaseCloudSyncManager {
                 storage_path: `${userId}/attachment/${safeAssetPath(assetId)}`,
                 mime_type: asset.mimeType || asset.blob.type || 'application/octet-stream',
                 byte_size: asset.blob.size,
-                signature: `${asset.blob.size}:${asset.mimeType}:${asset.createdAt}:${asset.name}`,
+                signature: `${asset.blob.size}:${asset.mimeType}:${asset.createdAt}:${asset.name}${studio?':'+hashText(JSON.stringify(studio)):''}`,
                 metadata: {
                     id: asset.id,
                     conversationKey: asset.conversationKey,
                     name: asset.name,
+                    ...(studio?{studio}:{}),
                 },
                 source_device_id: this.deviceId,
                 created_at_ms: asset.createdAt,
@@ -1780,6 +1866,7 @@ export class SupabaseCloudSyncManager {
                 await saveCharacterPhotoAsset({
                     id,
                     personaKey: String(metadata.personaKey || row.conversation_key || ''),
+                    studio:readStudioImageMetadata(String(metadata.personaKey || row.conversation_key || ''),id,metadata.studio),
                     prompt: String(metadata.prompt || ''),
                     createdAt: row.created_at_ms,
                     blob: download.data,
@@ -1790,6 +1877,7 @@ export class SupabaseCloudSyncManager {
                 await saveChatAttachment({
                     id,
                     conversationKey: String(metadata.conversationKey || row.conversation_key || ''),
+                    studio:readStudioVideoMetadata(String(metadata.conversationKey || row.conversation_key || ''),id,metadata.studio),
                     name: String(metadata.name || 'attachment'),
                     mimeType: row.mime_type,
                     createdAt: row.created_at_ms,

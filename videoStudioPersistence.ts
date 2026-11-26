@@ -7,6 +7,8 @@ export type PersistedVideoJob = {
     model: string;
     modelName: string;
     queueId: string;
+    submissionId?: string;
+    autonomous?: true;
     downloadUrl?: string;
     prompt: string;
     mode: PersistedVideoMode;
@@ -26,6 +28,7 @@ const getStorage = (): StorageLike | null => {
 export const sanitizePersistedVideoJob = (input: unknown): PersistedVideoJob | null => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
     const value = input as Partial<PersistedVideoJob>;
+    const validSubmission=value.submissionId===undefined||(typeof value.submissionId==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.submissionId)&&value.submissionId===value.queueId&&value.model==='wan-2-7-enhanced-text-to-video'&&value.mode==='text-to-video'&&value.downloadUrl===undefined);
     const validMode = value.mode === 'image-to-video' || value.mode === 'text-to-video';
     const validDownloadUrl = value.downloadUrl === undefined
         || (typeof value.downloadUrl === 'string' && /^https:\/\//i.test(value.downloadUrl));
@@ -40,6 +43,8 @@ export const sanitizePersistedVideoJob = (input: unknown): PersistedVideoJob | n
         || typeof value.queuedAt !== 'number'
         || !Number.isFinite(value.queuedAt)
         || value.queuedAt <= 0
+        || (value.autonomous!==undefined&&(value.autonomous!==true||!value.submissionId))
+        || !validSubmission
         || !validMode
         || !validDownloadUrl
     ) return null;
@@ -51,6 +56,8 @@ export const sanitizePersistedVideoJob = (input: unknown): PersistedVideoJob | n
             ? value.modelName
             : value.model,
         queueId: value.queueId,
+        ...(value.submissionId?{submissionId:value.submissionId}:{}),
+        ...(value.autonomous?{autonomous:true as const}:{}),
         downloadUrl: value.downloadUrl,
         prompt: value.prompt,
         mode: value.mode,

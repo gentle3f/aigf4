@@ -11,6 +11,7 @@ export interface StoredChatAttachment {
     name: string;
     mimeType: string;
     createdAt: number;
+    studio?: import('./studioMediaStore.js').StudioVideoMetadata;
 }
 
 let databasePromise: Promise<IDBDatabase> | null = null;
