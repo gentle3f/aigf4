@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {buildVpsVideoSubmission,createVpsVideoSubmission,submitDurableVideo,VPS_VIDEO_MODEL} from '../vpsVideoSubmission.js';
+import {sanitizePersistedVideoJob,type PersistedVideoJob} from '../videoStudioPersistence.js';
+import {createGenerationHandler} from '../server/generationJobs.js';
+const id='12345678-1234-4234-8234-123456789abc';
+const options={model:VPS_VIDEO_MODEL,prompt:'A cloud over a lake',duration:'5s',resolution:'720p',aspectRatio:'16:9',adultConfirmed:true};
+const done={job_id:id,status:'done',result:{choices:[{message:{content:JSON.stringify({video_submit_version:1,model:VPS_VIDEO_MODEL,queue_id:'venice-123'})}}]}};
+function fixture(){
+ let saved:PersistedVideoJob|null=null,failWrite=false,lost=false;
+ const calls:string[]=[];
+ const transport=createVpsVideoSubmission(async(_url,o)=>{calls.push(o!.method!);if(o!.method==='POST'){assert.equal(saved?.submissionId,id);assert.equal(JSON.parse(String(o!.body)).job_id,id);if(lost)throw Error('offline');return new Response(JSON.stringify({job_id:id,status:'queued'}));}return new Response(JSON.stringify(done));});
+ const submit=()=>submitDurableVideo({options,modelName:'Wan fixture',storage:{read:()=>saved,write:r=>{if(failWrite)return false;saved=r;return true}},lock:fn=>fn(),transport,onStored:()=>{},newId:()=>id,now:()=>123});
+ return {submit,calls,transport,saved:()=>saved,failWrite:(v:boolean)=>failWrite=v,lost:(v:boolean)=>lost=v};
+}
+test('persist receipt before paid dispatch; lost POST recovered by GET only',async()=>{const f=fixture();f.lost(true);await assert.rejects(f.submit(),/offline/);assert.equal(f.saved()?.submissionId,id);assert.ok(sanitizePersistedVideoJob(f.saved()));const r=await f.transport.resolve(f.saved()!);assert.equal(r?.queueId,'venice-123');assert.equal(r?.submissionId,undefined);assert.deepEqual(f.calls,['POST','GET']);});
+test('failed storage and second click cannot dispatch another job',async()=>{const f=fixture();f.failWrite(true);await assert.rejects(f.submit(),/NOT_DURABLE/);assert.equal(f.calls.length,0);f.failWrite(false);await f.submit();await assert.rejects(f.submit(),/PENDING_EXISTS/);assert.deepEqual(f.calls,['POST']);});
+test('unsupported input rejected, legacy receipt stays compatible',()=>{for(const patch of [{model:'other'},{sourceImageDataUrl:'data:image/png;base64,abc'},{adultConfirmed:false},{duration:'99s'},{audio:true}])assert.throws(()=>buildVpsVideoSubmission({...options,...patch}),/UNSUPPORTED/);const old={version:1,model:VPS_VIDEO_MODEL,modelName:'Wan',queueId:'old-id',prompt:'old',mode:'text-to-video',queuedAt:123};assert.ok(sanitizePersistedVideoJob(old));assert.equal(sanitizePersistedVideoJob({...old,submissionId:id}),null);});
+test('bad GET response or 404 never causes another POST',async()=>{const f=fixture();await f.submit();for(const d of [new Response('',{status:404}),new Response(JSON.stringify({...done,job_id:'wrong'})),new Response(JSON.stringify({...done,result:{choices:[{message:{content:'not a receipt'}}]}}))]){let calls=0;const transport=createVpsVideoSubmission(async(_u,o)=>{assert.equal(o?.method,'GET');calls++;return d;});await assert.rejects(transport.resolve(f.saved()!));assert.equal(calls,1);}});
+test('proxy accepts exact text-to-video plan and rejects reference image or arbitrary endpoint',async()=>{const request=buildVpsVideoSubmission(options);for(const [body,status] of [[request,202],[{...request,image_url:'https://example.invalid/image'},400],[{...request,adultConfirmed:false},400],[{...request,model:'unknown'},400]] as const){let calls=0;const res={code:0,setHeader(){},status(n:number){this.code=n;return this},json(){return this}};const handler=createGenerationHandler({env:{AIGF_VPS_QUEUE_ENABLED:'1',AIGF_VPS_QUEUE_URL:'https://fixture.invalid/',AIGF_VPS_QUEUE_TOKEN:'x'.repeat(64)},authenticate:()=>true,fetchImpl:async()=>{calls++;return new Response(JSON.stringify({job_id:id,status:'queued'}))}});await handler({method:'POST',body:{job_id:id,request:body}},res);assert.equal(res.code,status);assert.equal(calls,status===202?1:0);}});

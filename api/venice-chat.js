@@ -1,9 +1,11 @@
 import { requireAuthenticatedRequest } from './_auth.js';
+import generationJobs from '../server/generationJobs.js';
 
 const VENICE_UPSTREAM = 'https://api.venice.ai/api/v1/chat/completions';
 const UPSTREAM_TIMEOUT_MS = 250_000;
 
 export default async function handler(req, res) {
+  if (req.query?.queue === '1') return generationJobs(req, res);
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });

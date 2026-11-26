@@ -6,6 +6,7 @@ import { decodeRoomStorage, encodeRoomStorage } from './roomStorage.js';
 import { readRoomRecovery, saveRoomRecovery } from './roomRecoveryStore.js';
 import { emptyWardrobeState, normalizeWardrobeState } from './wardrobe.js';
 import { buildMemorySearchTags, mergeMemorySearchTags } from './memoryIndex.js';
+import { groupContextSnapshot } from './durableGroupTurn.js';
 
 const ROOM_STORAGE_KEY = 'aigf4RoomsV2';
 const DELETED_ROOM_IDS_STORAGE_KEY = 'aigf4DeletedRoomIdsV1';
@@ -110,6 +111,8 @@ export interface ChatRoom {
     createdAt: number;
     updatedAt: number;
     lastSummarizedUserMessageCount: number;
+    lastVpsSceneJobId?: string;
+    lastVpsMemoryJobId?: string;
     memorySummaryVersion?: number;
     legacySourcePersonaKey?: string;
     migrationVersion?: number;
@@ -983,6 +986,26 @@ export class RoomManager {
         }
     }
 
+    confirmVpsSceneCommit(id: string, jobId: string) {
+        const raw = localStorage.getItem(ROOM_STORAGE_KEY);
+        if (!raw) return false;
+        const parsed = decodeRoomStorage<RoomExportData | ChatRoom[]>(raw);
+        const rooms = Array.isArray(parsed) ? parsed : parsed.rooms;
+        return rooms.find(room => room.id === id)?.lastVpsSceneJobId === jobId
+            && this.rooms[id]?.lastVpsSceneJobId === jobId;
+    }
+
+    persistVpsSceneCommit(id: string, jobId: string, expectedSnapshot: string, scene: RoomSceneState) {
+        if (this.confirmVpsSceneCommit(id, jobId)) return;
+        const room = this.rooms[id];
+        if (!room || groupContextSnapshot(room) !== expectedSnapshot) throw Error('GROUP_CONTEXT_CHANGED');
+        const stored = this.updateRoom(id, next => {
+            next.scene = cloneRoom(scene);
+            next.lastVpsSceneJobId = jobId;
+        });
+        if (!stored || !this.confirmVpsSceneCommit(id, jobId)) throw Error('GROUP_SCENE_NOT_DURABLE');
+    }
+
     updateRoomSceneDeferred(id: string, scene: RoomSceneState) {
         const previous = this.rooms[id];
         if (!previous) return null;
@@ -1287,9 +1310,11 @@ export class RoomManager {
         entries: Array<Omit<RoomMemoryEntry, 'id' | 'createdAt' | 'pinned'>>,
         userMessageCount: number,
         summaryVersion: number,
+        vpsJobId?: string,
     ) {
         const room = this.rooms[roomId];
         if (!room) return 0;
+        if(vpsJobId && room.lastVpsMemoryJobId===vpsJobId)return 0;
         const previous = cloneRoom(room);
         const validMemberIds = new Set(room.members.map(member => member.id));
         let added = 0;
@@ -1328,6 +1353,7 @@ export class RoomManager {
         });
         room.lastSummarizedUserMessageCount = userMessageCount;
         room.memorySummaryVersion = summaryVersion;
+        if(vpsJobId)room.lastVpsMemoryJobId=vpsJobId;
         room.updatedAt = Date.now();
         try {
             this.persist();
@@ -1336,6 +1362,14 @@ export class RoomManager {
             this.rooms[roomId] = previous;
             throw error;
         }
+    }
+
+    confirmVpsMemoryCommit(id:string,jobId:string) {
+        const raw=localStorage.getItem(ROOM_STORAGE_KEY);
+        if(!raw)return false;
+        const parsed=decodeRoomStorage<RoomExportData|ChatRoom[]>(raw);
+        const rooms=Array.isArray(parsed)?parsed:parsed.rooms;
+        return rooms.find(room=>room.id===id)?.lastVpsMemoryJobId===jobId&&this.rooms[id]?.lastVpsMemoryJobId===jobId;
     }
 
     deleteMemory(roomId: string, memberId: string, memoryId: string, type: 'soul' | 'memory') {

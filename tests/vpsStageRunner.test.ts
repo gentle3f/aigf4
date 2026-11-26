@@ -1,0 +1,15 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {runDurableChatStage} from '../vpsStageRunner.js';
+import type {TurnReceipt} from '../durableChatTurn.js';
+import type {PilotJob,PilotRequest} from '../generationQueuePilot.js';
+const parent:TurnReceipt={jobId:'12345678-1234-4234-8234-123456789ab1',replyId:'12345678-1234-4234-8234-123456789ab2',userMessageId:'12345678-1234-4234-8234-123456789ab3',createdAt:0,conversationKey:'fixture',personaKey:'fixture',model:'glm-5-3-flash-uncensored'};
+const payload:PilotRequest={model:parent.model,messages:[{role:'user',content:'continue'}]};
+const child='12345678-1234-4234-8234-123456789ab4';
+const job=(status:PilotJob['status'],result=false):PilotJob=>({job_id:child,status,...(result?{result:{choices:[{message:{content:'continued'},finish_reason:'stop'}]}}:{})});
+const base=()=>({parent,phase:'continuation-1' as const,payload,signal:new AbortController().signal,verifyContext:async()=>{},delay:async()=>{}});
+test('polls queued and running child until complete',async()=>{const states=[job('queued'),job('running'),job('done'),job('done',true)];let calls=0;const out=await runDurableChatStage({...base(),stage:async(r,phase,p)=>{assert.equal(r,parent);assert.equal(phase,'continuation-1');assert.equal(p,payload);return states[calls++];}});assert.equal(calls,4);assert.equal(out.result?.choices[0].message.content,'continued');});
+test('failed child stops without retry',async()=>{let calls=0;await assert.rejects(runDurableChatStage({...base(),stage:async()=>{calls++;return job('failed')}}),/VPS_STAGE_FAILED/);assert.equal(calls,1);});
+test('history mismatch or aborted signal prevents child dispatch',async()=>{let calls=0;const stage=async()=>{calls++;return job('queued')};await assert.rejects(runDurableChatStage({...base(),verifyContext:async()=>{throw Error('TURN_HISTORY_CHANGED')},stage}),/HISTORY_CHANGED/);const ac=new AbortController();ac.abort();await assert.rejects(runDurableChatStage({...base(),signal:ac.signal,stage}),/Aborted/);assert.equal(calls,0);});
+test('timeout leaves stage pending, no repeated network attempt after deadline',async()=>{let calls=0,t=0;await assert.rejects(runDurableChatStage({...base(),now:()=>t,timeoutMs:100,delay:async()=>{t=101},stage:async()=>{calls++;return job('running')}}),/VPS_STAGE_PENDING/);assert.equal(calls,1);});
+test('transport uncertainty propagates and no fallback',async()=>{let calls=0;await assert.rejects(runDurableChatStage({...base(),stage:async()=>{calls++;throw Error('offline')}}),/offline/);assert.equal(calls,1);});

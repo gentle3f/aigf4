@@ -151,12 +151,17 @@ const syncSupabaseCloudNow = async () => {
 };
 
 const reloadSupabaseCloud = async () => {
-    if (!confirm('會先上傳尚未同步的本機變更，再重新載入雲端最新資料。繼續嗎？')) return;
+    const recovery=supabaseCloudSyncManager.isRecoveryOnly();
+    supabaseCloudControlsError.textContent='';
+    if (!confirm(recovery?'只讀還原：會取代此獨立 Preview 本機角色設定及最多一則本機訊息；不會修改正式網站或上傳雲端。確認此 Preview 沒有需保留的聊天，繼續嗎？':'會先上傳尚未同步的本機變更，再重新載入雲端最新資料。繼續嗎？')) return;
+    supabaseCloudReload.disabled=true;
+    supabaseCloudControlsError.textContent='正在檢查本機還原條件…';
     try {
-        await supabaseCloudSyncManager.reloadFromCloud();
+        await supabaseCloudSyncManager.reloadFromCloud(recovery);
+        supabaseCloudControlsError.textContent=supabaseCloudSyncManager.getState().detail;
     } catch (error) {
-        supabaseCloudError.textContent = error instanceof Error ? error.message : '重新載入失敗。';
-    }
+        supabaseCloudControlsError.textContent = error instanceof Error ? error.message : '重新載入失敗。';
+    } finally {supabaseCloudReload.disabled=false;}
 };
 
 const signOutSupabaseCloud = async () => {
@@ -174,6 +179,15 @@ export type LiveCloudUiHandle = {
 
 export const createLiveCloudUi = (manager: SupabaseCloudSyncManager): LiveCloudUiHandle => {
     supabaseCloudSyncManager = manager;
+    if(manager.isRecoveryOnly()){
+        supabaseCloudSyncNow.hidden=true;
+        supabaseCloudSendLink.hidden=true;
+        supabaseCloudNewPassword.hidden=true;
+        supabaseCloudNewPasswordConfirm.hidden=true;
+        supabaseCloudSetPassword.hidden=true;
+        supabaseCloudSignOut.hidden=true;
+        supabaseCloudReload.textContent='只讀還原至空白裝置';
+    }
     if (!listenersAttached) {
         closeSupabaseCloudBtn.addEventListener('click', closeSupabaseCloud);
         supabaseCloudModal.addEventListener('click', event => {

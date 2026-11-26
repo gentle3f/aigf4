@@ -6,7 +6,7 @@ const indexSource = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8
 const roomManagerSource = readFileSync(new URL('../roomManager.ts', import.meta.url), 'utf8');
 
 test('accepted Group replies use the deferred scene checkpoint, not synchronous updateRoom persistence', () => {
-    const start = indexSource.indexOf("if (typeof generated !== 'string' && request.room)");
+    const start = indexSource.indexOf("if (typeof generated !== 'string' && request.room && !request.vpsTurn)");
     const end = indexSource.indexOf("markChatPerformance('response:group-scene-persist'", start);
     assert.ok(start >= 0 && end > start);
     const source = indexSource.slice(start, end);
