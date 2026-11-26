@@ -1,3 +1,4 @@
+import {readDirector,formatDirector,consumeDirectorNext,type DirectorPreferences} from './worldlineDirector.js';
 
 import {
     CharacterPhotoProposal,
@@ -691,6 +692,7 @@ type SurpriseEventDrawOptions = {
     participantIds: string[];
 };
 type ActiveChatRequest = {
+    director?: DirectorPreferences;
     id: number;
     personaKey: string;
     conversationKey: string;
@@ -1864,6 +1866,7 @@ const beginChatRequest = (
         wardrobeState,
         controller: new AbortController(),
         startedAt: performance.now(),
+        director: mode==='character'&&getActiveWorldline(conversationKey)?readDirector(localStorage,conversationKey):undefined,
     };
     nextChatRequestId += 1;
     activeChatRequest = request;
@@ -6624,10 +6627,10 @@ const getActiveWorldline = (conversationKey: string) => {
         return world && !world.paused ? world : null;
     } catch { return null; }
 };
-const buildWorldlineRuntimeContext = (key:string,query:string) => {
+const buildWorldlineRuntimeContext = (key:string,query:string,director?:DirectorPreferences) => {
     const world=getActiveWorldline(key);
     if(!world)return '';
-    return [buildWorldlinePrompt(world),compileWorldLedger(localStorage.getItem(WORLD_LEDGER_KEY),key,memoryManager.peekChatHistory(key),query)].filter(Boolean).join('\n\n');
+    return [buildWorldlinePrompt(world),compileWorldLedger(localStorage.getItem(WORLD_LEDGER_KEY),key,memoryManager.peekChatHistory(key),query),formatDirector(director)].filter(Boolean).join('\n\n');
 };
 type WorldSyncResult = {advanced:number;deferred:string[];issueCount:number};
 const worldLedgerJobs = new Map<string, Promise<WorldSyncResult>>();
@@ -6646,7 +6649,7 @@ const syncWorldLedger = (key: string, recent = false, skipIds:readonly string[]=
             const first=history.findIndex(m=>m.id===sources[0].id);
             const context=compileWorldLedger(raw,key,history.slice(0,Math.max(0,first)),'',4200);
             const result=await generateChatTextWithTimeout({
-                model: DEFAULT_CHAT_MODEL_SETTINGS.primary || VENICE_CHAT_MODEL,
+                model: chatModelSettings.primary || VENICE_CHAT_MODEL,
                 messages:buildRecoverableWorldExtractionMessages(sources,context),
                 maxCompletionTokens:5000,temperature:0.1,stop:[],
             },90000,{conversationKey:key,stage:recent?'ledger-new-turn':'ledger-rebuild',sourceIds:sources.flatMap(m=>m.id?[m.id]:[])});
@@ -6727,7 +6730,7 @@ const runConversationGeneration = async (
         ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
         : '';
     const activeWorld = assistantMode ? null : getActiveWorldline(request.conversationKey);
-    const worldlineContext = activeWorld ? buildWorldlineRuntimeContext(request.conversationKey,latestUserMessage) : '';
+    const worldlineContext = activeWorld ? buildWorldlineRuntimeContext(request.conversationKey,latestUserMessage,request.director) : '';
     const systemPromptParts = [
         baseSystemPrompt,
         archivedRecall,
@@ -7347,7 +7350,7 @@ const runRoomConversationGeneration = async (
                     ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
                     : '';
                 const world = getActiveWorldline(request.conversationKey);
-                const worldlineContext = world ? buildWorldlineRuntimeContext(request.conversationKey,latestUserMessage) : '';
+                const worldlineContext = world ? buildWorldlineRuntimeContext(request.conversationKey,latestUserMessage,request.director) : '';
                 const roomSystemPrompt = [
                     groupSystemPrompt,
                     archivedRecall,
@@ -7756,7 +7759,7 @@ const strictReviewSingleReply = async (
         request.surpriseEvent
             ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
             : '',
-        buildWorldlineRuntimeContext(request.conversationKey,latestUserMessage),
+        buildWorldlineRuntimeContext(request.conversationKey,latestUserMessage,request.director),
         isWorldlineNarrator(request)
             ? '' : buildImmediateTurnOwnershipRequirement(request.persona.name, latestUserMessage),
         buildNpcContinuityRequirement(establishedNpcNames),
@@ -7839,7 +7842,7 @@ const strictReviewGroupReply = async (
         request.surpriseEvent
             ? buildSurpriseEventExecutionContract(request.surpriseEvent, request.room)
             : '',
-        buildWorldlineRuntimeContext(request.conversationKey,latestUserMessage),
+        buildWorldlineRuntimeContext(request.conversationKey,latestUserMessage,request.director),
         'STRICT REVISION FORMAT: revised_response must contain one complete <chat>...</chat><scene>...</scene><npc_candidate>...</npc_candidate> envelope.',
     ].join('\n\n');
 
@@ -8818,6 +8821,10 @@ const getResponse = async (
         }
         const persistStartedAt = performance.now();
         memoryManager.addMessage(request.conversationKey, 'model', botContent);
+        if(request.mode==='character'&&request.director?.next){
+            try{consumeDirectorNext(localStorage,request.conversationKey,request.director);}
+            catch(error){console.warn('Director preference consumption failed',error);}
+        }
         if(getActiveWorldline(request.conversationKey)){
             const latest=memoryManager.peekChatHistory(request.conversationKey).at(-1);
             recordWorldResearch({conversationKey:request.conversationKey,requestId:request.id,stage:'final-persist',sourceIds:latest?.id?[latest.id]:[]},{kind:'final-story',reply:researchText(botContent.text||''),elapsedMs:Math.round(performance.now()-request.startedAt)});
@@ -10038,7 +10045,7 @@ const openWorldline = async (source: 'new' | 'current' = 'current') => {
                     await import('./worldlineRandomQuest.js');
                 const seed = Math.floor(Math.random() * 2_000_000_000);
                 const result = await generateChatTextWithTimeout({
-                    model: DEFAULT_CHAT_MODEL_SETTINGS.primary || VENICE_CHAT_MODEL,
+                    model: chatModelSettings.primary || VENICE_CHAT_MODEL,
                     messages: buildRandomMainQuestMessages(input),
                     maxCompletionTokens: 900,
                     temperature: 1.04,
@@ -10564,6 +10571,12 @@ const setupEventListeners = () => {
     });
     chatAttachmentInput.addEventListener('change', () => void handleChatAttachmentSelection());
     composerCameraButton.addEventListener('click', openPhotoPromptModal);
+    document.getElementById('worldline-director-button')?.addEventListener('click',async()=>{
+        const key=currentConversationKey;
+        if(!key||!getActiveWorldline(key))return;
+        const {openWorldlineDirector}=await import('./features/worldlineDirectorUi.js');
+        if(currentConversationKey===key)openWorldlineDirector(key);
+    });
     chatSearchBtn.addEventListener('click', openChatSearch);
     homeSearchToggle.addEventListener('click', () => {
         activateConversationSearch();
@@ -10647,7 +10660,7 @@ const setupEventListeners = () => {
             moreOptionsMenu.classList.add('hidden');
             void import('./predictiveLab.js').then(({openPredictiveLab})=>openPredictiveLab(async(history,signal)=>{
                 return generateChatTextWithTimeout({
-                    model:DEFAULT_CHAT_MODEL_SETTINGS.primary||VENICE_CHAT_MODEL,
+                    model:chatModelSettings.primary||VENICE_CHAT_MODEL,
                     messages:[{role:'system',content:'You are a fictional conversational partner in an isolated timing experiment. Reply in natural, brief Traditional Chinese or the language the user uses. Use one or two conversational sentences. This is not the existing story or persona.'},...history],
                     signal,maxCompletionTokens:160,temperature:0.75,stop:[],
                 });

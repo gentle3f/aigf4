@@ -40,6 +40,10 @@
     <link rel="stylesheet" href="/index.css">
     <link rel="stylesheet" href="/mori.css">
     <link rel="stylesheet" href="/ui-v2.css">
+<style>
+#worldline-director-button{display:none;flex-shrink:0;align-self:flex-end;min-height:38px;min-width:42px;padding:0 6px;border-radius:10px;border:1px solid currentColor;font-size:12px;opacity:.85}
+.aigf-worldline-active #worldline-director-button{display:inline-flex;align-items:center;justify-content:center}
+</style>
 </head>
 <body class="app-body bg-gray-900 antialiased text-gray-200">
 
@@ -226,6 +230,7 @@
                 <div class="composer-shell">
                 <div class="composer-frame relative flex items-end">
                     <input id="chat-attachment-input" type="file" class="hidden" multiple accept="image/*,.zip,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.markdown,.json,.log,.js,.ts,.py,.yaml,.yml,.sql,video/*">
+                    <button id="worldline-director-button" type="button" aria-label="旁白導演" title="旁白導演">旁白</button>
                     <div class="composer-input-shell">
                         <textarea id="message-input" placeholder="輸入訊息" autocomplete="off" rows="1"></textarea>
                         <button id="composer-camera-button" type="button" class="composer-icon-button" aria-label="請角色拍照" title="請角色拍照">
