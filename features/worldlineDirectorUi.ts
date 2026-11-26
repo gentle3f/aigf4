@@ -1,4 +1,4 @@
-import {readDirector,saveDirector,effectiveNarrativeStyle,NARRATIVE_STYLE_PRESETS,CREATIVE_SECTIONS,effectiveCreativeSection,formatDirector} from '../worldlineDirector.js';
+import {readDirector,saveDirector,effectiveNarrativeStyle,NARRATIVE_STYLE_PRESETS,CREATIVE_SECTIONS,effectiveCreativeSection,formatDirector,effectiveDirectorPreface} from '../worldlineDirector.js';
 export function openWorldlineDirector(key:string){
  const d=document.createElement('dialog');d.className='wl-dialog';d.setAttribute('aria-label','旁白設定');
  const header=document.createElement('div');header.className='wl-header';
@@ -10,6 +10,16 @@ export function openWorldlineDirector(key:string){
  const status=document.createElement('p');status.className='wl-note';status.setAttribute('aria-live','polite');
  const preview=document.createElement('textarea');preview.className='wl-input';preview.rows=10;preview.readOnly=true;preview.setAttribute('aria-label','已保存的旁白創作指令');
  const refreshPreview=()=>{preview.value=formatDirector(readDirector(localStorage,key));};
+ const intro=document.createElement('label');intro.className='wl-field';
+ const introLabel=document.createElement('span');introLabel.className='wl-field-label';introLabel.textContent='旁白總則（創作導言）';
+ const introInput=document.createElement('textarea');introInput.className='wl-input';introInput.rows=5;introInput.maxLength=1500;introInput.value=effectiveDirectorPreface(initial);
+ intro.append(introLabel,introInput);body.append(intro);
+ const introHelp=document.createElement('p');introHelp.className='wl-note';introHelp.textContent='自訂旁白創作方向及寫作目的。固定運作規則另行保留。';body.append(introHelp);
+ const introActions=document.createElement('div');introActions.className='wl-actions';
+ const introReset=document.createElement('button');introReset.type='button';introReset.className='wl-button';introReset.textContent='還原預設導言';
+ const introSave=document.createElement('button');introSave.type='button';introSave.className='wl-button wl-primary';introSave.textContent='保存旁白導言';
+ const applyIntro=(value:string)=>{try{const saved=saveDirector(localStorage,key,'preface',value);introInput.value=effectiveDirectorPreface(saved);refreshPreview();status.textContent='旁白導言已保存。';}catch(e){status.textContent=e instanceof Error?e.message:'保存失敗。';}};
+ introReset.onclick=()=>applyIntro('');introSave.onclick=()=>applyIntro(introInput.value);introActions.append(introReset,introSave);body.append(introActions);
  const styleField=document.createElement('label');styleField.className='wl-field';
  const styleCaption=document.createElement('span');styleCaption.className='wl-field-label';styleCaption.textContent='核心寫作設定';
  const styleInput=document.createElement('textarea');styleInput.className='wl-input';styleInput.rows=6;styleInput.maxLength=1500;styleInput.value=effectiveNarrativeStyle(initial);

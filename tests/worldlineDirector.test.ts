@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readDirector,saveDirector,consumeDirectorNext,formatDirector,effectiveNarrativeStyle,DEFAULT_NARRATIVE_STYLE,NARRATIVE_STYLE_PRESETS,CREATIVE_SECTIONS,effectiveCreativeSection} from '../worldlineDirector.js';
+import {readDirector,saveDirector,consumeDirectorNext,formatDirector,effectiveNarrativeStyle,DEFAULT_NARRATIVE_STYLE,NARRATIVE_STYLE_PRESETS,CREATIVE_SECTIONS,effectiveCreativeSection,effectiveDirectorPreface,DEFAULT_DIRECTOR_PREFACE} from '../worldlineDirector.js';
 import {readFileSync} from 'node:fs';
 function fixture(){const m=new Map<string,string>();let n=0;return {store:{getItem:(k:string)=>m.get(k)??null,setItem:(k:string,v:string)=>{m.set(k,v)},removeItem:(k:string)=>{m.delete(k)}},id:()=>String(++n)};}
 test('per-world standing and next-turn instructions persist, next consumed once after accepted response',()=>{
@@ -64,4 +64,16 @@ test('studio previews actual saved director formatter and uses individual reset 
  assert.match(s,/preview\.value=formatDirector\(readDirector\(localStorage,key\)\)/);
  assert.match(s,/preview\.readOnly=true/);
  assert.match(s,/saveDirector\(localStorage,key,section\.key,value\)/);
+});
+
+test('creative preface can be edited independently and reset; fixed rules remain unchanged',()=>{
+ const {store,id}=fixture();
+ const initial=formatDirector(readDirector(store,'a'));
+ saveDirector(store,'a','preface','Tell the story as a historical chronicle',id);
+ const edited=formatDirector(readDirector(store,'a'));
+ assert.match(edited,/Tell the story as a historical chronicle/);
+ assert.equal(edited.split('\n').slice(1).join('\n'),initial.split('\n').slice(1).join('\n'));
+ assert.equal(effectiveDirectorPreface(readDirector(store,'b')),DEFAULT_DIRECTOR_PREFACE);
+ saveDirector(store,'a','preface','',id);
+ assert.equal(formatDirector(readDirector(store,'a')),initial);
 });

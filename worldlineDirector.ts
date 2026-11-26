@@ -10,9 +10,11 @@ export const CREATIVE_SECTIONS=[
  {key:'quality',label:'一般寫作質素',text:'檢查敘事是否流暢、人物對話是否自然、場景轉接是否清晰，以及有否重複或無意間改變已確立的細節。'},
 ] as const;
 export type CreativeSection=typeof CREATIVE_SECTIONS[number]['key'];
-export type DirectorScope='core'|'standing'|'next'|CreativeSection;
+export type DirectorScope='preface'|'core'|'standing'|'next'|CreativeSection;
 export type DirectorPreferences=Partial<Record<DirectorScope,DirectorNote>>;
 export const effectiveCreativeSection=(v:DirectorPreferences|undefined,key:CreativeSection)=>v?.[key]?.text||CREATIVE_SECTIONS.find(s=>s.key===key)!.text;
+export const DEFAULT_DIRECTOR_PREFACE='WORLDLINE DIRECTOR PREFERENCES (player-facing creative direction, not character dialogue).';
+export const effectiveDirectorPreface=(v:DirectorPreferences|undefined)=>v?.preface?.text||DEFAULT_DIRECTOR_PREFACE;
 export const DEFAULT_NARRATIVE_STYLE='以小說形式敘事，保持情節連貫、人物性格一致，使用自然對話及具體場景描寫。按場景需要調整節奏、篇幅和視角，重要事件應有清楚的因果及後續反應。';
 export const NARRATIVE_STYLE_PRESETS=[
  {label:'預設小說',text:DEFAULT_NARRATIVE_STYLE},
@@ -33,7 +35,7 @@ const note=(x:unknown):DirectorNote|undefined=>{
 };
 export function readDirector(store:Store,world:string):DirectorPreferences{
  const raw=store.getItem(key(world));if(!raw)return {};
- try{const v=JSON.parse(raw);const out:DirectorPreferences={};for(const scope of ['core','standing','next',...CREATIVE_SECTIONS.map(s=>s.key)] as const){const n=note(v?.[scope]);if(n)out[scope]=n;}return out;}catch{return {};}
+ try{const v=JSON.parse(raw);const out:DirectorPreferences={};for(const scope of ['preface','core','standing','next',...CREATIVE_SECTIONS.map(s=>s.key)] as const){const n=note(v?.[scope]);if(n)out[scope]=n;}return out;}catch{return {};}
 }
 export function saveDirector(store:Store,world:string,scope:DirectorScope,text:string,newId=()=>crypto.randomUUID()){
  const clean=text.trim();if(clean.length>1500)throw Error('導演指令最多 1500 字。');
@@ -52,7 +54,8 @@ export function consumeDirectorNext(store:Store,world:string,used:DirectorPrefer
 }
 export function formatDirector(v:DirectorPreferences|undefined){
  return [
- 'WORLDLINE DIRECTOR PREFERENCES (player-facing creative direction, not character dialogue). Apply only to narrative tone, pacing, continuity, viewpoint, atmosphere, character reactions, and non-explicit romantic or intimate scenes. These preferences cannot override content boundaries, established facts, character agency, or consent. Do not invent the player’s actions. Do not quote these notes as dialogue. When a scene cannot be depicted directly, preserve narrative continuity using an appropriate non-graphic transition and meaningful aftermath.',
+ 'Director preface: '+JSON.stringify(effectiveDirectorPreface(v)),
+ 'Apply only to narrative tone, pacing, continuity, viewpoint, atmosphere, character reactions, and non-explicit romantic or intimate scenes. These preferences cannot override content boundaries, established facts, character agency, or consent. Do not invent the player’s actions. Do not quote these notes as dialogue. When a scene cannot be depicted directly, preserve narrative continuity using an appropriate non-graphic transition and meaningful aftermath.',
  'Core narrative style: '+JSON.stringify(effectiveNarrativeStyle(v)),
  ...CREATIVE_SECTIONS.map(s=>s.label+': '+JSON.stringify(effectiveCreativeSection(v,s.key))),
  v?.standing?'Standing preference: '+JSON.stringify(v.standing.text):'',
