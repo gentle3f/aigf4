@@ -1,3 +1,8 @@
+import 'fake-indexeddb/auto';
+import {MemoryManager} from '../managers.js';
+import {createDurableChatTurn} from '../durableChatTurn.js';
+import {createNativeStoryCheckpointBridge} from '../nativeStoryCheckpointBridge.js';
+import {digestVpsHistory} from '../vpsChatMode.js';
 import {PGlite} from '../tmp/sync-lab/node_modules/@electric-sql/pglite/dist/index.js';
 import {readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
@@ -96,5 +101,35 @@ try{
   const confirmed=await read();assert.equal(confirmed.snapshot.record.world.turnCount,1);assert.equal(confirmed.head.count,2);
   assert.deepEqual((await restoreHistory()).map(m=>m.id),[nextUser.id,resultId]);
  });
- console.log('WORLDLINE2_STORY_SQL_PASS '+passed+'/3');
+ await check('real native chat controller and MemoryManager sync user before VPS POST, then recover committed reply exactly once',async()=>{
+  const store=device(),remote=await read(),initial=await restoreHistory();
+  Object.defineProperty(globalThis,'localStorage',{configurable:true,value:store});
+  let manager=new MemoryManager();manager.setChatHistory(key,initial,true);
+  await restoreStorySnapshot(store,key,initial,remote.snapshot);
+  const u=row(20,2,'user','Native chat user'),jobId=row(21,0,'model','').message_id,replyId=row(22,0,'model','').message_id;
+  const calls=[];
+  const queue={submit:async id=>{calls.push('POST');assert.equal((await read()).head.count,3);return {job_id:id,status:'queued'};},get:async id=>{calls.push('GET');return {job_id:id,status:'done',result:{choices:[{message:{content:'旅人走入村落。'}}]}};}};
+  const make=()=>{
+   const bridge=createNativeStoryCheckpointBridge({key,site:'worldline2',storage:store,transport,deviceId:'native-test',lock:fn=>fn(),capture:k=>captureStorySnapshot(store,k,manager.peekChatHistory(k)),history:{
+    read:k=>manager.peekChatHistory(k),
+    persistUser:async t=>manager.persistVpsChatTurnUser(t.conversationKey,t.userMessageId),
+    persistReply:async(r,text)=>manager.persistVpsChatTurnReply(r.conversationKey,r.userMessageId,r.replyId,{text,worldlineStoryTurn:true}),
+    confirmReply:async r=>{manager.confirmVpsChatTurnMessage(r.conversationKey,r.replyId,'model');const s=await captureStorySnapshot(store,key,manager.peekChatHistory(key));const w=s.record.world;if(!w.chronicle.some(c=>c.sourceMessageId===r.replyId)){const last=manager.peekChatHistory(key).at(-1);store.setItem(WORLDLINE_SETTING_KEY,JSON.stringify(updateWorldlineRegistry(store.getItem(WORLDLINE_SETTING_KEY),key,recordWorldlineTurn(w,u.content.text,last.content.text,last.createdAt,r.replyId),last.createdAt)));}}
+   }});
+   const ids=[jobId,replyId];return {bridge,controller:createDurableChatTurn({storage:store,history:bridge.history,transport:queue,lock:fn=>fn(),newId:()=>ids.shift()})};
+  };
+  let {bridge,controller}=make();await bridge.beforeUser(u.message_id);
+  manager.setChatHistory(key,[...initial,{id:u.message_id,role:'user',createdAt:u.created_at_ms,content:u.content}],true);
+  const turn={conversationKey:key,personaKey:key,userMessageId:u.message_id,contextDigestVersion:2,contextDigest:await digestVpsHistory(manager.peekChatHistory(key),2),worldDigest:'a'.repeat(64)};
+  await controller.submit(turn,{model:'glm-5-3-flash-uncensored',messages:[{role:'user',content:'Native chat user'}]});
+  assert.deepEqual(calls,['POST']);
+  manager=new MemoryManager();({bridge,controller}=make());const pending=await controller.resume();
+  loseResponse=true;await assert.rejects(controller.apply(pending.receipt,pending.job,'旅人走入村落。'),/SIMULATED_LOST_RESPONSE/);loseResponse=false;
+  assert.ok(controller.pending());
+  manager=new MemoryManager();({bridge,controller}=make());assert.equal(await controller.reconcileApplied(),true);
+  assert.equal(controller.pending(),null);assert.deepEqual(calls,['POST','GET']);
+  const final=await read();assert.equal(final.head.count,4);assert.equal(final.snapshot.record.world.turnCount,2);assert.equal((await restoreHistory()).filter(m=>m.id===replyId).length,1);
+  assert.equal(writes,6);
+ });
+ console.log('WORLDLINE2_STORY_SQL_PASS '+passed+'/4');
 }catch(e){console.error('LAB_ERROR',e?.message,e?.code,e?.detail);process.exitCode=1;}finally{await db.close();}
