@@ -19,7 +19,8 @@ test('newly edited instruction is not consumed by old in-flight response; cleari
 test('director preferences are shared by generation and review and are not added to transcript',()=>{
  const s=readFileSync(new URL('../index.tsx',import.meta.url),'utf8');
  assert.equal((s.match(/buildWorldlineRuntimeContext\(request.conversationKey,latestUserMessage,request.director\)/g)||[]).length,4);
- assert.match(s,/memoryManager\.addMessage\(request\.conversationKey, 'model', botContent\);\s*if\(request.mode==='character'&&request.director\?\.next\)/);
+ assert.match(s,/memoryManager\.addMessage\(request\.conversationKey, 'model', botContent\);\s*if\(request.mode==='character'&&!request.vpsTurn\?\.identity.worldDigest&&request.director\?\.next\)/);
+ assert.match(s,/if\(used&&director.next\?\.id===used\)consumeDirectorNext\(localStorage,r.conversationKey,director\)/);
  assert.doesNotMatch(s,/model:\s*DEFAULT_CHAT_MODEL_SETTINGS\.primary\s*\|\|\s*VENICE_CHAT_MODEL/);
  assert.match(formatDirector({next:{id:'x',text:'Keep the same location'}}),/cannot override content boundaries/);
 });

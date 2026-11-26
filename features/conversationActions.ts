@@ -6,6 +6,7 @@ import { deleteChatAttachment } from '../chatMediaStore.js';
 import { WORLDLINE_SETTING_KEY, getWorldline, forkWorldlineAt, updateWorldlineRegistry } from '../worldline.js';
 import { WORLD_LEDGER_KEY, copyWorldLedgerAt } from '../worldLedger.js';
 import { setPersistedAppSetting } from '../appSettings.js';
+import { removeRecalledWorldlineSources } from '../durableWorldlineTurn.js';
 
 export type ConversationActionsDependencies = {
     memoryManager: MemoryManager;
@@ -381,6 +382,12 @@ const recallUserMessage = async (messageId: string) => {
     const removedSourceMessageIds = result.removed
         .map(message => message.id)
         .filter((id): id is string => Boolean(id));
+    const registry=localStorage.getItem(WORLDLINE_SETTING_KEY);
+    const world=getWorldline(registry,conversationKey);
+    if(world){
+        const next=removeRecalledWorldlineSources(world,removedSourceMessageIds);
+        if(next!==world)setPersistedAppSetting(WORLDLINE_SETTING_KEY,JSON.stringify(updateWorldlineRegistry(registry,conversationKey,next)));
+    }
     const remainingUserMessageCount = result.remaining.filter(message => message.role === 'user').length;
     deps.removeSessionMemoriesBySourceMessageIds(conversationKey, removedSourceMessageIds);
 
