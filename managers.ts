@@ -1178,6 +1178,7 @@ export class MemoryManager {
     getPersona(key: string): Persona | undefined {
         return this.personas[key];
     }
+    installNativeStoryPilotPersona(){const key='aigf-sync-pilot-worldline1';this.personas[key]={name:'世界敘述者',conversationLabel:'古塔 · 同步試用',emoji:'🏰',gender:'female',description:'獨立同步測試故事',prompt:'You are the disembodied narrator of the tower exploration story.',greeting:'',avatarPrompt:'',avatarUrl:null};}
 
     async restorePrivateAvatars() {
         const avatars = await loadPersonaAvatars();
@@ -1306,6 +1307,7 @@ export class MemoryManager {
     // --- Chat History Methods ---
 
     getChatHistory(key: string): ChatMessage[] {
+        if(key==='aigf-sync-pilot-worldline1'&&!this.chatHistories[key]?.length)return this.chatHistories[key]||[];
         if (!this.chatHistories[key] || this.chatHistories[key].length === 0) {
             const persona = this.getPersona(key);
             this.chatHistories[key] = persona
@@ -1579,7 +1581,7 @@ export class MemoryManager {
     }
 
     /** Commit a validated reply with its stable ID, never append a second copy. */
-    persistVpsChatTurnReply(key: string, userMessageId: string, replyId: string, content: Content) {
+    persistVpsChatTurnReply(key: string, userMessageId: string, replyId: string, content: Content, createdAt=Date.now()) {
         const history = this.peekChatHistory(key);
         const userIndex = history.findIndex(message => message.id === userMessageId && message.role === 'user');
         const existingIndex = history.findIndex(message => message.id === replyId);
@@ -1593,7 +1595,7 @@ export class MemoryManager {
         if (userIndex < 0 || userIndex !== history.length - 1 || !content.text?.trim()) {
             throw new Error('TURN_HISTORY_CHANGED');
         }
-        const message: ChatMessage = { id: replyId, createdAt: Date.now(), role: 'model', content };
+        const message: ChatMessage = { id: replyId, createdAt, role: 'model', content };
         history.push(message);
         try {
             this.persistChatHistories(true, true);

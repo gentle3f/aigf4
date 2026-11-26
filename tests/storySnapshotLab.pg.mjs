@@ -1,3 +1,8 @@
+import 'fake-indexeddb/auto';
+import {MemoryManager} from '../managers.js';
+import {createDurableChatTurn} from '../durableChatTurn.js';
+import {createNativeStoryCheckpointBridge} from '../nativeStoryCheckpointBridge.js';
+import {digestVpsHistory} from '../vpsChatMode.js';
 import {PGlite} from '../tmp/sync-lab/node_modules/@electric-sql/pglite/dist/index.js';
 import {readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
@@ -95,5 +100,67 @@ try{
   const confirmed=await read();assert.equal(confirmed.snapshot.record.world.turnCount,1);assert.equal(confirmed.head.count,2);
   assert.deepEqual((await restoreHistory()).map(m=>m.id),[nextUser.id,resultId]);
  });
- console.log('WORLDLINE1_STORY_SQL_PASS '+passed+'/3');
+ await check('real native chat controller and MemoryManager sync user before VPS POST, then recover committed reply exactly once',async()=>{
+  const store=device(),remote=await read(),initial=await restoreHistory();
+  Object.defineProperty(globalThis,'localStorage',{configurable:true,value:store});
+  let manager=new MemoryManager();manager.setChatHistory(key,initial,true);
+  await restoreStorySnapshot(store,key,initial,remote.snapshot);
+  const u=row(20,2,'user','Native chat user'),jobId=row(21,0,'model','').message_id,replyId=row(22,0,'model','').message_id;
+  const calls=[];
+  const queue={submit:async id=>{calls.push('POST');assert.equal((await read()).head.count,3);return {job_id:id,status:'queued'};},get:async id=>{calls.push('GET');return {job_id:id,status:'done',result:{choices:[{message:{content:'旅人走入村落。'}}]}};}};
+  const make=()=>{
+   const bridge=createNativeStoryCheckpointBridge({key,site:'worldline1',storage:store,transport,deviceId:'native-test',lock:fn=>fn(),capture:k=>captureStorySnapshot(store,k,manager.peekChatHistory(k)),history:{
+    read:k=>manager.peekChatHistory(k),
+    persistUser:async t=>manager.persistVpsChatTurnUser(t.conversationKey,t.userMessageId),
+    persistReply:async(r,text)=>manager.persistVpsChatTurnReply(r.conversationKey,r.userMessageId,r.replyId,{text,worldlineStoryTurn:true}),
+    confirmReply:async r=>{manager.confirmVpsChatTurnMessage(r.conversationKey,r.replyId,'model');const s=await captureStorySnapshot(store,key,manager.peekChatHistory(key));const w=s.record.world;if(!w.chronicle.some(c=>c.sourceMessageId===r.replyId)){const last=manager.peekChatHistory(key).at(-1);store.setItem(WORLDLINE_SETTING_KEY,JSON.stringify(updateWorldlineRegistry(store.getItem(WORLDLINE_SETTING_KEY),key,recordWorldlineTurn(w,u.content.text,last.content.text,last.createdAt,r.replyId),last.createdAt)));}}
+   }});
+   const ids=[jobId,replyId];return {bridge,controller:createDurableChatTurn({storage:store,history:bridge.history,transport:queue,lock:fn=>fn(),newId:()=>ids.shift()})};
+  };
+  let {bridge,controller}=make();await bridge.beforeUser(u.message_id);
+  manager.setChatHistory(key,[...initial,{id:u.message_id,role:'user',createdAt:u.created_at_ms,content:u.content}],true);
+  const turn={conversationKey:key,personaKey:key,userMessageId:u.message_id,contextDigestVersion:2,contextDigest:await digestVpsHistory(manager.peekChatHistory(key),2),worldDigest:'a'.repeat(64)};
+  await controller.submit(turn,{model:'glm-5-3-flash-uncensored',messages:[{role:'user',content:'Native chat user'}]});
+  assert.deepEqual(calls,['POST']);
+  manager=new MemoryManager();({bridge,controller}=make());const pending=await controller.resume();
+  loseResponse=true;await assert.rejects(controller.apply(pending.receipt,pending.job,'旅人走入村落。'),/SIMULATED_LOST_RESPONSE/);loseResponse=false;
+  assert.ok(controller.pending());
+  manager=new MemoryManager();({bridge,controller}=make());assert.equal(await controller.reconcileApplied(),true);
+  assert.equal(controller.pending(),null);assert.deepEqual(calls,['POST','GET']);
+  const final=await read();assert.equal(final.head.count,4);assert.equal(final.snapshot.record.world.turnCount,2);assert.equal((await restoreHistory()).filter(m=>m.id===replyId).length,1);
+  assert.equal(writes,6);
+ });
+ await check('WL1 director preferences synchronize independently of message history',async()=>{
+ const local=device(),h=await restoreHistory(),before=await read();
+ await restoreStorySnapshot(local,key,h,before.snapshot);
+ const a=session(local,()=>h),base=await a.begin(key);
+ saveDirector(local,key,'preface','新導言',()=> 'preface-2');
+ saveDirector(local,key,'core','新文風',()=> 'core-2');
+ saveDirector(local,key,'next','下一輪',()=> 'next-2');
+ saveDirector(local,key,'pacing','新節奏',()=> 'pace-2');
+ assert.equal(await a.commit(base,{kind:'settings'}),'confirmed');
+ const after=await read();assert.equal(after.head.count,before.head.count);assert.equal(after.head.sha256,before.head.sha256);
+ const second=device();await restoreStorySnapshot(second,key,h,after.snapshot);
+ const director=(await captureStorySnapshot(second,key,h)).director;
+ assert.equal(director.preface.text,'新導言');assert.equal(director.core.text,'新文風');assert.equal(director.next.text,'下一輪');assert.equal(director.pacing.text,'新節奏');
+ await assert.rejects(a.commit(base,{kind:'settings'}),/BASELINE_CHANGED/);
+ });
+ await check('evidence-linked ledger-only checkpoint restores on second device; stale extraction cannot survive recall',async()=>{
+  const a=device(),b=device();let h=await restoreHistory(),other=h.slice();const prior=await read();
+  await restoreStorySnapshot(a,key,h,prior.snapshot);await restoreStorySnapshot(b,key,other,prior.snapshot);
+  const x=session(a,()=>h),y=session(b,()=>other),baseline=await x.begin(key),stale=await y.begin(key);
+  const latest=h.at(-1),sourceId=latest.id;
+  const batch=parseWorldExtraction(JSON.stringify({observations:[{sourceId,quote:'走入村落',kind:'location',subject:'旅人',key:'location',value:'村落',state:'established'}]}),[latest],1200);
+  a.setItem(WORLD_LEDGER_KEY,JSON.stringify(appendWorldBatches(a.getItem(WORLD_LEDGER_KEY),key,batch,h)));
+  assert.equal(await x.commit(baseline,{kind:'settings'}),'confirmed');
+  const after=await read();assert.equal(after.head.sha256,prior.head.sha256);assert.equal(after.head.count,prior.head.count);assert.equal(after.snapshot.ledger[sourceId].observations[0].value,'村落');
+  const fresh=device();await restoreStorySnapshot(fresh,key,h,after.snapshot);
+  assert.deepEqual((await captureStorySnapshot(fresh,key,h)).ledger,after.snapshot.ledger);
+  await assert.rejects(y.commit(stale,{kind:'settings'}),/BASELINE_CHANGED/);
+  const base=await x.begin(key);const user=h.at(-2);h=h.slice(0,-2);
+  assert.equal(await x.commit(base,{kind:'recall',userId:user.id}),'confirmed');
+  assert.equal((await read()).snapshot.ledger[sourceId],undefined);
+  await assert.rejects(x.commit(base,{kind:'settings'}),/BASELINE_CHANGED/);
+ });
+ console.log('WORLDLINE1_STORY_SQL_PASS '+passed+'/6');
 }catch(e){console.error('LAB_ERROR',e?.message,e?.code,e?.detail);process.exitCode=1;}finally{await db.close();}
