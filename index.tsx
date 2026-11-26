@@ -1,6 +1,6 @@
 import {normalizeHongKongTraditional} from './traditionalChinese.js';
 import {readDirector,formatDirector,consumeDirectorNext,type DirectorPreferences} from './worldlineDirector.js';
-import {editWorldline2Request,getSystemTexts,resolveWorldline2Parts,composeWorldline2Parts,saveWorldline2Variable,type Worldline2PromptParts} from './worldline2Prompt.js';
+import {editWorldline2Request,getSystemTexts,readFullPromptSettings,resolveWorldline2Parts,composeWorldline2Parts,saveWorldline2Variable,type Worldline2PromptParts} from './worldline2Prompt.js';
 
 import {
     CharacterPhotoProposal,
@@ -21,6 +21,7 @@ import {
     cleanAiResponse,
 } from "./managers.js";
 import { createDurableChatTurn, browserTurnLock, type TurnIdentity, type TurnReceipt } from './durableChatTurn.js';
+import {digestWorldlineContext,verifyWorldlineAppliedPrefix,commitWorldlineReply} from './durableWorldlineTurn.js';
 import { runDurableChatStage } from './vpsStageRunner.js';
 import { buildVpsWorkflowPayload, decodeVpsWorkflow } from './vpsWorkflow.js';
 import { createGroupCommit, digestGroupContext } from './durableGroupTurn.js';
@@ -1901,6 +1902,19 @@ const makeVpsGroupCommit = () => createGroupCommit({
     confirmScene: (id,jobId) => roomManager.confirmVpsSceneCommit(id,jobId),
     writeScene: (id,jobId,expected,scene) => roomManager.persistVpsSceneCommit(id,jobId,expected,scene),
 });
+const readVpsWorld=(key:string)=>{
+    const world=getWorldline(localStorage.getItem(WORLDLINE_SETTING_KEY),key);
+    return world&&!world.paused?world:null;
+};
+const digestVpsWorld=async(key:string,history=memoryManager.peekChatHistory(key))=>{
+    const world=readVpsWorld(key);
+    if(!world)return undefined;
+    const {fixedPrompt,variableOverride}=readFullPromptSettings(localStorage,key);
+    return digestWorldlineContext(world,projectWorld(localStorage.getItem(WORLD_LEDGER_KEY),key,history),{director:readDirector(localStorage,key),fixedPrompt,variableOverride});
+};
+const checkWorldlineTurnContext=async(t:TurnIdentity,history=memoryManager.peekChatHistory(t.conversationKey))=>{
+    if(await digestVpsWorld(t.conversationKey,history)!==t.worldDigest)throw Error('WORLDLINE_CONTEXT_CHANGED');
+};
 const makeVpsTurnController = (replyContent?: Content, groupScene?: GroupGenerationResult['scene']) => createDurableChatTurn({
     storage: localStorage,
     transport: createVpsChatTransport(),
@@ -1908,7 +1922,7 @@ const makeVpsTurnController = (replyContent?: Content, groupScene?: GroupGenerat
     history: {
         read: key => memoryManager.peekChatHistory(key),
         persistUser: async t => {
-            if(getActiveWorldline(t.conversationKey))throw Error('WORLDLINE_VPS_INTEGRATION_PENDING');
+            await checkWorldlineTurnContext(t);
             if (t.roomDigest) {
                 const room=roomManager.getRoom(t.conversationKey);
                 if (!room || await digestGroupContext(room,t.contextDigestVersion)!==t.roomDigest) throw Error('GROUP_CONTEXT_CHANGED');
@@ -1917,16 +1931,32 @@ const makeVpsTurnController = (replyContent?: Content, groupScene?: GroupGenerat
             if (t.contextDigest && await digestVpsHistory(memoryManager.peekChatHistory(t.conversationKey),t.contextDigestVersion) !== t.contextDigest) throw Error('TURN_HISTORY_CHANGED');
         },
         persistReply: async (r, text) => {
-            if(getActiveWorldline(r.conversationKey))throw Error('WORLDLINE_VPS_INTEGRATION_PENDING');
+            await checkWorldlineTurnContext(r);
             if (await digestVpsHistory(memoryManager.peekChatHistory(r.conversationKey),r.contextDigestVersion) !== r.contextDigest) throw Error('TURN_HISTORY_CHANGED');
             if (r.roomDigest) {
                 if(!groupScene)throw Error('GROUP_SCENE_RECEIPT_MISSING');
                 await makeVpsGroupCommit().persistReply(r,{...replyContent,text},groupScene);
-            } else memoryManager.persistVpsChatTurnReply(r.conversationKey, r.userMessageId, r.replyId, { ...replyContent, text });
+            } else memoryManager.persistVpsChatTurnReply(r.conversationKey, r.userMessageId, r.replyId, { ...replyContent, text,...(r.worldDigest?{worldlineStoryTurn:true,worldlineVpsDirectorNextId:readDirector(localStorage,r.conversationKey).next?.id}:{}) });
         },
         confirmReply: async r => {
             if(r.roomDigest)await makeVpsGroupCommit().confirm(r);
             else memoryManager.confirmVpsChatTurnMessage(r.conversationKey,r.replyId,'model');
+            if(r.worldDigest){
+                const world=readVpsWorld(r.conversationKey);
+                if(!world)throw Error('WORLDLINE_CONTEXT_CHANGED');
+                const history=memoryManager.peekChatHistory(r.conversationKey);
+                const exists=world.chronicle.some(row=>row.sourceMessageId===r.replyId);
+                const {userIndex:i,replyIndex:j}=await verifyWorldlineAppliedPrefix(history,r,exists);
+                if(!exists){
+                    await checkWorldlineTurnContext(r,history.slice(0,i+1));
+                    const next=commitWorldlineReply(world,r.replyId,history[i].content.text||'',history[j].content.text||'');
+                    setPersistedAppSetting(WORLDLINE_SETTING_KEY,JSON.stringify(updateWorldlineRegistry(localStorage.getItem(WORLDLINE_SETTING_KEY),r.conversationKey,next)));
+                    if(!readVpsWorld(r.conversationKey)?.chronicle.some(row=>row.sourceMessageId===r.replyId))throw Error('WORLDLINE_CHRONICLE_NOT_DURABLE');
+                }
+                const used=history[j].content.worldlineVpsDirectorNextId;
+                const director=readDirector(localStorage,r.conversationKey);
+                if(used&&director.next?.id===used)consumeDirectorNext(localStorage,r.conversationKey,director);
+            }
         },
     },
 });
@@ -1944,7 +1974,6 @@ const resumeVpsChatTurn = async (openConversation = false) => {
         const controller = makeVpsTurnController();
         const pending = controller.pending();
         if (!pending) return;
-        if(getActiveWorldline(pending.conversationKey))throw Error('WORLDLINE_VPS_INTEGRATION_PENDING');
         if (await controller.reconcileApplied()) {
             if (pending.roomDigest && currentRoom?.id===pending.conversationKey) {
                 const room=roomManager.getRoom(pending.conversationKey);
@@ -1954,6 +1983,7 @@ const resumeVpsChatTurn = async (openConversation = false) => {
                 chatContainer.replaceChildren(); resetRenderedChatHistoryWindow();
                 renderChatHistoryWindow(pending.conversationKey, memoryManager.peekChatHistory(pending.conversationKey));
             }
+            if(pending.worldDigest)void syncWorldLedger(pending.conversationKey,true).catch(error=>console.warn('World OS recovery extraction pending:',error));
             return;
         }
         if (currentConversationKey !== pending.conversationKey) {
@@ -1968,6 +1998,7 @@ const resumeVpsChatTurn = async (openConversation = false) => {
         const history = memoryManager.peekChatHistory(pending.conversationKey);
         const user = history.at(-1);
         if (user?.id !== pending.userMessageId || user.role !== 'user' || !user.content.text || await digestVpsHistory(history,pending.contextDigestVersion) !== pending.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+        await checkWorldlineTurnContext(pending);
         const request = beginChatRequest(pending.personaKey, currentPersona, 'character', pending.conversationKey);
         request.vpsTurn = { identity: pending, model: pending.model, receipt: pending };
         startChatPerformanceTurn();
@@ -6739,6 +6770,7 @@ const buildWorldlineRuntimeContext = (key:string,query:string,director?:Director
 type WorldSyncResult = {advanced:number;deferred:string[];issueCount:number};
 const worldLedgerJobs = new Map<string, Promise<WorldSyncResult>>();
 const syncWorldLedger = (key: string, recent = false, skipIds:readonly string[]=[]): Promise<WorldSyncResult> => {
+    if(pendingVpsTurn()?.conversationKey===key||(activeChatRequest?.conversationKey===key&&activeChatRequest.vpsTurn?.identity.worldDigest))return Promise.reject(Error('WORLDLINE_TURN_PENDING'));
     const running = worldLedgerJobs.get(key);
     if (running) return running;
     const job = (async () => {
@@ -6935,7 +6967,7 @@ const runConversationGeneration = async (
                     });
                 }
                 messages.push({ role: 'user', content: latestUserContent });
-                if(activeWorld){const edited=await editWorldline2Request(request.conversationKey,messages,request.controller.signal);messages.splice(0,messages.length,...edited);}
+                if(activeWorld&&!request.vpsTurn?.receipt){const edited=await editWorldline2Request(request.conversationKey,messages,request.controller.signal);messages.splice(0,messages.length,...edited);}
                 const generationPhase = index === 0 && !isRepairAttempt
                     ? 'generation:primary'
                     : isRepairAttempt ? 'generation:repair' : 'generation:fallback';
@@ -6979,6 +7011,7 @@ const runConversationGeneration = async (
                         turn.receipt = recovered.receipt;
                         turn.job = recovered.job;
                     } else {
+                        if(turn.identity.worldDigest&&JSON.stringify(request.director||{})!==JSON.stringify(readDirector(localStorage,request.conversationKey)))throw Error('WORLDLINE_CONTEXT_CHANGED');
                         const reviewContext = buildSingleReviewContext(request, latestUserMessage);
                         const plan = buildVpsWorkflowPayload(generationOptions, {
                             editorPrompt: STRICT_REVIEW_EDITOR_PROMPT,
@@ -7579,7 +7612,7 @@ const runRoomConversationGeneration = async (
                 }
                 messages.push(...recentMessages);
                 messages.push({ role: 'user', content: latestUserContent });
-                if(world){const edited=await editWorldline2Request(request.conversationKey,messages,request.controller.signal);messages.splice(0,messages.length,...edited);}
+                if(world&&!request.vpsTurn?.receipt){const edited=await editWorldline2Request(request.conversationKey,messages,request.controller.signal);messages.splice(0,messages.length,...edited);}
                 markChatPerformance('generation:prompt-build', preparationStartedAt);
 
                 const generationStartedAt = performance.now();
@@ -9088,7 +9121,7 @@ const getResponse = async (
                 return;
             }
         } else memoryManager.addMessage(request.conversationKey, 'model', botContent);
-        if(request.mode==='character'&&request.director?.next){
+        if(request.mode==='character'&&!request.vpsTurn?.identity.worldDigest&&request.director?.next){
             try{consumeDirectorNext(localStorage,request.conversationKey,request.director);}
             catch(error){console.warn('Director preference consumption failed',error);}
         }
@@ -9096,7 +9129,7 @@ const getResponse = async (
             const latest=memoryManager.peekChatHistory(request.conversationKey).at(-1);
             recordWorldResearch({conversationKey:request.conversationKey,requestId:request.id,stage:'final-persist',sourceIds:latest?.id?[latest.id]:[]},{kind:'final-story',reply:researchText(botContent.text||''),elapsedMs:Math.round(performance.now()-request.startedAt)});
         }
-        if (request.mode === 'character') {
+        if (request.mode === 'character'&&!request.vpsTurn?.identity.worldDigest) {
             try {
                 const world = getActiveWorldline(request.conversationKey,false);
                 if (world) {
@@ -10179,14 +10212,17 @@ const sendMessage = async ({
     request.attachments = attachmentBundle.attachments;
     request.attachmentParts = attachmentBundle.contentParts;
     const vpsModel = selectedVpsChatModel();
-    if (vpsModel && !getActiveWorldline(conversationKey) && userMessageMeta?.id && isVpsChatEligible({
+    if (vpsModel && (!getActiveWorldline(conversationKey)||!request.room) && userMessageMeta?.id && isVpsChatEligible({
         room: Boolean(request.room), assistant: assistantMode, special: characterPhotoRequest || isGodModeActive,
         attachments: attachmentBundle.attachments.length, personaKey,
     })) {
         try {
             if (!navigator.locks || !crypto.subtle) throw Error('VPS_BROWSER_SUPPORT_REQUIRED');
+            if(worldLedgerJobs.has(conversationKey))await worldLedgerJobs.get(conversationKey);
+            if(!isActiveChatRequest(request)||request.controller.signal.aborted)throw Error('TURN_CANCELLED');
+            const worldDigest=await digestVpsWorld(conversationKey);
             request.vpsTurn = {
-                identity: { conversationKey, personaKey, userMessageId: userMessageMeta.id, contextDigestVersion:CURRENT_CONTEXT_DIGEST_VERSION,contextDigest: await digestVpsHistory(memoryManager.peekChatHistory(conversationKey),CURRENT_CONTEXT_DIGEST_VERSION),
+                identity: { conversationKey, personaKey, userMessageId: userMessageMeta.id,...(worldDigest?{worldDigest}:{}), contextDigestVersion:CURRENT_CONTEXT_DIGEST_VERSION,contextDigest: await digestVpsHistory(memoryManager.peekChatHistory(conversationKey),CURRENT_CONTEXT_DIGEST_VERSION),
                     ...(request.room?{roomDigest:await digestGroupContext(roomManager.getRoom(conversationKey)!,CURRENT_CONTEXT_DIGEST_VERSION),roomMemberId:request.roomMemberId}:{}),
                 },
                 model: vpsModel,

@@ -35,3 +35,15 @@ test('workflow GET rejects inconsistent sequence and joined output',async()=>{fo
 test('CC workflow proxy validates language stage and preserves only visible polish',async()=>{const cc={...wf,workflow_version:2,polish:{...payload.request,messages:[{role:'system',content:'Proofread Cantonese fixture'},{role:'user',content:'__AIGF_CANDIDATE_V1__'}]}};const a=await call({body:{job_id:id,request:cc}});assert.equal(a.response.code,202);for(const polish of [{...cc.polish,model:'qwen-3-6-plus'},{...cc.polish,messages:[{role:'user',content:'wrong'}]}]){const r=await call({body:{job_id:id,request:{...cc,polish}}});assert.equal(r.response.code,400);assert.equal(r.calls.length,0);}const d=structuredClone(workResult);d.workflow.version=2;d.workflow.polished='Hello friend';d.workflow.stages.splice(2,0,{phase:'cc-polish',raw:'HIDDEN'});const r=await call({method:'GET',upstream:new Response(JSON.stringify({job_id:id,status:'done',result:d}))});assert.equal(r.response.code,200);assert.equal(r.response.data.result.workflow.polished,'Hello friend');assert.ok(!JSON.stringify(r.response.data).includes('HIDDEN'));});
 
 test('group workflow v3 proxy forwards one plan and rejects fragmented result',async()=>{const request={...wf,workflow_version:3};const r=await call({body:{job_id:id,request}});assert.equal(r.response.code,202);assert.deepEqual(JSON.parse(r.calls[0].body).request,request);const d=structuredClone(workResult);d.workflow.version=3;d.workflow.parts=['First'];d.choices[0].message.content='First';d.workflow.stages.splice(1,1);const out=await call({method:'GET',upstream:new Response(JSON.stringify({job_id:id,status:'done',result:d}))});assert.equal(out.response.code,200);const bad=structuredClone(workResult);bad.workflow.version=3;const rejected=await call({method:'GET',upstream:new Response(JSON.stringify({job_id:id,status:'done',result:bad}))});assert.equal(rejected.response.code,502);});
+
+test('worldline receipt forwards fingerprint but rejects malformed or legacy-version digest',async()=>{
+ const config={...env,APP_SESSION_SECRET:'synthetic-session-secret'};
+ const receipt={jobId:id,replyId:'12345678-1234-4234-8234-123456789abe',userMessageId:'12345678-1234-4234-8234-123456789abd',conversationKey:'world-a',personaKey:'world-a',model:wf.primary.model,createdAt:12345,workflowVersion:1,contextDigestVersion:2,contextDigest:'a'.repeat(64),worldDigest:'b'.repeat(64)};
+ const ok=await call({config,body:{job_id:id,request:wf,recovery_receipt:receipt}});
+ assert.equal(ok.response.code,202);
+ assert.equal(JSON.parse(ok.calls[0].body).recovery.receipt.worldDigest,receipt.worldDigest);
+ for(const patch of [{worldDigest:'invalid'},{contextDigestVersion:1}]){
+  const bad=await call({config,body:{job_id:id,request:wf,recovery_receipt:{...receipt,...patch}}});
+  assert.equal(bad.response.code,400);assert.equal(bad.calls.length,0);
+ }
+});
