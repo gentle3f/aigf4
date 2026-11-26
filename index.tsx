@@ -1,4 +1,5 @@
 import {readDirector,formatDirector,consumeDirectorNext,type DirectorPreferences} from './worldlineDirector.js';
+import {editWorldline2Request,getSystemTexts} from './worldline2Prompt.js';
 
 import {
     CharacterPhotoProposal,
@@ -6831,6 +6832,7 @@ const runConversationGeneration = async (
                     });
                 }
                 messages.push({ role: 'user', content: latestUserContent });
+                if(activeWorld){const edited=await editWorldline2Request(request.conversationKey,messages,request.controller.signal);messages.splice(0,messages.length,...edited);}
                 const generationPhase = index === 0 && !isRepairAttempt
                     ? 'generation:primary'
                     : isRepairAttempt ? 'generation:repair' : 'generation:fallback';
@@ -6842,7 +6844,7 @@ const runConversationGeneration = async (
                     { repair: isRepairAttempt, fallback: index > 0 },
                 );
                 markPromptComponentAccounting(generationPhase, [
-                    ...requestPromptComponents,
+                    ...(activeWorld?[promptComponent('worldline2-actual-system',getSystemTexts(messages)[0]??''),...requestPromptComponents.filter(c=>['recent-conversation-history','latest-user-and-attachments','rehydrated-large-json-from-attachment'].includes(c.name))]:requestPromptComponents),
                     ...(isRepairAttempt ? [{
                         name: 'repair-instructions',
                         chars: getVeniceMessageAggregate([messages[1]!]),
@@ -7406,6 +7408,7 @@ const runRoomConversationGeneration = async (
                 }
                 messages.push(...recentMessages);
                 messages.push({ role: 'user', content: latestUserContent });
+                if(world){const edited=await editWorldline2Request(request.conversationKey,messages,request.controller.signal);messages.splice(0,messages.length,...edited);}
                 markChatPerformance('generation:prompt-build', preparationStartedAt);
 
                 const generationStartedAt = performance.now();
@@ -7418,7 +7421,7 @@ const runRoomConversationGeneration = async (
                     { repair: isRetry, fallback: modelIndex > 0 },
                 );
                 markPromptComponentAccounting(isRetry ? 'generation:repair' : 'generation:primary', [
-                    ...promptComponents,
+                    ...(world?[promptComponent('worldline2-actual-system',getSystemTexts(messages)[0]??''),...promptComponents.filter(c=>['recent-conversation-history','latest-user-and-attachments'].includes(c.name))]:promptComponents),
                     ...(isRetry ? [{
                         name: 'repair-instructions',
                         chars: getVeniceMessageAggregate([messages[1]!]),
@@ -10575,7 +10578,7 @@ const setupEventListeners = () => {
         const key=currentConversationKey;
         if(!key||!getActiveWorldline(key))return;
         const {openWorldlineDirector}=await import('./features/worldlineDirectorUi.js');
-        if(currentConversationKey===key)openWorldlineDirector(key);
+        if(currentConversationKey===key)openWorldlineDirector(key,()=>buildWorldlineRuntimeContext(key,'',readDirector(localStorage,key)));
     });
     chatSearchBtn.addEventListener('click', openChatSearch);
     homeSearchToggle.addEventListener('click', () => {
