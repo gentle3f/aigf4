@@ -1,0 +1,7 @@
+# G8I V2 client checkpoint laboratory (2026-11-27)
+Base: AIGF common recovery 4701488. No production RPC or UI wiring.
+Run:
+- npm install --prefix tmp/sync-lab --no-audit --no-fund --ignore-scripts @electric-sql/pglite@0.6.0
+- npm exec -- tsx --test tests/cloudCheckpointV2.test.ts
+- npm exec -- tsx tests/cloudCheckpointV2.pg.mjs
+V2 reads head, paginates ordered history, verifies head again, compares exact projected local prefix and appends only new text rows with server revision/count/digest CAS. Stores a local digest-only receipt before RPC. Lost response is resolved by consistent read, never automatic append retry. Second-device validation compares exact restored history and stable IDs. Does not hash PostgreSQL JSONB formatting in JS; head-before/after consistency requires cooperating writers and cannot rule out legacy ABA writes. Tests: six TS, seven actual isolated PGlite SQL checks including two simulated devices on 5536+ row history (22999672 baseline bytes). No actual phone or second browser, no Supabase migration, no VPS/model calls, no production writes. V2 preserves state payload; does not yet synchronize Worldline settings/director preferences, media, new conversations, or recall/deletions. Pending conflicts require explicit future resolution. The production legacy writers must be fenced before enabling RPC; no changes to other site branches. Next: isolated authenticated transport and state/recall convergence, then integrate submit/apply boundaries and actual device acceptance.
