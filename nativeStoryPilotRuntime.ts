@@ -67,7 +67,7 @@ export function createNativeStoryPilot(deps:{read:()=>ChatMessage[];write:(rows:
   catch(e){if(!viewBridge.session.pending()){for(let i=0;i<keys.length;i++){if(before[i]===null)localStorage.removeItem(keys[i]);else localStorage.setItem(keys[i],before[i]!);}}throw e;}
   await markConfirmed();
  };
- return {createBridge,refresh,beginSnapshotUpdate,commitSnapshotUpdate,saveSettings:async(mutate:()=>void)=>commitSnapshotUpdate(await beginSnapshotUpdate(),mutate),signIn:async(email:string,password:string)=>{await remote.signIn(email,password);await remote.initialize(site);},beforeUser:(id:string)=>viewBridge.beforeUser(id),recall:async(id:string,mutate:()=>void)=>{
+ return {createBridge,refresh,getMedia:remote.getMedia,beginSnapshotUpdate,commitSnapshotUpdate,saveSettings:async(mutate:()=>void)=>commitSnapshotUpdate(await beginSnapshotUpdate(),mutate),signIn:async(email:string,password:string)=>{await remote.signIn(email,password);await remote.initialize(site);},beforeUser:(id:string)=>viewBridge.beforeUser(id),recall:async(id:string,mutate:()=>void)=>{
   const b=await viewBridge.session.begin(key);
   const i=b.rows.findIndex(r=>r.message_id===id&&r.role==='user');if(i<0||b.rows.slice(i+1).some(r=>r.role==='user'))throw Error('NATIVE_SYNC_RECALL_LATEST_ONLY');
   mutate();

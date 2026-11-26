@@ -11328,6 +11328,8 @@ const setupEventListeners = () => {
             syncPilot.style.cssText='color:#171717;background:#fff;padding:4px 8px;border-radius:4px';
             syncPilot.onclick=()=>{toolsDialog.close();openNativeStoryPilot();};
             controls.append(syncPilot);
+            const mediaPilot=document.createElement('button');mediaPilot.type='button';mediaPilot.textContent='媒體同步試用（新生成圖片及影片）';
+            mediaPilot.onclick=()=>{if(!nativeStoryPilot){alert('請先登入跨裝置同步測試故事。');return;}if(!confirm('啟用本次登入期間新生成的 Studio 圖片及影片同步至獨立測試資料庫？不會批量上載原有相簿。'))return;mediaPilot.disabled=true;void import('./pilotStudioMedia.js').then(m=>m.enablePilotStudioMedia(nativeStoryPilot!.getMedia())).then(r=>alert('媒體同步已啟用；已核對雲端媒體 '+r.restored+' 項。')).catch(e=>alert('媒體同步未完成：'+(e instanceof Error?e.message:'UNKNOWN'))).finally(()=>mediaPilot.disabled=false);};controls.append(mediaPilot);
         }
         const closeTools=document.createElement('button');closeTools.type='button';closeTools.textContent='關閉';closeTools.onclick=()=>toolsDialog.close();controls.append(closeTools);
         controls.querySelectorAll('button').forEach(b=>{b.style.cssText='text-align:left;padding:9px 12px;border:1px solid #d9d5ce;background:#f7f6f3;color:#252321;border-radius:8px;font-size:13px;cursor:pointer';});
