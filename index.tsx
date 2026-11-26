@@ -6622,11 +6622,11 @@ const getWardrobeParticipantsForRequest = (
     ])).map(name => ({ key: name, label: name }));
 };
 
-const getActiveWorldline = (conversationKey: string) => {
+const getActiveWorldline = (conversationKey: string,repair=true) => {
     try {
         const world = getWorldline(localStorage.getItem(WORLDLINE_SETTING_KEY), conversationKey);
         if(!world||world.paused)return null;
-        if(!memoryManager.hasChatHistory(conversationKey))return world;
+        if(!repair||!memoryManager.hasChatHistory(conversationKey))return world;
         const repaired=reconcileWorldlineChronicle(world,memoryManager.peekChatHistory(conversationKey));
         if(repaired!==world){
             try{
@@ -8844,18 +8844,19 @@ const getResponse = async (
             markChatPerformance('response:group-scene-persist', groupScenePersistStartedAt);
         }
         const persistStartedAt = performance.now();
+        if(request.mode==='character')botContent.worldlineStoryTurn=Boolean(getActiveWorldline(request.conversationKey));
         memoryManager.addMessage(request.conversationKey, 'model', botContent);
         if(request.mode==='character'&&request.director?.next){
             try{consumeDirectorNext(localStorage,request.conversationKey,request.director);}
             catch(error){console.warn('Director preference consumption failed',error);}
         }
-        if(getActiveWorldline(request.conversationKey)){
+        if(getActiveWorldline(request.conversationKey,false)){
             const latest=memoryManager.peekChatHistory(request.conversationKey).at(-1);
             recordWorldResearch({conversationKey:request.conversationKey,requestId:request.id,stage:'final-persist',sourceIds:latest?.id?[latest.id]:[]},{kind:'final-story',reply:researchText(botContent.text||''),elapsedMs:Math.round(performance.now()-request.startedAt)});
         }
         if (request.mode === 'character') {
             try {
-                const world = getActiveWorldline(request.conversationKey);
+                const world = getActiveWorldline(request.conversationKey,false);
                 if (world) {
                     const next = recordWorldlineTurn(world, triggeringMessage, botContent.text || '',Date.now(),memoryManager.peekChatHistory(request.conversationKey).at(-1)?.id);
                     const registry = updateWorldlineRegistry(

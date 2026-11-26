@@ -303,6 +303,8 @@ export interface ChatContextBridge {
 }
 
 export interface Content {
+    /** Whether this accepted reply advanced an active Worldline story. */
+    worldlineStoryTurn?: boolean;
     /** UTF-8 text file contents for later Venice AI follow-ups; never rendered as visible user text. */
     assistantFileContext?: string;
     previousVersions?: Content[];

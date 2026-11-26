@@ -39,3 +39,32 @@ test('recall action and runtime reconciliation are wired to the active conversat
  assert.match(actions,/saveWorldline2Variable\(localStorage,conversationKey,restored\.turnCount,undefined\)/);
  assert.match(index,/reconcileWorldlineChronicle\(world,memoryManager\.peekChatHistory\(conversationKey\)\)/);
 });
+
+test('repairs 196 recorded turns to 192 retained story turns even when old recalled entries are outside the chronicle window',()=>{
+ let w=initial();const history:ReturnType<typeof msg>[]=[];
+ for(let i=1;i<=192;i++){
+  const u=msg('u'+i,'user',i===1?'【世界線開局】\n開始故事':'玩家行動 '+i);
+  const a=msg('a'+i,'model','有效故事回覆 '+i);
+  history.push(u,a);
+  w=recordWorldlineTurn(w,u.content.text,a.content.text,2000+i,a.id);
+  if([20,50,80,120].includes(i))w=recordWorldlineTurn(w,'已收回','已收回回覆 '+i,3000+i,'deleted'+i);
+ }
+ assert.equal(w.turnCount,196);
+ assert.equal(w.chronicle.some(x=>x.sourceMessageId?.startsWith('deleted')),false);
+ const restored=reconcileWorldlineChronicle(w,history,4000);
+ assert.equal(restored.turnCount,192);
+ assert.equal(restored.chronicle.at(-1)?.turn,192);
+ assert.equal(restored.chronicle.at(-1)?.sourceMessageId,'a192');
+ assert.match(buildWorldlineVariablePrompt(restored),/game turn: 192/);
+ assert.equal(reconcileWorldlineChronicle(restored,history),restored);
+ const newUser=msg('u193','user','新行動'),newReply=msg('a193','model','新回覆');
+ const next=recordWorldlineTurn(restored,newUser.content.text,newReply.content.text,4001,newReply.id);
+ assert.equal(reconcileWorldlineChronicle(next,[...history,newUser,newReply]).turnCount,193);
+});
+test('full reconstruction skips pre-opening chat, photos, and explicitly non-story messages',()=>{
+ const w={...world(),turnCount:10};
+ const history=[msg('pre','model','開局前對話'),msg('start','user','【世界線開局】\n開始故事'),a1,{...a2,content:{...a2.content,worldlineStoryTurn:false}},{...a2,id:'photo',content:{...a2.content,imageAssetId:'asset'}},u2,{...a2,content:{...a2.content,worldlineStoryTurn:true}}];
+ const repaired=reconcileWorldlineChronicle(w,history);
+ assert.equal(repaired.turnCount,2);
+ assert.deepEqual(repaired.chronicle.map(x=>x.sourceMessageId),['a1','a2']);
+});

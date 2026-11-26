@@ -205,9 +205,34 @@ export const recordWorldlineTurn=(world:Worldline,userInput:string,modelText:str
             outcome:clean(modelText,270),turn,...(sourceMessageId?{sourceMessageId}:{}),
         }].slice(-14)});
 };
-type WorldlineHistoryMessage={id?:string;createdAt?:number;role:string;content:{text?:string}};
+type WorldlineHistoryMessage={id?:string;createdAt?:number;role:string;content:{text?:string;worldlineStoryTurn?:boolean;photoProposal?:unknown;imageAssetId?:string;imageUrl?:string;imageGeneration?:unknown}};
+/** Only reconstruct a complete timeline when the actual opening is retained. */
+export const rebuildWorldlineChronicleFromOpening=(world:Worldline,history:readonly WorldlineHistoryMessage[]):WorldlineChronicle[]|null=>{
+    let start=-1;
+    for(let i=history.length-1;i>=0;i--){
+        const m=history[i];
+        if(m.role==='user'&&m.content.text?.startsWith('【世界線開局】')&&(!m.createdAt||m.createdAt>=world.createdAt-1000)){start=i;break;}
+    }
+    if(start<0)return null;
+    let input='';
+    const entries:WorldlineChronicle[]=[];
+    for(const m of history.slice(start)){
+        if(m.role==='user'){input=clean(m.content.text,170);continue;}
+        if(m.role!=='model'||m.content.worldlineStoryTurn===false||m.content.photoProposal||m.content.imageAssetId||m.content.imageUrl||m.content.imageGeneration||!m.content.text?.trim())continue;
+        const turn=entries.length+1;
+        entries.push({id:'turn-'+turn,turn,input,outcome:clean(m.content.text,270),...(m.id?{sourceMessageId:m.id}:{})});
+    }
+    return entries;
+};
 /** Retained chat is authoritative for generated chronicle entries. Explicit world-panel edits remain independent. */
 export const reconcileWorldlineChronicle=(world:Worldline,history:readonly WorldlineHistoryMessage[],now=Date.now()):Worldline=>{
+    const complete=rebuildWorldlineChronicleFromOpening(world,history);
+    // Do not inflate a recorded count from ambiguous legacy messages (e.g. old paused chat).
+    if(complete&&complete.length<=world.turnCount){
+        const chronicle=complete.slice(-14);
+        if(complete.length===world.turnCount&&chronicle.length===world.chronicle.length&&chronicle.every((entry,i)=>{const old=world.chronicle[i];return entry.id===old.id&&entry.turn===old.turn&&entry.input===old.input&&entry.outcome===old.outcome&&entry.sourceMessageId===old.sourceMessageId;}))return world;
+        return normalizeWorldline({...world,turnCount:complete.length,chronicle,updatedAt:now});
+    }
     const replies=history.filter(m=>m.role==='model');
     let cursor=replies.length-1;
     const surviving:WorldlineChronicle[]=[];
