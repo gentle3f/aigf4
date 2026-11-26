@@ -8,6 +8,7 @@ export type PersistedVideoJob = {
     modelName: string;
     queueId: string;
     submissionId?: string;
+    autonomous?: true;
     downloadUrl?: string;
     prompt: string;
     mode: PersistedVideoMode;
@@ -42,6 +43,7 @@ export const sanitizePersistedVideoJob = (input: unknown): PersistedVideoJob | n
         || typeof value.queuedAt !== 'number'
         || !Number.isFinite(value.queuedAt)
         || value.queuedAt <= 0
+        || (value.autonomous!==undefined&&(value.autonomous!==true||!value.submissionId))
         || !validSubmission
         || !validMode
         || !validDownloadUrl
@@ -55,6 +57,7 @@ export const sanitizePersistedVideoJob = (input: unknown): PersistedVideoJob | n
             : value.model,
         queueId: value.queueId,
         ...(value.submissionId?{submissionId:value.submissionId}:{}),
+        ...(value.autonomous?{autonomous:true as const}:{}),
         downloadUrl: value.downloadUrl,
         prompt: value.prompt,
         mode: value.mode,

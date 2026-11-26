@@ -7,7 +7,7 @@ const IMAGE_PREFIX='studio-image-v1-';
 const VIDEO_PREFIX='studio-video-v1-';
 export const imageAssetId=(jobId:string)=>IMAGE_PREFIX+jobId;
 export function videoAssetId(job:PersistedVideoJob){
- if(job.submissionId||!/^[a-zA-Z0-9_-]{1,200}$/.test(job.queueId)||!/^[a-zA-Z0-9._:-]{1,100}$/.test(job.model))throw Error('STUDIO_VIDEO_ID_INVALID');
+ if((job.submissionId&&!(job.autonomous===true&&job.submissionId===job.queueId&&job.model==='wan-2-7-enhanced-text-to-video'&&job.mode==='text-to-video'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(job.queueId)))||!/^[a-zA-Z0-9_-]{1,200}$/.test(job.queueId)||!/^[a-zA-Z0-9._:-]{1,100}$/.test(job.model))throw Error('STUDIO_VIDEO_ID_INVALID');
  return VIDEO_PREFIX+Array.from(new TextEncoder().encode(job.model),b=>b.toString(16).padStart(2,'0')).join('')+'-'+job.queueId;
 }
 export type StudioImageMetadata={version:1;modelName:string;aspectRatio?:string;resolution?:string;seed?:number};

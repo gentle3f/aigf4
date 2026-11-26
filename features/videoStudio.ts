@@ -1,3 +1,4 @@
+import {retrieveAutonomousStudioVideo} from '../vpsAutoVideoStudio.js';
 import {
     generateVeniceText,
     VENICE_ASSISTANT_MODEL,
@@ -1347,9 +1348,31 @@ const finishSavedStudioVideo=async(job:PersistedVideoJob,asset:StoredChatAttachm
         setVideoProgressState('completed');
         videoStudioStatus.textContent='影片已保存至本機媒體庫，可重新開啟工作室播放。';
     });
-    void completeVeniceVideo(job.model,job.queueId).catch(()=>console.warn('Unable to clean up completed Venice video media.'));
+    if(!job.autonomous)void completeVeniceVideo(job.model,job.queueId).catch(()=>console.warn('Unable to clean up completed Venice video media.'));
 };
 const pollPersistedVideoJob = async (job: PersistedVideoJob, controller: AbortController) => {
+    if(job.autonomous){
+        if(!VPS_CHAT_BUILD||!navigator.locks)throw Error('VPS_VIDEO_WEB_LOCKS_REQUIRED');
+        const existing=await getSavedStudioVideo(job);
+        if(existing){await finishSavedStudioVideo(job,existing,controller);return;}
+        setVideoProgressState('generating');
+        const deadline=Date.now()+VIDEO_POLL_TIMEOUT_MS;
+        while(Date.now()<deadline){
+            if(controller.signal.aborted)throw new DOMException('Aborted','AbortError');
+            const blob=await retrieveAutonomousStudioVideo(job,controller.signal);
+            if(blob){
+                const asset=await navigator.locks.request('aigf-vps-video-submit-v1',async()=>{
+                    const receipt=readPersistedVideoJobFromStorage();
+                    if(!receipt?.autonomous||receipt.submissionId!==job.submissionId||controller.signal.aborted)throw Error('VPS_VIDEO_RECEIPT_CHANGED');
+                    return persistStudioVideo(job,blob);
+                });
+                await finishSavedStudioVideo(job,asset,controller);return;
+            }
+            videoStudioStatus.textContent='VPS 自主生成及保存中；可關閉手機，重新開啟後取回。';
+            await waitForVideoPoll(controller.signal);
+        }
+        throw Error('VPS 仍在處理，原有任務已保存。');
+    }
     if(job.submissionId){
         if(!VPS_CHAT_BUILD)throw Error('請在 VPS 測試版恢復影片提交。');
         const transport=createVpsVideoSubmission();
@@ -1544,6 +1567,7 @@ const runVideoGeneration = async () => {
             if(!navigator.locks)throw Error('VPS_VIDEO_WEB_LOCKS_REQUIRED');
             const job=await submitDurableVideo({
                 options:queueOptions,modelName:model.name,
+                autonomous:queueOptions.duration==='5s'&&queueOptions.resolution==='720p',
                 storage:{read:readPersistedVideoJobFromStorage,write:writePersistedVideoJobToStorage},
                 lock:async work=>await navigator.locks.request('aigf-vps-video-submit-v1',work),
                 transport:createVpsVideoSubmission(),
