@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {applySystemTexts,getSystemTexts,readFullPromptSettings,writeFullPromptSettings,resolveWorldline2Context,saveWorldline2Context} from '../worldline2Prompt.js';
+import {applySystemTexts,getSystemTexts,readFullPromptSettings,writeFullPromptSettings,resolveWorldline2Parts,saveWorldline2Fixed,saveWorldline2Variable,composeWorldline2Parts} from '../worldline2Prompt.js';
 import type {VeniceMessage} from '../venice.js';
 test('complete system text including retry is editable; no user message is changed',()=>{
  const messages:VeniceMessage[]=[{role:'system',content:'Default instructions'},{role:'system',content:'Retry instructions'},{role:'user',content:'Continue the story'}];
@@ -25,25 +25,32 @@ test('single and group generation use the actual edited request before provider 
  assert.equal((s.match(/messages\.splice\(0,messages\.length,\.\.\.edited\)/g)||[]).length,2);
 });
 
-test('bottom worldline prompt can be saved, completely cleared and restored',()=>{
+test('fixed prompt edits persist while variable context follows subsequent turns',()=>{
  const values=new Map<string,string>();
  const store={getItem:(k:string)=>values.get(k)??null,setItem:(k:string,v:string)=>{values.set(k,v)},removeItem:(k:string)=>{values.delete(k)}};
- const original='Current world and memory';
- writeFullPromptSettings(store,'a',{review:false,saved:'Old full system snapshot'});
- saveWorldline2Context(store,'a','User-edited world context');
- assert.equal(resolveWorldline2Context(store,'a',original),'User-edited world context');
- assert.equal(readFullPromptSettings(store,'a').saved,undefined);
- assert.equal(readFullPromptSettings(store,'a').review,false);
- assert.equal(resolveWorldline2Context(store,'b',original),original);
- saveWorldline2Context(store,'a','');
- assert.equal(resolveWorldline2Context(store,'a',original),'');
- saveWorldline2Context(store,'a',undefined);
- assert.equal(resolveWorldline2Context(store,'a',original),original);
+ const initial={fixed:'Default writing rules',variable:'Scene one',turn:1};
+ writeFullPromptSettings(store,'a',{review:false,saved:'Old full system snapshot',worldContext:'Old world snapshot'});
+ saveWorldline2Fixed(store,'a','Custom writing rules');
+ saveWorldline2Variable(store,'a',1,'Edited scene');
+ assert.deepEqual(resolveWorldline2Parts(store,'a',initial),{fixed:'Custom writing rules',variable:'Edited scene',turn:1});
+ const next={...initial,variable:'Scene two and new memories',turn:2};
+ assert.equal(composeWorldline2Parts(resolveWorldline2Parts(store,'a',next)),'Custom writing rules\n\nScene two and new memories');
+ assert.deepEqual(resolveWorldline2Parts(store,'b',next),next);
+ assert.equal(readFullPromptSettings(store,'a').saved,'Old full system snapshot');
+ assert.equal(readFullPromptSettings(store,'a').worldContext,'Old world snapshot');
+ saveWorldline2Fixed(store,'a','');
+ assert.equal(resolveWorldline2Parts(store,'a',next).fixed,'');
+ saveWorldline2Fixed(store,'a',undefined);
+ saveWorldline2Variable(store,'a',2,'');
+ assert.equal(resolveWorldline2Parts(store,'a',next).variable,'');
+ saveWorldline2Variable(store,'a',2,undefined);
+ assert.deepEqual(resolveWorldline2Parts(store,'a',next),next);
 });
-test('bottom worldline editor saves actual generated context override',()=>{
+test('director settings wire editable fixed and per-turn variable sections to generation',()=>{
  const ui=readFileSync(new URL('../features/worldlineDirectorUi.ts',import.meta.url),'utf8');
  const index=readFileSync(new URL('../index.tsx',import.meta.url),'utf8');
- assert.doesNotMatch(ui,/preview\.readOnly\s*=\s*true/);
- assert.match(ui,/saveWorldline2Context\(localStorage,key,preview\.value\)/);
- assert.match(index,/resolveWorldline2Context\(localStorage,key,generated\)/);
+ assert.doesNotMatch(ui,/\.readOnly\s*=\s*true/);
+ assert.match(ui,/saveWorldline2Fixed\(localStorage,key,value\)/);
+ assert.match(ui,/saveWorldline2Variable\(localStorage,key,previewContext\(\)\.turn,value\)/);
+ assert.match(index,/resolveWorldline2Parts\(localStorage,key,generated\)/);
 });

@@ -209,11 +209,25 @@ const genreNames:Record<WorldlineGenre,string>={
     rebirth:'重生',apocalypse:'末世／科幻',fantasy:'奇幻冒險',custom:'自訂世界',
 };
 export const worldlineGenreLabel=(genre:WorldlineGenre)=>genreNames[genre];
-export const buildWorldlinePrompt=(world:Worldline):string=>{
+export const WORLDLINE_FIXED_HEADER='AIGF WORLDLINE — PERSISTENT INTERACTIVE STORY MODE (fictional world, not real-world news):';
+export const WORLDLINE_FIXED_CONTRACT=[
+        'WORLD DIRECTOR CONTRACT:',
+        '- This is an ongoing novel-like playable reality, NOT a one-off surprise card, rigid choice menu, or quest checklist. Begin inside a concrete scene and let it evolve across many turns.',
+        '- The world exists beyond the player: factions move, NPCs pursue separate aims, secrets have owners, alliances change and actions have irreversible consequences when established.',
+        '- Follow the latest player action first. Never silently act or consent on the player’s behalf. Offer natural openings, not compulsory numbered options.',
+        '- Give the protagonist unusual capabilities as defined by the golden finger, with creative uses, progression and coherent costs. Do NOT nerf or replace the golden finger without an in-world cause.',
+        '- Maintain long-running main and side arcs, meaningful setbacks and victories; do not solve the entire central mystery in the first reply or repeat identical dramatic hooks.',
+        '- New NPCs can be friends, rivals, family, mentors, strangers, villains and adult love interests of different genders. Their existence does not require joining the fixed group roster.',
+        '- Romance and adult intimacy are optional narrative paths and can influence loyalties and story consequences, but characters do not exist solely to serve the protagonist.',
+        '- Preserve the existing characters, speech styles and memories if this world is attached to an existing group. They may acquire new in-world identities without erasing their existing selves.',
+        '- The original world panel stores the initial premise and explicit player edits; placeholder or stale progress fields are not evidence of current conditions. The source-linked World OS ledger and newest explicit story events describe actual changes. Preserve explicit player corrections. Never claim an invented event has already been verified or saved.',
+        '- When the scene naturally warrants it, have the setting or an NPC initiate change without waiting for a special random-event button. Quiet chapters are also valuable.',
+        '- Reply in natural Traditional Chinese, reflect the user\'s stated language style, and keep a clear distinction between narration, in-world dialogue and optional system notifications.',
+].join('\n');
+export const buildWorldlineVariablePrompt=(world:Worldline):string=>{
     if(world.paused)return '';
     const short=(items:string[],limit=12)=>items.slice(-limit).map(v=>'- '+v).join('\n')||'- 尚未確立';
     return [
-        'AIGF WORLDLINE — PERSISTENT INTERACTIVE STORY MODE (fictional world, not real-world news):',
         `World: ${world.title}; genre: ${genreNames[world.genre]}; chapter: ${world.chapter}; game turn: ${world.turnCount}; location: ${world.location}.`,
         `Player-defined premise: ${world.premise}`,
         `Protagonist: ${world.protagonist}; current abilities: ${world.ability}.`,
@@ -229,20 +243,9 @@ export const buildWorldlinePrompt=(world:Worldline):string=>{
         ...(world.npcs.length?world.npcs.slice(-15).map(n=>`- ${n.name}: ${n.role}; wants ${n.motivation}; connection: ${n.relationship}.`):['- Not established yet; introduce characters only when a plausible scene calls for them.']),
         'Recent timeline (summarized excerpts, not canonical verified facts):',
         ...(world.chronicle.length?world.chronicle.slice(-6).map(turn=>`- #${turn.turn} player: ${turn.input}; scene: ${turn.outcome}`):['- The world has not begun.']),
-        'WORLD DIRECTOR CONTRACT:',
-        '- This is an ongoing novel-like playable reality, NOT a one-off surprise card, rigid choice menu, or quest checklist. Begin inside a concrete scene and let it evolve across many turns.',
-        '- The world exists beyond the player: factions move, NPCs pursue separate aims, secrets have owners, alliances change and actions have irreversible consequences when established.',
-        '- Follow the latest player action first. Never silently act or consent on the player’s behalf. Offer natural openings, not compulsory numbered options.',
-        '- Give the protagonist unusual capabilities as defined by the golden finger, with creative uses, progression and coherent costs. Do NOT nerf or replace the golden finger without an in-world cause.',
-        '- Maintain long-running main and side arcs, meaningful setbacks and victories; do not solve the entire central mystery in the first reply or repeat identical dramatic hooks.',
-        '- New NPCs can be friends, rivals, family, mentors, strangers, villains and adult love interests of different genders. Their existence does not require joining the fixed group roster.',
-        '- Romance and adult intimacy are optional narrative paths and can influence loyalties and story consequences, but characters do not exist solely to serve the protagonist.',
-        '- Preserve the existing characters, speech styles and memories if this world is attached to an existing group. They may acquire new in-world identities without erasing their existing selves.',
-        '- The original world panel stores the initial premise and explicit player edits; placeholder or stale progress fields are not evidence of current conditions. The source-linked World OS ledger and newest explicit story events describe actual changes. Preserve explicit player corrections. Never claim an invented event has already been verified or saved.',
-        '- When the scene naturally warrants it, have the setting or an NPC initiate change without waiting for a special random-event button. Quiet chapters are also valuable.',
-        '- Reply in natural Traditional Chinese, reflect the user\'s stated language style, and keep a clear distinction between narration, in-world dialogue and optional system notifications.',
     ].join('\n');
 };
+export const buildWorldlinePrompt=(world:Worldline):string=>world.paused?'':[WORLDLINE_FIXED_HEADER,buildWorldlineVariablePrompt(world),WORLDLINE_FIXED_CONTRACT].filter(Boolean).join('\n');
 export const buildWorldlineOpening=(world:Worldline):string=>
     [
         '【世界線開局】請直接開始第一幕，唔需要再問我設計題目。',

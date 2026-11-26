@@ -1,5 +1,5 @@
 import {readDirector,formatDirector,consumeDirectorNext,type DirectorPreferences} from './worldlineDirector.js';
-import {editWorldline2Request,getSystemTexts,resolveWorldline2Context} from './worldline2Prompt.js';
+import {editWorldline2Request,getSystemTexts,resolveWorldline2Parts,composeWorldline2Parts,type Worldline2PromptParts} from './worldline2Prompt.js';
 
 import {
     CharacterPhotoProposal,
@@ -22,7 +22,7 @@ import {
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
 import { createComposerAutoSize } from './composerAutoSize.js';
-import { WORLDLINE_SETTING_KEY, getWorldline, recordWorldlineTurn, updateWorldlineRegistry, buildWorldlinePrompt } from './worldline.js';
+import { WORLDLINE_SETTING_KEY, getWorldline, recordWorldlineTurn, updateWorldlineRegistry, buildWorldlinePrompt, buildWorldlineVariablePrompt, WORLDLINE_FIXED_HEADER, WORLDLINE_FIXED_CONTRACT } from './worldline.js';
 import { buildWorldReadModel, compileWorldRecall } from './worldOs.js';
 import { recordWorldResearch, captureResearchMessages, researchText, type ResearchContext } from './worldResearch.js';
 import { WORLD_LEDGER_KEY, appendWorldBatches, buildRecoverableWorldExtractionMessages, compileWorldLedger, recoverWorldExtraction, pendingWorldSources, projectWorld, selectWorldBatch } from './worldLedger.js';
@@ -6628,11 +6628,22 @@ const getActiveWorldline = (conversationKey: string) => {
         return world && !world.paused ? world : null;
     } catch { return null; }
 };
-const buildWorldlineRuntimeContext = (key:string,query:string,director?:DirectorPreferences,original=false) => {
+const buildWorldlinePromptParts = (key:string,query:string,director?:DirectorPreferences):Worldline2PromptParts => {
+    const world=getActiveWorldline(key);
+    if(!world)return {fixed:'',variable:'',turn:0};
+    return {fixed:[WORLDLINE_FIXED_HEADER,WORLDLINE_FIXED_CONTRACT].join('\n'),variable:[buildWorldlineVariablePrompt(world),compileWorldLedger(localStorage.getItem(WORLD_LEDGER_KEY),key,memoryManager.peekChatHistory(key),query),formatDirector(director)].filter(Boolean).join('\n\n'),turn:world.turnCount};
+};
+const buildWorldlineRuntimeContext = (key:string,query:string,director?:DirectorPreferences) => {
     const world=getActiveWorldline(key);
     if(!world)return '';
-    const generated=[buildWorldlinePrompt(world),compileWorldLedger(localStorage.getItem(WORLD_LEDGER_KEY),key,memoryManager.peekChatHistory(key),query),formatDirector(director)].filter(Boolean).join('\n\n');
-    return original?generated:resolveWorldline2Context(localStorage,key,generated);
+    const generated=buildWorldlinePromptParts(key,query,director);
+    const resolved=resolveWorldline2Parts(localStorage,key,generated);
+    if(resolved.fixed===generated.fixed&&resolved.variable===generated.variable){
+        // Preserve original ordering and behavior when neither section is customized.
+        const tail=generated.variable.slice(buildWorldlineVariablePrompt(world).length);
+        return buildWorldlinePrompt(world)+tail;
+    }
+    return composeWorldline2Parts(resolved);
 };
 type WorldSyncResult = {advanced:number;deferred:string[];issueCount:number};
 const worldLedgerJobs = new Map<string, Promise<WorldSyncResult>>();
@@ -10579,7 +10590,7 @@ const setupEventListeners = () => {
         const key=currentConversationKey;
         if(!key||!getActiveWorldline(key))return;
         const {openWorldlineDirector}=await import('./features/worldlineDirectorUi.js');
-        if(currentConversationKey===key)openWorldlineDirector(key,()=>buildWorldlineRuntimeContext(key,'',readDirector(localStorage,key),true));
+        if(currentConversationKey===key)openWorldlineDirector(key,()=>buildWorldlinePromptParts(key,'',readDirector(localStorage,key)));
     });
     chatSearchBtn.addEventListener('click', openChatSearch);
     homeSearchToggle.addEventListener('click', () => {
