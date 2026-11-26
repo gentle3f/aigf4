@@ -1,6 +1,7 @@
 import {PGlite} from '../tmp/sync-lab/node_modules/@electric-sql/pglite/dist/index.js';
 import {readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
+import {createStoryCheckpointSession} from '../storyCheckpointSession.js';
 import {captureStorySnapshot,restoreStorySnapshot} from '../storySnapshotLab.js';
 import {makeWorldline,recordWorldlineTurn,updateWorldlineRegistry,WORLDLINE_SETTING_KEY} from '../worldline.js';
 import {emptyLedger,appendWorldBatches,parseWorldExtraction,WORLD_LEDGER_KEY} from '../worldLedger.js';
@@ -34,6 +35,13 @@ try{
  const read=async()=>(await db.query("select public.wetapp_story_checkpoint_read_lab('fixture','worldline2') as result")).rows[0].result;
  const commit=async(h,rows,recall,snap)=>db.query("select public.wetapp_story_checkpoint_commit_lab('fixture','worldline2',$1,$2,$3,$4::jsonb,$5,$6::jsonb,'device-a') as revision",[h.revision,h.sha256,h.count,JSON.stringify(rows),recall,JSON.stringify(snap)]);
  const restoreHistory=async()=> (await state()).rows.map(r=>({id:r.message_id,createdAt:r.created_at_ms,role:r.role,speakerId:r.speaker_id||undefined,content:r.content}));
+ let writes=0,loseResponse=false;
+ const transport={read:async()=>read(),page:async(_key,offset,limit)=>(await state()).rows.slice(offset,offset+limit),commit:async(req)=>{
+  writes++;await commit(req.head,req.append,req.recall,req.snapshot);
+  if(loseResponse)throw Error('SIMULATED_LOST_RESPONSE');
+  return (await read()).head.revision;
+ }};
+ const session=(store,history)=>createStoryCheckpointSession({site:'worldline2',storage:store,transport,history:()=>history(),capture:()=>captureStorySnapshot(store,'fixture',history()),deviceId:'lab-device',lock:fn=>fn()});
  const device=()=>{const m=new Map();return {getItem:k=>m.get(k)??null,setItem:(k,v)=>m.set(k,v),removeItem:k=>m.delete(k)};};
  const phone=device(),pc=device(),fresh=device();
  const key='fixture';
@@ -45,23 +53,48 @@ try{
  const obs=[{sourceId:reply.message_id,quote:'取得青石',kind:'inventory',subject:'旅人',key:'石頭',value:'青石',state:'established'}];
  phone.setItem(WORLD_LEDGER_KEY,JSON.stringify(appendWorldBatches(emptyLedger(),key,parseWorldExtraction(JSON.stringify({observations:obs}),proposed,1011),proposed)));
  saveDirector(phone,key,'standing','繁體中文',()=> 'note-a');saveWorldline2Fixed(phone,key,'固定寫作設定');saveWorldline2Variable(phone,key,1,'當輪情景');
- let old;
+ let old,phoneHistory=history,pcHistory;
+ const phoneSync=session(phone,()=>phoneHistory),pcSync=session(pc,()=>pcHistory);
  await check('actual Worldline snapshot committed to SQL and restored on second device',async()=>{
   const snapshot=await captureStorySnapshot(phone,key,proposed);
-  assert.equal(snapshot.record.world.turnCount,1);await commit(await head(),[reply],null,snapshot);
+  assert.equal(snapshot.record.world.turnCount,1);
+  const baseline=await phoneSync.begin(key,true);phoneHistory=proposed;
+  loseResponse=true;await assert.rejects(phoneSync.commit(baseline,{kind:'reply',id:reply.message_id,userId:first.message_id}),/SIMULATED_LOST_RESPONSE/);loseResponse=false;
+  assert.equal(writes,1);assert.equal(await phoneSync.recover(),'confirmed');assert.equal(writes,1);assert.equal(phoneSync.pending(),null);
   const remote=await read();const h=await restoreHistory();
   assert.equal(await restoreStorySnapshot(pc,key,h,remote.snapshot),'restored');
-  assert.deepEqual(await captureStorySnapshot(pc,key,h),snapshot);old=remote;
+  assert.deepEqual(await captureStorySnapshot(pc,key,h),snapshot);old=remote;pcHistory=h;
  });
  await check('recall atomically removes actual world evidence and variable override, stale result refused',async()=>{
   const rolled=await captureStorySnapshot(pc,key,[]);
   assert.equal(rolled.record.world.turnCount,0);assert.equal(rolled.prompt.variableOverride,undefined);
-  await commit(old.head,[],first.message_id,rolled);
+  const baseline=await pcSync.begin(key);pcHistory=[];
+  assert.equal(await pcSync.commit(baseline,{kind:'recall',userId:first.message_id}),'confirmed');assert.equal(writes,2);
   const remote=await read();assert.equal(remote.head.count,0);assert.equal((await restoreHistory()).length,0);
   await restoreStorySnapshot(fresh,key,[],remote.snapshot);
   assert.deepEqual(await captureStorySnapshot(fresh,key,[]),rolled);assert.equal(rolled.prompt.fixedPrompt,'固定寫作設定');assert.equal(Object.keys(rolled.ledger).length,0);
   await assert.rejects(commit(old.head,[b],null,old.snapshot),/REVISION_CONFLICT/);
   await assert.rejects(restoreStorySnapshot(device(),key,[],old.snapshot),/HISTORY_MISMATCH/);
  });
- console.log('WORLDLINE2_STORY_SQL_PASS '+passed+'/2');
+ await check('new user sync, second-device accepted reply, and stale baseline rejection use same session',async()=>{
+  let freshHistory=[];
+  const firstDevice=session(fresh,()=>freshHistory);
+  const prior=await firstDevice.begin(key);
+  const nextUser={id:b.message_id,role:'user',createdAt:b.created_at_ms,content:{text:'進入新村落'}};
+  freshHistory=[nextUser];
+  assert.equal(await firstDevice.commit(prior,{kind:'user',id:nextUser.id}),'confirmed');assert.equal(writes,3);
+  const nextDevice=device(),remote=await read();let nextHistory=await restoreHistory();
+  await restoreStorySnapshot(nextDevice,key,nextHistory,remote.snapshot);
+  const secondDevice=session(nextDevice,()=>nextHistory),base=await secondDevice.begin(key);
+  const resultId=row(8,1,'model','新回覆').message_id;
+  const newReply={id:resultId,role:'model',createdAt:1100,content:{text:'旅人見到新村落。',worldlineStoryTurn:true}};
+  const current=remote.snapshot.record.world;
+  nextDevice.setItem(WORLDLINE_SETTING_KEY,JSON.stringify(updateWorldlineRegistry(nextDevice.getItem(WORLDLINE_SETTING_KEY),key,recordWorldlineTurn(current,nextUser.content.text,newReply.content.text,1110,resultId),1111)));
+  nextHistory=[...nextHistory,newReply];
+  assert.equal(await secondDevice.commit(base,{kind:'reply',id:resultId,userId:nextUser.id}),'confirmed');assert.equal(writes,4);
+  await assert.rejects(firstDevice.commit(prior,{kind:'user',id:nextUser.id}),/BASELINE_CHANGED/);
+  const confirmed=await read();assert.equal(confirmed.snapshot.record.world.turnCount,1);assert.equal(confirmed.head.count,2);
+  assert.deepEqual((await restoreHistory()).map(m=>m.id),[nextUser.id,resultId]);
+ });
+ console.log('WORLDLINE2_STORY_SQL_PASS '+passed+'/3');
 }catch(e){console.error('LAB_ERROR',e?.message,e?.code,e?.detail);process.exitCode=1;}finally{await db.close();}
