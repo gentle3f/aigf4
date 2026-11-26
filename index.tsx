@@ -18,8 +18,10 @@ import {
     cleanAiResponse,
 } from "./managers.js";
 import { createDurableChatTurn, browserTurnLock, type TurnIdentity, type TurnReceipt } from './durableChatTurn.js';
-import {pilotConnectionEnabled} from './pilotConnection.js';
-import {openPilotMediaLogin} from './pilotLoginUi.js';
+import {pilotConnectionEnabled,getPilotConnection} from './pilotConnection.js';
+import {createNativeStoryPilot,NATIVE_SYNC_KEY,nativePilotEnabled} from './nativeStoryPilotRuntime.js';
+import type {DurableHistory} from './durableChatTurn.js';
+import {openPilotMediaLogin,askPilotLogin} from './pilotLoginUi.js';
 import { runDurableChatStage } from './vpsStageRunner.js';
 import { buildVpsWorkflowPayload, decodeVpsWorkflow } from './vpsWorkflow.js';
 import { createGroupCommit, digestGroupContext } from './durableGroupTurn.js';
@@ -1890,11 +1892,9 @@ const makeVpsGroupCommit = () => createGroupCommit({
     confirmScene: (id,jobId) => roomManager.confirmVpsSceneCommit(id,jobId),
     writeScene: (id,jobId,expected,scene) => roomManager.persistVpsSceneCommit(id,jobId,expected,scene),
 });
-const makeVpsTurnController = (replyContent?: Content, groupScene?: GroupGenerationResult['scene']) => createDurableChatTurn({
-    storage: localStorage,
-    transport: createVpsChatTransport(),
-    lock: browserTurnLock,
-    history: {
+let nativeStoryPilot:ReturnType<typeof createNativeStoryPilot>|null=null;
+let nativeStoryBusy=false;
+const makeVpsBaseHistory = (replyContent?: Content, groupScene?: GroupGenerationResult['scene']):DurableHistory => ({
         read: key => memoryManager.peekChatHistory(key),
         persistUser: async t => {
             if(t.worldDigest)throw Error('WORLDLINE_RECEIPT_WRONG_SITE');
@@ -1911,15 +1911,16 @@ const makeVpsTurnController = (replyContent?: Content, groupScene?: GroupGenerat
             if (r.roomDigest) {
                 if(!groupScene)throw Error('GROUP_SCENE_RECEIPT_MISSING');
                 await makeVpsGroupCommit().persistReply(r,{...replyContent,text},groupScene);
-            } else memoryManager.persistVpsChatTurnReply(r.conversationKey, r.userMessageId, r.replyId, { ...replyContent, text });
+            } else memoryManager.persistVpsChatTurnReply(r.conversationKey, r.userMessageId, r.replyId, { ...replyContent, text },r.conversationKey===NATIVE_SYNC_KEY?r.createdAt+1:undefined);
         },
         confirmReply: async r => {
             if(r.worldDigest)throw Error('WORLDLINE_RECEIPT_WRONG_SITE');
             if(r.roomDigest)await makeVpsGroupCommit().confirm(r);
             else memoryManager.confirmVpsChatTurnMessage(r.conversationKey,r.replyId,'model');
         },
-    },
 });
+const nativeHistoryFor=(base:DurableHistory,key:string)=>{if(key!==NATIVE_SYNC_KEY)return base;if(!nativeStoryPilot)throw Error('NATIVE_SYNC_LOGIN_REQUIRED');return nativeStoryPilot.createBridge(base).history;};
+const makeVpsTurnController=(replyContent?:Content,groupScene?:GroupGenerationResult['scene'])=>{const base=makeVpsBaseHistory(replyContent,groupScene);return createDurableChatTurn({storage:localStorage,transport:createVpsChatTransport(),lock:browserTurnLock,history:{read:base.read,persistUser:t=>nativeHistoryFor(base,t.conversationKey).persistUser(t),persistReply:(r,text)=>nativeHistoryFor(base,r.conversationKey).persistReply(r,text),confirmReply:r=>nativeHistoryFor(base,r.conversationKey).confirmReply(r)}});};
 const pendingVpsTurn = () => VPS_CHAT_BUILD ? makeVpsTurnController().pending() : null;
 const selectedVpsChatModel = () => {
     return selectVpsModel(VPS_CHAT_BUILD,chatModelSettings.primary,localStorage.getItem(VPS_CHAT_MODE_KEY)==='1');
@@ -1932,6 +1933,7 @@ const resumeVpsChatTurn = async (openConversation = false) => {
         const controller = makeVpsTurnController();
         const pending = controller.pending();
         if (!pending) return;
+        if(pending.conversationKey===NATIVE_SYNC_KEY&&!nativeStoryPilot)return;
         if (await controller.reconcileApplied()) {
             if (pending.roomDigest && currentRoom?.id===pending.conversationKey) {
                 const room=roomManager.getRoom(pending.conversationKey);
@@ -2928,6 +2930,52 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
     if (VPS_CHAT_BUILD) void resumeVpsChatTurn();
 };
 
+const renderNativeStoryHistory=()=>{if(currentConversationKey!==NATIVE_SYNC_KEY)return;chatContainer.replaceChildren();resetRenderedChatHistoryWindow();renderChatHistoryWindow(NATIVE_SYNC_KEY,memoryManager.peekChatHistory(NATIVE_SYNC_KEY));updateSendButtonState();};
+const syncNativeStoryPilot=async()=>{
+    if(!nativeStoryPilot||nativeStoryBusy||activeChatRequest||resumingVpsTurn||currentConversationKey!==NATIVE_SYNC_KEY||!isUnlocked)return;
+    nativeStoryBusy=true;
+    try{
+        const pending=pendingVpsTurn();
+        if(pending){
+            if(pending.conversationKey===NATIVE_SYNC_KEY){
+                const local=memoryManager.peekChatHistory(NATIVE_SYNC_KEY);
+                if(!local.some(m=>m.id===pending.replyId)){
+                    if(await nativeStoryPilot.refresh())renderNativeStoryHistory();
+                    const now=memoryManager.peekChatHistory(NATIVE_SYNC_KEY);
+                    if(!now.some(m=>m.id===pending.replyId)&&now.at(-1)?.id!==pending.userMessageId){await makeVpsTurnController().abandon(pending.jobId);hideError();return;}
+                }
+                await resumeVpsChatTurn();
+            }
+            return;
+        }
+        if(await nativeStoryPilot.refresh())renderNativeStoryHistory();
+        const user=memoryManager.peekChatHistory(NATIVE_SYNC_KEY).at(-1);
+        if(user?.role!=='user'||!user.id)return;
+        const digest=await digestVpsHistory(memoryManager.peekChatHistory(NATIVE_SYNC_KEY),2);
+        const matches=(await listVpsRecovery()).filter(row=>row.receipt.conversationKey===NATIVE_SYNC_KEY&&row.receipt.personaKey===NATIVE_SYNC_KEY&&row.receipt.userMessageId===user.id&&row.receipt.contextDigest===digest&&row.receipt.contextDigestVersion===2&&!row.receipt.worldDigest&&!row.receipt.roomDigest&&['queued','running','done'].includes(row.status));
+        if(matches.length===1){await makeVpsTurnController().adoptRecovery(matches[0].receipt);await resumeVpsChatTurn();}
+        else if(matches.length>1)throw Error('NATIVE_SYNC_MULTIPLE_JOBS');
+    }catch(e){if(currentConversationKey===NATIVE_SYNC_KEY)showError('同步暫未完成：'+(e instanceof Error?e.message:'UNKNOWN'));}
+    finally{nativeStoryBusy=false;updateSendButtonState();}
+};
+const openNativeStoryPilot=()=>{
+    if(!nativePilotEnabled||!isUnlocked||activeChatRequest||resumingVpsTurn||nativeStoryBusy)return;
+    if(nativeStoryPilot){startChat(NATIVE_SYNC_KEY,memoryManager.peekChatHistory(NATIVE_SYNC_KEY));void syncNativeStoryPilot();return;}
+    const connect=async(email:string,password:string)=>{
+        if(activeChatRequest||resumingVpsTurn||nativeStoryBusy)throw Error('CHAT_REQUEST_IN_PROGRESS');
+        nativeStoryBusy=true;
+        try{
+            const pilot=createNativeStoryPilot({read:()=>memoryManager.peekChatHistory(NATIVE_SYNC_KEY),write:rows=>memoryManager.setChatHistory(NATIVE_SYNC_KEY,rows,true)});
+            await pilot.signIn(email,password);
+            const pending=pendingVpsTurn();
+            if(!pending||pending.conversationKey!==NATIVE_SYNC_KEY)await pilot.refresh();
+            memoryManager.installNativeStoryPilotPersona();nativeStoryPilot=pilot;
+            startChat(NATIVE_SYNC_KEY,memoryManager.peekChatHistory(NATIVE_SYNC_KEY));
+        }finally{nativeStoryBusy=false;}
+        void syncNativeStoryPilot();
+    };
+    if(getPilotConnection().isSignedIn())void connect('','').catch(e=>showError('同步登入未完成：'+(e instanceof Error?e.message:'UNKNOWN')));else askPilotLogin(connect);
+};
 const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
     closeChatSearch();
     imageStudioUi?.cancelRequest();
@@ -3313,18 +3361,26 @@ const deleteCustomPersona = (key: string) => {
 };
 
 const deleteConversationFromList = (key: string, title: string, room?: ChatRoom) => {
+    if(key===NATIVE_SYNC_KEY){showError('同步試用請使用收回最新一輪。');return;}
     void loadConversationActions()
         .then(actions => actions.deleteConversation(key, title, room))
         .catch(error => console.error('Failed to delete conversation', error));
 };
 
 const createTimelineBranch = (messageId: string) => {
+    if(currentConversationKey===NATIVE_SYNC_KEY){showError('同步試用暫未接駁分支。');return;}
     void loadConversationActions()
         .then(actions => actions.createTimelineBranch(messageId))
         .catch(error => console.error('Failed to create timeline branch', error));
 };
 
 const recallUserMessage = (messageId: string) => {
+    if(currentConversationKey===NATIVE_SYNC_KEY){
+        if(!nativeStoryPilot||nativeStoryBusy||activeChatRequest||resumingVpsTurn){showError('請先完成目前同步操作。');return;}
+        if(!confirm('收回最新一輪同步測試訊息及回覆？'))return;
+        nativeStoryBusy=true;
+        void (async()=>{await nativeStoryPilot!.recall(messageId,()=>{if(!memoryManager.removeUserTurn(NATIVE_SYNC_KEY,messageId,true))throw Error('NATIVE_SYNC_RECALL_NOT_FOUND');});await makeVpsTurnController().recall(NATIVE_SYNC_KEY,()=>true);await nativeStoryPilot!.refresh();renderNativeStoryHistory();hideError();})().catch(e=>showError('收回未完成：'+(e instanceof Error?e.message:'UNKNOWN'))).finally(()=>{nativeStoryBusy=false;updateSendButtonState();});return;
+    }
     void loadConversationActions()
         .then(actions => actions.recallUserMessage(messageId))
         .catch(error => {
@@ -9041,7 +9097,7 @@ const getResponse = async (
         completeChatPerformanceTurn('response:final-visible');
         schedulePersonaListRefreshAfterPaint();
         if (request.room) { if(request.vpsTurn)void startVpsGroupMemory(request.room.id);else void maybeSummarizeRoomMemory(request.room.id); }
-        else if (request.mode === 'character') {
+        else if (request.mode === 'character' && request.conversationKey!==NATIVE_SYNC_KEY) {
             if (request.vpsTurn) void startVpsPersonaMemory(request.personaKey);
             else void maybeSummarizePersonaMemory(request.personaKey);
         }
@@ -9865,6 +9921,10 @@ const sendMessage = async ({
         return;
     }
 
+    if(currentConversationKey===NATIVE_SYNC_KEY){
+        if(!nativeStoryPilot||nativeStoryBusy){showError('請先登入同步測試故事，或稍候同步完成。');return;}
+        if(!selectedVpsChatModel()||characterPhotoRequest||pendingChatAttachments.length||isGodModeActive||currentRoom||[GOD_MODE_ENTER_COMMAND,GOD_MODE_EXIT_COMMAND].includes((messageText??messageInput.value).trim().toUpperCase())){showError('同步試用目前只支援文字及 VPS 模型。');return;}
+    }
     if (VPS_CHAT_BUILD && (resumingVpsTurn || pendingVpsTurn())) {
         showError('有未完成的 VPS 回覆。請先取回原任務，或在選單確認放棄。');
         return;
@@ -9934,6 +9994,12 @@ const sendMessage = async ({
         id: crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         createdAt: Date.now(),
     };
+    if(conversationKey===NATIVE_SYNC_KEY){
+        nativeStoryBusy=true;
+        try{await nativeStoryPilot!.beforeUser(userMessageMeta!.id);if(currentConversationKey!==conversationKey)throw Error('NATIVE_SYNC_VIEW_CHANGED');}
+        catch(e){showError('同步未開始：'+(e instanceof Error?e.message:'UNKNOWN'));cancelChatPerformanceTurn('send:sync-preflight');return;}
+        finally{nativeStoryBusy=false;}
+    }
 
     messageInput.value = '';
     resetMessageInput();
@@ -9983,7 +10049,7 @@ const sendMessage = async ({
         !assistantMode
         && !characterPhotoRequest
         && attachmentBundle.attachments.length === 0
-        && explicitMemoryIntent
+        && explicitMemoryIntent && conversationKey!==NATIVE_SYNC_KEY
     ) {
         const proposal = {
             id: crypto.randomUUID?.() || `memory-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -10005,7 +10071,7 @@ const sendMessage = async ({
         !assistantMode
         && !characterPhotoRequest
         && attachmentBundle.attachments.length === 0
-        && isExplicitCharacterPhotoRequest(userMessage)
+        && isExplicitCharacterPhotoRequest(userMessage) && conversationKey!==NATIVE_SYNC_KEY
     ) {
         const systemContent: Content = { photoIntent: createPhotoIntentProposal(userMessage) };
         memoryManager.addMessage(conversationKey, 'system', systemContent);
@@ -10019,7 +10085,7 @@ const sendMessage = async ({
         && !characterPhotoRequest
         && attachmentBundle.attachments.length === 0
     ) {
-        const npcPromotion = createExplicitNpcPromotionProposal(conversationKey, persona, userMessage);
+        const npcPromotion = conversationKey===NATIVE_SYNC_KEY?null:createExplicitNpcPromotionProposal(conversationKey, persona, userMessage);
         if (npcPromotion) {
             const systemContent: Content = { npcProposal: npcPromotion };
             memoryManager.addMessage(conversationKey, 'system', systemContent);
@@ -10053,6 +10119,7 @@ const sendMessage = async ({
                 },
                 model: vpsModel,
             };
+            if(conversationKey===NATIVE_SYNC_KEY)await nativeHistoryFor(makeVpsBaseHistory(),conversationKey).persistUser(request.vpsTurn.identity);
         } catch (error) {
             finishChatRequest(request, 'error');
             showError('VPS 測試模式未能開始；未提交任何生成任務。');
@@ -10936,6 +11003,7 @@ const setupEventListeners = () => {
             finally{findRecovery.disabled=false;}
         };
         controls.append(label,fallback,resume,findRecovery,memoryResume,abandon,memoryAbandon,groupMemoryAbandon);
+        if(nativePilotEnabled){const entry=document.createElement('button');entry.type='button';entry.textContent='跨裝置同步試用';entry.onclick=()=>{toolsDialog.close();openNativeStoryPilot();};controls.append(entry);}
         if(pilotConnectionEnabled){const mediaPilot=document.createElement('button');mediaPilot.type='button';mediaPilot.textContent='媒體同步試用（新生成圖片及影片）';mediaPilot.onclick=()=>{toolsDialog.close();openPilotMediaLogin();};controls.append(mediaPilot);}
         const closeTools=document.createElement('button');closeTools.type='button';closeTools.textContent='關閉';closeTools.onclick=()=>toolsDialog.close();controls.append(closeTools);
         controls.querySelectorAll('button').forEach(b=>{b.style.cssText='text-align:left;padding:9px 12px;border:1px solid #d9d5ce;background:#f7f6f3;color:#252321;border-radius:8px;font-size:13px;cursor:pointer';});
@@ -10944,7 +11012,8 @@ const setupEventListeners = () => {
         toolsEntry.onclick=()=>{moreOptionsMenu.classList.add('hidden');refreshMode();refreshFallback();toolsDialog.showModal();};
         moreOptionsMenu.prepend(toolsEntry);
         moreOptionsMenu.querySelector('.v2-more-options-section-interaction .v2-more-options-grid')?.appendChild(toolsEntry);
-        window.addEventListener('online',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();});
+        if(nativePilotEnabled){window.setInterval(()=>{if(document.visibilityState==='visible')void syncNativeStoryPilot();},8000);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')void syncNativeStoryPilot();});}
+        window.addEventListener('online',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();void syncNativeStoryPilot();});
         window.addEventListener('pageshow',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();});
         document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();}});
     }
@@ -11046,17 +11115,20 @@ const setupEventListeners = () => {
     });
 
     clearChatBtn.addEventListener('click', () => {
+        if(currentConversationKey===NATIVE_SYNC_KEY){showError('同步試用請使用收回最新一輪。');return;}
         void loadConversationActions()
             .then(actions => actions.clearCurrentChat())
             .catch(error => console.error('Failed to clear chat', error));
         moreOptionsMenu.classList.add('hidden');
     });
     
-    newSceneBtn.addEventListener('click', startNewScene);
+    newSceneBtn.addEventListener('click', ()=>{if(currentConversationKey===NATIVE_SYNC_KEY){showError('同步試用暫未接駁場景切換。');return;}startNewScene();});
     surpriseEventBtn.addEventListener('click', () => {
+        if(currentConversationKey===NATIVE_SYNC_KEY)return;
         openSurpriseEventOptions();
     });
     takePhotoBtn.addEventListener('click', () => {
+        if(currentConversationKey===NATIVE_SYNC_KEY)return;
         openPhotoPromptModal();
     });
 
@@ -11087,7 +11159,7 @@ const setupEventListeners = () => {
         openRoomInfo();
     });
     dmRoomMemberBtn.addEventListener('click', () => openParticipantAction('dm'));
-    inviteCharacterBtn.addEventListener('click', () => openParticipantAction('invite'));
+    inviteCharacterBtn.addEventListener('click', () => {if(currentConversationKey!==NATIVE_SYNC_KEY)openParticipantAction('invite');});
     leaveRoomMemberBtn.addEventListener('click', () => openParticipantAction('leave'));
     addRoomMemberBtn.addEventListener('click', () => {
         if (currentRoom) void openCreateGroup(currentRoom.id);

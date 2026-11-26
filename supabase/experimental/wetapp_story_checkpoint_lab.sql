@@ -3,7 +3,7 @@
 create table if not exists public.wetapp_story_checkpoint_lab (
  user_id uuid not null,
  conversation_key text not null,
- site text not null check(site in ('worldline1','worldline2')),
+ site text not null check(site in ('worldline1','worldline2','aigf')),
  history_sha256 text not null check(history_sha256 ~ '^[a-f0-9]{64}$'),
  snapshot jsonb not null check(jsonb_typeof(snapshot)='object'),
  invalidated boolean not null default false,
@@ -22,7 +22,7 @@ as $$
  select case when h is null then null else jsonb_build_object('head',h,'snapshot',case when not m.invalidated and m.history_sha256=h->>'sha256' then m.snapshot else null end,'stale',coalesce(m.invalidated or m.history_sha256<>h->>'sha256',false)) end
  from (select public.wetapp_chat_checkpoint_head_v2(target) h) x
  left join public.wetapp_story_checkpoint_lab m on m.user_id=auth.uid() and m.conversation_key=target and m.site=site_name
- where public.is_wetapp_owner() is true and site_name in ('worldline1','worldline2')
+ where public.is_wetapp_owner() is true and site_name in ('worldline1','worldline2','aigf')
 $$;
 revoke all on function public.wetapp_story_checkpoint_read_lab(text,text) from public,anon;
 grant execute on function public.wetapp_story_checkpoint_read_lab(text,text) to authenticated;
@@ -39,13 +39,12 @@ declare
  cut_pos integer;
 begin
  if uid is null or public.is_wetapp_owner() is distinct from true then raise exception using errcode='42501',message='NOT_AUTHORIZED'; end if;
- if site_name is null or site_name not in ('worldline1','worldline2') or target is null or length(target) not between 1 and 256
+ if site_name is null or site_name not in ('worldline1','worldline2','aigf') or target is null or length(target) not between 1 and 256
  or device is null or length(device) not between 1 and 256
  or expected_revision is null or expected_revision<1 or expected_digest is null or expected_digest !~ '^[a-f0-9]{64}$'
  or expected_count is null or expected_count<0
  or jsonb_typeof(new_snapshot) is distinct from 'object' or pg_column_size(new_snapshot)>2097152
  or jsonb_typeof(append_rows) is distinct from 'array' or (recall_user is not null and jsonb_array_length(append_rows)<>0)
- or (recall_user is null and jsonb_array_length(append_rows)=0)
  then raise exception using errcode='22023',message='INVALID_STORY_CHECKPOINT'; end if;
  select revision into rev from public.wetapp_state where user_id=uid for update;
  if rev is distinct from expected_revision then raise exception using errcode='40001',message='WETAPP_STATE_REVISION_CONFLICT';end if;
@@ -53,7 +52,11 @@ begin
  if not found then raise exception using errcode='22023',message='CONVERSATION_NOT_FOUND';end if;
  h:=public.wetapp_chat_checkpoint_head_v2(target);
  if h is null or h->>'sha256' is distinct from expected_digest or (h->>'count')::bigint is distinct from expected_count or (h->>'contiguous')::boolean is distinct from true then raise exception using errcode='40001',message='WETAPP_HISTORY_CONFLICT';end if;
- if recall_user is null then
+ if recall_user is null and jsonb_array_length(append_rows)=0 then
+   -- Settings-only update: no history mutation; same revision and history CAS.
+   if exists(select 1 from public.wetapp_messages where user_id=uid and conversation_key=target and position=expected_count-1 and role='user') then raise exception using errcode='40001',message='STORY_TURN_PENDING';end if;
+   update public.wetapp_state set revision=revision+1,source_device_id=device where user_id=uid returning revision into rev;
+ elsif recall_user is null then
    rev:=public.wetapp_append_chat_checkpoint_v2(expected_revision,target,expected_digest,expected_count,append_rows,device);
  else
    -- Tail-only recall. Never delete another user's turn or media-linked messages.
