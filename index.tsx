@@ -1,3 +1,4 @@
+import {normalizeHongKongTraditional} from './traditionalChinese.js';
 import {readDirector,formatDirector,consumeDirectorNext,type DirectorPreferences} from './worldlineDirector.js';
 import {editWorldline2Request,getSystemTexts,resolveWorldline2Parts,composeWorldline2Parts,saveWorldline2Variable,type Worldline2PromptParts} from './worldline2Prompt.js';
 
@@ -6166,32 +6167,6 @@ const CC_CANTONESE_POLISH_PROMPT = [
     '不要解釋或評論，只輸出校稿後的完整回覆。',
 ].join('\n');
 
-const TRADITIONAL_CHARACTER_REPLACEMENTS: Record<string, string> = {
-    见: '見', 车: '車', 灯: '燈', 闪: '閃', 两: '兩', 这: '這', 那: '那',
-    说: '說', 话: '話', 门: '門', 开: '開', 关: '關', 时: '時', 问: '問',
-    点: '點', 发: '發', 会: '會', 听: '聽', 让: '讓', 给: '給', 么: '麼',
-    过: '過', 还: '還', 个: '個', 温: '溫', 头: '頭', 进: '進', 离: '離',
-    远: '遠', 亲: '親', 爱: '愛', 欢: '歡', 应: '應', 为: '為', 与: '與',
-    从: '從', 觉: '覺', 气: '氣', 声: '聲', 脸: '臉', 长: '長', 轻: '輕',
-    对: '對', 体: '體', 们: '們', 边: '邊', 镜: '鏡', 数: '數', 据: '據',
-    码: '碼', 优: '優', 网: '網', 该: '該', 实: '實', 现: '現', 术: '術',
-    书: '書', 画: '畫', 东: '東', 风: '風', 叶: '葉', 线: '線', 专: '專',
-    业: '業', 处: '處', 经: '經', 济: '濟', 动: '動', 阳: '陽', 阴: '陰',
-    云: '雲', 变: '變', 认: '認', 识: '識', 级: '級', 归: '歸', 顺: '順',
-    写: '寫', 读: '讀', 买: '買', 卖: '賣', 师: '師', 赶: '趕', 礼: '禮',
-    继: '繼', 续: '續', 张: '張', 赵: '趙', 刘: '劉', 陈: '陳', 备: '備',
-    选: '選', 样: '樣', 种: '種', 记: '記', 压: '壓', 务: '務', 围: '圍',
-    规: '規', 划: '劃', 静: '靜', 里: '裡', 梦: '夢', 视: '視', 传: '傳',
-    递: '遞', 触: '觸', 览: '覽', 录: '錄', 乐: '樂', 舞: '舞', 台: '台',
-    历: '歷', 际: '際', 场: '場', 华: '華', 后: '後', 复: '復', 众: '眾',
-    组: '組', 织: '織', 别: '別', 顾: '顧', 议: '議', 决: '決', 随: '隨',
-    机: '機', 紧: '緊', 统: '統', 调: '調', 达: '達', 险: '險',
-    惊: '驚', 秘: '祕', 故: '故', 计: '計', 临: '臨',
-    满: '滿', 带: '帶', 诚: '誠', 语: '語', 词: '詞', 丽: '麗', 艺: '藝',
-    单: '單', 啧: '嘖', 几: '幾', 粘: '黏', 没: '沒', 扰: '擾', 显: '顯',
-    颤: '顫', 习: '習', 顿: '頓', 绝: '絕', 刚: '剛', 无: '無',
-};
-
 const markVeniceRequestAggregate = (
     label: string,
     model: string,
@@ -6259,12 +6234,7 @@ const markPromptComponentAccounting = (
     );
 };
 
-const normalizeTraditionalChineseLeaks = (text: string) => {
-    return text.replace(
-        new RegExp(`[${Object.keys(TRADITIONAL_CHARACTER_REPLACEMENTS).join('')}]`, 'gu'),
-        character => TRADITIONAL_CHARACTER_REPLACEMENTS[character] || character,
-    );
-};
+const normalizeTraditionalChineseLeaks = normalizeHongKongTraditional;
 
 const normalizeGroupGenerationTraditional = (result: GroupGenerationResult): GroupGenerationResult => {
     const segments = result.segments.map(segment => ({
