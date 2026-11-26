@@ -92,7 +92,7 @@ function validRecoveryReceipt(r){
  const short=v=>typeof v==='string'&&v.length>0&&v.length<=256;
  const digest=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
  const uuid=v=>typeof v==='string'&&UUID.test(v);
- return r&&typeof r==='object'&&!Array.isArray(r)&&Object.keys(r).every(k=>['jobId','replyId','createdAt','model','workflowVersion','conversationKey','personaKey','userMessageId','contextDigest','contextDigestVersion','roomDigest','roomMemberId'].includes(k))&&[1,2,3].includes(r.workflowVersion)&&MODELS.has(r.model)&&[r.jobId,r.replyId,r.userMessageId].every(uuid)&&new Set([r.jobId,r.replyId,r.userMessageId]).size===3&&short(r.conversationKey)&&short(r.personaKey)&&digest(r.contextDigest)&&(r.contextDigestVersion===undefined||[1,2].includes(r.contextDigestVersion))&&Number.isSafeInteger(r.createdAt)&&r.createdAt>0&&r.createdAt<100000000000000&&(r.workflowVersion===3?digest(r.roomDigest)&&short(r.roomMemberId):r.roomDigest===undefined&&r.roomMemberId===undefined);
+ return r&&typeof r==='object'&&!Array.isArray(r)&&Object.keys(r).every(k=>['jobId','replyId','createdAt','model','workflowVersion','conversationKey','personaKey','userMessageId','contextDigest','contextDigestVersion','roomDigest','roomMemberId','worldDigest'].includes(k))&&[1,2,3].includes(r.workflowVersion)&&MODELS.has(r.model)&&[r.jobId,r.replyId,r.userMessageId].every(uuid)&&new Set([r.jobId,r.replyId,r.userMessageId]).size===3&&short(r.conversationKey)&&short(r.personaKey)&&digest(r.contextDigest)&&(r.contextDigestVersion===undefined||[1,2].includes(r.contextDigestVersion))&&(r.worldDigest===undefined||(digest(r.worldDigest)&&r.contextDigestVersion===2))&&Number.isSafeInteger(r.createdAt)&&r.createdAt>0&&r.createdAt<100000000000000&&(r.workflowVersion===3?digest(r.roomDigest)&&short(r.roomMemberId):r.roomDigest===undefined&&r.roomMemberId===undefined);
 }
 export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAuthenticatedRequest, env=process.env}={}) {
   return async function handler(req,res) {
@@ -129,7 +129,7 @@ export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAu
         if(!upstream.ok)return res.status(502).json({error:'RECOVERY_HTTP_'+upstream.status});
         const d=await upstream.json();
         if(!Array.isArray(d.receipts)||d.receipts.length>50||d.receipts.some(x=>!validRecoveryReceipt(x?.receipt)||!recoveryStatuses.has(x.status)||!Number.isFinite(x.updated)))return res.status(502).json({error:'INVALID_RECOVERY_LIST'});
-        return res.status(200).json({receipts:d.receipts.map(x=>({receipt:x.receipt,status:x.status,updated:x.updated}))});
+        return res.status(200).json({receipts:d.receipts.filter(x=>!x.receipt.worldDigest).map(x=>({receipt:x.receipt,status:x.status,updated:x.updated}))});
       }catch{return res.status(503).json({error:'RECOVERY_UNAVAILABLE'});}
     }
     const jobId=method==='POST'?req.body?.job_id:req.query?.job_id;
@@ -147,7 +147,7 @@ export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAu
       const p=req.body?.request;
       const validation=p&&typeof p==='object'&&'video_auto_version' in p?validateAutoVideo(p):p&&typeof p==='object'&&'video_retrieve_version' in p?validateVideoRetrieval(p):p&&typeof p==='object'&&'image_submit_version' in p?validateImageSubmission(p):p&&typeof p==='object'&&'video_submit_version' in p?validateVideoSubmission(p):p&&typeof p==='object'&&'workflow_version' in p?validateWorkflowPayload(p):validateTextPayload(p);
       if(validation)return res.status(400).json({error:validation});
-      if(receipt!==undefined&&(!validRecoveryReceipt(receipt)||receipt.jobId!==jobId||receipt.workflowVersion!==p.workflow_version||receipt.model!==p.primary?.model))return res.status(400).json({error:'INVALID_RECOVERY_RECEIPT'});
+      if(receipt!==undefined&&(!validRecoveryReceipt(receipt)||receipt.worldDigest!==undefined||receipt.jobId!==jobId||receipt.workflowVersion!==p.workflow_version||receipt.model!==p.primary?.model))return res.status(400).json({error:'INVALID_RECOVERY_RECEIPT'});
       body=JSON.stringify({job_id:jobId,request:p,...(receipt!==undefined?{recovery:{scope,receipt}}:{})});
       if(Buffer.byteLength(body)>LIMIT) return res.status(413).json({error:'REQUEST_TOO_LARGE'});
     }

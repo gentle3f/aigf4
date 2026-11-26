@@ -1895,6 +1895,7 @@ const makeVpsTurnController = (replyContent?: Content, groupScene?: GroupGenerat
     history: {
         read: key => memoryManager.peekChatHistory(key),
         persistUser: async t => {
+            if(t.worldDigest)throw Error('WORLDLINE_RECEIPT_WRONG_SITE');
             if (t.roomDigest) {
                 const room=roomManager.getRoom(t.conversationKey);
                 if (!room || await digestGroupContext(room,t.contextDigestVersion)!==t.roomDigest) throw Error('GROUP_CONTEXT_CHANGED');
@@ -1903,6 +1904,7 @@ const makeVpsTurnController = (replyContent?: Content, groupScene?: GroupGenerat
             if (t.contextDigest && await digestVpsHistory(memoryManager.peekChatHistory(t.conversationKey),t.contextDigestVersion) !== t.contextDigest) throw Error('TURN_HISTORY_CHANGED');
         },
         persistReply: async (r, text) => {
+            if(r.worldDigest)throw Error('WORLDLINE_RECEIPT_WRONG_SITE');
             if (await digestVpsHistory(memoryManager.peekChatHistory(r.conversationKey),r.contextDigestVersion) !== r.contextDigest) throw Error('TURN_HISTORY_CHANGED');
             if (r.roomDigest) {
                 if(!groupScene)throw Error('GROUP_SCENE_RECEIPT_MISSING');
@@ -1910,6 +1912,7 @@ const makeVpsTurnController = (replyContent?: Content, groupScene?: GroupGenerat
             } else memoryManager.persistVpsChatTurnReply(r.conversationKey, r.userMessageId, r.replyId, { ...replyContent, text });
         },
         confirmReply: async r => {
+            if(r.worldDigest)throw Error('WORLDLINE_RECEIPT_WRONG_SITE');
             if(r.roomDigest)await makeVpsGroupCommit().confirm(r);
             else memoryManager.confirmVpsChatTurnMessage(r.conversationKey,r.replyId,'model');
         },
@@ -3259,6 +3262,7 @@ const loadConversationActions = async () => {
                             cancelActiveChatRequest();
                         }
                     },
+                    recallVpsTurn: VPS_CHAT_BUILD ? (key,messageId)=>makeVpsTurnController().recall(key,()=>memoryManager.removeUserTurn(key,messageId,true)) : undefined,
                     abortCharacterPhotoRequest: () => characterPhotoRequestController?.abort(),
                     clearSessionMemories,
                     removeSessionMemoriesBySourceMessageIds,
