@@ -131,5 +131,19 @@ try{
   const final=await read();assert.equal(final.head.count,4);assert.equal(final.snapshot.record.world.turnCount,2);assert.equal((await restoreHistory()).filter(m=>m.id===replyId).length,1);
   assert.equal(writes,6);
  });
- console.log('WORLDLINE2_STORY_SQL_PASS '+passed+'/4');
+ await check('director and fixed/variable settings sync without changing message history; stale device cannot overwrite',async()=>{
+  const local=device();let h=await restoreHistory();const before=await read();
+  await restoreStorySnapshot(local,key,h,before.snapshot);
+  const a=session(local,()=>h);const baseline=await a.begin(key);
+  saveDirector(local,key,'standing','測試設定',()=> 'setting-new');saveWorldline2Fixed(local,key,'新的固定測試規則');
+  const turn=(await captureStorySnapshot(local,key,h)).record.world.turnCount;
+  saveWorldline2Variable(local,key,turn,'新的變數測試');
+  assert.equal(await a.commit(baseline,{kind:'settings'}),'confirmed');
+  const after=await read();assert.equal(after.head.count,before.head.count);assert.equal(after.head.sha256,before.head.sha256);assert.equal(after.head.revision,before.head.revision+1);
+  const b=device();await restoreStorySnapshot(b,key,h,after.snapshot);
+  assert.equal((await captureStorySnapshot(b,key,h)).prompt.fixedPrompt,'新的固定測試規則');
+  assert.equal((await captureStorySnapshot(b,key,h)).prompt.variableOverride.text,'新的變數測試');
+  await assert.rejects(a.commit(baseline,{kind:'settings'}),/BASELINE_CHANGED/);
+ });
+ console.log('WORLDLINE2_STORY_SQL_PASS '+passed+'/5');
 }catch(e){console.error('LAB_ERROR',e?.message,e?.code,e?.detail);process.exitCode=1;}finally{await db.close();}

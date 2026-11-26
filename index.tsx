@@ -2980,7 +2980,7 @@ const startChat = (key: string, restoredHistory: ChatMessage[] | null = null, hi
 
 const renderNativeStoryHistory=()=>{if(currentConversationKey!==NATIVE_SYNC_KEY)return;chatContainer.replaceChildren();resetRenderedChatHistoryWindow();renderChatHistoryWindow(NATIVE_SYNC_KEY,memoryManager.peekChatHistory(NATIVE_SYNC_KEY));updateSendButtonState();};
 const syncNativeStoryPilot=async()=>{
-    if(!nativeStoryPilot||nativeStoryBusy||activeChatRequest||resumingVpsTurn||currentConversationKey!==NATIVE_SYNC_KEY||!isUnlocked)return;
+    if(!nativeStoryPilot||nativeStoryBusy||activeChatRequest||resumingVpsTurn||currentConversationKey!==NATIVE_SYNC_KEY||!isUnlocked||document.querySelector('dialog[aria-label="旁白導演"][open]'))return;
     nativeStoryBusy=true;
     try{
         const pending=pendingVpsTurn();
@@ -11153,7 +11153,10 @@ const setupEventListeners = () => {
         const key=currentConversationKey;
         if(!key||!getActiveWorldline(key))return;
         const {openWorldlineDirector}=await import('./features/worldlineDirectorUi.js');
-        if(currentConversationKey===key)openWorldlineDirector(key,()=>buildWorldlinePromptParts(key,'',readDirector(localStorage,key)));
+        if(currentConversationKey===key)openWorldlineDirector(key,()=>buildWorldlinePromptParts(key,'',readDirector(localStorage,key)),key===NATIVE_SYNC_KEY?async mutate=>{
+            if(!nativeStoryPilot||nativeStoryBusy||activeChatRequest||resumingVpsTurn||pendingVpsTurn())throw Error('請先完成目前同步或生成任務。');
+            nativeStoryBusy=true;try{await nativeStoryPilot.saveSettings(mutate);}finally{nativeStoryBusy=false;updateSendButtonState();}
+        }:undefined);
     });
     chatSearchBtn.addEventListener('click', openChatSearch);
     homeSearchToggle.addEventListener('click', () => {

@@ -45,7 +45,6 @@ begin
  or expected_count is null or expected_count<0
  or jsonb_typeof(new_snapshot) is distinct from 'object' or pg_column_size(new_snapshot)>2097152
  or jsonb_typeof(append_rows) is distinct from 'array' or (recall_user is not null and jsonb_array_length(append_rows)<>0)
- or (recall_user is null and jsonb_array_length(append_rows)=0)
  then raise exception using errcode='22023',message='INVALID_STORY_CHECKPOINT'; end if;
  select revision into rev from public.wetapp_state where user_id=uid for update;
  if rev is distinct from expected_revision then raise exception using errcode='40001',message='WETAPP_STATE_REVISION_CONFLICT';end if;
@@ -53,7 +52,11 @@ begin
  if not found then raise exception using errcode='22023',message='CONVERSATION_NOT_FOUND';end if;
  h:=public.wetapp_chat_checkpoint_head_v2(target);
  if h is null or h->>'sha256' is distinct from expected_digest or (h->>'count')::bigint is distinct from expected_count or (h->>'contiguous')::boolean is distinct from true then raise exception using errcode='40001',message='WETAPP_HISTORY_CONFLICT';end if;
- if recall_user is null then
+ if recall_user is null and jsonb_array_length(append_rows)=0 then
+   -- Settings-only update: no history mutation; same revision and history CAS.
+   if exists(select 1 from public.wetapp_messages where user_id=uid and conversation_key=target and position=expected_count-1 and role='user') then raise exception using errcode='40001',message='STORY_TURN_PENDING';end if;
+   update public.wetapp_state set revision=revision+1,source_device_id=device where user_id=uid returning revision into rev;
+ elsif recall_user is null then
    rev:=public.wetapp_append_chat_checkpoint_v2(expected_revision,target,expected_digest,expected_count,append_rows,device);
  else
    -- Tail-only recall. Never delete another user's turn or media-linked messages.

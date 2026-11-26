@@ -57,7 +57,13 @@ export function createNativeStoryPilot(deps:{read:()=>ChatMessage[];write:(rows:
   journal.setItem('last-confirmed:'+key,incomingHash);
   return changed;
  };
- return {createBridge,refresh,signIn:async(email:string,password:string)=>{await remote.signIn(email,password);await remote.initialize(site);},beforeUser:(id:string)=>viewBridge.beforeUser(id),recall:async(id:string,mutate:()=>void)=>{
+ return {createBridge,refresh,saveSettings:async(mutate:()=>void)=>{
+  const b=await viewBridge.session.begin(key,true);
+  if(b.rows.at(-1)?.role==='user')throw Error('NATIVE_SYNC_TURN_PENDING');
+  mutate();
+  if(await viewBridge.session.commit(b,{kind:'settings'})!=='confirmed')throw Error('NATIVE_SYNC_SETTINGS_UNCONFIRMED');
+  await markConfirmed();
+ },signIn:async(email:string,password:string)=>{await remote.signIn(email,password);await remote.initialize(site);},beforeUser:(id:string)=>viewBridge.beforeUser(id),recall:async(id:string,mutate:()=>void)=>{
   const b=await viewBridge.session.begin(key);
   const i=b.rows.findIndex(r=>r.message_id===id&&r.role==='user');if(i<0||b.rows.slice(i+1).some(r=>r.role==='user'))throw Error('NATIVE_SYNC_RECALL_LATEST_ONLY');
   mutate();

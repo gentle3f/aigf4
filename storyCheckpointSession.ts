@@ -9,7 +9,7 @@ export type StoryCheckpointRow={message_id:string;position:number;role:string;sp
 type View<S>={head:StoryCheckpointHead;snapshot:S|null;stale:boolean};
 export type StoryCheckpointTransport<S>={read:(key:string,site:Site)=>Promise<View<S>>;page:(key:string,offset:number,limit:number)=>Promise<StoryCheckpointRow[]>;commit:(request:{key:string;site:Site;head:StoryCheckpointHead;append:StoryCheckpointRow[];recall:string|null;snapshot:S;deviceId:string})=>Promise<number>};
 type Baseline<S>=View<S>&{key:string;rows:StoryCheckpointRow[]};
-type Operation={kind:'user';id:string}|{kind:'reply';id:string;userId:string}|{kind:'recall';userId:string};
+type Operation={kind:'user';id:string}|{kind:'reply';id:string;userId:string}|{kind:'recall';userId:string}|{kind:'settings'};
 type Journal={version:1;key:string;revision:number;beforeHash:string;afterHash:string;afterCount:number};
 const equal=(a:unknown,b:unknown)=>canonicalContextJson(a)===canonicalContextJson(b);
 const digest=(v:unknown)=>hashContextJson(canonicalContextJson(v));
@@ -59,7 +59,9 @@ export function createStoryCheckpointSession<S extends StoryCheckpointSnapshot>(
    if(current.stale||!equal(current,baseline))throw Error('STORY_SYNC_BASELINE_CHANGED');
    const history=deps.history(baseline.key),next=rowsOf(history);
    let append:StoryCheckpointRow[]=[],recall:string|null=null;
-   if(op.kind==='recall'){
+   if(op.kind==='settings'){
+    if(!equal(next,baseline.rows)||baseline.rows.at(-1)?.role==='user')throw Error('STORY_SYNC_SETTINGS_HISTORY_CHANGED');
+   }else if(op.kind==='recall'){
     const i=baseline.rows.findIndex(r=>r.message_id===op.userId&&r.role==='user');
     if(i<0||baseline.rows.slice(i+1).some(r=>r.role==='user')||baseline.rows.slice(i).some(media)||!equal(next,baseline.rows.slice(0,i)))throw Error('STORY_SYNC_RECALL_INVALID');
     recall=op.userId;
