@@ -6,6 +6,7 @@ import {MemoryManager} from '../managers.js';
 import {RoomManager} from '../roomManager.js';
 import {readCloudSyncIndex,writeCloudSyncIndexesAtomically} from '../cloudSyncIndexStore.js';
 import {readAtomicBaseline,saveAtomicBaseline,pendingAtomicJournal,planAtomicDelta} from '../atomicCloudDelta.js';
+import {mergeBaseIndex,readMergeBase} from '../atomicCloudMerge.js';
 const pending='wetappCloudPendingV1',messageIndex='wetappCloudMessageIndexV1',convIndex='wetappCloudConversationIndexV1',mediaIndex='wetappCloudMediaIndexV1',stateIndex='wetappCloudStateEntityIndexV1';
 const id='fixture-room\u0000old';
 const payload={schemaVersion:1,customPersonas:{},diaries:{},interests:{},rooms:{version:2,rooms:[]},appSettings:{}};
@@ -47,4 +48,22 @@ test('stale baseline and new media both refuse all cloud mutations',async()=>{
 test('whole conversation deletion does not include contradictory individual row deletes',()=>{
  const d=planAtomicDelta([],[],{}, {'a\u0000x':'1','b\u0000y':'2'},{a:'1'});
  assert.deepEqual(d.remove_conversations,['a']);assert.deepEqual(d.remove_messages,[{conversation_key:'b',message_id:'y'}]);
+});
+
+test('manager stages a stable three-way conflict plan without remote writes or local replacement',async()=>{
+ const uid='atomic-merge-plan-1',f=await fixture(uid);
+ const local=f.x.collectLocalMessages(),base={conversations:local.conversations,messages:local.messages.slice(0,1),payload};
+ await saveAtomicBaseline(uid,7,mergeBaseIndex(uid,7,base));
+ f.advance();
+ const other={conversation_key:'other',title:'Other',kind:'persona'};
+ const remoteMessage={conversation_key:'other',message_id:'other-u',position:0,role:'user',speaker_id:null,content:{text:'remote'},created_at_ms:3};
+ f.x.client.from=(table:string)=>{assert.equal(table,'wetapp_state');const chain={select:()=>chain,maybeSingle:async()=>({data:{revision:8,payload},error:null})};return chain;};
+ f.x.fetchAllRows=async(table:string)=>table==='wetapp_conversations'?[...base.conversations,other]:table==='wetapp_messages'?[...base.messages,remoteMessage]:[];
+ assert.equal(await f.x.pushLocalToCloud(),false);
+ const plan=await readCloudSyncIndex('wetappAtomicMergePlanV3:'+uid);
+ assert.equal(plan.remoteRevision,'8');assert.equal(JSON.parse(plan.merged).messages.length,3);
+ assert.equal(JSON.parse(plan.local).messages.length,2);assert.equal(JSON.parse(plan.remote).messages.length,2);
+ assert.deepEqual(f.calls,[]);assert.equal(await pendingAtomicJournal(uid),null);
+ assert.equal(await readAtomicBaseline(uid),7);assert.equal((await readMergeBase(uid,7))!.messages.length,1);
+ assert.equal(f.m.get(pending),'true');
 });

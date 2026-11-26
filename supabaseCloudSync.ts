@@ -15,7 +15,8 @@ import {
 } from './chatMediaStore.js';
 import type { StoredChatAttachment } from './chatMediaStore.js';
 import { filterRemoteStateEntities, findLocallyDeletedIndexedKeys, mergeChatHistoryMaps } from './cloudMessageMerge.js';
-import { readCloudSyncIndex, writeCloudSyncIndex } from './cloudSyncIndexStore.js';
+import { readCloudSyncIndex, writeCloudSyncIndex, writeCloudSyncIndexesAtomically } from './cloudSyncIndexStore.js';
+import {mergeAtomicSnapshots,mergeBaseIndex,readMergeBase,normalizeMergeSnapshot,type CloudMergeSnapshot} from './atomicCloudMerge.js';
 import {planAtomicDelta,readAtomicBaseline,saveAtomicBaseline,pendingAtomicJournal,prepareAtomicJournal,completeAtomicJournal} from './atomicCloudDelta.js';
 import { isLocalCloudChangeBatchActive, LOCAL_CLOUD_CHANGE_EVENT, LocalCloudChangeScope } from './cloudSyncEvents.js';
 import { isPersistedAppSettingKey, PERSISTED_APP_SETTING_KEYS, mergeStructuredAppSetting } from './appSettings.js';
@@ -1114,6 +1115,34 @@ export class SupabaseCloudSyncManager {
         );
     }
 
+    private async prepareAtomicConflict(uid:string,generation:number,baseRevision:number,remoteRevision:number,epoch:number):Promise<boolean>{
+        if(!this.client||!this.canRestore())return false;
+        const base=await readMergeBase(uid,baseRevision);if(!base)return false;
+        const client=this.client;
+        const [state,conversations,messages,mediaRows]=await Promise.all([
+            client.from('wetapp_state').select('revision,payload').maybeSingle(),
+            this.fetchAllRows<CloudConversationRow>('wetapp_conversations',[['conversation_key',true]]),
+            this.fetchAllRows<CloudMessageRow>('wetapp_messages',[['conversation_key',true],['position',true],['message_id',true]]),
+            this.fetchAllRows<CloudMediaRow>('wetapp_media',[['asset_id',true]]),
+        ]);
+        if(state.error||normalizeCloudStateRevision(state.data?.revision)!==remoteRevision||!state.data?.payload)throw Error('ATOMIC_CONFLICT_REVIEW_REQUIRED：雲端版本已改變。');
+        const payload=await this.buildStatePayload(),localRows=this.collectLocalMessages(uid),localMedia=await this.collectLocalMedia(payload.rooms.rooms,uid);
+        const oldMedia=await readCloudSyncIndex(MEDIA_INDEX_KEY);
+        const signature=(rows:{asset_id:string;signature:string}[])=>JSON.stringify(Object.entries(Object.fromEntries(rows.map(r=>[r.asset_id,r.signature]))).sort());
+        const baselineMedia=JSON.stringify(Object.entries(oldMedia).sort());
+        if(signature(mediaRows)!==baselineMedia||signature(localMedia)!==baselineMedia)throw Error('ATOMIC_MEDIA_CHANGE_PENDING：媒體有變更，未合併。');
+        const local=normalizeMergeSnapshot({conversations:localRows.conversations,messages:localRows.messages,payload});
+        const remote=normalizeMergeSnapshot({conversations,messages,payload:state.data.payload});
+        const merged=normalizeMergeSnapshot(mergeAtomicSnapshots(base,local,remote));
+        const head=await this.readCloudStateHead(uid,generation);
+        this.assertCurrentSessionUser(uid,generation);
+        if(head.revision!==remoteRevision||this.atomicLocalEpoch!==epoch||!this.canRestore())throw Error('ATOMIC_CONFLICT_REVIEW_REQUIRED：合併期間資料已改變。');
+        // The proposed merge is durable, but never overwrite either side before the
+        // normal runtime can install and confirm the rebased state without losing edits.
+        await writeCloudSyncIndexesAtomically({['wetappAtomicMergePlanV3:'+uid]:{baseRevision:String(baseRevision),remoteRevision:String(remoteRevision),local:JSON.stringify(local),remote:JSON.stringify(remote),merged:JSON.stringify(merged)}});
+        return true;
+    }
+
     // Deliberately opt-in. The original production writer is not switched by this implementation.
     private async pushAtomicDelta():Promise<boolean>{
         if(this.recoveryOnly||!this.client||!this.session||this.pushing||this.pulling)return false;
@@ -1136,7 +1165,10 @@ export class SupabaseCloudSyncManager {
                     const baseline=await readAtomicBaseline(uid);
                     if(!baseline)throw Error('ATOMIC_BASELINE_REQUIRED：請先確認本機與雲端基準；未上載任何資料。');
                     const head=await this.readCloudStateHead(uid,generation);
-                    if(head.revision!==baseline)throw Error('ATOMIC_CONFLICT_REVIEW_REQUIRED：另一裝置已更新雲端；本機變更已保留。');
+                    if(head.revision!==baseline){
+                        const prepared=await this.prepareAtomicConflict(uid,generation,baseline,head.revision,epoch);
+                        throw Error(prepared?'ATOMIC_CONFLICT_REVIEW_REQUIRED：已建立合併方案，本機及雲端原件未改動。':'ATOMIC_CONFLICT_REVIEW_REQUIRED：另一裝置已更新雲端；本機變更已保留。');
+                    }
                     const payload=await this.buildStatePayload();assertCurrent();
                     const media=await this.collectLocalMedia(payload.rooms.rooms,uid);
                     const mediaIndex=Object.fromEntries(media.map(a=>[a.asset_id,a.signature]));
@@ -1153,6 +1185,7 @@ export class SupabaseCloudSyncManager {
                         [CONVERSATION_INDEX_KEY]:Object.fromEntries(conversations.map(c=>[c.conversation_key,'1'])),
                         [MEDIA_INDEX_KEY]:mediaIndex,
                         [STATE_ENTITY_INDEX_KEY]:this.stateEntityIndex(payload),
+                        ...mergeBaseIndex(uid,baseline+1,{conversations,messages,payload}),
                     });
                 }
                 assertCurrent();
@@ -1419,7 +1452,14 @@ export class SupabaseCloudSyncManager {
                     (stateResponse.data?.payload || {}) as Partial<CloudStatePayload>,
                 );
                 this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
-                if(this.atomicDeltaMode&&!this.recoveryOnly)await saveAtomicBaseline(sessionUserId,this.lastObservedCloudStateRevision??0);
+                if(this.atomicDeltaMode&&!this.recoveryOnly){
+                    const revision=this.lastObservedCloudStateRevision??0;
+                    const conversations=await this.fetchAllRows<CloudConversationRow>('wetapp_conversations',[['conversation_key',true]]);
+                    const head=await this.client.from('wetapp_state').select('revision').maybeSingle();
+                    this.assertCurrentSessionUser(sessionUserId,sessionGeneration);
+                    if(head.error||normalizeCloudStateRevision(head.data?.revision)!==revision)throw Error('CLOUD_RECOVERY_REVISION_CHANGED');
+                    await saveAtomicBaseline(sessionUserId,revision,mergeBaseIndex(sessionUserId,revision,{conversations,messages:messageRows,payload:stateResponse.data?.payload||{}}));
+                }
             } catch (error) {
                 try {
                     await this.rollbackCloudPullTransaction(localTransaction);

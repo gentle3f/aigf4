@@ -18,7 +18,7 @@ const baselineKey=(uid:string)=>'wetappAtomicDeltaBaselineV3:'+uid;
 export type AtomicRequest={expected_revision:number;new_payload:object;delta:Delta;device:string;operation_id:string};
 type Journal={request:AtomicRequest;indexes:Record<string,Record<string,string>>};
 export const readAtomicBaseline=async(uid:string)=>Number((await readCloudSyncIndex(baselineKey(uid))).revision||0);
-export const saveAtomicBaseline=async(uid:string,revision:number)=>{if(!Number.isSafeInteger(revision)||revision<1)throw Error('ATOMIC_BASELINE_REQUIRED');await writeCloudSyncIndexesAtomically({[baselineKey(uid)]:{revision:String(revision)}});};
+export const saveAtomicBaseline=async(uid:string,revision:number,extra:Record<string,Record<string,string>>={})=>{if(!Number.isSafeInteger(revision)||revision<1)throw Error('ATOMIC_BASELINE_REQUIRED');await writeCloudSyncIndexesAtomically({...extra,[baselineKey(uid)]:{revision:String(revision)}});};
 export const pendingAtomicJournal=async(uid:string):Promise<Journal|null>=>{
  const raw=(await readCloudSyncIndex(journalKey(uid))).json;if(!raw)return null;
  const j=JSON.parse(raw) as Journal;
