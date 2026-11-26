@@ -13,7 +13,7 @@ export function createStoryCheckpointSupabaseTransport<S extends StoryCheckpoint
   const url=new URL(typeof input==='string'?input:input instanceof URL?input.href:input.url);
   const method=(init?.method||(input instanceof Request?input.method:'GET')).toUpperCase();
   const path=url.pathname;
-  const allowed=method==='GET'&&path==='/rest/v1/wetapp_messages'||method==='POST'&&['/rest/v1/rpc/wetapp_story_checkpoint_read_lab','/rest/v1/rpc/wetapp_story_checkpoint_commit_lab'].includes(path)||method==='POST'&&path==='/auth/v1/token'&&['password','refresh_token'].includes(url.searchParams.get('grant_type')||'');
+  const allowed=method==='GET'&&path==='/rest/v1/wetapp_messages'||method==='POST'&&['/rest/v1/rpc/wetapp_story_checkpoint_read_lab','/rest/v1/rpc/wetapp_story_checkpoint_commit_lab','/rest/v1/rpc/wetapp_story_checkpoint_init_lab'].includes(path)||method==='POST'&&path==='/auth/v1/token'&&['password','refresh_token'].includes(url.searchParams.get('grant_type')||'');
   if(url.origin!==target.origin||url.username||url.password||!allowed)throw Error('STORY_SYNC_NETWORK_DENIED');
   return fetchImpl(input,{...init,redirect:'error'});
  };
@@ -39,7 +39,11 @@ export function createStoryCheckpointSupabaseTransport<S extends StoryCheckpoint
    return Number(result);
   }
  };
- return {transport,signIn:async(email:string,password:string)=>{
+ return {transport,initialize:async(site:'worldline1'|'worldline2')=>{
+  const key=checked(await client.rpc('wetapp_story_checkpoint_init_lab',{site_name:site}));
+  if(key!=='aigf-sync-pilot-'+site)throw Error('STORY_SYNC_INIT_INVALID');
+  return key as string;
+ },signIn:async(email:string,password:string)=>{
   const result=await supabase.auth.signInWithPassword({email,password});
   if(result.error||!result.data.session)throw Error('STORY_SYNC_LOGIN_FAILED');
  }};

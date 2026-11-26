@@ -11224,7 +11224,14 @@ const setupEventListeners = () => {
             }catch(e){showError('未能查找 VPS 任務：'+(e instanceof Error?e.message:'UNKNOWN'));}
             finally{findRecovery.disabled=false;}
         };
-        controls.append(label,select,resume,abandon,memoryResume,memoryAbandon,groupMemoryAbandon,findRecovery);chatView.prepend(controls);
+        controls.append(label,select,resume,abandon,memoryResume,memoryAbandon,groupMemoryAbandon,findRecovery);
+        if(import.meta.env?.VITE_AIGF_SYNC_PILOT_KEY){
+            const syncPilot=document.createElement('button');syncPilot.type='button';syncPilot.textContent='跨裝置同步試用';
+            syncPilot.style.cssText='color:#171717;background:#fff;padding:4px 8px;border-radius:4px';
+            syncPilot.onclick=()=>void import('./storySyncPilotUi.js').then(m=>m.openStorySyncPilot()).catch(e=>showError('未能開啟同步試用：'+(e instanceof Error?e.message:'UNKNOWN')));
+            controls.append(syncPilot);
+        }
+        chatView.prepend(controls);
         window.addEventListener('online',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();});
         window.addEventListener('pageshow',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();});
         document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();}});

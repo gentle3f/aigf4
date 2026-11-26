@@ -44,7 +44,7 @@ export function createStoryCheckpointSession<S extends StoryCheckpointSnapshot>(
   if(current.head.revision===j.revision&&h===j.beforeHash)return 'not-confirmed' as const;
   return 'conflict' as const;
  };
- return {pending,recover:()=>deps.lock(async()=>{const j=pending();return j?inspect(j):'none' as const;}),
+ return {pending,load:(key:string)=>deps.lock(()=>read(key)),recover:()=>deps.lock(async()=>{const j=pending();return j?inspect(j):'none' as const;}),
   begin:(key:string,initialize=false)=>deps.lock(async()=>{
    if(pending())throw Error('STORY_SYNC_PENDING');
    const b=await read(key);
