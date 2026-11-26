@@ -25,3 +25,35 @@ test('real Supabase SDK requests exact isolated REST and RPC endpoints',async()=
  assert.equal(calls[2].body.recall_user,'user-id');assert.equal(calls[2].body.expected_revision,1);
  await assert.rejects(transport.page('fixture',0,201),/RANGE_INVALID/);assert.equal(calls.length,3);
 });
+
+test('real SDK media upload/download uses isolated bucket and owner-bound manifest',async()=>{
+ const uid='10000000-0000-4000-8000-000000000001';
+ const files=new Map<string,Blob>();let row:any=null;const calls:string[]=[];
+ const mock:typeof fetch=async(input,init)=>{
+  const u=new URL(typeof input==='string'?input:input instanceof URL?input.href:input.url);
+  assert.equal(u.origin,cfg.projectUrl);assert.equal(init?.redirect,'error');
+  const method=init?.method||'GET';calls.push(method+' '+u.pathname);
+  const json=(data:any,status=200)=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}});
+  if(u.pathname==='/auth/v1/token')return json({access_token:'fixture-access',refresh_token:'fixture-refresh',expires_in:3600,token_type:'bearer',user:{id:uid,email:'fixture@example.invalid'}});
+  if(u.pathname==='/rest/v1/wetapp_pilot_media'){
+   if(method==='POST'){row=JSON.parse(String(init?.body));assert.equal(row.user_id,uid);delete row.user_id;return new Response(null,{status:201});}
+   return json(row?[row]:[]);
+  }
+  const path=u.pathname.replace(/^\/storage\/v1\/object\/(?:authenticated\/)?aigf-pilot-media\//,'');
+  assert.ok(path.startsWith(uid+'/'));
+  if(method==='POST'){
+   const body=init?.body;
+   const blob=body instanceof FormData?body.get('') as Blob:body as Blob;
+   assert.ok(blob instanceof Blob);files.set(path,blob);return json({Id:'fixture',Key:'aigf-pilot-media/'+path});
+  }
+  const blob=files.get(path);assert.ok(blob);return new Response(blob,{headers:{'Content-Type':blob.type}});
+ };
+ const client=createStoryCheckpointSupabaseTransport(cfg,mock);
+ assert.throws(()=>client.getMedia(),/LOGIN_REQUIRED/);
+ await client.signIn('fixture@example.invalid','not-real-password');
+ const media=client.getMedia(),a={id:'fixture-media',kind:'image' as const,blob:new Blob(['fixture bytes'],{type:'image/webp'}),metadata:{prompt:'fixture'},createdAt:123};
+ assert.equal(await media.push(a),'synced');
+ assert.equal(await (await media.pull(a.id))!.blob.text(),'fixture bytes');
+ assert.equal((await media.list()).length,1);
+ assert.equal(calls.filter(x=>x.startsWith('POST /storage/')).length,1);
+});
