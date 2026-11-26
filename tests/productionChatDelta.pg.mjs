@@ -37,5 +37,16 @@ try{
  await check('other owner unchanged and anonymous execution denied',async()=>{
   await db.exec('reset role');const r=await db.query("select revision from public.wetapp_state where user_id=$1",[other]);assert.equal(Number(r.rows[0].revision),1);assert.equal((await db.query("select has_function_privilege('anon','public.wetapp_commit_chat_delta_v3(bigint,jsonb,jsonb,text)','EXECUTE') allowed")).rows[0].allowed,false);
  });
- console.log('PRODUCTION_DELTA_SQL_PASS '+passed+'/5');
+ await check('receipted transaction retries same request exactly once and refuses operation ID collision',async()=>{
+  await db.exec("set role authenticated;set fixture.uid='"+owner+"';set fixture.owner='yes';");
+  const args=[482,JSON.stringify({marker:'receipt'}),JSON.stringify({...empty,messages:[row(5536)]}),'device-receipt','30000000-0000-4000-8000-000000000001'];
+  const apply=()=>db.query('select public.wetapp_commit_chat_delta_receipted_v3($1,$2::jsonb,$3::jsonb,$4,$5::uuid) as revision',args);
+  assert.equal(Number((await apply()).rows[0].revision),483);
+  assert.equal(Number((await apply()).rows[0].revision),483);
+  assert.equal(Number((await state()).revision),483);assert.equal((await head()).message_count,5537);
+  assert.equal(Number((await db.query('select revision from public.wetapp_chat_delta_receipts_v3')).rows[0].revision),483);
+  args[1]=JSON.stringify({marker:'other'});await assert.rejects(apply(),/DELTA_OPERATION_COLLISION/);
+  assert.equal((await state()).payload.marker,'receipt');assert.equal(await fingerprint(),old);
+ });
+ console.log('PRODUCTION_DELTA_SQL_PASS '+passed+'/6');
 }catch(e){console.error(e);process.exitCode=1}finally{await db.close()}

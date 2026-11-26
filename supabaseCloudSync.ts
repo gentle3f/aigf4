@@ -16,6 +16,7 @@ import {
 import type { StoredChatAttachment } from './chatMediaStore.js';
 import { filterRemoteStateEntities, findLocallyDeletedIndexedKeys, mergeChatHistoryMaps } from './cloudMessageMerge.js';
 import { readCloudSyncIndex, writeCloudSyncIndex } from './cloudSyncIndexStore.js';
+import {planAtomicDelta,readAtomicBaseline,saveAtomicBaseline,pendingAtomicJournal,prepareAtomicJournal,completeAtomicJournal} from './atomicCloudDelta.js';
 import { isLocalCloudChangeBatchActive, LOCAL_CLOUD_CHANGE_EVENT, LocalCloudChangeScope } from './cloudSyncEvents.js';
 import { isPersistedAppSettingKey, PERSISTED_APP_SETTING_KEYS, mergeStructuredAppSetting } from './appSettings.js';
 import {
@@ -276,8 +277,9 @@ export class SupabaseCloudSyncManager {
     private remoteStateChangeEpoch = 0;
     private reconciledRemoteStateChangeEpoch = 0;
     private started = false;
+    private atomicLocalEpoch=0;
 
-    constructor(memoryManager: MemoryManager, roomManager: RoomManager, callbacks: CloudSyncCallbacks, private readonly recoveryOnly=false, private readonly canRestore=()=>true) {
+    constructor(memoryManager: MemoryManager, roomManager: RoomManager, callbacks: CloudSyncCallbacks, private readonly recoveryOnly=false, private readonly canRestore=()=>true, private readonly atomicDeltaMode=false) {
         this.memoryManager = memoryManager;
         this.roomManager = roomManager;
         this.callbacks = callbacks;
@@ -622,7 +624,9 @@ export class SupabaseCloudSyncManager {
     }
 
     private readonly handleLocalChange = (event: CustomEvent<{ scope?: LocalCloudChangeScope }>) => {
-        if (this.applyingRemote || this.pushing) return;
+        if (this.applyingRemote) return;
+        if(this.atomicDeltaMode)this.atomicLocalEpoch++;
+        if(this.pushing&&!this.atomicDeltaMode)return;
         localStorage.setItem(PENDING_KEY, 'true');
         if (!this.session || !this.initializedUserId || this.pullRecoveryRequired) return;
         this.schedulePush(event.detail?.scope === 'media' ? 400 : 1200);
@@ -785,6 +789,11 @@ export class SupabaseCloudSyncManager {
         sessionGeneration = this.sessionGeneration,
     ) {
         if (!this.client || !this.isCurrentSession(sessionUserId, sessionGeneration)) return;
+        if(this.atomicDeltaMode){
+            if(await pendingAtomicJournal(sessionUserId)||localStorage.getItem(PENDING_KEY)==='true')await this.pushAtomicDelta();
+            else await this.pullCloudToLocal(true,false);
+            return;
+        }
         try {
             const [{ data: remoteState, error: stateError }, { count, error: countError }] = await Promise.all([
                 this.client.from('wetapp_state').select('revision,updated_at,source_device_id').maybeSingle(),
@@ -1041,6 +1050,7 @@ export class SupabaseCloudSyncManager {
 
     private async pushPendingChangesSafely(): Promise<boolean> {
         if(this.recoveryOnly)return false;
+        if(this.atomicDeltaMode)return this.pushAtomicDelta();
         if (!this.client || !this.session || this.pushing || this.pulling) return false;
         const sessionUserId = this.session.user.id;
         const sessionGeneration = this.sessionGeneration;
@@ -1082,6 +1092,11 @@ export class SupabaseCloudSyncManager {
 
     private async recoverCloudSafely() {
         if(this.recoveryOnly)return false;
+        if(this.atomicDeltaMode){
+            if(!this.session)return false;
+            if(await pendingAtomicJournal(this.session.user.id)||localStorage.getItem(PENDING_KEY)==='true')return this.pushAtomicDelta();
+            return this.pullCloudToLocal(true,false);
+        }
         if (!this.client || !this.session || this.pushing || this.pulling) return false;
         const sessionUserId = this.session.user.id;
         const sessionGeneration = this.sessionGeneration;
@@ -1099,8 +1114,88 @@ export class SupabaseCloudSyncManager {
         );
     }
 
+    // Deliberately opt-in. The original production writer is not switched by this implementation.
+    private async pushAtomicDelta():Promise<boolean>{
+        if(this.recoveryOnly||!this.client||!this.session||this.pushing||this.pulling)return false;
+        if(!navigator.onLine){this.setState('offline','本機變更已保留，連線後補傳。');return false;}
+        if(!navigator.locks){this.setState('error','ATOMIC_SYNC_BROWSER_LOCK_REQUIRED');return false;}
+        const uid=this.session.user.id,generation=this.sessionGeneration,client=this.client;
+        if(isLocalCloudChangeBatchActive()){this.schedulePush(250);return false;}
+        return navigator.locks.request('wetapp-atomic-cloud-delta:'+uid,async()=>{
+            if(this.pushing||this.pulling||!this.isCurrentSession(uid,generation))return false;
+            this.pushing=true;
+            const assertCurrent=()=>this.assertCurrentSessionUser(uid,generation);
+            const epoch=this.atomicLocalEpoch;
+            let followup=false;
+            try{
+                let journal=await pendingAtomicJournal(uid);
+                assertCurrent();
+                const recovering=!!journal;
+                if(!journal){
+                    if(localStorage.getItem(PENDING_KEY)!=='true')return true;
+                    const baseline=await readAtomicBaseline(uid);
+                    if(!baseline)throw Error('ATOMIC_BASELINE_REQUIRED：請先確認本機與雲端基準；未上載任何資料。');
+                    const head=await this.readCloudStateHead(uid,generation);
+                    if(head.revision!==baseline)throw Error('ATOMIC_CONFLICT_REVIEW_REQUIRED：另一裝置已更新雲端；本機變更已保留。');
+                    const payload=await this.buildStatePayload();assertCurrent();
+                    const media=await this.collectLocalMedia(payload.rooms.rooms,uid);
+                    const mediaIndex=Object.fromEntries(media.map(a=>[a.asset_id,a.signature]));
+                    const [oldMedia,oldMessages,oldConversations]=await Promise.all([readCloudSyncIndex(MEDIA_INDEX_KEY),readCloudSyncIndex(MESSAGE_INDEX_KEY),readCloudSyncIndex(CONVERSATION_INDEX_KEY)]);
+                    assertCurrent();
+                    // Existing media references are supported; new/replaced/deleted bytes require
+                    // the immutable media transaction path. Never fall back to a legacy overwrite.
+                    if(Object.keys(oldMedia).length!==Object.keys(mediaIndex).length||Object.keys(mediaIndex).some(k=>oldMedia[k]!==mediaIndex[k]))throw Error('ATOMIC_MEDIA_CHANGE_PENDING：新媒體仍保留在本機。');
+                    const {conversations,messages,hashes}=this.collectLocalMessages(uid);
+                    const delta=planAtomicDelta(conversations,messages,hashes,oldMessages,oldConversations);
+                    if(this.atomicLocalEpoch!==epoch)throw Error('ATOMIC_LOCAL_SNAPSHOT_CHANGED');
+                    journal=await prepareAtomicJournal(uid,{expected_revision:baseline,new_payload:payload,delta,device:this.deviceId},{
+                        [MESSAGE_INDEX_KEY]:hashes,
+                        [CONVERSATION_INDEX_KEY]:Object.fromEntries(conversations.map(c=>[c.conversation_key,'1'])),
+                        [MEDIA_INDEX_KEY]:mediaIndex,
+                        [STATE_ENTITY_INDEX_KEY]:this.stateEntityIndex(payload),
+                    });
+                }
+                assertCurrent();
+                this.setState('pushing','正在一次提交聊天、角色及群組設定…',{progress:88});
+                const revision=await completeAtomicJournal(uid,journal,{
+                    read:async operationId=>{
+                        const r=await client.from('wetapp_chat_delta_receipts_v3').select('revision').eq('user_id',uid).eq('operation_id',operationId).maybeSingle();
+                        if(r.error)throw r.error;
+                        return r.data?normalizeCloudStateRevision(r.data.revision):null;
+                    },
+                    commit:async request=>{
+                        const r=await client.rpc('wetapp_commit_chat_delta_receipted_v3',request);
+                        if(r.error)throw r.error;
+                        return normalizeCloudStateRevision(r.data);
+                    }
+                },assertCurrent);
+                assertCurrent();
+                this.lastObservedCloudStateRevision=revision;
+                this.setPullRecoveryRequired(false);
+                followup=recovering||epoch!==this.atomicLocalEpoch;
+                if(followup)localStorage.setItem(PENDING_KEY,'true');
+                else localStorage.removeItem(PENDING_KEY);
+                this.markSynced(followup?'已確認先前同步；新變更仍待補傳。':'聊天及設定已同步。');
+                return true;
+            }catch(error){
+                if(!this.isCurrentSession(uid,generation))return false;
+                localStorage.setItem(PENDING_KEY,'true');
+                const message=authErrorMessage(error,'原子同步失敗');
+                if(isCloudStateRevisionConflict(error)||/ATOMIC_(BASELINE_REQUIRED|CONFLICT_REVIEW_REQUIRED|MEDIA_CHANGE_PENDING)/.test(message)){
+                    this.setPullRecoveryRequired(true);
+                    this.setState('error',message);
+                }else this.handleSyncError(error,'同步未確認，本機變更已保留');
+                return false;
+            }finally{
+                this.pushing=false;
+                if(followup&&this.isCurrentSession(uid,generation))this.schedulePush(0);
+            }
+        });
+    }
+
     private async pushLocalToCloud(initial = false, preserveRemote = false, expectedStateRevision?: number, forceFullSnapshot = false): Promise<boolean> {
         if(this.recoveryOnly)return false;
+        if(this.atomicDeltaMode){if(preserveRemote)throw Error('ATOMIC_UNVERSIONED_WRITE_DISABLED');return this.pushAtomicDelta();}
         if (!this.client || !this.session || this.pushing || this.pulling) return false;
         const sessionUserId = this.session.user.id;
         const sessionGeneration = this.sessionGeneration;
@@ -1192,6 +1287,7 @@ export class SupabaseCloudSyncManager {
     }
 
     private async pullCloudToLocal(force = false, mergeLocal = false): Promise<boolean> {
+        if(this.atomicDeltaMode&&!this.recoveryOnly&&(mergeLocal||localStorage.getItem(PENDING_KEY)==='true'||!this.canRestore()||(this.session&&await pendingAtomicJournal(this.session.user.id))))return false;
         if(this.recoveryOnly&&(!force||mergeLocal||!this.canRestore()||!this.recoveryHistoryAllowed()))return false;
         if (!this.client || !this.session || this.pulling || this.pushing) return false;
         const sessionUserId = this.session.user.id;
@@ -1275,8 +1371,8 @@ export class SupabaseCloudSyncManager {
                 this.fetchAllRows<CloudMediaRow>('wetapp_media', [['created_at_ms', true]]),
             ]);
             this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
-            if(this.recoveryOnly){
-                if(!this.canRestore()||!this.recoveryHistoryAllowed())throw Error('CLOUD_RECOVERY_LOCAL_CHANGED');
+            if(this.recoveryOnly||this.atomicDeltaMode){
+                if(!this.canRestore()||(this.recoveryOnly&&!this.recoveryHistoryAllowed()))throw Error('CLOUD_RECOVERY_LOCAL_CHANGED');
                 const head=await this.client.from('wetapp_state').select('revision').maybeSingle();
                 if(head.error||normalizeCloudStateRevision(head.data?.revision)!==this.lastObservedCloudStateRevision)throw Error('CLOUD_RECOVERY_REVISION_CHANGED');
             }
@@ -1287,8 +1383,8 @@ export class SupabaseCloudSyncManager {
                 await this.pullMedia(mediaRows, mergeLocal, localTransaction);
                 this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
                 this.setState('pulling', `正在整理 ${messageRows.length.toLocaleString('zh-HK')} 則訊息…`, { progress: 72 });
-                if(this.recoveryOnly){
-                    if(!this.canRestore()||!this.recoveryHistoryAllowed())throw Error('CLOUD_RECOVERY_LOCAL_CHANGED');
+                if(this.recoveryOnly||this.atomicDeltaMode){
+                    if(!this.canRestore()||(this.recoveryOnly&&!this.recoveryHistoryAllowed()))throw Error('CLOUD_RECOVERY_LOCAL_CHANGED');
                     const head=await this.client.from('wetapp_state').select('revision').maybeSingle();
                     if(head.error||normalizeCloudStateRevision(head.data?.revision)!==this.lastObservedCloudStateRevision)throw Error('CLOUD_RECOVERY_REVISION_CHANGED');
                 }
@@ -1323,6 +1419,7 @@ export class SupabaseCloudSyncManager {
                     (stateResponse.data?.payload || {}) as Partial<CloudStatePayload>,
                 );
                 this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
+                if(this.atomicDeltaMode&&!this.recoveryOnly)await saveAtomicBaseline(sessionUserId,this.lastObservedCloudStateRevision??0);
             } catch (error) {
                 try {
                     await this.rollbackCloudPullTransaction(localTransaction);

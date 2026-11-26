@@ -59,6 +59,17 @@ export const readCloudSyncIndex = async (name: string) => {
     return {};
 };
 
+// Publish all confirmed sync indexes and retire the durable request in one IndexedDB transaction.
+export const writeCloudSyncIndexesAtomically = async (entries:Record<string,Record<string,string>>,removeNames:string[]=[]) => {
+ const database=await openDatabase();
+ return new Promise<void>((resolve,reject)=>{
+  const tx=database.transaction(INDEX_STORE,'readwrite'),store=tx.objectStore(INDEX_STORE);
+  for(const [name,values] of Object.entries(entries))store.put({name,values,updatedAt:Date.now()} satisfies StoredCloudIndex);
+  for(const name of removeNames)store.delete(name);
+  tx.oncomplete=()=>resolve();
+  tx.onabort=()=>reject(tx.error||new Error('Atomic cloud index transaction failed.'));
+ });
+};
 export const writeCloudSyncIndex = async (name: string, values: Record<string, string>) => {
     await requestIndex('readwrite', store => store.put({
         name,
