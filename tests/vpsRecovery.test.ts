@@ -33,3 +33,19 @@ test('proxy scope is derived server-side, listing requires app auth and strips u
  assert.deepEqual((await request('GET',undefined,{recovery:'1'})).value,{receipts:[row]});
  assert.equal(calls,2);
 });
+
+test('site recovery scope is stable and mixed legacy receipts remain compatible',async()=>{
+ const {createHmac}=await import('node:crypto');
+ const env={APP_SESSION_SECRET:'fixture-secret',AIGF_VPS_QUEUE_ENABLED:'1',AIGF_VPS_QUEUE_URL:'https://fixture.invalid/',AIGF_VPS_QUEUE_TOKEN:'x'.repeat(64)};
+ const worldRow={...row,receipt:{...receipt,contextDigestVersion:2,worldDigest:'b'.repeat(64)}};
+ const expected=createHmac('sha256',env.APP_SESSION_SECRET).update('aigf-vps-private-app-recovery-v2:worldline1').digest('hex');
+ let value:any;
+ const res={code:0,setHeader(){},status(n:number){this.code=n;return this},json(v:any){value=v;return this}};
+ const handler=createGenerationHandler({env,authenticate:()=>true,fetchImpl:async u=>{
+  assert.equal(String(u),'https://fixture.invalid/v1/recovery/'+expected);
+  return new Response(JSON.stringify({receipts:[row,worldRow]}));
+ }});
+ await handler({method:'GET',query:{recovery:'1'}},res);
+ assert.equal(res.code,200);
+ assert.deepEqual(value.receipts,[row,worldRow]);
+});

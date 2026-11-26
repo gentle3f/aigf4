@@ -120,7 +120,7 @@ export function createGenerationHandler({fetchImpl=fetch, authenticate=requireAu
     let scope;
     if(listing||receipt!==undefined){
       if(!env.APP_SESSION_SECRET)return res.status(503).json({error:'RECOVERY_NOT_CONFIGURED'});
-      scope=createHmac('sha256',env.APP_SESSION_SECRET).update('aigf-vps-private-app-recovery-v1').digest('hex');
+      scope=createHmac('sha256',env.APP_SESSION_SECRET).update('aigf-vps-private-app-recovery-v2:worldline1').digest('hex');
     }
     if(listing){
       if(method!=='GET'||req.query?.job_id!==undefined||req.query?.media_offset!==undefined)return res.status(400).json({error:'INVALID_RECOVERY_QUERY'});
