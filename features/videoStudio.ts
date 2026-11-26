@@ -25,6 +25,7 @@ import {
 import type { PersistedVideoJob } from '../videoStudioPersistence.js';
 import { setPersistedAppSetting } from '../appSettings.js';
 import { VPS_CHAT_BUILD } from '../vpsChatMode.js';
+import {queuePilotStudioMedia,refreshPilotStudioMedia} from '../pilotStudioMedia.js';
 import { getSavedStudioVideo,persistStudioVideo,listSavedStudioVideos,deleteSavedStudioVideo } from '../studioMediaStore.js';
 import type { StoredChatAttachment } from '../chatMediaStore.js';
 import { VPS_VIDEO_MODEL,createVpsVideoSubmission,submitDurableVideo } from '../vpsVideoSubmission.js';
@@ -1334,7 +1335,7 @@ const showSavedStudioVideo=(asset:StoredChatAttachment)=>{
     videoResults=[{id:asset.id,savedAssetId:asset.id,url:URL.createObjectURL(asset.blob),isObjectUrl:true,prompt:asset.studio.prompt,model:asset.studio.modelName,modelId:asset.studio.model,queueId:asset.studio.queueId,createdAt:new Date(asset.createdAt),needsRemoteCleanup:false},...videoResults];
 };
 const restoreSavedStudioVideos=async()=>{
-    try{for(const asset of await listSavedStudioVideos())showSavedStudioVideo(asset);renderVideoResults();}
+    try{await refreshPilotStudioMedia().catch(e=>console.warn('Pilot media refresh pending:',e));for(const asset of await listSavedStudioVideos())showSavedStudioVideo(asset);renderVideoResults();}
     catch{showVideoStudioError('未能讀取本機已保存影片。');}
 };
 const finishSavedStudioVideo=async(job:PersistedVideoJob,asset:StoredChatAttachment,controller:AbortController)=>{
@@ -1364,7 +1365,7 @@ const pollPersistedVideoJob = async (job: PersistedVideoJob, controller: AbortCo
                 const asset=await navigator.locks.request('aigf-vps-video-submit-v1',async()=>{
                     const receipt=readPersistedVideoJobFromStorage();
                     if(!receipt?.autonomous||receipt.submissionId!==job.submissionId||controller.signal.aborted)throw Error('VPS_VIDEO_RECEIPT_CHANGED');
-                    return persistStudioVideo(job,blob);
+                    const asset=await persistStudioVideo(job,blob);queuePilotStudioMedia('video',asset.id);return asset;
                 });
                 await finishSavedStudioVideo(job,asset,controller);return;
             }
@@ -1432,7 +1433,7 @@ const pollPersistedVideoJob = async (job: PersistedVideoJob, controller: AbortCo
                 const asset=await navigator.locks.request('aigf-vps-video-submit-v1',async()=>{
                     const receipt=readPersistedVideoJobFromStorage();
                     if(receipt?.queueId!==job.queueId||receipt.model!==job.model||controller.signal.aborted)throw Error('VPS_VIDEO_RECEIPT_CHANGED');
-                    return persistStudioVideo(job,retrieved.blob!);
+                    const asset=await persistStudioVideo(job,retrieved.blob!);queuePilotStudioMedia('video',asset.id);return asset;
                 });
                 await finishSavedStudioVideo(job,asset,controller);
                 return;

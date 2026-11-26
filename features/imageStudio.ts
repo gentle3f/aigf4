@@ -1,4 +1,5 @@
 import { VPS_CHAT_BUILD } from '../vpsChatMode.js';
+import {queuePilotStudioMedia,refreshPilotStudioMedia} from '../pilotStudioMedia.js';
 import { getSavedStudioImage,persistStudioImage,listSavedStudioImages,deleteSavedStudioImage } from '../studioMediaStore.js';
 import type { CharacterPhotoAsset } from '../photoStore.js';
 import { IMAGE_RECEIPT_KEY,readImageReceipt,createVpsImageTransport,submitDurableImage,type ImageReceipt } from '../vpsImageJob.js';
@@ -558,7 +559,7 @@ const showSavedStudioImage=(asset:CharacterPhotoAsset)=>{
     imageResults=[{id:asset.id,savedAssetId:asset.id,blob:asset.blob,url:URL.createObjectURL(asset.blob),prompt:asset.prompt,model:asset.studio?.modelName||'Qwen Image 3',modelId:'qwen-image-3',mode:'generate',aspectRatio:asset.studio?.aspectRatio||'1:1',resolution:asset.studio?.resolution,seed:asset.studio?.seed,createdAt:new Date(asset.createdAt)},...imageResults];
 };
 const restoreSavedStudioImages=async()=>{
-    try{for(const asset of await listSavedStudioImages())showSavedStudioImage(asset);renderImageResults();}
+    try{await refreshPilotStudioMedia().catch(e=>console.warn('Pilot media refresh pending:',e));for(const asset of await listSavedStudioImages())showSavedStudioImage(asset);renderImageResults();}
     catch{showImageStudioError('未能讀取本機已保存圖片。');}
 };
 const receiveVpsImage=async(receipt:ImageReceipt,signal:AbortSignal)=>{
@@ -573,7 +574,7 @@ const receiveVpsImage=async(receipt:ImageReceipt,signal:AbortSignal)=>{
             if(!navigator.locks)throw Error('VPS_IMAGE_WEB_LOCKS_REQUIRED');
             await navigator.locks.request('aigf-vps-image-v1',async()=>{
                 if(readImageReceipt(localStorage)?.jobId!==receipt.jobId||signal.aborted)throw Error('VPS_IMAGE_RECEIPT_CHANGED');
-                const asset=await persistStudioImage(receipt,blob);
+                const asset=await persistStudioImage(receipt,blob);queuePilotStudioMedia('image',asset.id);
                 if(signal.aborted||readImageReceipt(localStorage)?.jobId!==receipt.jobId)throw Error('VPS_IMAGE_RECEIPT_CHANGED');
                 showSavedStudioImage(asset);
                 renderImageResults();

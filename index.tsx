@@ -18,6 +18,8 @@ import {
     cleanAiResponse,
 } from "./managers.js";
 import { createDurableChatTurn, browserTurnLock, type TurnIdentity, type TurnReceipt } from './durableChatTurn.js';
+import {pilotConnectionEnabled} from './pilotConnection.js';
+import {openPilotMediaLogin} from './pilotLoginUi.js';
 import { runDurableChatStage } from './vpsStageRunner.js';
 import { buildVpsWorkflowPayload, decodeVpsWorkflow } from './vpsWorkflow.js';
 import { createGroupCommit, digestGroupContext } from './durableGroupTurn.js';
@@ -10934,6 +10936,7 @@ const setupEventListeners = () => {
             finally{findRecovery.disabled=false;}
         };
         controls.append(label,fallback,resume,findRecovery,memoryResume,abandon,memoryAbandon,groupMemoryAbandon);
+        if(pilotConnectionEnabled){const mediaPilot=document.createElement('button');mediaPilot.type='button';mediaPilot.textContent='媒體同步試用（新生成圖片及影片）';mediaPilot.onclick=()=>{toolsDialog.close();openPilotMediaLogin();};controls.append(mediaPilot);}
         const closeTools=document.createElement('button');closeTools.type='button';closeTools.textContent='關閉';closeTools.onclick=()=>toolsDialog.close();controls.append(closeTools);
         controls.querySelectorAll('button').forEach(b=>{b.style.cssText='text-align:left;padding:9px 12px;border:1px solid #d9d5ce;background:#f7f6f3;color:#252321;border-radius:8px;font-size:13px;cursor:pointer';});
         toolsDialog.append(heading,controls);document.body.append(toolsDialog);
