@@ -21,7 +21,9 @@ import {
     cleanAiResponse,
 } from "./managers.js";
 import { createDurableChatTurn, browserTurnLock, type TurnIdentity, type TurnReceipt, type DurableHistory } from './durableChatTurn.js';
-import {createNativeStoryPilot,askNativePilotLogin,NATIVE_SYNC_KEY,nativePilotEnabled} from './nativeStoryPilotRuntime.js';
+import {createNativeStoryPilot,NATIVE_SYNC_KEY,nativePilotEnabled} from './nativeStoryPilotRuntime.js';
+import {getPilotConnection,pilotConnectionEnabled} from './pilotConnection.js';
+import {askPilotLogin,openPilotMediaLogin} from './pilotLoginUi.js';
 import {digestWorldlineContext,verifyWorldlineAppliedPrefix,commitWorldlineReply} from './durableWorldlineTurn.js';
 import { runDurableChatStage } from './vpsStageRunner.js';
 import { buildVpsWorkflowPayload, decodeVpsWorkflow } from './vpsWorkflow.js';
@@ -3009,7 +3011,7 @@ const syncNativeStoryPilot=async()=>{
 const openNativeStoryPilot=()=>{
     if(!nativePilotEnabled||!isUnlocked||activeChatRequest||resumingVpsTurn||nativeStoryBusy)return;
     if(nativeStoryPilot){startChat(NATIVE_SYNC_KEY,memoryManager.peekChatHistory(NATIVE_SYNC_KEY));void syncNativeStoryPilot();return;}
-    askNativePilotLogin(async(email,password)=>{
+    const connect=async(email:string,password:string)=>{
         if(activeChatRequest||resumingVpsTurn||nativeStoryBusy)throw Error('CHAT_REQUEST_IN_PROGRESS');
         nativeStoryBusy=true;
         try{
@@ -3021,7 +3023,8 @@ const openNativeStoryPilot=()=>{
             startChat(NATIVE_SYNC_KEY,memoryManager.peekChatHistory(NATIVE_SYNC_KEY));
         }finally{nativeStoryBusy=false;}
         void syncNativeStoryPilot();
-    });
+    };
+    if(getPilotConnection().isSignedIn())void connect('','').catch(e=>showError('同步登入未完成：'+(e instanceof Error?e.message:'UNKNOWN')));else askPilotLogin(connect);
 };
 const showSelectionView = (historyMode: 'replace' | 'skip' = 'replace') => {
     closeChatSearch();
@@ -11329,7 +11332,7 @@ const setupEventListeners = () => {
             syncPilot.onclick=()=>{toolsDialog.close();openNativeStoryPilot();};
             controls.append(syncPilot);
             const mediaPilot=document.createElement('button');mediaPilot.type='button';mediaPilot.textContent='媒體同步試用（新生成圖片及影片）';
-            mediaPilot.onclick=()=>{if(!nativeStoryPilot){alert('請先登入跨裝置同步測試故事。');return;}if(!confirm('啟用本次登入期間新生成的 Studio 圖片及影片同步至獨立測試資料庫？不會批量上載原有相簿。'))return;mediaPilot.disabled=true;void import('./pilotStudioMedia.js').then(m=>m.enablePilotStudioMedia(nativeStoryPilot!.getMedia())).then(r=>alert('媒體同步已啟用；已核對雲端媒體 '+r.restored+' 項。')).catch(e=>alert('媒體同步未完成：'+(e instanceof Error?e.message:'UNKNOWN'))).finally(()=>mediaPilot.disabled=false);};controls.append(mediaPilot);
+            mediaPilot.onclick=()=>{toolsDialog.close();openPilotMediaLogin();};controls.append(mediaPilot);
         }
         const closeTools=document.createElement('button');closeTools.type='button';closeTools.textContent='關閉';closeTools.onclick=()=>toolsDialog.close();controls.append(closeTools);
         controls.querySelectorAll('button').forEach(b=>{b.style.cssText='text-align:left;padding:9px 12px;border:1px solid #d9d5ce;background:#f7f6f3;color:#252321;border-radius:8px;font-size:13px;cursor:pointer';});

@@ -1,4 +1,5 @@
 import {createStoryCheckpointSupabaseTransport} from './storyCheckpointSupabaseTransport.js';
+import {getPilotConnection} from './pilotConnection.js';
 import {captureStorySnapshot,restoreStorySnapshot,type StorySnapshotV2} from './storySnapshotLab.js';
 import {createNativeStoryCheckpointBridge} from './nativeStoryCheckpointBridge.js';
 import {canonicalContextJson,hashContextJson} from './contextFingerprint.js';
@@ -17,7 +18,8 @@ const journal={getItem:(k:string)=>localStorage.getItem('native-sync-pilot:'+k),
 const lock=async<T>(fn:()=>Promise<T>)=>{if(!navigator.locks)throw Error('WEB_LOCKS_REQUIRED');return navigator.locks.request('aigf-native-story-sync',fn);};
 export function createNativeStoryPilot(deps:{read:()=>ChatMessage[];write:(rows:ChatMessage[])=>void}){
  if(!nativePilotEnabled)throw Error('NATIVE_SYNC_DISABLED');
- const remote=createStoryCheckpointSupabaseTransport<StorySnapshotV2>({projectUrl:'https://hmrcvjxdmedrjjcjbtmd.supabase.co',productionUrl:'https://ebinyocojscfnxskybax.supabase.co',publishableKey,enabled:true});
+ const connection=getPilotConnection();
+ const remote=createStoryCheckpointSupabaseTransport<StorySnapshotV2>({projectUrl:'https://hmrcvjxdmedrjjcjbtmd.supabase.co',productionUrl:'https://ebinyocojscfnxskybax.supabase.co',publishableKey,enabled:true},fetch,connection);
  const read=()=>deps.read();
  const capture=()=>captureStorySnapshot(localStorage,key,read());
  const markConfirmed=async()=>journal.setItem('last-confirmed:'+key,await hashContextJson(canonicalContextJson(await capture())));
@@ -67,7 +69,7 @@ export function createNativeStoryPilot(deps:{read:()=>ChatMessage[];write:(rows:
   catch(e){if(!viewBridge.session.pending()){for(let i=0;i<keys.length;i++){if(before[i]===null)localStorage.removeItem(keys[i]);else localStorage.setItem(keys[i],before[i]!);}}throw e;}
   await markConfirmed();
  };
- return {createBridge,refresh,getMedia:remote.getMedia,beginSnapshotUpdate,commitSnapshotUpdate,saveSettings:async(mutate:()=>void)=>commitSnapshotUpdate(await beginSnapshotUpdate(),mutate),signIn:async(email:string,password:string)=>{await remote.signIn(email,password);await remote.initialize(site);},beforeUser:(id:string)=>viewBridge.beforeUser(id),recall:async(id:string,mutate:()=>void)=>{
+ return {createBridge,refresh,getMedia:remote.getMedia,beginSnapshotUpdate,commitSnapshotUpdate,saveSettings:async(mutate:()=>void)=>commitSnapshotUpdate(await beginSnapshotUpdate(),mutate),signIn:async(email:string,password:string)=>{if(!connection.isSignedIn())await remote.signIn(email,password);await remote.initialize(site);},beforeUser:(id:string)=>viewBridge.beforeUser(id),recall:async(id:string,mutate:()=>void)=>{
   const b=await viewBridge.session.begin(key);
   const i=b.rows.findIndex(r=>r.message_id===id&&r.role==='user');if(i<0||b.rows.slice(i+1).some(r=>r.role==='user'))throw Error('NATIVE_SYNC_RECALL_LATEST_ONLY');
   mutate();
