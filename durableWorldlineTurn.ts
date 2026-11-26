@@ -15,13 +15,13 @@ export async function verifyWorldlineAppliedPrefix(history:readonly TurnHistoryR
  return {userIndex:i,replyIndex:j};
 }
 // Legacy Worldline 1: only remove explicitly source-linked chronicle entries; never guess older history.
-export function removeRecalledWorldlineSources(world:Worldline,removed:readonly string[]){
+export function removeRecalledWorldlineSources(world:Worldline,removed:readonly string[],now=Date.now()){
  const ids=new Set(removed);
  const kept=world.chronicle.filter(row=>!row.sourceMessageId||!ids.has(row.sourceMessageId));
  const count=world.chronicle.length-kept.length;
  if(!count)return world;
  const start=Math.max(0,world.turnCount-world.chronicle.length);
- return normalizeWorldline({...world,turnCount:Math.max(0,world.turnCount-count),chronicle:kept.map((row,i)=>({...row,turn:start+i+1,id:'turn-'+(start+i+1)})),updatedAt:Date.now()});
+ return normalizeWorldline({...world,turnCount:Math.max(0,world.turnCount-count),chronicle:kept.map((row,i)=>({...row,turn:start+i+1,id:'turn-'+(start+i+1)})),updatedAt:now});
 }
 export function commitWorldlineReply(world:Worldline,replyId:string,user:string,reply:string){
  if(world.chronicle.some(row=>row.sourceMessageId===replyId))return world;
