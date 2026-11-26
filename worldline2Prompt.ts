@@ -1,12 +1,22 @@
 import type {VeniceMessage} from './venice.js';
 
 type Store=Pick<Storage,'getItem'|'setItem'|'removeItem'>;
-export type PromptSettings={review:boolean;saved?:string};
+export type PromptSettings={review:boolean;saved?:string;worldContext?:string};
 const key=(world:string)=>'aigfWorldline2FullPrompt:'+world;
 export function readFullPromptSettings(store:Store,world:string):PromptSettings{
- try{const raw=store.getItem(key(world));const v=raw?JSON.parse(raw):{};return {review:v.review!==false,...(typeof v.saved==='string'?{saved:v.saved}:{})};}catch{return {review:true};}
+ try{const raw=store.getItem(key(world));const v=raw?JSON.parse(raw):{};return {review:v.review!==false,...(typeof v.saved==='string'?{saved:v.saved}:{}),...(typeof v.worldContext==='string'?{worldContext:v.worldContext}:{})};}catch{return {review:true};}
 }
 export function writeFullPromptSettings(store:Store,world:string,value:PromptSettings){store.setItem(key(world),JSON.stringify(value));}
+export function resolveWorldline2Context(store:Store,world:string,generated:string):string{
+ return readFullPromptSettings(store,world).worldContext??generated;
+}
+export function saveWorldline2Context(store:Store,world:string,value:string|undefined){
+ const settings=readFullPromptSettings(store,world);
+ // A saved whole-system snapshot would otherwise shadow changes to this section.
+ delete settings.saved;
+ if(value===undefined)delete settings.worldContext;else settings.worldContext=value;
+ writeFullPromptSettings(store,world,settings);
+}
 export function applySystemTexts(messages:readonly VeniceMessage[],texts:readonly string[]):VeniceMessage[]{
  let i=0;return messages.map(m=>m.role==='system'?{...m,content:texts[i++]??m.content}:m);
 }
@@ -38,8 +48,8 @@ export async function editWorldline2Request(world:string,messages:VeniceMessage[
   let settled=false;
   const cleanup=()=>{signal?.removeEventListener('abort',abort);if(d.open)d.close();d.remove();};
   const abort=()=>{if(settled)return;settled=true;cleanup();reject(new DOMException('Cancelled','AbortError'));};
-  const finish=(persist:boolean)=>{if(settled)return;const values=fields.map(f=>f.value);try{if(persist)writeFullPromptSettings(localStorage,world,{review:true,saved:values[0]});}catch(e){status.textContent=e instanceof Error?e.message:'保存失敗';return;}settled=true;cleanup();resolve(applySystemTexts(messages,values));};
-  reset.onclick=()=>{fields.forEach((f,i)=>f.value=defaults[i]);try{writeFullPromptSettings(localStorage,world,{review:true});status.textContent='已還原自動組合。';}catch(e){status.textContent=String(e);}};
+  const finish=(persist:boolean)=>{if(settled)return;const values=fields.map(f=>f.value);try{if(persist)writeFullPromptSettings(localStorage,world,{...readFullPromptSettings(localStorage,world),review:true,saved:values[0]});}catch(e){status.textContent=e instanceof Error?e.message:'保存失敗';return;}settled=true;cleanup();resolve(applySystemTexts(messages,values));};
+  reset.onclick=()=>{fields.forEach((f,i)=>f.value=defaults[i]);try{const current=readFullPromptSettings(localStorage,world);delete current.saved;writeFullPromptSettings(localStorage,world,{...current,review:true});status.textContent='已還原本輪組合。';}catch(e){status.textContent=String(e);}};
   close.onclick=abort;cancel.onclick=abort;send.onclick=()=>finish(false);save.onclick=()=>finish(true);
   d.addEventListener('cancel',e=>{e.preventDefault();abort();});d.addEventListener('close',abort,{once:true});signal?.addEventListener('abort',abort,{once:true});
   try{d.showModal();if(signal?.aborted)abort();}catch(e){settled=true;cleanup();reject(e);}

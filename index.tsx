@@ -1,5 +1,5 @@
 import {readDirector,formatDirector,consumeDirectorNext,type DirectorPreferences} from './worldlineDirector.js';
-import {editWorldline2Request,getSystemTexts} from './worldline2Prompt.js';
+import {editWorldline2Request,getSystemTexts,resolveWorldline2Context} from './worldline2Prompt.js';
 
 import {
     CharacterPhotoProposal,
@@ -6628,10 +6628,11 @@ const getActiveWorldline = (conversationKey: string) => {
         return world && !world.paused ? world : null;
     } catch { return null; }
 };
-const buildWorldlineRuntimeContext = (key:string,query:string,director?:DirectorPreferences) => {
+const buildWorldlineRuntimeContext = (key:string,query:string,director?:DirectorPreferences,original=false) => {
     const world=getActiveWorldline(key);
     if(!world)return '';
-    return [buildWorldlinePrompt(world),compileWorldLedger(localStorage.getItem(WORLD_LEDGER_KEY),key,memoryManager.peekChatHistory(key),query),formatDirector(director)].filter(Boolean).join('\n\n');
+    const generated=[buildWorldlinePrompt(world),compileWorldLedger(localStorage.getItem(WORLD_LEDGER_KEY),key,memoryManager.peekChatHistory(key),query),formatDirector(director)].filter(Boolean).join('\n\n');
+    return original?generated:resolveWorldline2Context(localStorage,key,generated);
 };
 type WorldSyncResult = {advanced:number;deferred:string[];issueCount:number};
 const worldLedgerJobs = new Map<string, Promise<WorldSyncResult>>();
@@ -10578,7 +10579,7 @@ const setupEventListeners = () => {
         const key=currentConversationKey;
         if(!key||!getActiveWorldline(key))return;
         const {openWorldlineDirector}=await import('./features/worldlineDirectorUi.js');
-        if(currentConversationKey===key)openWorldlineDirector(key,()=>buildWorldlineRuntimeContext(key,'',readDirector(localStorage,key)));
+        if(currentConversationKey===key)openWorldlineDirector(key,()=>buildWorldlineRuntimeContext(key,'',readDirector(localStorage,key),true));
     });
     chatSearchBtn.addEventListener('click', openChatSearch);
     homeSearchToggle.addEventListener('click', () => {
