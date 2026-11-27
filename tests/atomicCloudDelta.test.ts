@@ -222,6 +222,30 @@ test('V4 lost acknowledgement leaves exact immutable plan and deterministic job 
 });
 test('V4 stale admission never falls through to V3 merge',async()=>{
  const uid='atomic-v4-stale',f=await withV4(uid);f.advance();
- await assert.rejects(f.x.admitServerGeneration(f.admission),/ATOMIC_GENERATION_NOT_CONFIRMED/);
+ await assert.rejects(f.x.admitServerGeneration(f.admission),/ATOMIC_GENERATION_BASELINE_CHANGED/);
  assert.deepEqual(f.rpcCalls,[]);assert.equal(await pendingAtomicJournal(uid),null);assert.equal(f.m.get(pending),'true');
+});
+
+test('V4 admission tolerates equivalent historical marker with changed legacy hash',async()=>{
+ const uid='atomic-v4-historical-marker',f=await withV4(uid);
+ const oldMarker={version:1,jobId:'00000000-0000-4000-8000-000000000081',replyId:'00000000-0000-4000-8000-000000000082'};
+ const collect=f.x.collectLocalMessages;
+ f.x.collectLocalMessages=()=>{const x=collect();x.messages[0].content={vpsServerGeneration:oldMarker,text:'old'};x.hashes[id]='new-key-order';return x;};
+ const x=f.x.collectLocalMessages();const baseline=structuredClone(x.messages[0]);baseline.content={text:'old',vpsServerGeneration:oldMarker};
+ await saveAtomicBaseline(uid,7,mergeBaseIndex(uid,7,{conversations:x.conversations,messages:[baseline],payload}));
+ await f.x.admitServerGeneration(f.admission);assert.deepEqual(f.rpcCalls,['wetapp_accept_generation_v4']);
+});
+test('V4 recovery moves only positively unsubmitted draft, not existing server job',async()=>{
+ const f=await withV4('atomic-v4-recovery');
+ let restored=0;f.x.getServerGenerationStatus=async()=>null;
+ assert.equal(await f.x.recoverUnsubmittedGeneration(generationJob,()=>restored++),'draft');assert.equal(restored,1);
+ f.x.getServerGenerationStatus=async()=> 'queued';
+ assert.equal(await f.x.recoverUnsubmittedGeneration(generationJob,()=>restored++),'accepted');assert.equal(restored,1);
+});
+test('V4 preflight detects stale revision before creating local draft',async()=>{
+ const f=await fixture('atomic-v4-preflight');f.m.delete(pending);
+ await f.x.preflightServerGeneration();
+ f.advance();f.x.reloadFromCloud=async()=>{};
+ await assert.rejects(f.x.preflightServerGeneration(),/ATOMIC_GENERATION_BASELINE_CHANGED/);
+ assert.deepEqual(f.calls,[]);
 });
