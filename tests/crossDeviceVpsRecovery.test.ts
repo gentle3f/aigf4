@@ -25,3 +25,13 @@ test('adopted receipt on second device only GETs existing job and applies once',
  assert.equal(await findMatchingVpsRecovery([row],'fixture',rows),null);
  assert.equal(controller.pending(),null);
 });
+
+test('worldline recovery requires exactly matching restored world context',async()=>{
+ const worldDigest='a'.repeat(64);
+ const worldRow={...row,receipt:{...receipt,worldDigest}};
+ assert.equal(await findMatchingVpsRecovery([worldRow],'fixture',history),null);
+ assert.equal(await findMatchingVpsRecovery([worldRow],'fixture',history,'b'.repeat(64)),null);
+ assert.equal((await findMatchingVpsRecovery([worldRow],'fixture',history,worldDigest))?.receipt.jobId,receipt.jobId);
+ assert.equal(await findMatchingVpsRecovery([row],'fixture',history,worldDigest),null);
+ assert.equal(await findMatchingVpsRecovery([{...worldRow,receipt:{...worldRow.receipt,roomDigest:'c'.repeat(64),roomMemberId:'fixture'}}],'fixture',history,worldDigest),null);
+});

@@ -1983,10 +1983,12 @@ const resumeVpsChatTurn = async (openConversation = false) => {
             const key=currentConversationKey;
             const history=memoryManager.peekChatHistory(key);
             if(history.at(-1)?.role!=='user')return;
-            const match=await findMatchingVpsRecovery(await listVpsRecovery(),key,history);
-            if(!match||currentConversationKey!==key||activeChatRequest)return;
-            // Ordinary role turns only; room/world state must also be independently restored before adoption.
-            if(match.receipt.roomDigest||match.receipt.worldDigest||key===NATIVE_SYNC_KEY)return;
+            if(key===NATIVE_SYNC_KEY||currentRoom)return;
+            const worldDigest=await digestVpsWorld(key,history);
+            const match=await findMatchingVpsRecovery(await listVpsRecovery(),key,history,worldDigest);
+            if(!match||currentConversationKey!==key||activeChatRequest||currentRoom||currentPersonaKey!==match.receipt.personaKey)return;
+            // The restored world and chat history must match the existing server receipt.
+            await checkWorldlineTurnContext(match.receipt);
             await controller.adoptRecovery(match.receipt);
             pending=controller.pending();
         }
