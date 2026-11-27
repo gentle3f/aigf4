@@ -17,3 +17,14 @@ export async function readVpsRecoveryText(row:RecoveryRow,fetchImpl:typeof fetch
  // This is provider output, not a validated/committed character reply.
  return w.decision.decision==='revise'?w.decision.revisedResponse:w.polished||w.parts.join('\n');
 }
+
+// Cross-device recovery is discovery-only. Never re-submit when the server has
+// no receipt, and never attach a reply to a different history.
+export async function findMatchingVpsRecovery(rows:RecoveryRow[],key:string,history:readonly import('./durableChatTurn.js').TurnHistoryRow[]):Promise<RecoveryRow|null>{
+ const tail=history.at(-1);
+ if(!tail?.id||tail.role!=='user')return null;
+ const {digestVpsHistory}=await import('./vpsChatMode.js');
+ const digest=await digestVpsHistory(history,2);
+ const matches=rows.filter(row=>row.receipt.conversationKey===key&&row.receipt.userMessageId===tail.id&&row.receipt.contextDigestVersion===2&&row.receipt.contextDigest===digest&&['queued','running','done'].includes(row.status));
+ return matches.length===1?matches[0]:null;
+}
