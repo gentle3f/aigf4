@@ -34,6 +34,7 @@ import { createDurableMemoryTask, browserMemoryLock, type MemoryContext } from '
 import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult, VPS_REVIEW_MODELS } from './vpsCharacterTransport.js';
 import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
 import { CURRENT_CONTEXT_DIGEST_VERSION } from './contextFingerprint.js';
+import {ATOMIC_CLOUD_PREVIEW} from './atomicCloudPreview.js';
 import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, selectVpsModel, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
@@ -561,7 +562,7 @@ const loadSupabaseCloudSyncManager = async () => {
                             updateSendButtonState();
                         }
                     },
-                }, VPS_CHAT_BUILD,()=>!activeChatRequest&&!resumingVpsTurn&&!pendingVpsTurn());
+                }, VPS_CHAT_BUILD&&!ATOMIC_CLOUD_PREVIEW,()=>!activeChatRequest&&!resumingVpsTurn&&!pendingVpsTurn(),ATOMIC_CLOUD_PREVIEW);
                 supabaseCloudSyncManager = manager;
                 return manager;
             })
@@ -574,7 +575,7 @@ const loadSupabaseCloudSyncManager = async () => {
 };
 
 const startSupabaseCloudSync = async () => {
-    if (VPS_CHAT_BUILD) return;
+    if (VPS_CHAT_BUILD&&!ATOMIC_CLOUD_PREVIEW) return;
     const manager = await loadSupabaseCloudSyncManager();
     await manager.start();
 };

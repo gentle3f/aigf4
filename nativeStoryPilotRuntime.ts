@@ -12,7 +12,7 @@ import type {DurableHistory} from './durableChatTurn.js';
 export const NATIVE_SYNC_KEY='aigf-sync-pilot-worldline2';
 const key=NATIVE_SYNC_KEY,site='worldline2' as const;
 const publishableKey=String(import.meta.env?.VITE_AIGF_SYNC_PILOT_KEY||'');
-export const nativePilotEnabled=import.meta.env?.VITE_AIGF_VPS_CHAT_PILOT==='1'&&!!publishableKey;
+export const nativePilotEnabled=import.meta.env?.VITE_AIGF_ATOMIC_SYNC_PREVIEW!=='1'&&import.meta.env?.VITE_AIGF_VPS_CHAT_PILOT==='1'&&!!publishableKey;
 const eq=(a:unknown,b:unknown)=>canonicalContextJson(a)===canonicalContextJson(b);
 const journal={getItem:(k:string)=>localStorage.getItem('native-sync-pilot:'+k),setItem:(k:string,v:string)=>localStorage.setItem('native-sync-pilot:'+k,v),removeItem:(k:string)=>localStorage.removeItem('native-sync-pilot:'+k)};
 const lock=async<T>(fn:()=>Promise<T>)=>{if(!navigator.locks)throw Error('WEB_LOCKS_REQUIRED');return navigator.locks.request('aigf-native-story-sync',fn);};

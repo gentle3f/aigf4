@@ -15,7 +15,7 @@ import type {VeniceMessage} from './venice.js';
 const site='worldline2' as const,key='aigf-sync-pilot-'+site;
 const projectUrl='https://hmrcvjxdmedrjjcjbtmd.supabase.co',productionUrl='https://ebinyocojscfnxskybax.supabase.co';
 const publishableKey=String(import.meta.env?.VITE_AIGF_SYNC_PILOT_KEY||'');
-export const STORY_SYNC_PILOT_ENABLED=import.meta.env?.VITE_AIGF_VPS_CHAT_PILOT==='1'&&!!publishableKey;
+export const STORY_SYNC_PILOT_ENABLED=import.meta.env?.VITE_AIGF_ATOMIC_SYNC_PREVIEW!=='1'&&import.meta.env?.VITE_AIGF_VPS_CHAT_PILOT==='1'&&!!publishableKey;
 const equal=(a:unknown,b:unknown)=>canonicalContextJson(a)===canonicalContextJson(b);
 const digest=(x:unknown)=>hashContextJson(canonicalContextJson(x));
 const storage={getItem:(k:string)=>localStorage.getItem('isolated-sync-pilot:'+k),setItem:(k:string,v:string)=>localStorage.setItem('isolated-sync-pilot:'+k,v),removeItem:(k:string)=>localStorage.removeItem('isolated-sync-pilot:'+k)};
