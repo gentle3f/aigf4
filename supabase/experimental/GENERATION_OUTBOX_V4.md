@@ -1,0 +1,19 @@
+# V4 server-owned generation — 2026-11-27
+
+Goal: after server acceptance, all browser tabs and devices may go offline; VPS completes generation and persists the reply before any device reconnects.
+
+Implemented locally:
+- Atomic V4 acceptance RPC stores message, immutable workflow plan, and durable job in a single commit.
+- Private outbox worker RPCs: lease/claim, release, failure, atomic reply + state completion.
+- Server worker core uses GET before POST with the exact durable job ID. Unknown accepted POST can be recovered within 12h (queue retains terminal results 24h); known queued job missing is never recreated.
+- Restricted NOLOGIN role, no direct business-table permissions. No production grants or installation.
+- Local PGlite 7 admission + 6 lifecycle + 1 integrated fixture pass. Integrated fixture simulates client disconnect, lost submit ack, worker restart, one reply written exactly once. Queue/model is mocked in that test; prior actual queue smoke is separate.
+- Run: node scripts/testGenerationOutboxV4.mjs (requires existing local tmp/sync-lab PGlite).
+
+Not yet wired:
+1. Server finalizer equivalent to current client result parser, review selection, worldline chronicle/ledger/director and persona/group memory/scene processing. Never substitute raw candidate text for processed chat.
+2. Admission integration in atomic cloud manager: compose complete plan before sending one atomic RPC. UI must distinguish local draft, submitting, server accepted.
+3. Replace strict global revision conflict with reviewed per-conversation/state patch merge. Current prototype conservatively marks a conflict on ANY intervening state revision. Do not silently overwrite newer state.
+4. Provision scoped database login and a persistent VPS process using existing localhost queue; no broad DB grants.
+5. Isolated live DB installation + synthetic model request; terminate both browser clients before worker completion, verify persisted reply via new session.
+6. Port shared behavior to AIGF and Worldline1, then cutover after acceptance. Existing production and legacy messages unchanged.
