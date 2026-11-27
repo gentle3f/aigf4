@@ -12,3 +12,9 @@ test('studio autonomous submission resumes via GET and saves by stable VPS ID',a
  await assert.rejects(submitDurableVideo({options:{model:'wan-2-7-enhanced-text-to-video',prompt:'Lake',duration:'5s',resolution:'720p',adultConfirmed:true},modelName:'Wan',storage:{read:()=>receipt,write:r=>{receipt=sanitizePersistedVideoJob(r);return !!receipt}},lock:fn=>fn(),transport:createVpsVideoSubmission(fetchImpl),onStored:()=>{},autonomous:true,newId:()=>id}),/offline/);
  const job=receipt!;assert.ok(job);assert.equal(await getSavedStudioVideo(job),null);const blob=await retrieveAutonomousStudioVideo(job,undefined,fetchImpl);assert.ok(blob);const saved=await persistStudioVideo(job,blob);assert.equal((await getSavedStudioVideo(job))?.id,saved.id);assert.equal(posts,1);
 });
+
+test('cloud registration failure prevents paid video submission and retains receipt',async()=>{
+ let receipt:PersistedVideoJob|null=null,posts=0;
+ await assert.rejects(submitDurableVideo({options:{model:'wan-2-7-enhanced-text-to-video',prompt:'Lake',duration:'5s',resolution:'720p',adultConfirmed:true},modelName:'Wan',storage:{read:()=>receipt,write:r=>{receipt=r;return true}},lock:fn=>fn(),transport:createVpsVideoSubmission(async()=>{posts++;throw Error('unexpected')}),onStored:()=>{},autonomous:true,beforeSubmit:async r=>{assert.equal(receipt,r);throw Error('registration offline')}}),/registration offline/);
+ assert.equal(posts,0);assert.ok(receipt);
+});

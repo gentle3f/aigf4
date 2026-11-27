@@ -1753,6 +1753,7 @@ const loadImageStudioUi = async () => {
                     getImageModelPrice,
                     formatModelPrice,
                     requestImage: requestVeniceImage,
+                    getStudioRecovery:()=>supabaseCloudSyncManager?.getStudioMediaRecovery()??null,
                     resolveSharedSeed: () => resolveImageSeedForRequest(imageSeed, imageSeedLock.checked),
                     getSharedSeed: getSharedImageSeed,
                     getSharedSeedLocked: () => imageSeedLock.checked,
@@ -1800,6 +1801,7 @@ const loadVideoStudioUi = async () => {
         videoStudioUiLoad = import('./features/videoStudio.js')
             .then(({ createVideoStudio }) => {
                 const ui = createVideoStudio({
+                    getStudioRecovery:()=>supabaseCloudSyncManager?.getStudioMediaRecovery()??null,
                     isUnlocked: () => isUnlocked,
                     handleAuthRequired,
                     cancelActiveChatRequest,

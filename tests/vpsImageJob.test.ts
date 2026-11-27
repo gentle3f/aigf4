@@ -32,3 +32,9 @@ test('proxy checks exact offsets, chunk encoding and image plan, no raw metadata
   await handler({method,body,query},res);assert.equal(res.code,expected);assert.equal(calls,expected===400?0:1);assert.ok(!JSON.stringify(value).includes('HIDDEN'));
  }
 });
+
+test('cloud receipt registered before paid request, registration failure prevents POST',async()=>{
+ const f=fixture();
+ await assert.rejects(submitDurableImage({options,modelName:'Qwen',storage:f.storage,lock:fn=>fn(),transport:f.transport,newId:()=>id,beforeSubmit:async r=>{assert.equal(readImageReceipt(f.storage)?.jobId,r.jobId);throw Error('registration offline')}}),/registration offline/);
+ assert.deepEqual(f.calls,[]);assert.ok(readImageReceipt(f.storage));
+});

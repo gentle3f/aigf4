@@ -33,6 +33,7 @@ import { VPS_VIDEO_MODEL,createVpsVideoSubmission,submitDurableVideo } from '../
 export type VideoStudioHistoryMode = 'push' | 'replace' | 'skip';
 
 export type VideoStudioDependencies = {
+    getStudioRecovery?:()=>ReturnType<typeof import('../studioMediaRecoveryClient.js').createStudioMediaRecovery>|null;
     isUnlocked: () => boolean;
     handleAuthRequired: () => void;
     cancelActiveChatRequest: () => void;
@@ -1518,6 +1519,20 @@ const resumePendingVideoJob = async (source: 'auto' | 'manual' = 'manual') => {
     }
 };
 
+const recoverCloudVideos=async()=>{
+    if(isVideoRequestRunning)return;
+    const recovery=getDependencies().getStudioRecovery?.();if(!recovery)return;
+    setVideoStudioBusy(true);
+    try{
+        const rows=await recovery.list('video');
+        for(const r of rows.filter(r=>r.status==='archived')){
+            await recovery.transfer(r);
+            if(readPersistedVideoJobFromStorage()?.submissionId===r.job_id)clearPersistedVideoJob();
+        }
+        await restoreSavedStudioVideos();
+        videoStudioStatus.textContent=rows.some(r=>r.status==='pending')?'雲端影片任務尚在處理；毋須再次生成。':'已核對雲端影片任務。';
+    }finally{setVideoStudioBusy(false);}
+};
 const runVideoGeneration = async () => {
     if (pendingVideoJob) {
         await resumePendingVideoJob('manual');
@@ -1572,6 +1587,7 @@ const runVideoGeneration = async () => {
                 storage:{read:readPersistedVideoJobFromStorage,write:writePersistedVideoJobToStorage},
                 lock:async work=>await navigator.locks.request('aigf-vps-video-submit-v1',work),
                 transport:createVpsVideoSubmission(),
+                beforeSubmit:async r=>{if(r.autonomous){const recovery=getDependencies().getStudioRecovery?.();if(recovery)await recovery.registerVideo(r);}},
                 onStored:r=>{pendingVideoJob=r;updateVideoJobAction();},
             });
             await pollPersistedVideoJob(job,controller);
@@ -1712,6 +1728,7 @@ const setupVideoStudioListeners = () => {
     });
     videoCancelButton.addEventListener('click', cancelVideoRequest);
     clearVideoResultsBtn.addEventListener('click', clearVideoResults);
+    if(import.meta.env?.VITE_AIGF_STUDIO_MEDIA_RECOVERY_V4==='1'){const cloud=document.createElement('button');cloud.type='button';cloud.textContent='取回雲端影片';cloud.onclick=()=>void recoverCloudVideos().catch(e=>showVideoStudioError(e instanceof Error?e.message:'STUDIO_RECOVERY_FAILED'));videoStudioStatus.after(cloud);}
     window.addEventListener('beforeunload', () => {
         videoResults.forEach(result => {
             if (result.isObjectUrl) URL.revokeObjectURL(result.url);

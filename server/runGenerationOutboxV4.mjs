@@ -7,6 +7,7 @@ import {finalizeAcceptedSingleJob} from '../serverTurnFinalizer.ts';
 import {finalizeAcceptedGroupJob} from '../serverGroupFinalizer.ts';
 import {createPersonaMemoryStore,processOnePersonaMemory} from './personaMemoryWorkerV4.mjs';
 import {createGroupMemoryStore,processOneGroupMemory} from './groupMemoryWorkerV4.mjs';
+import {createStudioMediaStore,processOneStudioMedia} from './studioMediaWorkerV4.mjs';
 import {createWorldLedgerStore,processOneWorldLedger} from './worldLedgerWorkerV4.mjs';
 
 export function readWorkerConfig(env=process.env,read=readFileSync){
@@ -70,13 +71,18 @@ async function main(){
   if(ledgerAccess?.can_claim!==true||ledgerAccess.direct_ledger!==false)throw Error('V4_LEDGER_DATABASE_ROLE_CHECK_FAILED');
   const groupAccess=(await query("select has_function_privilege(current_user,'aigf_worker.claim_group_memory_v4()','EXECUTE') as can_claim,has_table_privilege(current_user,'aigf_worker.group_memory_outbox_v4','SELECT,INSERT,UPDATE,DELETE') as direct_memory",[])).rows[0];
   if(groupAccess?.can_claim!==true||groupAccess.direct_memory!==false)throw Error('V4_GROUP_MEMORY_DATABASE_ROLE_CHECK_FAILED');
+  const mediaAccess=(await query("select has_function_privilege(current_user,'aigf_worker.claim_studio_media_v4()','EXECUTE') as can_claim,has_table_privilege(current_user,'aigf_worker.studio_media_recovery_v4','SELECT,INSERT,UPDATE,DELETE') as direct_media",[])).rows[0];
+  if(mediaAccess?.can_claim!==true||mediaAccess.direct_media!==false)throw Error('V4_MEDIA_DATABASE_ROLE_CHECK_FAILED');
   if(process.argv.includes('--check')){console.log('V4_WORKER_DB_ROLE_PASS');return;}
   const store=createPostgresOutboxStore(query),queue=createLocalGenerationQueue({token:cfg.token});
   console.log('V4_WORKER_READY');
   const memoryStore=createPersonaMemoryStore(query),ledgerStore=createWorldLedgerStore(query);
   const groupStore=createGroupMemoryStore(query);
   let nextFollowup=0;
-  await runWorkerLoop({processOne:async()=>{const chat=await processOneGeneration({store,queue,finalize:(row,job)=>row.finalizer_context?.version===2?finalizeAcceptedGroupJob(row,job):finalizeAcceptedSingleJob(row,job)});if(chat!=='idle')return chat;const tasks=[()=>processOnePersonaMemory({store:memoryStore,queue}),()=>processOneWorldLedger({store:ledgerStore,queue}),()=>processOneGroupMemory({store:groupStore,queue})];for(let i=0;i<tasks.length;i++){const n=nextFollowup++%tasks.length;const result=await tasks[n]();if(result!=='idle')return result;}return 'idle';},signal:stop.signal,once:process.argv.includes('--once')});
+  const mediaStore=createStudioMediaStore(query);
+  const chatLoop=()=>runWorkerLoop({processOne:async()=>{const chat=await processOneGeneration({store,queue,finalize:(row,job)=>row.finalizer_context?.version===2?finalizeAcceptedGroupJob(row,job):finalizeAcceptedSingleJob(row,job)});if(chat!=='idle')return chat;const tasks=[()=>processOnePersonaMemory({store:memoryStore,queue}),()=>processOneWorldLedger({store:ledgerStore,queue}),()=>processOneGroupMemory({store:groupStore,queue})];for(let i=0;i<tasks.length;i++){const n=nextFollowup++%tasks.length;const result=await tasks[n]();if(result!=='idle')return result;}return 'idle';},signal:stop.signal,once:process.argv.includes('--once')});
+  const mediaLoop=()=>runWorkerLoop({processOne:()=>processOneStudioMedia({store:mediaStore,queue}),signal:stop.signal,once:process.argv.includes('--once')});
+  try{await Promise.all([chatLoop(),mediaLoop()]);}finally{stop.abort();}
  }finally{await db.end();}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)main().catch(()=>{console.error('V4_WORKER_START_OR_RUN_FAILED');process.exitCode=1;});

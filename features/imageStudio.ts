@@ -49,6 +49,7 @@ export type ImageStudioResult = {
 };
 
 export type ImageStudioDependencies = {
+    getStudioRecovery?:()=>ReturnType<typeof import('../studioMediaRecoveryClient.js').createStudioMediaRecovery>|null;
     getImageModels: (mode: VeniceImageMode) => VeniceImageModelSummary[];
     loadImageModels: (mode: VeniceImageMode, force?: boolean) => Promise<void>;
     getSelectedImageModelId: (mode: VeniceImageMode) => string;
@@ -600,6 +601,21 @@ const resumeVpsImage=async()=>{
     catch(e){if(!controller.signal.aborted){const message=e instanceof Error?e.message:'背景圖片取回失敗';showImageStudioError(message);if(message===VENICE_AUTH_REQUIRED_ERROR)getDeps().handleAuthRequired();}imageStudioStatus.textContent='背景任務紀錄已保留，沒有重新提交。';}
     finally{if(imageRequestController===controller){imageRequestController=null;setImageStudioBusy(false);}}
 };
+// Recover previously submitted jobs only. Never issue a generation request here.
+const recoverCloudImages=async()=>{
+    if(isImageRequestRunning)return;
+    const recovery=getDeps().getStudioRecovery?.();if(!recovery)return;
+    setImageStudioBusy(true);
+    try{
+        const rows=await recovery.list('image');
+        for(const r of rows.filter(r=>r.status==='archived')){
+            await recovery.transfer(r);
+            if(readImageReceipt(localStorage)?.jobId===r.job_id)localStorage.removeItem(IMAGE_RECEIPT_KEY);
+        }
+        await restoreSavedStudioImages();
+        imageStudioStatus.textContent=rows.some(r=>r.status==='pending')?'雲端圖片任務尚在處理；毋須再次生成。':'已核對雲端圖片任務。';
+    }finally{setImageStudioBusy(false);}
+};
 const runImageGeneration = async () => {
     if(VPS_CHAT_BUILD){
         try{if(readImageReceipt(localStorage)){await resumeVpsImage();return;}}
@@ -655,7 +671,7 @@ const runImageGeneration = async () => {
         };
         if(VPS_CHAT_BUILD&&options.mode==='generate'&&options.model==='qwen-image-3'&&options.variants===1){
             if(!navigator.locks)throw Error('VPS_IMAGE_WEB_LOCKS_REQUIRED');
-            const receipt=await submitDurableImage({options:{...options,sourceImageBase64:undefined},modelName:model.name,storage:localStorage,lock:async work=>await navigator.locks.request('aigf-vps-image-v1',work),transport:createVpsImageTransport()});
+            const receipt=await submitDurableImage({options:{...options,sourceImageBase64:undefined},modelName:model.name,storage:localStorage,lock:async work=>await navigator.locks.request('aigf-vps-image-v1',work),transport:createVpsImageTransport(),beforeSubmit:async r=>{const recovery=getDeps().getStudioRecovery?.();if(recovery)await recovery.registerImage(r);}});
             await receiveVpsImage(receipt,controller.signal);
             return;
         }
@@ -779,7 +795,9 @@ const attachListeners = () => {
             });
         };
         const note=document.createElement('p');note.textContent='VPS Preview：單張背景圖片須於 24 小時內取回，成功後自動保存本機。';
-        controls.append(note,resume,abandon);imageStudioStatus.after(controls);
+        controls.append(note,resume,abandon);
+        if(import.meta.env?.VITE_AIGF_STUDIO_MEDIA_RECOVERY_V4==='1'){const cloud=document.createElement('button');cloud.type='button';cloud.textContent='取回雲端圖片';cloud.onclick=()=>void recoverCloudImages().catch(e=>showImageStudioError(e instanceof Error?e.message:'STUDIO_RECOVERY_FAILED'));controls.append(cloud);}
+        imageStudioStatus.after(controls);
     }
 };
 
