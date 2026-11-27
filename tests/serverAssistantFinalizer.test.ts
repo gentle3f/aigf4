@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildAssistantServerPlan,finalizeAcceptedAssistantJob} from '../serverAssistantFinalizer.js';
+import {buildAssistantServerPlan,finalizeAcceptedAssistantJob,assistantTextInput,isAssistantBackgroundModel} from '../serverAssistantFinalizer.js';
 import {buildVeniceTextPayload} from '../venice.js';
 import type {PilotJob} from '../generationQueuePilot.js';
 const id='12345678-1234-4234-8234-123456789abc';
@@ -11,3 +11,6 @@ test('assistant plan is original payload without streaming',()=>{const plan=buil
 test('web search and unapproved model stay outside this route',()=>{assert.throws(()=>buildAssistantServerPlan({...opts,enableWebSearch:true}),/UNSUPPORTED/);assert.throws(()=>buildAssistantServerPlan({...opts,model:'other'}),/UNSUPPORTED/);});
 test('assistant Markdown and code preserved, state unchanged',()=>{const text='## Answer\n\n```js\nconst sum = 1 + 2;\n```';const r=finalizeAcceptedAssistantJob(row,job('Assistant: '+text));assert.deepEqual(r.content,{text});assert.deepEqual(r.payload,row.state_payload);assert.notEqual(r.payload,row.state_payload);});
 test('truncation, empty output and repeat are not published',()=>{assert.throws(()=>finalizeAcceptedAssistantJob(row,job('partial','length')),/INVALID_RESULT/);assert.throws(()=>finalizeAcceptedAssistantJob(row,job('<think>internal</think>')),/INVALID_RESULT/);const reply='The total of the two numbers is three, calculated by adding one to two.';assert.throws(()=>finalizeAcceptedAssistantJob({...row,finalizer_context:{...row.finalizer_context,assistant:{latestUserMessage:'Explain a sum',recentReplies:[reply]}}},job(reply)),/INVALID_RESULT/);});
+
+test('pinned assistant model preserves existing search settings',()=>{const plan=buildAssistantServerPlan({...opts,model:'venice-uncensored-1-2',enableWebSearch:true});assert.equal(isAssistantBackgroundModel(plan.model),true);assert.deepEqual(plan.venice_parameters,buildVeniceTextPayload({...opts,model:plan.model,enableWebSearch:true}).venice_parameters);});
+test('text attachments are passed in full and UTF8 budget is enforced',()=>{const input=assistantTextInput('Explain','a\nb\n\nc');assert.equal(input,'Explain\n\na\nb\n\nc');assert.equal(buildAssistantServerPlan({...opts,messages:[{role:'user',content:input}]}).messages[0].content,input);assert.throws(()=>buildAssistantServerPlan({...opts,messages:[{role:'user',content:'測'.repeat(90000)}]}),/PLAN_INVALID/);});
