@@ -38,7 +38,7 @@ export function createPilotConnection(config:PilotConnectionConfig,fetchImpl:typ
  ownerId=result.data.session.user.id;
  }};
 }
-export const pilotConnectionEnabled=import.meta.env?.VITE_AIGF_VPS_CHAT_PILOT==='1'&&!!import.meta.env?.VITE_AIGF_SYNC_PILOT_KEY;
+export const pilotConnectionEnabled=import.meta.env?.VITE_AIGF_ATOMIC_SYNC_PREVIEW!=='1'&&import.meta.env?.VITE_AIGF_VPS_CHAT_PILOT==='1'&&!!import.meta.env?.VITE_AIGF_SYNC_PILOT_KEY;
 let active:ReturnType<typeof createPilotConnection>|null=null;
 export const getPilotConnection=()=>{
  if(!pilotConnectionEnabled)throw Error('PILOT_CONNECTION_DISABLED');

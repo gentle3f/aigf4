@@ -59,8 +59,9 @@ const CLOUD_RETRY_MAX_DELAY_MS = 30_000;
 const RESEARCH_CLOUD_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 const RESEARCH_CLOUD_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const RESEARCH_CLOUD_LAST_PRUNE_KEY = 'aigf4ResearchCloudLastPruneAtV1';
-const SUPABASE_URL = String(import.meta.env?.VITE_SUPABASE_URL || '').trim();
-const SUPABASE_KEY = String(
+import {ATOMIC_CLOUD_PREVIEW,ATOMIC_CLOUD_PREVIEW_URL,ATOMIC_CLOUD_PREVIEW_KEY} from './atomicCloudPreview.js';
+const SUPABASE_URL = ATOMIC_CLOUD_PREVIEW?ATOMIC_CLOUD_PREVIEW_URL:String(import.meta.env?.VITE_SUPABASE_URL || '').trim();
+const SUPABASE_KEY = ATOMIC_CLOUD_PREVIEW?ATOMIC_CLOUD_PREVIEW_KEY:String(
     import.meta.env?.VITE_SUPABASE_PUBLISHABLE_KEY
     || import.meta.env?.VITE_SUPABASE_ANON_KEY
     || '',
@@ -301,7 +302,7 @@ export class SupabaseCloudSyncManager {
         this.state = {
             phase: this.client ? 'signed_out' : 'unconfigured',
             configured: Boolean(this.client),
-            detail: this.client ? '登入後會自動同步所有對話與私人媒體。' : 'Supabase 尚未設定。',
+            detail: this.client ? (ATOMIC_CLOUD_PREVIEW?'V3 獨立測試雲端：請使用測試帳戶密碼。':'登入後會自動同步所有對話與私人媒體。') : 'Supabase 尚未設定。',
             lastSyncAt: Number(localStorage.getItem(LAST_SYNC_KEY) || 0) || undefined,
         };
     }
