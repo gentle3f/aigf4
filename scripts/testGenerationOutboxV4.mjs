@@ -383,4 +383,36 @@ try{
  assert.deepEqual((await db.query('select payload from public.wetapp_state where user_id=$1',[uid])).rows[0].payload,ab.payload);
  assert.equal((await db.query('select count(*)::int as n from aigf_worker.persona_memory_outbox_v4 where parent_job=$1',[aj])).rows[0].n,0);
  console.log('PASS assistant default model/search parameters and full text attachment input, atomic admission and idempotent reply, Markdown intact, no state or memory side effects');
+
+ // Production cutover rehearsal: same complete V4 schema plus old-writer fence.
+ await db.exec(`reset role;
+ alter table storage.objects enable row level security;
+ grant select,insert,update,delete on storage.objects to authenticated;
+ create policy fixture_storage_owner on storage.objects for all to authenticated using(true) with check(true);
+ create function public.wetapp_save_state(jsonb,text) returns bigint language sql as $$select 1::bigint$$;
+ create function public.wetapp_save_state_if_revision(jsonb,text,bigint) returns bigint language sql as $$select 1::bigint$$;
+ grant execute on function public.wetapp_save_state(jsonb,text),public.wetapp_save_state_if_revision(jsonb,text,bigint) to authenticated;
+ `);
+ for(const name of ['wetapp_state','wetapp_conversations','wetapp_messages','wetapp_media']){
+  await db.exec('alter table public.'+name+' enable row level security;create policy fixture_owner_'+name+' on public.'+name+' for all to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid())');
+ }
+ await db.exec(readFileSync(new URL('../supabase/experimental/wetapp_studio_media_recovery_v4.sql',import.meta.url),'utf8'));
+ await db.exec(readFileSync(new URL('../supabase/experimental/wetapp_atomic_cutover_fence_v3.sql',import.meta.url),'utf8'));
+ const cut=(await db.query('select revision,payload from public.wetapp_state where user_id=$1',[uid])).rows[0];
+ const cj='00000000-0000-4000-8000-000000000711',cr='00000000-0000-4000-8000-000000000712',cm='00000000-0000-4000-8000-000000000713',ck='assistant-topic-fenced';
+ const cd={...ad,conversations:[{conversation_key:ck,title:'Fenced',kind:'assistant'}],messages:[{...ad.messages[0],conversation_key:ck,message_id:cm,content:{text:'Explain addition',vpsServerGeneration:{version:1,jobId:cj,replyId:cr}}}]};
+ await db.exec("set role authenticated;set test.uid='"+uid+"'");
+ await assert.rejects(db.query('update public.wetapp_state set revision=revision+1'),/permission denied/);
+ await assert.rejects(db.query("select public.wetapp_save_state('{}'::jsonb,'fixture')"),/permission denied/);
+ await assert.rejects(db.query("insert into storage.objects values('wetapp-private','legacy-path','{}')"),/row-level security/);
+ const admitCut=()=>db.query('select public.wetapp_accept_generation_v4($1,$2::jsonb,$3::jsonb,$4,$5::uuid,$6::uuid,$7,$8,$9::jsonb,$10::jsonb) as revision',[cut.revision,JSON.stringify(cut.payload),JSON.stringify(cd),'fixture-device',cj,cr,ck,cm,JSON.stringify(ap),JSON.stringify(ac)]);
+ await admitCut();await admitCut();
+ await db.exec('reset role;set role aigf_generation_worker');
+ const fencedJob=await claim();assert.equal(fencedJob.job_id,cj);
+ const fencedOutput=finalizeAcceptedAssistantJob(fencedJob,{job_id:cj,status:'done',result:{choices:[{message:{content:'Addition is correct.'},finish_reason:'stop'}]}});
+ const fencedResult=await db.query('select * from aigf_worker.finish_generation_v4($1,$2,$3::jsonb,$4::jsonb)',[cj,fencedJob.lease_id,JSON.stringify(fencedOutput.content),JSON.stringify(fencedOutput.payload)]);
+ assert.equal(fencedResult.rows[0].status,'done');
+ await db.exec('reset role;set role authenticated');
+ assert.equal((await db.query('select count(*)::int as n from public.wetapp_messages where conversation_key=$1',[ck])).rows[0].n,2);
+ console.log('PASS full V4 cutover fence, old writers denied, atomic user admission and worker reply retained, authenticated reads intact');
 }finally{await db.close()}

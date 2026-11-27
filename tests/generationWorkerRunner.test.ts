@@ -21,3 +21,15 @@ test('worker loop recovers a temporary failure then processes completed work and
 test('single step returns exactly one iteration',async()=>{
  let calls=0;assert.equal(await runWorkerLoop({once:true,processOne:async()=>{calls++;return 'waiting'},log:()=>{}}),'waiting');assert.equal(calls,1);
 });
+
+test('production must be explicitly selected with distinct exact project and login',async()=>{
+ const prod=valid.replace('aigf_v4_pilot_worker','aigf_v4_production_worker').replace('hmrcvjxdmedrjjcjbtmd','ebinyocojscfnxskybax');
+ const env={CREDENTIALS_DIRECTORY:'/fixture',AIGF_V4_TARGET:'production'};
+ assert.equal(readWorkerConfig(env,read(prod)).login,'aigf_v4_production_worker');
+ assert.throws(()=>readWorkerConfig(env,read(valid)),/V4_/);
+ assert.throws(()=>readWorkerConfig({CREDENTIALS_DIRECTORY:'/fixture'},read(prod)),/V4_/);
+ assert.throws(()=>readWorkerConfig(env,read(prod.replace('/postgres','/other'))),/V4_/);
+ const row={login:'aigf_v4_production_worker',worker_role:true,can_claim:true,direct_messages:false,direct_state:false,direct_outbox:false,elevated:false};
+ await verifyWorkerDatabase(async()=>({rows:[row]}),'aigf_v4_production_worker');
+ await assert.rejects(verifyWorkerDatabase(async()=>({rows:[row]})),/V4_DATABASE_ROLE_CHECK_FAILED/);
+});

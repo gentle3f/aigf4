@@ -17,15 +17,19 @@ export function readWorkerConfig(env=process.env,read=readFileSync){
  const file=name=>read(dir+'/'+name,'utf8').trim();
  const connectionString=file('database-url');
  const u=new URL(connectionString);
- // Enforce a dedicated login, a verified TLS connection, and the isolated pilot.
- if(!['postgres:','postgresql:'].includes(u.protocol)||decodeURIComponent(u.username).split('.')[0]!=='aigf_v4_pilot_worker'||!u.password||!u.hostname||u.hash||u.search)throw Error('V4_DATABASE_URL_INVALID');
- const direct=u.hostname==='db.hmrcvjxdmedrjjcjbtmd.supabase.co'&&decodeURIComponent(u.username)==='aigf_v4_pilot_worker';
- const pooled=/^[a-z0-9-]+\.pooler\.supabase\.com$/.test(u.hostname)&&decodeURIComponent(u.username)==='aigf_v4_pilot_worker.hmrcvjxdmedrjjcjbtmd';
- if(!direct&&!pooled)throw Error('V4_PILOT_DATABASE_REQUIRED');
+ // Production is a separate explicitly configured service, never a pilot fallback.
+ const target=env.AIGF_V4_TARGET||'pilot';
+ if(!['pilot','production'].includes(target))throw Error('V4_TARGET_INVALID');
+ const project=target==='pilot'?'hmrcvjxdmedrjjcjbtmd':'ebinyocojscfnxskybax';
+ const login=target==='pilot'?'aigf_v4_pilot_worker':'aigf_v4_production_worker';
+ if(!['postgres:','postgresql:'].includes(u.protocol)||decodeURIComponent(u.username).split('.')[0]!==login||!u.password||!u.hostname||u.hash||u.search||u.pathname!=='/postgres'||(u.port&&u.port!=='5432'))throw Error('V4_DATABASE_URL_INVALID');
+ const direct=u.hostname==='db.'+project+'.supabase.co'&&decodeURIComponent(u.username)===login;
+ const pooled=/^[a-z0-9-]+\.pooler\.supabase\.com$/.test(u.hostname)&&decodeURIComponent(u.username)===login+'.'+project;
+ if(!direct&&!pooled)throw Error('V4_DATABASE_TARGET_REQUIRED');
  const token=file('queue-token');if(token.length<32)throw Error('V4_QUEUE_TOKEN_REQUIRED');
- return {connectionString,token};
+ return {connectionString,token,login,target};
 }
-export async function verifyWorkerDatabase(query){
+export async function verifyWorkerDatabase(query,login='aigf_v4_pilot_worker'){
  const r=await query(`select
   current_user as login,
   pg_has_role(current_user,'aigf_generation_worker','USAGE') as worker_role,
@@ -35,7 +39,7 @@ export async function verifyWorkerDatabase(query){
   has_function_privilege(current_user,'aigf_worker.claim_generation_v4()','EXECUTE') as can_claim,
   (select rolsuper or rolbypassrls or rolcreaterole or rolcreatedb from pg_roles where rolname=current_user) as elevated`,[]);
  const row=r.rows[0];
- if(row?.login!=='aigf_v4_pilot_worker'||row.worker_role!==true||row.can_claim!==true||row.direct_messages!==false||row.direct_state!==false||row.direct_outbox!==false||row.elevated!==false)throw Error('V4_DATABASE_ROLE_CHECK_FAILED');
+ if(row?.login!==login||row.worker_role!==true||row.can_claim!==true||row.direct_messages!==false||row.direct_state!==false||row.direct_outbox!==false||row.elevated!==false)throw Error('V4_DATABASE_ROLE_CHECK_FAILED');
 }
 export async function runWorkerLoop({processOne,signal,once=false,pause=sleep,log=console.log}){
  let failures=0;
@@ -65,7 +69,7 @@ async function main(){
  const stop=new AbortController();
  process.once('SIGTERM',()=>stop.abort());process.once('SIGINT',()=>stop.abort());
  try{
-  await verifyWorkerDatabase(query);
+  await verifyWorkerDatabase(query,cfg.login);
   const memoryAccess=(await query("select has_function_privilege(current_user,'aigf_worker.claim_persona_memory_v4()','EXECUTE') as can_claim,has_table_privilege(current_user,'aigf_worker.persona_memory_outbox_v4','SELECT,INSERT,UPDATE,DELETE') as direct_memory",[])).rows[0];
   if(memoryAccess?.can_claim!==true||memoryAccess.direct_memory!==false)throw Error('V4_MEMORY_DATABASE_ROLE_CHECK_FAILED');
   const ledgerAccess=(await query("select has_function_privilege(current_user,'aigf_worker.claim_world_ledger_v4()','EXECUTE') as can_claim,has_table_privilege(current_user,'aigf_worker.world_ledger_outbox_v4','SELECT,INSERT,UPDATE,DELETE') as direct_ledger",[])).rows[0];

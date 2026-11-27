@@ -1,0 +1,28 @@
+[Unit]
+Description=AIGF V4 server-owned generation (production)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=AIGF_V4_TARGET=production
+Environment=NODE_EXTRA_CA_CERTS=/opt/aigf-v4-production/supabase-ca.crt
+User=aigf-v4-production
+Group=aigf-v4-production
+WorkingDirectory=/opt/aigf-v4-production
+LoadCredential=database-url:/etc/aigf-v4-production/database-url
+LoadCredential=queue-token:/etc/aigf-v4-production/queue-token
+ExecStart=/usr/bin/node /opt/aigf-v4-production/worker.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+MemoryMax=256M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target
