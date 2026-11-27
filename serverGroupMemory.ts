@@ -3,7 +3,7 @@ import type {ChatMessage} from './managers.js';
 import type {PilotRequest,PilotJob} from './generationQueuePilot.js';
 import type {MemoryContext} from './durablePersonaMemory.js';
 import {buildMemoryTurnBatches,buildRoomAutoMemoryMessages,parseRoomAutoMemoryResponse,ROOM_MEMORY_RESPONSE_FORMAT} from './autoMemory.js';
-import {AUTO_MEMORY_SUMMARY_VERSION,AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES,AUTO_MEMORY_TURN_INTERVAL,AUTO_MEMORY_MIN_IMPORTANCE} from './autoMemoryPolicy.js';
+import {AUTO_MEMORY_SUMMARY_VERSION,AUTO_MEMORY_TURN_INTERVAL,AUTO_MEMORY_MIN_IMPORTANCE} from './autoMemoryPolicy.js';
 import {getManualMemoryControlledSourceIds,getManualMemoryLongTermExclusionSummaries,autoMemoryMatchesManualDecision} from './memoryPolicy.js';
 import {buildVpsCharacterPayload,VPS_REVIEW_MODELS} from './vpsCharacterTransport.js';
 import {canonicalContextJson,hashContextJson} from './contextFingerprint.js';
@@ -23,11 +23,21 @@ export async function planServerGroupMemory(room:ChatRoom|undefined,history:Chat
  if(ids.some(id=>!id)||new Set(ids).size!==history.length)return skip('unstable_source_ids');
  const count=history.filter(m=>m.role==='user').length,checkpoint=Number(room.lastSummarizedUserMessageCount||0);
  if(!Number.isSafeInteger(checkpoint)||checkpoint<0||checkpoint>count)return skip('checkpoint_invalid');
- const recovery=Number(room.memorySummaryVersion||0)<AUTO_MEMORY_SUMMARY_VERSION&&count>=AUTO_MEMORY_BACKFILL_MIN_USER_MESSAGES;
- if(!recovery&&count-checkpoint<AUTO_MEMORY_TURN_INTERVAL)return skip('threshold');
- const batches=buildMemoryTurnBatches(history,checkpoint,recovery?'recovery':'auto');
- if(batches.length!==1)return skip('multiple_batches');
- const batch=batches[0],controlled=getManualMemoryControlledSourceIds(history),sourceIds=new Set<string>(),sceneIds=new Set<string>();
+ // Never rewind an existing checkpoint or skip the oldest unprocessed turn.
+ // One immutable queue request covers one batch. The database schedules bounded
+ // successor batches only after a successful checkpoint commit.
+ if(count-checkpoint<AUTO_MEMORY_TURN_INTERVAL)return skip('threshold');
+ const batches=buildMemoryTurnBatches(history,checkpoint,'auto');
+ const batch=batches[0];
+ if(!batch||batch.throughUserMessageCount<=checkpoint)return skip('threshold');
+ // Reject incomplete user-only turns in historical data rather than marking them processed.
+ let userSeen=false,modelSeen=false;
+ for(const m of batch.messages){
+  if(m.role==='user'){if(userSeen&&!modelSeen)return skip('incomplete_historical_turn');userSeen=true;modelSeen=false;}
+  if(m.role==='model'&&userSeen)modelSeen=true;
+ }
+ if(userSeen&&!modelSeen)return skip('incomplete_historical_turn');
+ const controlled=getManualMemoryControlledSourceIds(history),sourceIds=new Set<string>(),sceneIds=new Set<string>();
  let suppress=false,scene:ChatRoom['scene']|undefined;
  const lines=batch.messages.flatMap(m=>{
   if(m.role==='user'){suppress=controlled.has(m.id!);scene=m.content.roomSceneBeforeTurn;}

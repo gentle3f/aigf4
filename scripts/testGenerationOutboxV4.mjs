@@ -26,7 +26,7 @@ try{
  create table public.wetapp_media(user_id uuid,asset_id text,conversation_key text,kind text,storage_path text,mime_type text,byte_size bigint,signature text,metadata jsonb,source_device_id text,created_at_ms bigint,primary key(user_id,asset_id));
  insert into public.wetapp_state values('${uid}','{}',1,null),('${other}','{}',1,null);
  grant select,insert,update,delete on all tables in schema public to authenticated;grant select on storage.objects to authenticated;`);
- for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql','wetapp_persona_memory_v4.sql','wetapp_world_ledger_v4.sql','wetapp_group_generation_v4.sql','wetapp_group_memory_v4.sql','wetapp_generation_context_guard_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
+ for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql','wetapp_persona_memory_v4.sql','wetapp_world_ledger_v4.sql','wetapp_group_generation_v4.sql','wetapp_group_memory_v4.sql','wetapp_generation_context_guard_v4.sql','wetapp_memory_backfill_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
  await db.exec(`set role authenticated;set test.uid='${uid}'`);
  const delta={conversations:[{conversation_key:'fixture',title:'Fixture',kind:'persona'}],messages:[{conversation_key:'fixture',message_id:msg,position:0,role:'user',content:{text:'hello'},created_at_ms:1000}],remove_messages:[],remove_conversations:[]};
  const plan={workflow_version:1,primary:{model:'fixture',messages:[{role:'user',content:'hello'}]},review:{model:'fixture',messages:[]}};
@@ -298,4 +298,36 @@ try{
  await db.exec('reset role');
  assert.equal((await db.query('select admission_revision from aigf_worker.generation_outbox_v4 where job_id=$1',[e7.jid])).rows[0].admission_revision,ce7.admission_revision);
  console.log('PASS retry survives unrelated conversation admission, original receipt unchanged');
+
+ // Backfill on the already-summarized fixture. Each completed batch advances
+ // only its checkpoint; the next batch is scheduled transactionally, max 3.
+ await db.exec("reset role;update aigf_worker.generation_outbox_v4 set status='conflict' where status in ('accepted','queued')");
+ await db.exec("update aigf_worker.persona_memory_outbox_v4 set status='skipped',outcome='fixture_cleanup' where status='pending' and persona_key in ('guard-a','guard-b')");
+ const appendTurns=async(key,n,scene)=>{
+  const start=(await db.query('select coalesce(max(position),-1)+1 as n from public.wetapp_messages where user_id=$1 and conversation_key=$2',[uid,key])).rows[0].n;
+  for(let i=0;i<n*2;i++)await db.query('insert into public.wetapp_messages(user_id,conversation_key,message_id,position,role,content,created_at_ms) values($1,$2,$3,$4,$5,$6::jsonb,$7)',[uid,key,'backfill-'+key+'-'+i,start+i,i%2?'model':'user',JSON.stringify(i%2?{text:'A garden observation '+i}:{text:'Visit garden '+i,...(scene?{roomSceneBeforeTurn:scene}:{})}),5000+i]);
+ };
+ await appendTurns(k5,56);
+ await appendTurns(k6,40,room6.scene);
+ await db.query('insert into aigf_worker.persona_memory_outbox_v4(user_id,parent_job,persona_key) values($1,gen_random_uuid(),$2)',[uid,k5]);
+ await db.query('insert into aigf_worker.group_memory_outbox_v4(user_id,parent_job,room_key) values($1,gen_random_uuid(),$2)',[uid,k6]);
+ const paidIds=new Set();
+ const backfillQueue={get:async id=>{if(!paidIds.has(id))throw new QueueHttpError(404);return {job_id:id,status:'done',result:{choices:[{message:{content:'{"memories":[]}'}}]}}},submit:async(id)=>{assert.ok(!paidIds.has(id));paidIds.add(id);return {job_id:id,status:'done',result:{choices:[{message:{content:'{"memories":[]}'}}]}}}};
+ const executeChain=async(kind)=>{
+  const process=()=>kind==='persona'?processOnePersonaMemory({store:memStore(),queue:backfillQueue}):processOneGroupMemory({store:gs(),queue:backfillQueue});
+  await db.exec('set role aigf_generation_worker');
+  for(let i=0;i<3;i++){const status=await process();if(status!=='prepared'){await db.exec('reset role');console.log('CHAIN_DIAG',kind,i,status,(await db.query('select status,outcome,batch_depth from aigf_worker.'+kind+'_memory_outbox_v4 order by created_at desc limit 4')).rows);await db.exec('set role aigf_generation_worker');}assert.equal(status,'prepared');assert.equal(await process(),'done');}
+  assert.equal(await process(),'idle');await db.exec('reset role');
+ };
+ await executeChain('persona');await executeChain('group');
+ assert.equal(paidIds.size,6);
+ const personaChain=(await db.query("select batch_depth,(plan->'context'->>'checkpoint')::int as checkpoint,status from aigf_worker.persona_memory_outbox_v4 where persona_key=$1 and id<>$2 order by batch_depth",[k5,memoryId])).rows;
+ assert.deepEqual(personaChain,[{batch_depth:0,checkpoint:22,status:'done'},{batch_depth:1,checkpoint:36,status:'done'},{batch_depth:2,checkpoint:50,status:'done'}]);
+ const groupChain=(await db.query("select batch_depth,(plan->'context'->>'checkpoint')::int as checkpoint,status from aigf_worker.group_memory_outbox_v4 where room_key=$1 and id<>$2 order by batch_depth",[k6,gmemId])).rows;
+ assert.deepEqual(groupChain,[{batch_depth:0,checkpoint:22,status:'done'},{batch_depth:1,checkpoint:36,status:'done'},{batch_depth:2,checkpoint:48,status:'done'}]);
+ const backfillState=(await db.query('select payload from public.wetapp_state where user_id=$1',[uid])).rows[0].payload;
+ assert.equal(backfillState.customPersonas[k5].lastMemorySummaryUserMessageCount,50);assert.equal(backfillState.customPersonas[k5].memories.length,1);
+ assert.equal(backfillState.rooms.rooms[0].lastSummarizedUserMessageCount,48);assert.equal(backfillState.rooms.rooms[0].sharedMemories.length,1);
+ assert.equal(backfillState.rooms.rooms[0].members[1].memories.length,0);
+ console.log('PASS bounded persona and group backfill chains, six unique jobs, monotonic checkpoints, preserved existing memories');
 }finally{await db.close()}

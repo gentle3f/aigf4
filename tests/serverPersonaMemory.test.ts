@@ -35,3 +35,16 @@ test('shared reducer deduplicates with evidence and preserves pinned memories',(
  assert.equal(applyPersonaMemorySummaryState(p,[{...entry,importance:5,sourceMessageIds:['u0','r0']}],9,3,'job2'),0);
  assert.equal(p.memories![0].pinned,true);assert.equal(p.memories![0].importance,5);assert.deepEqual(p.memories![0].sourceMessageIds,['u0','r0']);
 });
+
+test('historical backlog advances oldest pending turns without resetting old checkpoints',async()=>{
+ const h=Array.from({length:70},(_,i)=>[{id:'u'+i,role:'user' as const,content:{text:'Visit garden '+i}},{id:'r'+i,role:'model' as const,content:{text:'Observe a tree '+i}}]).flat();
+ const p=await planServerPersonaMemory('fixture',persona,h);assert.equal(p.status,'ready');if(p.status!=='ready')return;
+ assert.equal(p.plan.context.checkpoint,16);assert.ok(p.plan.context.sourceIds.includes('u0'));assert.ok(!p.plan.context.sourceIds.includes('u69'));
+ const a=await finalizeServerPersonaMemory({jobId:id,job:result([memory]),plan:p.plan,persona,history:h,at:1});
+ const next=await planServerPersonaMemory('fixture',a.persona,h);assert.equal(next.status,'ready');if(next.status!=='ready')return;
+ assert.equal(next.plan.context.checkpoint,30);assert.ok(next.plan.context.sourceIds.includes('u14'));assert.ok(next.plan.context.sourceIds.includes('u29'));
+ const legacy={...persona,lastMemorySummaryUserMessageCount:60,memorySummaryVersion:1};
+ const l=await planServerPersonaMemory('fixture',legacy,h);assert.equal(l.status,'ready');if(l.status==='ready')assert.equal(l.plan.context.checkpoint,70);
+ assert.deepEqual(await planServerPersonaMemory('fixture',{...legacy,lastMemorySummaryUserMessageCount:70},h),{status:'skipped',reason:'threshold'});
+ const broken=h.filter(m=>m.id!=='r0');assert.deepEqual(await planServerPersonaMemory('fixture',persona,broken),{status:'skipped',reason:'incomplete_historical_turn'});
+});
