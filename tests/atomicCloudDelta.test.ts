@@ -5,8 +5,8 @@ import {SupabaseCloudSyncManager} from '../supabaseCloudSync.js';
 import {MemoryManager} from '../managers.js';
 import {RoomManager} from '../roomManager.js';
 import {readCloudSyncIndex,writeCloudSyncIndexesAtomically} from '../cloudSyncIndexStore.js';
-import {readAtomicBaseline,saveAtomicBaseline,pendingAtomicJournal,planAtomicDelta} from '../atomicCloudDelta.js';
-import {mergeBaseIndex,readMergeBase} from '../atomicCloudMerge.js';
+import {readAtomicBaseline,saveAtomicBaseline,pendingAtomicJournal,planAtomicDelta,prepareAtomicJournal,retireStaleAtomicJournal} from '../atomicCloudDelta.js';
+import {mergeBaseIndex,readMergeBase,equalMergeSnapshot} from '../atomicCloudMerge.js';
 const pending='wetappCloudPendingV1',messageIndex='wetappCloudMessageIndexV1',convIndex='wetappCloudConversationIndexV1',mediaIndex='wetappCloudMediaIndexV1',stateIndex='wetappCloudStateEntityIndexV1';
 const id='fixture-room\u0000old';
 const payload={schemaVersion:1,customPersonas:{},diaries:{},interests:{},rooms:{version:2,rooms:[]},appSettings:{}};
@@ -50,20 +50,72 @@ test('whole conversation deletion does not include contradictory individual row 
  assert.deepEqual(d.remove_conversations,['a']);assert.deepEqual(d.remove_messages,[{conversation_key:'b',message_id:'y'}]);
 });
 
-test('manager stages a stable three-way conflict plan without remote writes or local replacement',async()=>{
- const uid='atomic-merge-plan-1',f=await fixture(uid);
- const local=f.x.collectLocalMessages(),base={conversations:local.conversations,messages:local.messages.slice(0,1),payload};
+async function mergeFixture(uid:string){
+ const f=await fixture(uid);
+ const original=f.x.collectLocalMessages(),base={conversations:original.conversations,messages:original.messages.slice(0,1),payload};
  await saveAtomicBaseline(uid,7,mergeBaseIndex(uid,7,base));
  f.advance();
  const other={conversation_key:'other',title:'Other',kind:'persona'};
  const remoteMessage={conversation_key:'other',message_id:'other-u',position:0,role:'user',speaker_id:null,content:{text:'remote'},created_at_ms:3};
- f.x.client.from=(table:string)=>{assert.equal(table,'wetapp_state');const chain={select:()=>chain,maybeSingle:async()=>({data:{revision:8,payload},error:null})};return chain;};
+ const previousFrom=f.x.client.from;
+ f.x.client.from=(table:string)=>{if(table!=='wetapp_state')return previousFrom(table);const chain={select:()=>chain,maybeSingle:async()=>({data:{revision:8,payload},error:null})};return chain;};
  f.x.fetchAllRows=async(table:string)=>table==='wetapp_conversations'?[...base.conversations,other]:table==='wetapp_messages'?[...base.messages,remoteMessage]:[];
- assert.equal(await f.x.pushLocalToCloud(),false);
- const plan=await readCloudSyncIndex('wetappAtomicMergePlanV3:'+uid);
- assert.equal(plan.remoteRevision,'8');assert.equal(JSON.parse(plan.merged).messages.length,3);
- assert.equal(JSON.parse(plan.local).messages.length,2);assert.equal(JSON.parse(plan.remote).messages.length,2);
- assert.deepEqual(f.calls,[]);assert.equal(await pendingAtomicJournal(uid),null);
- assert.equal(await readAtomicBaseline(uid),7);assert.equal((await readMergeBase(uid,7))!.messages.length,1);
- assert.equal(f.m.get(pending),'true');
+ let current=structuredClone(original);
+ f.x.collectLocalMessages=()=>current;
+ let installs=0;
+ f.x.createCloudPullTransactionSnapshot=async()=>structuredClone(current);
+ f.x.rollbackCloudPullTransaction=async(s:any)=>{current=s;};
+ f.x.applyRemoteData=async(_payload:any,rows:any[],_merge:boolean,conversations:any[])=>{installs++;current={conversations,messages:rows,hashes:{}};};
+ return {...f,base,original,current:()=>current,installs:()=>installs,change:()=>{current.messages.push({conversation_key:'fixture-room',message_id:'later',position:2,role:'user',speaker_id:null,content:{text:'later'},created_at_ms:4});}};
+}
+test('manager commits and installs three-way merge, then publishes indexes',async()=>{
+ const uid='atomic-merge-1',f=await mergeFixture(uid);
+ assert.equal(await f.x.pushLocalToCloud(),true);
+ assert.deepEqual(f.calls,['GET','POST']);assert.equal(f.installs(),1);
+ assert.equal(f.current().messages.length,3);
+ assert.equal(await pendingAtomicJournal(uid),null);assert.equal(await readAtomicBaseline(uid),9);
+ assert.equal((await readMergeBase(uid,9))!.messages.length,3);
+ assert.equal(f.m.has(pending),false);
+});
+test('confirmed merge with lost response resumes with GET only and installs once',async()=>{
+ const uid='atomic-merge-2',f=await mergeFixture(uid);f.lose();
+ assert.equal(await f.x.pushLocalToCloud(),false);assert.equal(f.installs(),0);
+ assert.ok((await pendingAtomicJournal(uid))?.mergeInstall);assert.equal(await readAtomicBaseline(uid),7);
+ f.online();assert.equal(await f.x.pushLocalToCloud(),true);
+ assert.deepEqual(f.calls,['GET','POST','GET','GET']);assert.equal(f.installs(),1);
+ assert.equal(await readAtomicBaseline(uid),9);assert.equal(await pendingAtomicJournal(uid),null);
+});
+test('new local edit after confirmed merge is not overwritten and receipt stays recoverable',async()=>{
+ const uid='atomic-merge-3',f=await mergeFixture(uid);f.lose();
+ assert.equal(await f.x.pushLocalToCloud(),false);f.change();f.online();
+ assert.equal(await f.x.pushLocalToCloud(),false);assert.equal(f.installs(),0);
+ assert.equal(f.current().messages.at(-1)?.message_id,'later');assert.ok((await pendingAtomicJournal(uid))?.mergeInstall);
+ assert.equal(await readAtomicBaseline(uid),7);assert.deepEqual(f.calls,['GET','POST','GET','GET']);
+});
+
+test('real local managers install verified merge and restore durable messages on reload',async()=>{
+ const uid='atomic-real-install',f=await fixture(uid);
+ delete f.x.collectLocalMessages;delete f.x.buildStatePayload;
+ const mem=f.x.memoryManager as MemoryManager;
+ mem.setChatHistory('cc',[{id:'fixture-u',role:'user',createdAt:1000,content:{text:'original'}}],true);
+ const local=await f.x.captureAtomicLocal(uid),merged=structuredClone(local);
+ const group=merged.messages.filter((r:any)=>r.conversation_key==='cc');
+ merged.messages.push({conversation_key:'cc',message_id:'fixture-r',position:group.length,role:'model',speaker_id:null,content:{text:'remote reply'},created_at_ms:1001});
+ await f.x.installAtomicMerge(uid,f.x.sessionGeneration,{local,merged});
+ assert.ok(equalMergeSnapshot(await f.x.captureAtomicLocal(uid),merged));
+ assert.equal(mem.peekChatHistory('cc').at(-1)?.id,'fixture-r');
+ const reopened=new MemoryManager();
+ assert.equal(reopened.peekChatHistory('cc').at(-1)?.id,'fixture-r');
+});
+
+test('stale request retired only after higher revision and confirmed receipt absence',async()=>{
+ const uid='atomic-stale-retirement',f=await fixture(uid);
+ await prepareAtomicJournal(uid,{expected_revision:7,new_payload:payload,delta:planAtomicDelta([],[],{},{},{}),device:'test'},{});
+ assert.equal(await retireStaleAtomicJournal(uid,7,async()=>null,()=>{}),false);
+ assert.equal(await retireStaleAtomicJournal(uid,8,async()=>8,()=>{}),false);
+ await assert.rejects(retireStaleAtomicJournal(uid,8,async()=>{throw Error('network')},()=>{}),/network/);
+ assert.ok(await pendingAtomicJournal(uid));
+ assert.equal(await retireStaleAtomicJournal(uid,8,async()=>null,()=>{}),true);
+ assert.equal(await pendingAtomicJournal(uid),null);
+ assert.equal(await readAtomicBaseline(uid),7);
 });
