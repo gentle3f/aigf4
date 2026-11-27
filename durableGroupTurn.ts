@@ -44,3 +44,8 @@ export function createGroupCommit(deps:{
   },
  };
 }
+
+// V4 cloud payload stages avatar pointers independently of the generation context.
+export async function digestServerGroupContext(room:ChatRoom):Promise<string>{
+ return hashContextJson(canonicalContextJson({...room,updatedAt:undefined,members:room.members.map(m=>({...m,avatarAssetKey:undefined,persona:{...m.persona,avatarUrl:undefined}}))}));
+}
