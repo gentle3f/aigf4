@@ -1254,6 +1254,15 @@ export class SupabaseCloudSyncManager {
         if(r.error)throw r.error;
         return typeof r.data==='string'?r.data:null;
     }
+    async retryServerGeneration(jobId:string,attemptId:string):Promise<string>{
+        if(!this.atomicDeltaMode||!this.client||!this.session||this.recoveryOnly)throw Error('ATOMIC_GENERATION_LOGIN_REQUIRED');
+        const uid=this.session.user.id,generation=this.sessionGeneration;
+        const r=await this.client.rpc('wetapp_retry_generation_v4',{p_job:jobId,p_attempt:attemptId});
+        this.assertCurrentSessionUser(uid,generation);
+        if(r.error)throw Error(authErrorMessage(r.error,'GENERATION_RETRY_FAILED'));
+        if(!['accepted','queued','done'].includes(r.data))throw Error('GENERATION_RETRY_NOT_ACCEPTED');
+        return r.data;
+    }
     async recoverUnsubmittedGeneration(jobId:string,restoreDraft:()=>void):Promise<'accepted'|'draft'>{
         if(!this.atomicDeltaMode||!this.session||!this.client||!navigator.locks)throw Error('ATOMIC_GENERATION_LOGIN_REQUIRED');
         const uid=this.session.user.id,generation=this.sessionGeneration,client=this.client;

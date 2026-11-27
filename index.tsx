@@ -2010,7 +2010,8 @@ const resumeVpsChatTurn = async (openConversation = false, manualLegacy = false)
                 const status=await supabaseCloudSyncManager.getServerGenerationStatus(serverMarker.jobId);
                 if(currentConversationKey===key&&!activeChatRequest){
                     if(status==='accepted'||status==='queued')showError('伺服器已接收任務，背景生成中；可以關閉網頁。');
-                    else if(status==='failed'||status==='conflict')showError('伺服器任務未完成（'+status+'），原訊息保留。');
+                    else if(status==='failed')showV4FailedRetry(key,serverMarker.jobId);
+                    else if(status==='conflict')showError('伺服器任務未完成：對話版本已改變，原訊息保留。');
                     else if(status==='done')showError('伺服器回覆已保存，等待雲端同步。');
                     else showV4DraftRecovery('生成草稿未確認送達伺服器，原訊息保留在本機。');
                 }
@@ -5240,6 +5241,23 @@ const showError = (message: string) => {
 
 const hideError = () => {
     errorMessage.classList.add('hidden');
+};
+const showV4FailedRetry=(key:string,jobId:string)=>{
+    if(errorMessage.querySelector('[data-v4-retry-job="'+jobId+'"]'))return;
+    showError('伺服器生成失敗，原訊息已保留。');
+    const button=document.createElement('button');button.type='button';button.textContent='重新生成';button.dataset.v4RetryJob=jobId;
+    button.style.cssText='margin-left:12px;padding:5px 10px;border:1px solid currentColor;border-radius:8px;color:#fff;background:#4b5563;cursor:pointer;position:relative;z-index:1';
+    button.onclick=async()=>{
+        if(button.disabled||activeChatRequest||!supabaseCloudSyncManager||currentConversationKey!==key)return;
+        if(!confirm('重新生成原訊息？將再次呼叫模型，可能產生費用。'))return;
+        button.disabled=true;
+        try{
+            const status=await supabaseCloudSyncManager.retryServerGeneration(jobId,crypto.randomUUID());
+            if(currentConversationKey===key)showError(status==='done'?'回覆已保存，等待同步。':'伺服器已重新接收生成任務，可以關閉網頁。');
+        }catch(e){if(currentConversationKey===key)alert('重新生成未確認：'+(e instanceof Error?e.message:'UNKNOWN'));}
+        finally{button.disabled=false;}
+    };
+    errorMessage.append(' ',button);
 };
 const showV4DraftRecovery=(message:string)=>{
     showError(message);
