@@ -27,7 +27,7 @@ import {digestWorldlineContext,verifyWorldlineAppliedPrefix,commitWorldlineReply
 import { runDurableChatStage } from './vpsStageRunner.js';
 import { buildVpsWorkflowPayload, decodeVpsWorkflow } from './vpsWorkflow.js';
 import { createGroupCommit, digestGroupContext } from './durableGroupTurn.js';
-import { listVpsRecovery,readVpsRecoveryText } from './vpsRecovery.js';
+import { listVpsRecovery,readVpsRecoveryText,findMatchingVpsRecovery } from './vpsRecovery.js';
 import { GROUP_MEMORY_KEY, roomMemorySnapshot, groupMemoryAliases, groupMemoryPresence, constrainGroupMemories } from './durableGroupMemory.js';
 import { createDurableMemoryTask, browserMemoryLock, type MemoryContext } from './durablePersonaMemory.js';
 import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult, VPS_REVIEW_MODELS } from './vpsCharacterTransport.js';
@@ -551,6 +551,7 @@ const loadSupabaseCloudSyncManager = async () => {
                 const manager = new SupabaseCloudSyncManager(memoryManager, roomManager, {
                     onStateChange: state => liveCloudUi?.renderState(state),
                     onRemoteApplied: () => {
+                        if(ATOMIC_CLOUD_PREVIEW)window.setTimeout(()=>void resumeVpsChatTurn(),0);
                         roomManager.ensureIuGroupRoom(memoryManager);
                         renderPersonaList();
                         if (currentConversationKey) {
@@ -1936,7 +1937,7 @@ const makeVpsBaseHistory = (replyContent?: Content, groupScene?: GroupGeneration
             if (r.roomDigest) {
                 if(!groupScene)throw Error('GROUP_SCENE_RECEIPT_MISSING');
                 await makeVpsGroupCommit().persistReply(r,{...replyContent,text},groupScene);
-            } else memoryManager.persistVpsChatTurnReply(r.conversationKey, r.userMessageId, r.replyId, { ...replyContent, text,...(r.worldDigest?{worldlineVpsDirectorNextId:readDirector(localStorage,r.conversationKey).next?.id}:{}) },r.conversationKey===NATIVE_SYNC_KEY?r.createdAt+1:undefined);
+            } else memoryManager.persistVpsChatTurnReply(r.conversationKey, r.userMessageId, r.replyId, { ...replyContent, text,...(r.worldDigest?{worldlineVpsDirectorNextId:readDirector(localStorage,r.conversationKey).next?.id}:{}) },r.createdAt+1);
         },
         confirmReply: async r => {
             if(r.roomDigest)await makeVpsGroupCommit().confirm(r);
@@ -1972,7 +1973,18 @@ const resumeVpsChatTurn = async (openConversation = false) => {
     resumingVpsTurn = true;
     try {
         const controller = makeVpsTurnController();
-        const pending = controller.pending();
+        let pending = controller.pending();
+        if (!pending&&ATOMIC_CLOUD_PREVIEW&&supabaseCloudSyncManager?.getState().phase==='synced'&&currentConversationKey){
+            const key=currentConversationKey;
+            const history=memoryManager.peekChatHistory(key);
+            if(history.at(-1)?.role!=='user')return;
+            const match=await findMatchingVpsRecovery(await listVpsRecovery(),key,history);
+            if(!match||currentConversationKey!==key||activeChatRequest)return;
+            // Ordinary role turns only; room/world state must also be independently restored before adoption.
+            if(match.receipt.roomDigest||match.receipt.worldDigest||key===NATIVE_SYNC_KEY)return;
+            await controller.adoptRecovery(match.receipt);
+            pending=controller.pending();
+        }
         if (!pending) return;
         if(pending.conversationKey===NATIVE_SYNC_KEY&&!nativeStoryPilot)return;
         if (await controller.reconcileApplied()) {
@@ -11337,6 +11349,7 @@ const setupEventListeners = () => {
         toolsEntry.onclick=()=>{moreOptionsMenu.classList.add('hidden');refreshMode();refreshFallback();toolsDialog.showModal();};
         moreOptionsMenu.prepend(toolsEntry);
         moreOptionsMenu.querySelector('.v2-more-options-section-interaction .v2-more-options-grid')?.appendChild(toolsEntry);
+        if(ATOMIC_CLOUD_PREVIEW)window.setInterval(()=>{if(document.visibilityState==='visible'&&currentConversationKey&&memoryManager.peekChatHistory(currentConversationKey).at(-1)?.role==='user')void resumeVpsChatTurn();},8000);
         if(nativePilotEnabled){window.setInterval(()=>{if(document.visibilityState==='visible')void syncNativeStoryPilot();},8000);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')void syncNativeStoryPilot();});}
         window.addEventListener('online',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();void syncNativeStoryPilot();});
         window.addEventListener('pageshow',()=>{void resumeVpsChatTurn();void resumeVpsPersonaMemory();void resumeVpsGroupMemory();});
