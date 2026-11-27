@@ -7,6 +7,9 @@ import {createPostgresOutboxStore,processOneGeneration,QueueHttpError} from '../
 import {createPersonaMemoryStore,processOnePersonaMemory} from '../server/personaMemoryWorkerV4.mjs';
 import {createWorldLedgerStore,processOneWorldLedger} from '../server/worldLedgerWorkerV4.mjs';
 import {WORLD_LEDGER_KEY,projectWorld} from '../worldLedger.ts';
+import {finalizeAcceptedGroupJob} from '../serverGroupFinalizer.ts';
+import {digestServerGroupContext} from '../durableGroupTurn.ts';
+import {createGroupMemoryStore,processOneGroupMemory} from '../server/groupMemoryWorkerV4.mjs';
 const db=new PGlite();
 const uid='00000000-0000-4000-8000-000000000001',other='00000000-0000-4000-8000-000000000002';
 const job='00000000-0000-4000-8000-000000000003',reply='00000000-0000-4000-8000-000000000004',msg='00000000-0000-4000-8000-000000000005';
@@ -23,7 +26,7 @@ try{
  create table public.wetapp_media(user_id uuid,asset_id text,conversation_key text,kind text,storage_path text,mime_type text,byte_size bigint,signature text,metadata jsonb,source_device_id text,created_at_ms bigint,primary key(user_id,asset_id));
  insert into public.wetapp_state values('${uid}','{}',1,null),('${other}','{}',1,null);
  grant select,insert,update,delete on all tables in schema public to authenticated;grant select on storage.objects to authenticated;`);
- for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql','wetapp_persona_memory_v4.sql','wetapp_world_ledger_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
+ for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql','wetapp_persona_memory_v4.sql','wetapp_world_ledger_v4.sql','wetapp_group_generation_v4.sql','wetapp_group_memory_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
  await db.exec(`set role authenticated;set test.uid='${uid}'`);
  const delta={conversations:[{conversation_key:'fixture',title:'Fixture',kind:'persona'}],messages:[{conversation_key:'fixture',message_id:msg,position:0,role:'user',content:{text:'hello'},created_at_ms:1000}],remove_messages:[],remove_conversations:[]};
  const plan={workflow_version:1,primary:{model:'fixture',messages:[{role:'user',content:'hello'}]},review:{model:'fixture',messages:[]}};
@@ -200,4 +203,52 @@ try{
  assert.equal(projection.processed,2);assert.equal(projection.timeline.length,1);assert.equal(projection.timeline[0].sourceId,r4);
  assert.equal((await db.query('select count(*)::int as n from public.wetapp_messages where conversation_key=$1',[key4])).rows[0].n,2);
  console.log('PASS offline world ledger trigger, durable extraction, lost acknowledgement, evidence validation and isolated commit');
+
+ // Group reply and room state commit together, including optional NPC system message.
+ const k6='room-group-fixture',j6='00000000-0000-4000-8000-000000000031',r6='00000000-0000-4000-8000-000000000032',m6='00000000-0000-4000-8000-000000000033';
+ const member6=(id,name)=>({id,joinedAt:1,soul:[],memories:[],persona:{name,emoji:'G',gender:'female',description:'Garden guide',prompt:'Talk about plants',greeting:'Hello',avatarPrompt:'',avatarUrl:null}});
+ const room6={id:k6,type:'group',title:'Garden',description:'Group',leadMemberId:'a',members:[member6('a','Anna'),member6('b','Beth')],scene:{id:'scene',location:'garden',realityLayer:'physical',realityEpochId:'epoch1',presentMemberIds:['a','b'],summary:'Garden visit',unresolved:[],startedAt:1},sharedSoul:[],sharedMemories:[],createdAt:1,updatedAt:1,lastSummarizedUserMessageCount:0};
+ const before6=(await db.query('select payload,revision from public.wetapp_state where user_id=$1',[uid])).rows[0];
+ const state6={...before6.payload,rooms:{version:2,rooms:[room6,{...room6,id:'other-room'}]}};
+ const d6={...delta,conversations:[{conversation_key:k6,title:'Garden',kind:'room'}],messages:[{...delta.messages[0],conversation_key:k6,message_id:m6,content:{text:'hello',vpsServerGeneration:{version:1,jobId:j6,replyId:r6}}}]};
+ const ctx6={version:2,worldActive:false,roomDigest:await digestServerGroupContext(room6),group:{latestUserMessage:'hello',personaName:'Anna',fallbackMemberId:'a',recentReplies:[],ownerV2:false,alreadyOfferedNames:[]}};
+ const plan6={...plan,workflow_version:3,primary:{...plan.primary,model:'glm-5-3-flash-uncensored'}};
+ await db.exec("set role authenticated;set test.uid='"+uid+"'");
+ const admit6=c=>db.query('select public.wetapp_accept_generation_v4($1,$2::jsonb,$3::jsonb,$4,$5::uuid,$6::uuid,$7,$8,$9::jsonb,$10::jsonb)',[before6.revision,JSON.stringify(state6),JSON.stringify(d6),'fixture-device',j6,r6,k6,m6,JSON.stringify(plan6),JSON.stringify(c)]);
+ await assert.rejects(admit6({...ctx6,roomDigest:null}),/INVALID_GENERATION_ADMISSION/);
+ await assert.rejects(admit6({...ctx6,group:{...ctx6.group,latestUserMessage:'not hello'}}),/GENERATION_FINALIZER_USER_MISMATCH/);
+ await admit6(ctx6);await db.exec('reset role;set role aigf_generation_worker');
+ const groupRaw='<chat>Anna：「花园很漂亮。」\\nBeth：「我们去看喷泉。」</chat><scene>{"location":"花园","reality_layer":"texting","present_member_ids":["a","b"],"summary":"参观","unresolved":[]}</scene><npc_candidate>{"name":"Dora","gender":"female","description":"Garden guide"}</npc_candidate>'.replace('\\n','\n');
+ const groupJob={job_id:j6,status:'done',result:{choices:[{message:{content:groupRaw}}],workflow:{version:3,parts:[groupRaw],review:{choices:[{message:{content:'{"decision":"keep","issues":[],"revised_response":""}'}}]},stages:[{phase:'primary'},{phase:'review-1'}]}}};
+ assert.equal(await processOneGeneration({store:store(),queue:{get:async()=>groupJob,submit:async()=>{throw Error('UNEXPECTED_SUBMIT')}},finalize:finalizeAcceptedGroupJob}),'done');
+ await db.exec('reset role');
+ const groupMessages=(await db.query('select role,content,message_id from public.wetapp_messages where conversation_key=$1 order by position',[k6])).rows;
+ assert.deepEqual(groupMessages.map(m=>m.role),['user','model','system']);
+ assert.equal(groupMessages[1].content.segments.length,2);assert.equal(groupMessages[1].content.npcProposal,undefined);assert.equal(groupMessages[2].content.npcProposal.name,'Dora');assert.equal(groupMessages[2].message_id,r6+'-npc');
+ const groupSaved=(await db.query('select payload from public.wetapp_state where user_id=$1',[uid])).rows[0].payload;
+ assert.equal(groupSaved.rooms.rooms[0].scene.realityLayer,'texting');assert.equal(groupSaved.rooms.rooms[0].lastVpsSceneJobId,j6);assert.deepEqual(groupSaved.rooms.rooms[1],state6.rooms.rooms[1]);assert.deepEqual(groupSaved.customPersonas,state6.customPersonas);assert.deepEqual(groupSaved.appSettings,state6.appSettings);
+ console.log('PASS server group admission, atomic segments/scene/NPC, unrelated worlds and memories unchanged');
+
+ // The first completed group turn automatically queues a memory task. Add
+ // seven synthetic completed turns before claim to exercise the eighth-turn threshold.
+ const gmemRows=(await db.query('select id,status,parent_job from aigf_worker.group_memory_outbox_v4')).rows;
+ assert.equal(gmemRows.length,1);assert.equal(gmemRows[0].parent_job,j6);
+ const gmemId=gmemRows[0].id;
+ await db.query("update public.wetapp_messages set content=content||$1::jsonb where conversation_key=$2 and message_id=$3",[JSON.stringify({roomSceneBeforeTurn:room6.scene}),k6,m6]);
+ for(let i=0;i<14;i++)await db.query("insert into public.wetapp_messages(user_id,conversation_key,message_id,position,role,content,created_at_ms) values($1,$2,$3,$4,$5,$6::jsonb,$7)",[uid,k6,'group-memory-fixture-'+i,i+3,i%2?'model':'user',JSON.stringify(i%2?{text:'Anna: Tea is available.',segments:[{type:'dialogue',speakerId:'a',speakerName:'Anna',text:'Tea is available.'}]}:{text:'I prefer tea.',roomSceneBeforeTurn:room6.scene}),3000+i]);
+ await db.exec('set role authenticated');await assert.rejects(db.query('select * from aigf_worker.claim_group_memory_v4()'),/permission denied/);
+ const gs=()=>createGroupMemoryStore((q,a)=>db.query(q,a)),gjobs=new Map();let gpaid=0;
+ const gqueue={get:async id=>{if(!gjobs.has(id))throw new QueueHttpError(404);return gjobs.get(id)},submit:async(id,req)=>{gpaid++;assert.ok(req.response_format);gjobs.set(id,{job_id:id,status:'queued'});throw Error('lost acknowledgement')}};
+ const gprocess=()=>processOneGroupMemory({store:gs(),queue:gqueue});
+ const gdue=()=>db.exec("reset role;update aigf_worker.group_memory_outbox_v4 set next_poll_at=now()-interval '1 second';set role aigf_generation_worker");
+ await db.exec('reset role;set role aigf_generation_worker');assert.equal(await gprocess(),'prepared');
+ await gdue();assert.equal(await gprocess(),'waiting');assert.equal(gpaid,1);
+ await gdue();assert.equal(await gprocess(),'waiting');assert.equal(gpaid,1);
+ gjobs.set(gmemId,{job_id:gmemId,status:'done',result:{choices:[{message:{content:JSON.stringify({memories:[{kind:'preference',title:'Tea',shared_summary:'User prefers tea.',subject_ids:['a'],importance:4,visibility:'shared',unresolved:false,scene_id:'scene',source_message_ids:['group-memory-fixture-0','group-memory-fixture-1'],perspectives:[{member_id:'a',salience:4,knowledge:'experienced',memory:'I heard the user prefer tea.'}]}]})}}]}});
+ await gdue();assert.equal(await gprocess(),'done');assert.equal(gpaid,1);
+ await db.exec('reset role');
+ const gstate=(await db.query('select payload,source_device_id from public.wetapp_state where user_id=$1',[uid])).rows[0],groom=gstate.payload.rooms.rooms[0];
+ assert.equal(gstate.source_device_id,'aigf-vps-group-memory-v4');assert.equal(groom.sharedMemories.length,1);assert.equal(groom.members[0].memories.length,1);assert.equal(groom.members[1].memories.length,0);assert.equal(groom.sharedMemories[0].visibility,'restricted');assert.equal(groom.lastSummarizedUserMessageCount,8);assert.equal(groom.lastVpsMemoryJobId,gmemId);
+ assert.deepEqual(groom.scene,groupSaved.rooms.rooms[0].scene);assert.deepEqual(gstate.payload.rooms.rooms[1],groupSaved.rooms.rooms[1]);assert.deepEqual(gstate.payload.appSettings,groupSaved.appSettings);
+ console.log('PASS group memory auto trigger, eighth turn, one submission, restricted knowledge, unchanged room scene and other rooms');
 }finally{await db.close()}
