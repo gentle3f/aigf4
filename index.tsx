@@ -7188,7 +7188,7 @@ const runConversationGeneration = async (
                             await checkWorldlineTurnContext(turn.identity);
                             memoryManager.persistVpsChatTurnUser(request.conversationKey,turn.identity.userMessageId);
                             applyChatRuntimeState('queueing','正在交付伺服器…');
-                            await supabaseCloudSyncManager.admitServerGeneration({job_id:request.serverGeneration.jobId,reply_id:request.serverGeneration.replyId,conversation_key:request.conversationKey,user_message_id:turn.identity.userMessageId,plan,finalizer_context:{version:1,worldActive:false,single:{personaKey:request.personaKey,personaName:request.persona.name,latestUserMessage,wardrobe:request.wardrobeState,wardrobeParticipants,establishedNpcNames:reviewContext.establishedNpcNames,addressedNpcNames:reviewContext.addressedNpcNames,recentCandidateReplies:recentAssistantReplies,recentReviewReplies:getRecentAssistantRepliesForPersona(request.conversationKey,false,8),requireAttributedNpcSpeech:false}}});
+                            await supabaseCloudSyncManager.admitServerGeneration({job_id:request.serverGeneration.jobId,reply_id:request.serverGeneration.replyId,conversation_key:request.conversationKey,user_message_id:turn.identity.userMessageId,plan,finalizer_context:{version:1,worldActive:!!activeWorld,...(request.director?.next?.id?{directorNextId:request.director.next.id}:{}),single:{personaKey:request.personaKey,personaName:request.persona.name,latestUserMessage,wardrobe:request.wardrobeState,wardrobeParticipants,establishedNpcNames:reviewContext.establishedNpcNames,addressedNpcNames:reviewContext.addressedNpcNames,recentCandidateReplies:recentAssistantReplies,recentReviewReplies:getRecentAssistantRepliesForPersona(request.conversationKey,false,8),requireAttributedNpcSpeech:false}}});
                             throw new ServerGenerationAccepted();
                         }
                         turn.job = await controller.submit(turn.identity, plan);
@@ -10288,11 +10288,13 @@ const sendMessage = async ({
         id: crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         createdAt: Date.now(),
     };
-    const serverRequired=SERVER_GENERATION_V4&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&!getActiveWorldline(conversationKey)&&!currentRoom&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
+    const serverRequired=SERVER_GENERATION_V4&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&!currentRoom&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
     const dispatchModel=serverRequired?selectV4PilotModel(chatModelSettings.primary):selectedVpsChatModel();
     if(serverRequired&&!dispatchModel){showError('V4 背景生成：請選擇支援的主要模型（GLM 5.3、DeepSeek V4.1 或 Qwen 3.6）。未發送訊息。');cancelChatPerformanceTurn('send:v4-model-required');return;}
-    const serverEligible=SERVER_GENERATION_V4&&!!dispatchModel&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&!getActiveWorldline(conversationKey)&&!currentRoom&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
+    const serverEligible=SERVER_GENERATION_V4&&!!dispatchModel&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&!currentRoom&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
     if(serverEligible){
+        if(worldLedgerJobs.has(conversationKey))await worldLedgerJobs.get(conversationKey);
+        if(currentConversationKey!==conversationKey||currentPersonaKey!==personaKey||activeChatRequest)return;
         if(!supabaseCloudSyncManager||supabaseCloudSyncManager.getState().phase!=='synced'){showError('請先完成雲端同步，再送出背景生成訊息。');return;}
         try{await supabaseCloudSyncManager.preflightServerGeneration();}catch(e){showError('V4：'+(e instanceof Error?e.message:'SYNC_PREFLIGHT_FAILED')+'。訊息未發送，輸入仍保留。');cancelChatPerformanceTurn('send:v4-preflight');return;}
         if(currentConversationKey!==conversationKey||currentPersonaKey!==personaKey||activeChatRequest)return;

@@ -249,3 +249,16 @@ test('V4 preflight detects stale revision before creating local draft',async()=>
  await assert.rejects(f.x.preflightServerGeneration(),/ATOMIC_GENERATION_BASELINE_CHANGED/);
  assert.deepEqual(f.calls,[]);
 });
+
+test('atomic cloud captures dynamic director keys without treating unrelated storage as settings',async()=>{
+ const f=await fixture('v4-director-sync');
+ const key='aigfWorldlineDirectorV1:fixture-world',raw=JSON.stringify({standing:{id:'s',text:'Concise replies'},next:{id:'n',text:'Describe the forest'}});
+ f.m.set(key,raw);f.m.set('private-unrelated-token','not a synced setting');
+ Object.defineProperties(localStorage,{length:{get:()=>f.m.size},key:{value:(n:number)=>[...f.m.keys()][n]??null}});
+ assert.equal(f.x.ownsCloudSetting(key),true);
+ assert.equal(f.x.ownsCloudSetting('private-unrelated-token'),false);
+ assert.ok(f.x.cloudSettingKeys().includes(key));assert.ok(!f.x.cloudSettingKeys().includes('private-unrelated-token'));
+ const captured=await (SupabaseCloudSyncManager.prototype as any).buildStatePayload.call(f.x);
+ assert.equal(captured.appSettings[key],raw);assert.equal(captured.appSettings['private-unrelated-token'],undefined);
+ f.x.atomicDeltaMode=false;assert.ok(!f.x.cloudSettingKeys().includes(key));
+});

@@ -1,3 +1,4 @@
+import {notifyLocalCloudChange} from './cloudSyncEvents.js';
 // Per-world narrator style/preferences, not dialogue or model-policy overrides.
 export const DIRECTOR_KEY='aigfWorldlineDirectorV1';
 export type DirectorNote={id:string;text:string};
@@ -43,6 +44,7 @@ export function saveDirector(store:Store,world:string,scope:DirectorScope,text:s
  if(clean)v[scope]={id:newId(),text:clean};else delete v[scope];
  const raw=JSON.stringify(v);store.setItem(key(world),raw);
  if(store.getItem(key(world))!==raw)throw Error('未能保存導演指令。');
+ if(typeof window!=='undefined'&&store===window.localStorage)notifyLocalCloudChange('state');
  return v;
 }
 export function consumeDirectorNext(store:Store,world:string,used:DirectorPreferences|undefined){
@@ -50,6 +52,7 @@ export function consumeDirectorNext(store:Store,world:string,used:DirectorPrefer
  const v=readDirector(store,world);if(v.next?.id!==used.next.id)return false;
  delete v.next;const raw=JSON.stringify(v);store.setItem(key(world),raw);
  if(store.getItem(key(world))!==raw)throw Error('未能更新導演指令。');
+ if(typeof window!=='undefined'&&store===window.localStorage)notifyLocalCloudChange('state');
  return true;
 }
 export function formatDirector(v:DirectorPreferences|undefined){
