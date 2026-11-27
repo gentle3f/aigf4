@@ -8,10 +8,11 @@ Implemented locally:
 - Server worker core uses GET before POST with the exact durable job ID. Unknown accepted POST can be recovered within 12h (queue retains terminal results 24h); known queued job missing is never recreated.
 - Restricted NOLOGIN role, no direct business-table permissions. No production grants or installation.
 - Local PGlite 7 admission + 6 lifecycle + 1 integrated fixture pass. Integrated fixture simulates client disconnect, lost submit ack, worker restart, one reply written exactly once. Queue/model is mocked in that test; prior actual queue smoke is separate.
-- Run: node scripts/testGenerationOutboxV4.mjs (requires existing local tmp/sync-lab PGlite).
+- Shared single-character finalizer uses existing reply rules, language normalization, wardrobe parsing, review application, and deterministic Worldline chronicle/director updates. Immutable finalizer context stored with admission; its latest user text must match the saved message. Worker adapter and actual finalizer tested together in local PGlite with synthetic model output. Group finalization and asynchronous persona/world ledger extraction not yet ported.
+- Run: npm exec -- tsx scripts/testGenerationOutboxV4.mjs (requires existing local tmp/sync-lab PGlite).
 
 Not yet wired:
-1. Server finalizer equivalent to current client result parser, review selection, worldline chronicle/ledger/director and persona/group memory/scene processing. Never substitute raw candidate text for processed chat.
+1. Complete parity and wire production worker runner to finalizer. Port world ledger and persona/group memory/scene processing; never substitute raw candidate text for processed chat.
 2. Admission integration in atomic cloud manager: compose complete plan before sending one atomic RPC. UI must distinguish local draft, submitting, server accepted.
 3. Replace strict global revision conflict with reviewed per-conversation/state patch merge. Current prototype conservatively marks a conflict on ANY intervening state revision. Do not silently overwrite newer state.
 4. Provision scoped database login and a persistent VPS process using existing localhost queue; no broad DB grants.

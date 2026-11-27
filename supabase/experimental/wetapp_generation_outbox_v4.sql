@@ -14,6 +14,7 @@ create table if not exists aigf_worker.generation_outbox_v4(
  admission_revision bigint not null,
  admission_sha256 text not null check(admission_sha256 ~ '^[a-f0-9]{64}$'),
  plan jsonb not null,
+ finalizer_context jsonb,
  status text not null default 'accepted' check(status in ('accepted','queued','done','failed','conflict')),
  created_at timestamptz not null default now(),
  primary key(user_id,job_id),
@@ -31,12 +32,12 @@ create policy generation_outbox_admit on aigf_worker.generation_outbox_v4 for in
 
 create or replace function public.wetapp_accept_generation_v4(
  expected_revision bigint,new_payload jsonb,delta jsonb,device text,
- job_id uuid,reply_id uuid,conversation_key text,user_message_id text,plan jsonb
+ job_id uuid,reply_id uuid,conversation_key text,user_message_id text,plan jsonb,finalizer_context jsonb default null
 ) returns bigint language plpgsql security invoker set search_path=''
 as $$
 declare
  uid uuid:=auth.uid(); prior aigf_worker.generation_outbox_v4%rowtype;
- fingerprint text; rev bigint; tail_id text; tail_role text;
+ fingerprint text; rev bigint; tail_id text; tail_role text; tail_text text;
 begin
  if uid is null or public.is_wetapp_owner() is distinct from true then
   raise exception using errcode='42501',message='NOT_AUTHORIZED';
@@ -46,9 +47,10 @@ begin
  or user_message_id in (job_id::text,reply_id::text)
  or jsonb_typeof(plan) is distinct from 'object' or pg_column_size(plan)>262144
  or coalesce(plan->>'workflow_version','') not in ('1','2','3')
+ or (finalizer_context is not null and (jsonb_typeof(finalizer_context) is distinct from 'object' or pg_column_size(finalizer_context)>262144 or finalizer_context->>'version' is distinct from '1' or jsonb_typeof(finalizer_context->'single') is distinct from 'object'))
  or jsonb_typeof(plan->'primary') is distinct from 'object' or jsonb_typeof(plan->'review') is distinct from 'object'
  then raise exception using errcode='22023',message='INVALID_GENERATION_ADMISSION';end if;
- fingerprint:=encode(sha256(convert_to(jsonb_build_array(expected_revision,new_payload,delta,device,job_id,reply_id,conversation_key,user_message_id,plan)::text,'UTF8')),'hex');
+ fingerprint:=encode(sha256(convert_to(jsonb_build_array(expected_revision,new_payload,delta,device,job_id,reply_id,conversation_key,user_message_id,plan,finalizer_context)::text,'UTF8')),'hex');
  perform 1 from public.wetapp_state s where s.user_id=uid for update;
  select o.* into prior from aigf_worker.generation_outbox_v4 o where o.user_id=uid and o.job_id=wetapp_accept_generation_v4.job_id;
  if found then
@@ -64,16 +66,18 @@ begin
  where m.conversation_key=wetapp_accept_generation_v4.conversation_key and m.message_id=wetapp_accept_generation_v4.user_message_id and m.role='user')
  then raise exception using errcode='22023',message='GENERATION_USER_NOT_IN_DELTA';end if;
  rev:=public.wetapp_commit_chat_delta_receipted_v3(expected_revision,new_payload,delta,device,job_id);
- select m.message_id,m.role into tail_id,tail_role from public.wetapp_messages m
+ select m.message_id,m.role,m.content->>'text' into tail_id,tail_role,tail_text from public.wetapp_messages m
  where m.user_id=uid and m.conversation_key=wetapp_accept_generation_v4.conversation_key order by m.position desc limit 1;
  if tail_id is distinct from user_message_id or tail_role is distinct from 'user' then
   raise exception using errcode='22023',message='GENERATION_USER_NOT_TAIL';
  end if;
- insert into aigf_worker.generation_outbox_v4(user_id,job_id,reply_id,conversation_key,user_message_id,admission_revision,admission_sha256,plan)
- values(uid,job_id,reply_id,conversation_key,user_message_id,rev,fingerprint,plan);
+ if finalizer_context is not null and tail_text is distinct from finalizer_context->'single'->>'latestUserMessage' then
+  raise exception using errcode='22023',message='GENERATION_FINALIZER_USER_MISMATCH';end if;
+ insert into aigf_worker.generation_outbox_v4(user_id,job_id,reply_id,conversation_key,user_message_id,admission_revision,admission_sha256,plan,finalizer_context)
+ values(uid,job_id,reply_id,conversation_key,user_message_id,rev,fingerprint,plan,finalizer_context);
  return rev;
 end;
 $$;
-revoke all on function public.wetapp_accept_generation_v4(bigint,jsonb,jsonb,text,uuid,uuid,text,text,jsonb) from public,anon;
-grant execute on function public.wetapp_accept_generation_v4(bigint,jsonb,jsonb,text,uuid,uuid,text,text,jsonb) to authenticated;
+revoke all on function public.wetapp_accept_generation_v4(bigint,jsonb,jsonb,text,uuid,uuid,text,text,jsonb,jsonb) from public,anon;
+grant execute on function public.wetapp_accept_generation_v4(bigint,jsonb,jsonb,text,uuid,uuid,text,text,jsonb,jsonb) to authenticated;
 -- Worker SELECT/UPDATE grants and finalization are deliberately not installed here.

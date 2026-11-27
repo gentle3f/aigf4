@@ -18,7 +18,7 @@ create unique index if not exists generation_outbox_job_global_v4 on aigf_worker
 create index if not exists generation_outbox_ready_v4 on aigf_worker.generation_outbox_v4(next_poll_at,created_at) where status in ('accepted','queued');
 
 create or replace function aigf_worker.claim_generation_v4()
-returns table(job_id uuid,lease_id uuid,reply_id uuid,conversation_key text,user_message_id text,admission_revision bigint,plan jsonb,status text,state_payload jsonb,created_at timestamptz)
+returns table(job_id uuid,lease_id uuid,reply_id uuid,conversation_key text,user_message_id text,admission_revision bigint,plan jsonb,status text,state_payload jsonb,created_at timestamptz,finalizer_context jsonb)
 language plpgsql security definer set search_path=''
 as $$
 begin
@@ -31,9 +31,9 @@ begin
  ), claimed as (
   update aigf_worker.generation_outbox_v4 o set lease_id=gen_random_uuid(),lease_until=clock_timestamp()+interval '90 seconds'
   from picked p where o.user_id=p.user_id and o.job_id=p.job_id
-  returning o.job_id,o.lease_id,o.reply_id,o.conversation_key,o.user_message_id,o.admission_revision,o.plan,o.status,o.user_id,o.created_at
+  returning o.job_id,o.lease_id,o.reply_id,o.conversation_key,o.user_message_id,o.admission_revision,o.plan,o.status,o.user_id,o.created_at,o.finalizer_context
  )
- select c.job_id,c.lease_id,c.reply_id,c.conversation_key,c.user_message_id,c.admission_revision,c.plan,c.status,s.payload,c.created_at from claimed c left join public.wetapp_state s on s.user_id=c.user_id and s.revision=c.admission_revision;
+ select c.job_id,c.lease_id,c.reply_id,c.conversation_key,c.user_message_id,c.admission_revision,c.plan,c.status,s.payload,c.created_at,c.finalizer_context from claimed c left join public.wetapp_state s on s.user_id=c.user_id and s.revision=c.admission_revision;
 end$$;
 
 create or replace function aigf_worker.release_generation_v4(p_job uuid,p_lease uuid,p_queued boolean)

@@ -1,6 +1,8 @@
 import {PGlite} from '../tmp/sync-lab/node_modules/@electric-sql/pglite/dist/index.js';
 import {readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
+import {finalizeAcceptedSingleJob} from '../serverTurnFinalizer.ts';
+import {makeWorldline,updateWorldlineRegistry,getWorldline,WORLDLINE_SETTING_KEY} from '../worldline.ts';
 import {createPostgresOutboxStore,processOneGeneration,QueueHttpError} from '../server/generationOutboxWorker.mjs';
 const db=new PGlite();
 const uid='00000000-0000-4000-8000-000000000001',other='00000000-0000-4000-8000-000000000002';
@@ -88,4 +90,27 @@ try{
  assert.deepEqual(offline.rows,[{role:'user',content:{text:'hello'}},{role:'model',content:{text:'Offline response'}}]);
  console.log('PASS client offline, lost submit acknowledgement, worker restart, exactly one persisted reply');
  console.log('END_TO_END_FIXTURE PASS');
+ // V4 with the actual shared single-character finalizer and worldline state.
+ const j4='00000000-0000-4000-8000-00000000000c',r4='00000000-0000-4000-8000-00000000000d',m4='00000000-0000-4000-8000-00000000000e',key4='world-fixture';
+ const world=makeWorldline(key4,{title:'Garden',genre:'fantasy',premise:'Explore a garden'},1000);
+ const state4={appSettings:{[WORLDLINE_SETTING_KEY]:JSON.stringify(updateWorldlineRegistry(null,key4,world,1000))}};
+ const ctx4={version:1,worldActive:true,single:{personaKey:'fixture',personaName:'A',latestUserMessage:'hello',wardrobe:{user:'coat',characters:{}},wardrobeParticipants:[],establishedNpcNames:[],addressedNpcNames:[],recentCandidateReplies:[],recentReviewReplies:[],requireAttributedNpcSpeech:false}};
+ const d4={...delta,conversations:[{conversation_key:key4,title:'Garden',kind:'persona'}],messages:[{...delta.messages[0],conversation_key:key4,message_id:m4}]};
+ await db.exec("set role authenticated;set test.uid='"+uid+"'");
+ const admit4=ctx=>db.query('select public.wetapp_accept_generation_v4($1,$2::jsonb,$3::jsonb,$4,$5::uuid,$6::uuid,$7,$8,$9::jsonb,$10::jsonb)',[8,JSON.stringify(state4),JSON.stringify(d4),'fixture-device',j4,r4,key4,m4,JSON.stringify(plan),JSON.stringify(ctx)]);
+ await assert.rejects(admit4({...ctx4,single:{...ctx4.single,latestUserMessage:'wrong'}}),/GENERATION_FINALIZER_USER_MISMATCH/);
+ await admit4(ctx4);
+ await db.exec('reset role;set role aigf_generation_worker');
+ const raw='花园里有一棵树，旁边是一条小路。';
+ const completed={job_id:j4,status:'done',result:{choices:[{message:{content:raw}}],workflow:{version:1,parts:[raw],review:{choices:[{message:{content:'{"decision":"keep","issues":[],"revised_response":""}'}}]},stages:[{phase:'primary'},{phase:'review-1'}]}}};
+ const result=await processOneGeneration({store:store(),queue:{get:async id=>{assert.equal(id,j4);return completed},submit:async()=>{throw Error('UNEXPECTED_SUBMIT')}},finalize:finalizeAcceptedSingleJob});
+ assert.equal(result,'done');
+ await db.exec('reset role');
+ const finalRows=await db.query("select role,content from public.wetapp_messages where conversation_key='"+key4+"' order by position");
+ assert.equal(finalRows.rows[1].content.text,'花園裏有一棵樹，旁邊是一條小路。');
+ assert.equal(finalRows.rows[1].content.worldlineStoryTurn,true);
+ const saved=(await db.query("select payload from public.wetapp_state where user_id='"+uid+"'")).rows[0].payload;
+ const story=getWorldline(saved.appSettings[WORLDLINE_SETTING_KEY],key4);
+ assert.equal(story.turnCount,world.turnCount+1);assert.equal(story.chronicle.at(-1).sourceMessageId,r4);
+ console.log('PASS integrated actual shared finalizer, traditional text, atomic story chronicle');
 }finally{await db.close()}
