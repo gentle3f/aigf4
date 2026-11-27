@@ -793,7 +793,9 @@ export class SupabaseCloudSyncManager {
     ) {
         if (!this.client || !this.isCurrentSession(sessionUserId, sessionGeneration)) return;
         if(this.atomicDeltaMode){
-            if(await pendingAtomicJournal(sessionUserId)||localStorage.getItem(PENDING_KEY)==='true')await this.pushAtomicDelta();
+            if(await pendingAtomicJournal(sessionUserId))await this.pushAtomicDelta();
+            else if(!await readAtomicBaseline(sessionUserId))await this.bootstrapAtomicBaseline();
+            else if(localStorage.getItem(PENDING_KEY)==='true')await this.pushAtomicDelta();
             else await this.pullCloudToLocal(true,false);
             return;
         }
@@ -1097,7 +1099,9 @@ export class SupabaseCloudSyncManager {
         if(this.recoveryOnly)return false;
         if(this.atomicDeltaMode){
             if(!this.session)return false;
-            if(await pendingAtomicJournal(this.session.user.id)||localStorage.getItem(PENDING_KEY)==='true')return this.pushAtomicDelta();
+            if(await pendingAtomicJournal(this.session.user.id))return this.pushAtomicDelta();
+            if(!await readAtomicBaseline(this.session.user.id))return this.bootstrapAtomicBaseline();
+            if(localStorage.getItem(PENDING_KEY)==='true')return this.pushAtomicDelta();
             return this.pullCloudToLocal(true,false);
         }
         if (!this.client || !this.session || this.pushing || this.pulling) return false;
@@ -1192,9 +1196,57 @@ export class SupabaseCloudSyncManager {
         },{local,merged});
     }
 
+    // A fresh preview can have a pending flag from startup defaults before login.
+    // Establish an actual remote baseline first, never upload against an unknown revision.
+    private async bootstrapAtomicBaseline():Promise<boolean>{
+        if(!this.client||!this.session||this.pulling||this.pushing||!this.canRestore())return false;
+        const uid=this.session.user.id,generation=this.sessionGeneration;
+        if(await pendingAtomicJournal(uid)||await readAtomicBaseline(uid))return false;
+        const body=typeof document!=='undefined'?document.body:null,wasInert=body?.inert??false;
+        if(body)body.inert=true;
+        try{
+            const epoch=this.atomicLocalEpoch;
+            const hasRealChat=Object.entries(this.memoryManager.getAllChatHistories()).some(([key,rows])=>{
+                if(!rows.length)return false;
+                const row=rows[0];
+                if(rows.length!==1||row.role!=='model'||row.speakerId)return true;
+                if(key==='room_iu_jennie_irene_v1'){
+                    const room=this.roomManager.exportData().rooms.find(r=>r.id===key);
+                    // Exact startup greeting, not a user's generated or edited turn.
+                    const segments=row.content?.segments;
+                    return !(room&&row.content?.text===room.members[0]?.persona.greeting
+                        &&Array.isArray(segments)&&segments.length===4
+                        &&segments[0]?.type==='narration'&&segments[0]?.text==='晨光剛落進房間，三個人仍在昨晚相擁入睡的位置慢慢醒來。'
+                        &&segments[1]?.type==='dialogue'&&segments[1]?.speakerId==='iu'&&segments[1]?.text==='早晨……我們三個都在。你今日想先和誰說話，還是想就這樣再抱一會？'
+                        &&segments[2]?.type==='dialogue'&&segments[2]?.speakerId==='jennie'&&segments[2]?.text==='哼，我不是捨不得起床，只是這個位置剛好很舒服。'
+                        &&segments[3]?.type==='dialogue'&&segments[3]?.speakerId==='irene'&&segments[3]?.text==='不用急著安排所有事情。先慢慢醒來，我們會一起把今天過好。'
+                        &&Object.keys(row.content).every(k=>k==='text'||k==='segments'));
+                }
+                const persona=this.memoryManager.getPersona(key);
+                return !(persona&&row.content?.text===persona.greeting&&Object.keys(row.content).every(k=>k==='text'));
+            });
+            const hasLocalData=hasRealChat
+                ||Object.keys(this.memoryManager.getModifiedAndCustomPersonas()).length>0
+                ||Object.values(this.memoryManager.getAllDiaryEntries()).some(rows=>rows.length>0)
+                ||Object.values(this.memoryManager.getAllInterests()).some(rows=>rows.length>0)
+                ||this.roomManager.exportData().rooms.some(room=>room.id!=='room_iu_jennie_irene_v1');
+            const [avatars,photos,attachments]=await Promise.all([listPersonaAvatarAssets(),listCharacterPhotoAssets(),listChatAttachments()]);
+            this.assertCurrentSessionUser(uid,generation);
+            if(hasLocalData||avatars.length||photos.length||attachments.length){
+                this.setState('error','本機已有未建立基準的私人資料；已保留，請先匯出備份，再以空白測試裝置登入。');
+                return false;
+            }
+            if(epoch!==this.atomicLocalEpoch||!this.canRestore())return false;
+            const ok=await this.pullCloudToLocal(true,false,true);
+            if(ok&&this.isCurrentSession(uid,generation))this.markSynced('首次雲端基準已建立；可以正常聊天及同步。');
+            return ok;
+        }finally{if(body)body.inert=wasInert;}
+    }
+
     // Deliberately opt-in. The original production writer is not switched by this implementation.
     private async pushAtomicDelta():Promise<boolean>{
         if(this.recoveryOnly||!this.client||!this.session||this.pushing||this.pulling)return false;
+        if(!await pendingAtomicJournal(this.session.user.id)&&!await readAtomicBaseline(this.session.user.id))return this.bootstrapAtomicBaseline();
         if(!navigator.onLine){this.setState('offline','本機變更已保留，連線後補傳。');return false;}
         if(!navigator.locks){this.setState('error','ATOMIC_SYNC_BROWSER_LOCK_REQUIRED');return false;}
         const uid=this.session.user.id,generation=this.sessionGeneration,client=this.client;
@@ -1388,8 +1440,8 @@ export class SupabaseCloudSyncManager {
         }
     }
 
-    private async pullCloudToLocal(force = false, mergeLocal = false): Promise<boolean> {
-        if(this.atomicDeltaMode&&!this.recoveryOnly&&(mergeLocal||localStorage.getItem(PENDING_KEY)==='true'||!this.canRestore()||(this.session&&await pendingAtomicJournal(this.session.user.id))))return false;
+    private async pullCloudToLocal(force = false, mergeLocal = false, atomicBootstrap=false): Promise<boolean> {
+        if(this.atomicDeltaMode&&!this.recoveryOnly&&(mergeLocal||(!atomicBootstrap&&localStorage.getItem(PENDING_KEY)==='true')||!this.canRestore()||(this.session&&await pendingAtomicJournal(this.session.user.id))))return false;
         if(this.recoveryOnly&&(!force||mergeLocal||!this.canRestore()||!this.recoveryHistoryAllowed()))return false;
         if (!this.client || !this.session || this.pulling || this.pushing) return false;
         const sessionUserId = this.session.user.id;
