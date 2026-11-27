@@ -42,12 +42,13 @@ export function createVpsImageTransport(fetchImpl:typeof fetch=fetch){
   }
  };
 }
-export async function submitDurableImage(input:{options:VeniceImageRequest;modelName:string;storage:Store;lock:<T>(work:()=>Promise<T>)=>Promise<T>;transport:ReturnType<typeof createVpsImageTransport>;newId?:()=>string}){
+export async function submitDurableImage(input:{options:VeniceImageRequest;modelName:string;storage:Store;lock:<T>(work:()=>Promise<T>)=>Promise<T>;transport:ReturnType<typeof createVpsImageTransport>;newId?:()=>string;beforeSubmit?:(r:ImageReceipt)=>Promise<void>}){
  const plan=buildImagePlan(input.options);
  return input.lock(async()=>{
   if(readImageReceipt(input.storage))throw Error('VPS_IMAGE_PENDING_EXISTS');
   const r:ImageReceipt={version:1,jobId:(input.newId??(()=>crypto.randomUUID()))(),prompt:input.options.prompt,modelName:input.modelName,aspectRatio:input.options.aspectRatio,resolution:input.options.resolution,seed:input.options.seed,createdAt:Date.now()};
   input.storage.setItem(IMAGE_RECEIPT_KEY,JSON.stringify(r));
+  await input.beforeSubmit?.(r);
   await input.transport.submit(r.jobId,plan,input.options.signal);
   return r;
  });

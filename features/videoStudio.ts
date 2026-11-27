@@ -1,3 +1,4 @@
+import {queuePilotStudioMedia,refreshPilotStudioMedia} from '../pilotStudioMedia.js';
 import {retrieveAutonomousStudioVideo} from '../vpsAutoVideoStudio.js';
 import {
     generateVeniceText,
@@ -25,7 +26,6 @@ import {
 import type { PersistedVideoJob } from '../videoStudioPersistence.js';
 import { setPersistedAppSetting } from '../appSettings.js';
 import { VPS_CHAT_BUILD } from '../vpsChatMode.js';
-import {queuePilotStudioMedia,refreshPilotStudioMedia} from '../pilotStudioMedia.js';
 import { getSavedStudioVideo,persistStudioVideo,listSavedStudioVideos,deleteSavedStudioVideo } from '../studioMediaStore.js';
 import type { StoredChatAttachment } from '../chatMediaStore.js';
 import { VPS_VIDEO_MODEL,createVpsVideoSubmission,submitDurableVideo } from '../vpsVideoSubmission.js';
@@ -33,6 +33,7 @@ import { VPS_VIDEO_MODEL,createVpsVideoSubmission,submitDurableVideo } from '../
 export type VideoStudioHistoryMode = 'push' | 'replace' | 'skip';
 
 export type VideoStudioDependencies = {
+    getStudioRecovery?:()=>ReturnType<typeof import('../studioMediaRecoveryClient.js').createStudioMediaRecovery>|null;
     isUnlocked: () => boolean;
     handleAuthRequired: () => void;
     cancelActiveChatRequest: () => void;
@@ -1518,7 +1519,27 @@ const resumePendingVideoJob = async (source: 'auto' | 'manual' = 'manual') => {
     }
 };
 
+const recoverCloudVideos=async()=>{
+    if(isVideoRequestRunning)return true;
+    const recovery=getDependencies().getStudioRecovery?.();if(!recovery)return false;
+    setVideoStudioBusy(true);
+    try{
+        const rows=await recovery.list('video');
+        for(const r of rows.filter(r=>r.status==='archived'||r.status==='transferred')){
+            if(r.status==='archived'){
+                try{await recovery.transfer(r);}catch(e){if(!(e instanceof Error)||e.message!=='STUDIO_RECOVERY_ALREADY_TRANSFERRED')throw e;}
+            }
+            if(readPersistedVideoJobFromStorage()?.submissionId===r.job_id&&await recovery.localAsset(r))clearPersistedVideoJob();
+        }
+        await restoreSavedStudioVideos();
+        const pending=rows.some(r=>r.status==='pending');
+        videoStudioStatus.textContent=pending?'雲端影片任務尚在處理；毋須再次生成。':'已核對雲端影片任務。';
+        return pending;
+    }finally{setVideoStudioBusy(false);}
+};
 const runVideoGeneration = async () => {
+    if(isVideoRequestRunning)return;
+    if(VPS_CHAT_BUILD){try{if(await recoverCloudVideos())return;}catch(e){showVideoStudioError(e instanceof Error?e.message:'STUDIO_RECOVERY_FAILED');return;}}
     if (pendingVideoJob) {
         await resumePendingVideoJob('manual');
         return;
@@ -1572,6 +1593,7 @@ const runVideoGeneration = async () => {
                 storage:{read:readPersistedVideoJobFromStorage,write:writePersistedVideoJobToStorage},
                 lock:async work=>await navigator.locks.request('aigf-vps-video-submit-v1',work),
                 transport:createVpsVideoSubmission(),
+                beforeSubmit:async r=>{if(r.autonomous){const recovery=getDependencies().getStudioRecovery?.();if(recovery)await recovery.registerVideo(r);}},
                 onStored:r=>{pendingVideoJob=r;updateVideoJobAction();},
             });
             await pollPersistedVideoJob(job,controller);
@@ -1626,10 +1648,10 @@ const showVideoStudio = (historyMode: VideoStudioHistoryMode = 'push') => {
     renderVideoResults();
     void loadVideoModels(videoStudioMode);
     updateVideoGenerateButton();
-    if(VPS_CHAT_BUILD)void restoreSavedStudioVideos();
-    if (pendingVideoJob && !isVideoRequestRunning && deps.isUnlocked()) {
-        void resumePendingVideoJob('auto');
-    }
+    if(VPS_CHAT_BUILD){
+        void restoreSavedStudioVideos();
+        void recoverCloudVideos().then(pending=>{if(!pending&&pendingVideoJob&&!isVideoRequestRunning&&deps.isUnlocked())return resumePendingVideoJob('auto');}).catch(e=>showVideoStudioError(e instanceof Error?e.message:'STUDIO_RECOVERY_FAILED'));
+    }else if(pendingVideoJob&&!isVideoRequestRunning&&deps.isUnlocked())void resumePendingVideoJob('auto');
 };
 
 const navigateBackFromVideoStudio = () => {
@@ -1712,6 +1734,7 @@ const setupVideoStudioListeners = () => {
     });
     videoCancelButton.addEventListener('click', cancelVideoRequest);
     clearVideoResultsBtn.addEventListener('click', clearVideoResults);
+    if(import.meta.env?.VITE_AIGF_STUDIO_MEDIA_RECOVERY_V4==='1'){const cloud=document.createElement('button');cloud.type='button';cloud.textContent='取回雲端影片';cloud.onclick=()=>void recoverCloudVideos().catch(e=>showVideoStudioError(e instanceof Error?e.message:'STUDIO_RECOVERY_FAILED'));videoStudioStatus.after(cloud);}
     window.addEventListener('beforeunload', () => {
         videoResults.forEach(result => {
             if (result.isObjectUrl) URL.revokeObjectURL(result.url);
