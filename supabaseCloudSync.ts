@@ -1130,7 +1130,7 @@ export class SupabaseCloudSyncManager {
     }
     private async captureAtomicLocal(uid:string,reference?:object):Promise<CloudMergeSnapshot>{
         const captured=await this.buildStatePayload();
-        const payload=reference?preserveForeignCloudSettings(captured,reference,isPersistedAppSettingKey):captured;
+        const payload=reference?preserveForeignCloudSettings(captured,reference,k=>this.ownsCloudSetting(k)):captured;
         const {conversations,messages}=this.collectLocalMessages(uid);
         return normalizeMergeSnapshot({conversations,messages,payload});
     }
@@ -1183,7 +1183,7 @@ export class SupabaseCloudSyncManager {
         const signature=(rows:{asset_id:string;signature:string}[])=>JSON.stringify(Object.entries(Object.fromEntries(rows.map(r=>[r.asset_id,r.signature]))).sort());
         const baselineMedia=JSON.stringify(Object.entries(oldMedia).sort());
         if(signature(mediaRows)!==baselineMedia||signature(localMedia)!==baselineMedia)throw Error('ATOMIC_MEDIA_CHANGE_PENDING：媒體有變更，未合併。');
-        const local=normalizeMergeSnapshot({conversations:localRows.conversations,messages:localRows.messages,payload:preserveForeignCloudSettings(payload,base.payload,isPersistedAppSettingKey)});
+        const local=normalizeMergeSnapshot({conversations:localRows.conversations,messages:localRows.messages,payload:preserveForeignCloudSettings(payload,base.payload,k=>this.ownsCloudSetting(k))});
         const remote=normalizeMergeSnapshot({conversations,messages,payload:state.data.payload});
         const merged=normalizeMergeSnapshot(mergeAtomicSnapshots(base,local,remote));
         const head=await this.readCloudStateHead(uid,generation);
@@ -1354,7 +1354,7 @@ export class SupabaseCloudSyncManager {
                     }else{
                     const base=await readMergeBase(uid,baseline);
                     if(!base)throw Error('ATOMIC_BASELINE_REQUIRED');
-                    const payload=preserveForeignCloudSettings(await this.buildStatePayload(),base.payload,isPersistedAppSettingKey);assertCurrent();
+                    const payload=preserveForeignCloudSettings(await this.buildStatePayload(),base.payload,k=>this.ownsCloudSetting(k));assertCurrent();
                     const media=await this.collectLocalMedia(payload.rooms.rooms,uid);
                     const mediaIndex=Object.fromEntries(media.map(a=>[a.asset_id,a.signature]));
                     const [oldMedia,oldMessages,oldConversations]=await Promise.all([readCloudSyncIndex(MEDIA_INDEX_KEY),readCloudSyncIndex(MESSAGE_INDEX_KEY),readCloudSyncIndex(CONVERSATION_INDEX_KEY)]);
@@ -1721,6 +1721,19 @@ export class SupabaseCloudSyncManager {
         }
     }
 
+    // Per-world director preferences are dynamic keys, not credentials.
+    // Keep existing production sync behavior unchanged until V4 rollout.
+    private ownsCloudSetting(key:string):boolean{
+        return isPersistedAppSettingKey(key)||(this.atomicDeltaMode&&/^aigfWorldlineDirectorV1:.{1,256}$/u.test(key));
+    }
+    private cloudSettingKeys(extra:readonly string[]=[]):string[]{
+        const local:string[]=[];
+        if(this.atomicDeltaMode&&typeof localStorage.key==='function'){
+            for(let i=0;i<localStorage.length;i++){const key=localStorage.key(i);if(key&&this.ownsCloudSetting(key))local.push(key);}
+        }
+        return [...new Set([...PERSISTED_APP_SETTING_KEYS,...local,...extra.filter(k=>this.ownsCloudSetting(k))])];
+    }
+
     private async buildStatePayload(): Promise<CloudStatePayload> {
         const customPersonas = clone(this.memoryManager.getModifiedAndCustomPersonas());
         Object.entries(customPersonas).forEach(([key, persona]) => {
@@ -1751,7 +1764,7 @@ export class SupabaseCloudSyncManager {
         }
 
         const appSettings = Object.fromEntries(
-            PERSISTED_APP_SETTING_KEYS.flatMap(key => {
+            this.cloudSettingKeys().flatMap(key => {
                 const value = localStorage.getItem(key);
                 return value === null ? [] : [[key, value]];
             }),
@@ -2081,7 +2094,7 @@ export class SupabaseCloudSyncManager {
             memory: this.memoryManager.createImportSnapshot(),
             rooms: this.roomManager.createImportSnapshot(),
             appSettings: Object.fromEntries(
-                PERSISTED_APP_SETTING_KEYS.map(key => [key, localStorage.getItem(key)]),
+                this.cloudSettingKeys().map(key => [key, localStorage.getItem(key)]),
             ),
             avatarAssets: new Map(),
             photoAssets: new Map(),
@@ -2146,7 +2159,7 @@ export class SupabaseCloudSyncManager {
         await attempt(() => this.roomManager.restoreImportSnapshot(snapshot.rooms));
         await attempt(() => this.memoryManager.restoreImportSnapshot(snapshot.memory));
         await attempt(() => {
-            PERSISTED_APP_SETTING_KEYS.forEach(key => {
+            this.cloudSettingKeys(Object.keys(snapshot.appSettings)).forEach(key => {
                 const value = snapshot.appSettings[key];
                 if (value === null || value === undefined) localStorage.removeItem(key);
                 else localStorage.setItem(key, value);
@@ -2367,11 +2380,16 @@ export class SupabaseCloudSyncManager {
             this.roomManager.restorePrivateAvatars(),
         ]);
         if(exactMergeConversations){
-            for(const key of PERSISTED_APP_SETTING_KEYS){const value=payload.appSettings?.[key];if(typeof value==='string')localStorage.setItem(key,value);else localStorage.removeItem(key);}
+            for(const key of this.cloudSettingKeys(Object.keys(payload.appSettings||{}))){const value=payload.appSettings?.[key];if(typeof value==='string')localStorage.setItem(key,value);else localStorage.removeItem(key);}
             return;
         }
+        if(this.atomicDeltaMode&&!mergeLocal){
+            for(const key of this.cloudSettingKeys()){
+                if(!isPersistedAppSettingKey(key)&&typeof payload.appSettings?.[key]!=='string')localStorage.removeItem(key);
+            }
+        }
         Object.entries(payload.appSettings || {}).forEach(([key, value]) => {
-            if (!isPersistedAppSettingKey(key) || typeof value !== 'string') return;
+            if (!this.ownsCloudSetting(key) || typeof value !== 'string') return;
             const local=localStorage.getItem(key);
             const merged=mergeStructuredAppSetting(key,local,value);
             if(merged!==null){

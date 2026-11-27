@@ -26,7 +26,7 @@ test('worldline chronicle and one-turn director instruction committed together, 
  const key='fixture',other='other',world=makeWorldline(key,{title:'Forest',genre:'fantasy',premise:'Explore a forest'},1000),otherWorld=makeWorldline(other,{title:'Other',genre:'fantasy',premise:'Other story'},1000);
  const registry=updateWorldlineRegistry(updateWorldlineRegistry(null,key,world,1000),other,otherWorld,1000);
  const dirKey=DIRECTOR_KEY+':'+key;
- const payload={appSettings:{[WORLDLINE_SETTING_KEY]:JSON.stringify(registry),[dirKey]:JSON.stringify({standing:{id:'standing',text:'Short replies'},next:{id:'next',text:'Focus on trees'}}),unrelated:'keep'},diaries:{old:'unchanged'}};
+ const payload={appSettings:{[WORLDLINE_SETTING_KEY]:JSON.stringify(registry),[dirKey]:JSON.stringify({standing:{id:'standing',text:'Short replies'},core:{id:'core',text:'Natural dialogue'},pacing:{id:'pace',text:'Slow scenes'},next:{id:'next',text:'Focus on trees'}}),unrelated:'keep'},diaries:{old:'unchanged'}};
  const before=JSON.stringify(payload);
  const input={payload,conversationKey:key,replyId:'reply-1',latestUserMessage:ctx.latestUserMessage,content:finalizeSingleWorkflow(wrap(candidate),ctx),worldActive:true,directorNextId:'next',at:2000};
  const r=finalizeStoryState(input);
@@ -34,7 +34,7 @@ test('worldline chronicle and one-turn director instruction committed together, 
  const after=getWorldline(r.payload.appSettings[WORLDLINE_SETTING_KEY],key)!;
  assert.equal(after.turnCount,world.turnCount+1);assert.equal(after.chronicle.at(-1)?.sourceMessageId,'reply-1');assert.equal(r.content.worldlineStoryTurn,true);
  assert.deepEqual(getWorldline(r.payload.appSettings[WORLDLINE_SETTING_KEY],other),getWorldline(payload.appSettings[WORLDLINE_SETTING_KEY],other));
- assert.deepEqual(JSON.parse(r.payload.appSettings[dirKey]),{standing:{id:'standing',text:'Short replies'}});
+ assert.deepEqual(JSON.parse(r.payload.appSettings[dirKey]),{standing:{id:'standing',text:'Short replies'},core:{id:'core',text:'Natural dialogue'},pacing:{id:'pace',text:'Slow scenes'}});
  assert.throws(()=>finalizeStoryState({...input,payload:r.payload}),/WORLDLINE_ALREADY_FINALIZED/);
  assert.throws(()=>finalizeStoryState({...input,directorNextId:'wrong'}),/WORLDLINE_CONTEXT_CHANGED/);
 });

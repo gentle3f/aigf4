@@ -1,3 +1,4 @@
+import {notifyLocalCloudChange} from './cloudSyncEvents.js';
 // Per-world narrator style/preferences, not dialogue or model-policy overrides.
 export const DIRECTOR_KEY='aigfWorldlineDirectorV1';
 export type DirectorNote={id:string;text:string};
@@ -14,19 +15,25 @@ export function readDirector(store:Store,world:string):DirectorPreferences{
  const raw=store.getItem(key(world));if(!raw)return {};
  try{const v=JSON.parse(raw);return {standing:note(v?.standing),next:note(v?.next)};}catch{return {};}
 }
+// Preserve fields created by other versions of the app when changing one note.
+function rawDirector(store:Store,world:string):Record<string,unknown>{
+ try{const v=JSON.parse(store.getItem(key(world))||'{}');return v&&typeof v==='object'&&!Array.isArray(v)?v:{};}catch{return {};}
+}
 export function saveDirector(store:Store,world:string,scope:'standing'|'next',text:string,newId=()=>crypto.randomUUID()){
  const clean=text.trim();if(clean.length>1500)throw Error('導演指令最多 1500 字。');
- const v=readDirector(store,world);
+ const v=rawDirector(store,world);
  if(clean)v[scope]={id:newId(),text:clean};else delete v[scope];
  const raw=JSON.stringify(v);store.setItem(key(world),raw);
  if(store.getItem(key(world))!==raw)throw Error('未能保存導演指令。');
- return v;
+ if(typeof window!=='undefined'&&store===window.localStorage)notifyLocalCloudChange('state');
+ return readDirector(store,world);
 }
 export function consumeDirectorNext(store:Store,world:string,used:DirectorPreferences|undefined){
  if(!used?.next)return false;
- const v=readDirector(store,world);if(v.next?.id!==used.next.id)return false;
- delete v.next;const raw=JSON.stringify(v);store.setItem(key(world),raw);
+ if(readDirector(store,world).next?.id!==used.next.id)return false;
+ const v=rawDirector(store,world);delete v.next;const raw=JSON.stringify(v);store.setItem(key(world),raw);
  if(store.getItem(key(world))!==raw)throw Error('未能更新導演指令。');
+ if(typeof window!=='undefined'&&store===window.localStorage)notifyLocalCloudChange('state');
  return true;
 }
 export function formatDirector(v:DirectorPreferences|undefined){

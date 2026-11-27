@@ -20,7 +20,7 @@ try{
  create table public.wetapp_media(user_id uuid,asset_id text,conversation_key text,kind text,storage_path text,mime_type text,byte_size bigint,signature text,metadata jsonb,source_device_id text,created_at_ms bigint,primary key(user_id,asset_id));
  insert into public.wetapp_state values('${uid}','{}',1,null),('${other}','{}',1,null);
  grant select,insert,update,delete on all tables in schema public to authenticated;grant select on storage.objects to authenticated;`);
- for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
+ for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
  await db.exec(`set role authenticated;set test.uid='${uid}'`);
  const delta={conversations:[{conversation_key:'fixture',title:'Fixture',kind:'persona'}],messages:[{conversation_key:'fixture',message_id:msg,position:0,role:'user',content:{text:'hello'},created_at_ms:1000}],remove_messages:[],remove_conversations:[]};
  const plan={workflow_version:1,primary:{model:'fixture',messages:[{role:'user',content:'hello'}]},review:{model:'fixture',messages:[]}};
@@ -93,8 +93,10 @@ try{
  // V4 with the actual shared single-character finalizer and worldline state.
  const j4='00000000-0000-4000-8000-00000000000c',r4='00000000-0000-4000-8000-00000000000d',m4='00000000-0000-4000-8000-00000000000e',key4='world-fixture';
  const world=makeWorldline(key4,{title:'Garden',genre:'fantasy',premise:'Explore a garden'},1000);
- const state4={appSettings:{[WORLDLINE_SETTING_KEY]:JSON.stringify(updateWorldlineRegistry(null,key4,world,1000))}};
- const ctx4={version:1,worldActive:true,single:{personaKey:'fixture',personaName:'A',latestUserMessage:'hello',wardrobe:{user:'coat',characters:{}},wardrobeParticipants:[],establishedNpcNames:[],addressedNpcNames:[],recentCandidateReplies:[],recentReviewReplies:[],requireAttributedNpcSpeech:false}};
+ const directorKey='aigfWorldlineDirectorV1:'+key4;
+ const notes={standing:{id:'s',text:'Concise'},core:{id:'c',text:'Natural dialogue'},pacing:{id:'p',text:'Slow'},next:{id:'n',text:'Describe the trees'}};
+ const state4={appSettings:{[WORLDLINE_SETTING_KEY]:JSON.stringify(updateWorldlineRegistry(null,key4,world,1000)),[directorKey]:JSON.stringify(notes)}};
+ const ctx4={version:1,worldActive:true,directorNextId:'n',single:{personaKey:'fixture',personaName:'A',latestUserMessage:'hello',wardrobe:{user:'coat',characters:{}},wardrobeParticipants:[],establishedNpcNames:[],addressedNpcNames:[],recentCandidateReplies:[],recentReviewReplies:[],requireAttributedNpcSpeech:false}};
  const d4={...delta,conversations:[{conversation_key:key4,title:'Garden',kind:'persona'}],messages:[{...delta.messages[0],conversation_key:key4,message_id:m4,content:{text:'hello',vpsServerGeneration:{version:1,jobId:j4,replyId:r4}}}]};
  await db.exec("set role authenticated;set test.uid='"+uid+"'");
  const admit4=ctx=>db.query('select public.wetapp_accept_generation_v4($1,$2::jsonb,$3::jsonb,$4,$5::uuid,$6::uuid,$7,$8,$9::jsonb,$10::jsonb)',[8,JSON.stringify(state4),JSON.stringify(d4),'fixture-device',j4,r4,key4,m4,JSON.stringify(plan),JSON.stringify(ctx)]);
@@ -124,7 +126,7 @@ try{
  console.log('PASS owner-only retry, stable marker, duplicate click idempotence, old worker fenced');
  const raw='花园里有一棵树，旁边是一条小路。';
  const completed={job_id:retryId,status:'done',result:{choices:[{message:{content:raw}}],workflow:{version:1,parts:[raw],review:{choices:[{message:{content:'{"decision":"keep","issues":[],"revised_response":""}'}}]},stages:[{phase:'primary'},{phase:'review-1'}]}}};
- const result=await processOneGeneration({store:store(),queue:{get:async id=>{assert.equal(id,retryId);return completed},submit:async()=>{throw Error('UNEXPECTED_SUBMIT')}},finalize:finalizeAcceptedSingleJob});
+ const result=await processOneGeneration({store:store(),queue:{get:async id=>{assert.equal(id,retryId);return completed},submit:async()=>{throw Error('UNEXPECTED_SUBMIT')}},finalize:(j,job)=>{const r=finalizeAcceptedSingleJob(j,job);r.payload.appSettings[directorKey]=JSON.stringify({standing:notes.standing});return r;}});
  assert.equal(result,'done');
  await db.exec('reset role');
  const finalRows=await db.query("select role,content from public.wetapp_messages where conversation_key='"+key4+"' order by position");
@@ -133,6 +135,8 @@ try{
  const saved=(await db.query("select payload from public.wetapp_state where user_id='"+uid+"'")).rows[0].payload;
  const story=getWorldline(saved.appSettings[WORLDLINE_SETTING_KEY],key4);
  assert.equal(story.turnCount,world.turnCount+1);assert.equal(story.chronicle.at(-1).sourceMessageId,r4);
- console.log('PASS integrated actual shared finalizer, traditional text, atomic story chronicle');
+ assert.deepEqual(JSON.parse(saved.appSettings[directorKey]),{standing:notes.standing,core:notes.core,pacing:notes.pacing});
+ assert.equal(finalRows.rows[1].content.worldlineVpsDirectorNextId,'n');
+ console.log('PASS integrated actual shared finalizer, traditional text, atomic story chronicle and legacy worker director preservation');
  await db.exec("set role authenticated;set test.uid='"+uid+"'");assert.equal((await retry(retryOther)).rows[0].status,'done');console.log('PASS completed job cannot be regenerated by retry');
 }finally{await db.close()}
