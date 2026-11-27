@@ -26,7 +26,7 @@ try{
  create table public.wetapp_media(user_id uuid,asset_id text,conversation_key text,kind text,storage_path text,mime_type text,byte_size bigint,signature text,metadata jsonb,source_device_id text,created_at_ms bigint,primary key(user_id,asset_id));
  insert into public.wetapp_state values('${uid}','{}',1,null),('${other}','{}',1,null);
  grant select,insert,update,delete on all tables in schema public to authenticated;grant select on storage.objects to authenticated;`);
- for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql','wetapp_persona_memory_v4.sql','wetapp_world_ledger_v4.sql','wetapp_group_generation_v4.sql','wetapp_group_memory_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
+ for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql','wetapp_persona_memory_v4.sql','wetapp_world_ledger_v4.sql','wetapp_group_generation_v4.sql','wetapp_group_memory_v4.sql','wetapp_generation_context_guard_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
  await db.exec(`set role authenticated;set test.uid='${uid}'`);
  const delta={conversations:[{conversation_key:'fixture',title:'Fixture',kind:'persona'}],messages:[{conversation_key:'fixture',message_id:msg,position:0,role:'user',content:{text:'hello'},created_at_ms:1000}],remove_messages:[],remove_conversations:[]};
  const plan={workflow_version:1,primary:{model:'fixture',messages:[{role:'user',content:'hello'}]},review:{model:'fixture',messages:[]}};
@@ -251,4 +251,51 @@ try{
  assert.equal(gstate.source_device_id,'aigf-vps-group-memory-v4');assert.equal(groom.sharedMemories.length,1);assert.equal(groom.members[0].memories.length,1);assert.equal(groom.members[1].memories.length,0);assert.equal(groom.sharedMemories[0].visibility,'restricted');assert.equal(groom.lastSummarizedUserMessageCount,8);assert.equal(groom.lastVpsMemoryJobId,gmemId);
  assert.deepEqual(groom.scene,groupSaved.rooms.rooms[0].scene);assert.deepEqual(gstate.payload.rooms.rooms[1],groupSaved.rooms.rooms[1]);assert.deepEqual(gstate.payload.appSettings,groupSaved.appSettings);
  console.log('PASS group memory auto trigger, eighth turn, one submission, restricted knowledge, unchanged room scene and other rooms');
+
+ // Two independent text conversations can complete despite global revision changes.
+ const makeGuardJob=async(key,n)=>{
+  const id=(offset)=>'00000000-0000-4000-8000-'+(n+offset).toString(16).padStart(12,'0');
+  const jid=id(0),rid=id(1),mid=id(2);
+  await db.exec('reset role');
+  const {revision,payload}=(await db.query('select revision,payload from public.wetapp_state where user_id=$1',[uid])).rows[0];
+  const d={...delta,conversations:[{conversation_key:key,title:key,kind:'persona'}],messages:[{...delta.messages[0],conversation_key:key,message_id:mid,content:{text:'hello',vpsServerGeneration:{version:1,jobId:jid,replyId:rid}}}]};
+  const ctx={...ctx4,worldActive:false,directorNextId:undefined,single:{...ctx4.single,personaKey:key}};
+  await db.exec("set role authenticated;set test.uid='"+uid+"'");
+  await db.query('select public.wetapp_accept_generation_v4($1,$2::jsonb,$3::jsonb,$4,$5::uuid,$6::uuid,$7,$8,$9::jsonb,$10::jsonb)',[revision,JSON.stringify(payload),JSON.stringify(d),'fixture-device',jid,rid,key,mid,JSON.stringify(plan),JSON.stringify(ctx)]);
+  await db.exec('reset role');
+  return {jid,rid,mid,key};
+ };
+ const a7=await makeGuardJob('guard-a',0x100),b7=await makeGuardJob('guard-b',0x110);
+ await db.exec('set role aigf_generation_worker');
+ const ca=await claim(),cb=await claim();
+ assert.equal(ca.job_id,a7.jid);assert.equal(cb.job_id,b7.jid);assert.ok(ca.state_payload);assert.ok(cb.state_payload);
+ const doneGuard=(j)=>db.query('select * from aigf_worker.finish_generation_v4($1,$2,$3::jsonb,$4::jsonb)',[j.job_id,j.lease_id,JSON.stringify({text:'Garden reply'}),JSON.stringify(j.state_payload)]);
+ assert.equal((await doneGuard(cb)).rows[0].status,'done');
+ assert.equal((await doneGuard(ca)).rows[0].status,'done');
+ await db.exec('reset role');assert.equal((await db.query('select count(*)::int n from public.wetapp_messages where message_id in ($1,$2)',[a7.rid,b7.rid])).rows[0].n,2);
+ console.log('PASS independent conversations complete in reverse order, no lost replies');
+ const c7=await makeGuardJob('guard-c',0x120);
+ await db.exec('set role aigf_generation_worker');const cc7=await claim();assert.ok(cc7.state_payload);
+ await db.exec('reset role');
+ await db.query("update public.wetapp_messages set content=jsonb_set(content,'{text}','\"edited\"') where message_id=$1",[c7.mid]);
+ await db.exec('set role aigf_generation_worker');
+ assert.equal((await doneGuard(cc7)).rows[0].status,'conflict');
+ console.log('PASS same-chat content edit fenced even without revision bump');
+ const d7=await makeGuardJob('guard-d',0x130);
+ await db.exec('set role aigf_generation_worker');const cd7=await claim();assert.ok(cd7.state_payload);
+ await db.exec('reset role');
+ await db.query("update public.wetapp_state set payload=payload||'{\"fixtureSetting\":true}'::jsonb,revision=revision+1 where user_id=$1",[uid]);
+ await db.exec('set role aigf_generation_worker');
+ assert.equal((await doneGuard(cd7)).rows[0].status,'conflict');
+ console.log('PASS shared state change still fenced, never overwritten by older snapshot');
+ const e7=await makeGuardJob('guard-e',0x140);
+ await db.exec('set role aigf_generation_worker');const ce7=await claim();
+ assert.equal((await db.query("select aigf_worker.fail_generation_v4($1,$2,'QUEUE_FAILED') ok",[ce7.job_id,ce7.lease_id])).rows[0].ok,true);
+ const f7=await makeGuardJob('guard-f',0x150);
+ await db.exec("set role authenticated;set test.uid='"+uid+"'");
+ const attempt7='00000000-0000-4000-8000-000000000160';
+ assert.equal((await db.query('select public.wetapp_retry_generation_v4($1,$2) as status',[e7.jid,attempt7])).rows[0].status,'accepted');
+ await db.exec('reset role');
+ assert.equal((await db.query('select admission_revision from aigf_worker.generation_outbox_v4 where job_id=$1',[e7.jid])).rows[0].admission_revision,ce7.admission_revision);
+ console.log('PASS retry survives unrelated conversation admission, original receipt unchanged');
 }finally{await db.close()}
