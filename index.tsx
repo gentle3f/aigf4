@@ -38,7 +38,7 @@ import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
 import { CURRENT_CONTEXT_DIGEST_VERSION } from './contextFingerprint.js';
 import {ATOMIC_CLOUD_PREVIEW} from './atomicCloudPreview.js';
 import {SERVER_GENERATION_V4,createServerGenerationMarker,ServerGenerationAccepted,type ServerGenerationMarker} from './serverGenerationAdmission.js';
-import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, selectVpsModel, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
+import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, selectVpsModel, selectV4PilotModel, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
 import { createComposerAutoSize } from './composerAutoSize.js';
@@ -6928,7 +6928,7 @@ const runConversationGeneration = async (
 
         for (let attempt = 0; attempt < attemptCount; attempt += 1) {
             const isRepairAttempt = attempt > 0;
-            const detail = index === 0 && !isRepairAttempt ? '思考中...' : '重新思考中...';
+            const detail = request.serverGeneration ? 'V4：準備背景生成任務…' : index === 0 && !isRepairAttempt ? '思考中...' : '重新思考中...';
             applyChatRuntimeState(index === 0 && !isRepairAttempt ? 'generating' : 'retrying', detail);
             let requestStartedAt: number | null = null;
             let attemptRecorded = false;
@@ -10124,7 +10124,9 @@ const sendMessage = async ({
         id: crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         createdAt: Date.now(),
     };
-    const dispatchModel=selectedVpsChatModel();
+    const serverRequired=SERVER_GENERATION_V4&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&!currentRoom&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
+    const dispatchModel=serverRequired?selectV4PilotModel(chatModelSettings.primary):selectedVpsChatModel();
+    if(serverRequired&&!dispatchModel){showError('V4 背景生成：請選擇支援的主要模型（GLM 5.3、DeepSeek V4.1 或 Qwen 3.6）。未發送訊息。');cancelChatPerformanceTurn('send:v4-model-required');return;}
     const serverEligible=SERVER_GENERATION_V4&&!!dispatchModel&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&!currentRoom&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
     if(serverEligible){
         if(!supabaseCloudSyncManager||supabaseCloudSyncManager.getState().phase!=='synced'){showError('請先完成雲端同步，再送出背景生成訊息。');return;}
@@ -10251,7 +10253,7 @@ const sendMessage = async ({
     request.photoSubjectMemberIds = photoSubjectMemberIds;
     request.attachments = attachmentBundle.attachments;
     request.attachmentParts = attachmentBundle.contentParts;
-    const vpsModel = userContent.vpsDispatchIntent?.model || selectedVpsChatModel();
+    const vpsModel = userContent.vpsServerGeneration ? dispatchModel : userContent.vpsDispatchIntent?.model || selectedVpsChatModel();
     if (vpsModel && (!getActiveWorldline(conversationKey)||!request.room) && userMessageMeta?.id && isVpsChatEligible({
         room: Boolean(request.room), assistant: assistantMode, special: characterPhotoRequest || isGodModeActive,
         attachments: attachmentBundle.attachments.length, personaKey,
@@ -10274,6 +10276,7 @@ const sendMessage = async ({
             return;
         }
     }
+    if(request.serverGeneration&&!request.vpsTurn){finishChatRequest(request,'error');showError('V4 任務未成功準備，未轉用直連。原訊息保留。');return;}
     await getResponse(request, userMessage, assistantMode ? selectedAssistantModel : undefined);
 };
 
@@ -11229,9 +11232,9 @@ const setupEventListeners = () => {
         const heading=document.createElement('h3');heading.textContent='背景生成與任務恢復';heading.style.cssText='font-size:18px;font-weight:600;margin:0 0 12px';
         const controls=document.createElement('div');controls.style.cssText='display:grid;gap:8px';
         const label=document.createElement('p');label.style.cssText='font-size:13px;line-height:1.5;color:#555;overflow-wrap:anywhere';
-        const refreshMode=()=>{const model=selectedVpsChatModel();label.textContent=(model?'背景生成：'+model:'目前使用直連：'+chatModelSettings.primary)+'。模型沿用原有設定；預覽版雲端只讀。';};
+        const refreshMode=()=>{const model=SERVER_GENERATION_V4?selectV4PilotModel(chatModelSettings.primary):selectedVpsChatModel();label.textContent=SERVER_GENERATION_V4?(model?'V4 單人文字背景生成：'+model+'。':'V4：主要模型未受支援。'):(model?'背景生成：'+model:'目前使用直連：'+chatModelSettings.primary)+'。模型沿用原有設定。';};
         const fallback=document.createElement('button');fallback.type='button';
-        const refreshFallback=()=>{fallback.textContent=localStorage.getItem(VPS_CHAT_MODE_KEY)==='1'?'恢復自動背景生成':'暫用原有直連';};
+        const refreshFallback=()=>{fallback.textContent=SERVER_GENERATION_V4?'V4 測試版：單人文字使用背景生成':localStorage.getItem(VPS_CHAT_MODE_KEY)==='1'?'恢復自動背景生成':'暫用原有直連';fallback.disabled=SERVER_GENERATION_V4;};
         fallback.onclick=()=>{if(activeChatRequest||pendingVpsTurn()){alert('先處理原有任務。');return;}if(localStorage.getItem(VPS_CHAT_MODE_KEY)==='1')localStorage.removeItem(VPS_CHAT_MODE_KEY);else localStorage.setItem(VPS_CHAT_MODE_KEY,'1');refreshMode();refreshFallback();};
         const resume=document.createElement('button');resume.type='button';resume.textContent='取回 VPS 回覆';resume.onclick=()=>{if(activeChatRequest||resumingVpsTurn){alert('正在處理原任務，請稍後再試。');return;}void resumeVpsChatTurn(true,true);};
         const abandon=document.createElement('button');abandon.type='button';abandon.textContent='放棄待處理回覆';abandon.onclick=()=>{if(activeChatRequest||resumingVpsTurn){alert('正在處理原任務，請先停止目前生成或重新開啟頁面。');return;}const p=pendingVpsTurn();if(!p){alert('目前沒有本機待處理回覆。');return;}if(confirm('放棄本機待處理回覆？VPS 已開始的生成可能仍會扣費；此操作不會取消伺服器任務。'))void makeVpsTurnController().abandon(p.jobId).then(()=>{hideError();updateSendButtonState();toolsDialog.close();alert('舊任務已解除，可以發送新訊息。');}).catch(()=>alert('未能放棄原任務。'));};
