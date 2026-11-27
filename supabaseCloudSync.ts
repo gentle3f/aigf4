@@ -1,4 +1,5 @@
 import { createClient, RealtimeChannel, Session, SupabaseClient } from '@supabase/supabase-js';
+import {createStudioMediaRecovery} from './studioMediaRecoveryClient.js';
 import { createCloudRecoveryFetch } from './cloudRecoveryFetch.js';
 import {
     deletePersonaAvatar,
@@ -485,6 +486,24 @@ export class SupabaseCloudSyncManager {
         this.replaceSession(null);
         this.initializedUserId = '';
         this.setState('signed_out', '已登出；本機資料仍完整保留。');
+    }
+
+    // The recovery adapter is bound to the active authenticated pilot session.
+    getStudioMediaRecovery(){
+        if(!this.atomicDeltaMode||this.recoveryOnly||!ATOMIC_CLOUD_PREVIEW||import.meta.env?.VITE_AIGF_STUDIO_MEDIA_RECOVERY_V4!=='1')return null;
+        if(!this.client||!this.session)throw Error('STUDIO_RECOVERY_LOGIN_REQUIRED');
+        const uid=this.session.user.id,generation=this.sessionGeneration,client=this.client;
+        const check=()=>{if(!this.isCurrentSession(uid,generation))throw Error('STUDIO_RECOVERY_SESSION_CHANGED');};
+        const rpc=async(name:string,args:Record<string,unknown>={})=>{
+            check();const {data,error}=await client.rpc(name,args);check();if(error)throw Error('STUDIO_RECOVERY_RPC_'+(error.code||'FAILED'));return data;
+        };
+        return createStudioMediaRecovery({
+            register:(id,kind,receipt)=>rpc('wetapp_register_studio_media_v4',{p_job:id,p_kind:kind,p_receipt:receipt}),
+            list:()=>rpc('wetapp_list_studio_media_v4'),
+            chunk:async(id,offset)=>{const r=await rpc('wetapp_read_studio_media_chunk_v4',{p_job:id,p_offset:offset});if(!Array.isArray(r)||r.length!==1)throw Error('STUDIO_RECOVERY_CHUNK_MISSING');return r[0];},
+            sync:async()=>{check();await this.syncNow();check();},
+            confirm:id=>rpc('wetapp_confirm_studio_media_transfer_v4',{p_job:id})
+        });
     }
 
     async syncNow() {

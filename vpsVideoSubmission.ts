@@ -31,7 +31,7 @@ export function createVpsVideoSubmission(fetchImpl:typeof fetch=fetch){
   }
  };
 }
-export async function submitDurableVideo(input:{options:VeniceVideoQueueOptions;modelName:string;storage:{read:()=>PersistedVideoJob|null;write:(r:PersistedVideoJob)=>boolean};lock:<T>(fn:()=>Promise<T>)=>Promise<T>;transport:ReturnType<typeof createVpsVideoSubmission>;onStored:(r:PersistedVideoJob)=>void;autonomous?:boolean;newId?:()=>string;now?:()=>number}){
+export async function submitDurableVideo(input:{options:VeniceVideoQueueOptions;modelName:string;storage:{read:()=>PersistedVideoJob|null;write:(r:PersistedVideoJob)=>boolean};lock:<T>(fn:()=>Promise<T>)=>Promise<T>;transport:ReturnType<typeof createVpsVideoSubmission>;onStored:(r:PersistedVideoJob)=>void;autonomous?:boolean;newId?:()=>string;now?:()=>number;beforeSubmit?:(r:PersistedVideoJob)=>Promise<void>}){
  const legacy=buildVpsVideoSubmission(input.options);
  if(input.autonomous&&(legacy.duration!=='5s'||legacy.resolution!=='720p'))throw Error('VPS_VIDEO_UNSUPPORTED');
  const {video_submit_version,...options}=legacy;
@@ -42,6 +42,7 @@ export async function submitDurableVideo(input:{options:VeniceVideoQueueOptions;
    const receipt:PersistedVideoJob={version:1,model:input.options.model,modelName:input.modelName,queueId:id,submissionId:id,...(input.autonomous?{autonomous:true as const}:{}),prompt:input.options.prompt,mode:'text-to-video',queuedAt:(input.now??Date.now)()};
    if(!input.storage.write(receipt))throw Error('VPS_VIDEO_RECEIPT_NOT_DURABLE');
    input.onStored(receipt);
+   await input.beforeSubmit?.(receipt);
    await input.transport.submit(id,payload,input.options.signal);
    return receipt;
  });
