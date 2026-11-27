@@ -13,7 +13,7 @@ export function createLocalGenerationQueue({base='http://127.0.0.1:18781',token,
   if(!r.ok)throw new QueueHttpError(r.status);
   return r.json();
  }
- return {get:id=>call('/v1/jobs/'+id,'GET'),submit:(id,plan)=>call('/v1/jobs','POST',{job_id:id,request:plan})};
+ return {get:id=>call('/v1/jobs/'+id,'GET'),media:(id,offset)=>call('/v1/jobs/'+id+'/media/'+offset,'GET'),submit:(id,plan)=>call('/v1/jobs','POST',{job_id:id,request:plan})};
 }
 export function createPostgresOutboxStore(query){
  return {
