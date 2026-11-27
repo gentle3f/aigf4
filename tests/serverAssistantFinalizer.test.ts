@@ -1,0 +1,13 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {buildAssistantServerPlan,finalizeAcceptedAssistantJob} from '../serverAssistantFinalizer.js';
+import {buildVeniceTextPayload} from '../venice.js';
+import type {PilotJob} from '../generationQueuePilot.js';
+const id='12345678-1234-4234-8234-123456789abc';
+const opts={model:'qwen-3-6-plus',messages:[{role:'system' as const,content:'General assistant'},{role:'user' as const,content:'Explain a sum'}],temperature:0.7,topP:0.9,repetitionPenalty:1.04};
+const row={job_id:id,state_payload:{rooms:{rooms:[]},appSettings:{test:'preserve'}},finalizer_context:{version:3,worldActive:false,assistant:{latestUserMessage:'Explain a sum',recentReplies:[]}}};
+const job=(content:string,finish_reason='stop'):PilotJob=>({job_id:id,status:'done',result:{choices:[{message:{content},finish_reason}]}});
+test('assistant plan is original payload without streaming',()=>{const plan=buildAssistantServerPlan({...opts,onTextDelta:()=>{}});assert.deepEqual(plan,buildVeniceTextPayload(opts));assert.equal('stream' in plan,false);});
+test('web search and unapproved model stay outside this route',()=>{assert.throws(()=>buildAssistantServerPlan({...opts,enableWebSearch:true}),/UNSUPPORTED/);assert.throws(()=>buildAssistantServerPlan({...opts,model:'other'}),/UNSUPPORTED/);});
+test('assistant Markdown and code preserved, state unchanged',()=>{const text='## Answer\n\n```js\nconst sum = 1 + 2;\n```';const r=finalizeAcceptedAssistantJob(row,job('Assistant: '+text));assert.deepEqual(r.content,{text});assert.deepEqual(r.payload,row.state_payload);assert.notEqual(r.payload,row.state_payload);});
+test('truncation, empty output and repeat are not published',()=>{assert.throws(()=>finalizeAcceptedAssistantJob(row,job('partial','length')),/INVALID_RESULT/);assert.throws(()=>finalizeAcceptedAssistantJob(row,job('<think>internal</think>')),/INVALID_RESULT/);const reply='The total of the two numbers is three, calculated by adding one to two.';assert.throws(()=>finalizeAcceptedAssistantJob({...row,finalizer_context:{...row.finalizer_context,assistant:{latestUserMessage:'Explain a sum',recentReplies:[reply]}}},job(reply)),/INVALID_RESULT/);});
