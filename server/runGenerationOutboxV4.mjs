@@ -5,6 +5,7 @@ import {Pool} from 'pg';
 import {createLocalGenerationQueue,createPostgresOutboxStore,processOneGeneration} from './generationOutboxWorker.mjs';
 import {finalizeAcceptedSingleJob} from '../serverTurnFinalizer.ts';
 import {createPersonaMemoryStore,processOnePersonaMemory} from './personaMemoryWorkerV4.mjs';
+import {createWorldLedgerStore,processOneWorldLedger} from './worldLedgerWorkerV4.mjs';
 
 export function readWorkerConfig(env=process.env,read=readFileSync){
  const dir=env.CREDENTIALS_DIRECTORY;
@@ -63,11 +64,14 @@ async function main(){
   await verifyWorkerDatabase(query);
   const memoryAccess=(await query("select has_function_privilege(current_user,'aigf_worker.claim_persona_memory_v4()','EXECUTE') as can_claim,has_table_privilege(current_user,'aigf_worker.persona_memory_outbox_v4','SELECT,INSERT,UPDATE,DELETE') as direct_memory",[])).rows[0];
   if(memoryAccess?.can_claim!==true||memoryAccess.direct_memory!==false)throw Error('V4_MEMORY_DATABASE_ROLE_CHECK_FAILED');
+  const ledgerAccess=(await query("select has_function_privilege(current_user,'aigf_worker.claim_world_ledger_v4()','EXECUTE') as can_claim,has_table_privilege(current_user,'aigf_worker.world_ledger_outbox_v4','SELECT,INSERT,UPDATE,DELETE') as direct_ledger",[])).rows[0];
+  if(ledgerAccess?.can_claim!==true||ledgerAccess.direct_ledger!==false)throw Error('V4_LEDGER_DATABASE_ROLE_CHECK_FAILED');
   if(process.argv.includes('--check')){console.log('V4_WORKER_DB_ROLE_PASS');return;}
   const store=createPostgresOutboxStore(query),queue=createLocalGenerationQueue({token:cfg.token});
   console.log('V4_WORKER_READY');
-  const memoryStore=createPersonaMemoryStore(query);
-  await runWorkerLoop({processOne:async()=>{const chat=await processOneGeneration({store,queue,finalize:finalizeAcceptedSingleJob});return chat==='idle'?processOnePersonaMemory({store:memoryStore,queue}):chat;},signal:stop.signal,once:process.argv.includes('--once')});
+  const memoryStore=createPersonaMemoryStore(query),ledgerStore=createWorldLedgerStore(query);
+  let ledgerFirst=false;
+  await runWorkerLoop({processOne:async()=>{const chat=await processOneGeneration({store,queue,finalize:finalizeAcceptedSingleJob});if(chat!=='idle')return chat;ledgerFirst=!ledgerFirst;const a=()=>processOnePersonaMemory({store:memoryStore,queue}),b=()=>processOneWorldLedger({store:ledgerStore,queue});const first=await (ledgerFirst?b:a)();return first==='idle'?(ledgerFirst?a:b)():first;},signal:stop.signal,once:process.argv.includes('--once')});
  }finally{await db.end();}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)main().catch(()=>{console.error('V4_WORKER_START_OR_RUN_FAILED');process.exitCode=1;});

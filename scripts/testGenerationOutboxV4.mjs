@@ -5,6 +5,8 @@ import {finalizeAcceptedSingleJob} from '../serverTurnFinalizer.ts';
 import {makeWorldline,updateWorldlineRegistry,getWorldline,WORLDLINE_SETTING_KEY} from '../worldline.ts';
 import {createPostgresOutboxStore,processOneGeneration,QueueHttpError} from '../server/generationOutboxWorker.mjs';
 import {createPersonaMemoryStore,processOnePersonaMemory} from '../server/personaMemoryWorkerV4.mjs';
+import {createWorldLedgerStore,processOneWorldLedger} from '../server/worldLedgerWorkerV4.mjs';
+import {WORLD_LEDGER_KEY,projectWorld} from '../worldLedger.ts';
 const db=new PGlite();
 const uid='00000000-0000-4000-8000-000000000001',other='00000000-0000-4000-8000-000000000002';
 const job='00000000-0000-4000-8000-000000000003',reply='00000000-0000-4000-8000-000000000004',msg='00000000-0000-4000-8000-000000000005';
@@ -21,7 +23,7 @@ try{
  create table public.wetapp_media(user_id uuid,asset_id text,conversation_key text,kind text,storage_path text,mime_type text,byte_size bigint,signature text,metadata jsonb,source_device_id text,created_at_ms bigint,primary key(user_id,asset_id));
  insert into public.wetapp_state values('${uid}','{}',1,null),('${other}','{}',1,null);
  grant select,insert,update,delete on all tables in schema public to authenticated;grant select on storage.objects to authenticated;`);
- for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql','wetapp_persona_memory_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
+ for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql','wetapp_persona_memory_v4.sql','wetapp_world_ledger_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
  await db.exec(`set role authenticated;set test.uid='${uid}'`);
  const delta={conversations:[{conversation_key:'fixture',title:'Fixture',kind:'persona'}],messages:[{conversation_key:'fixture',message_id:msg,position:0,role:'user',content:{text:'hello'},created_at_ms:1000}],remove_messages:[],remove_conversations:[]};
  const plan={workflow_version:1,primary:{model:'fixture',messages:[{role:'user',content:'hello'}]},review:{model:'fixture',messages:[]}};
@@ -100,7 +102,7 @@ try{
  const ctx4={version:1,worldActive:true,directorNextId:'n',single:{personaKey:'fixture',personaName:'A',latestUserMessage:'hello',wardrobe:{user:'coat',characters:{}},wardrobeParticipants:[],establishedNpcNames:[],addressedNpcNames:[],recentCandidateReplies:[],recentReviewReplies:[],requireAttributedNpcSpeech:false}};
  const d4={...delta,conversations:[{conversation_key:key4,title:'Garden',kind:'persona'}],messages:[{...delta.messages[0],conversation_key:key4,message_id:m4,content:{text:'hello',vpsServerGeneration:{version:1,jobId:j4,replyId:r4}}}]};
  await db.exec("set role authenticated;set test.uid='"+uid+"'");
- const admit4=ctx=>db.query('select public.wetapp_accept_generation_v4($1,$2::jsonb,$3::jsonb,$4,$5::uuid,$6::uuid,$7,$8,$9::jsonb,$10::jsonb)',[8,JSON.stringify(state4),JSON.stringify(d4),'fixture-device',j4,r4,key4,m4,JSON.stringify(plan),JSON.stringify(ctx)]);
+ const admit4=ctx=>db.query('select public.wetapp_accept_generation_v4($1,$2::jsonb,$3::jsonb,$4,$5::uuid,$6::uuid,$7,$8,$9::jsonb,$10::jsonb)',[8,JSON.stringify(state4),JSON.stringify(d4),'fixture-device',j4,r4,key4,m4,JSON.stringify({...plan,primary:{...plan.primary,model:'glm-5-3-flash-uncensored'}}),JSON.stringify(ctx)]);
  await assert.rejects(admit4({...ctx4,single:{...ctx4.single,latestUserMessage:'wrong'}}),/GENERATION_FINALIZER_USER_MISMATCH/);
  await assert.rejects(db.query('select public.wetapp_commit_chat_delta_receipted_v3($1,$2::jsonb,$3::jsonb,$4,$5::uuid)',[8,JSON.stringify(state4),JSON.stringify(d4),'fixture-device',j4]),/GENERATION_MARKER_REQUIRES_OUTBOX/);
  await admit4(ctx4);
@@ -176,4 +178,26 @@ try{
  assert.equal(personaAfter.memories.length,1);assert.equal(personaAfter.lastMemorySummaryUserMessageCount,8);assert.equal(personaAfter.lastVpsMemoryJobId,memoryId);assert.equal(personaAfter.prompt,persona5.prompt);assert.equal(stateAfter.source_device_id,'aigf-vps-memory-v4');
  assert.equal((await db.query('select count(*)::int as n from public.wetapp_messages where conversation_key=$1',[k5])).rows[0].n,16);
  console.log('PASS offline eighth-turn memory task, durable plan, lost acknowledgement, exactly one memory commit and unchanged chat messages');
+
+ const ledRows=(await db.query('select id,status,parent_job,attempt_id from aigf_worker.world_ledger_outbox_v4')).rows;
+ assert.equal(ledRows.length,1);assert.equal(ledRows[0].parent_job,j4);assert.equal(ledRows[0].status,'pending');
+ const attempt=ledRows[0].attempt_id;
+ const ledStore=()=>createWorldLedgerStore((q,a)=>db.query(q,a));
+ let ledgerSubmits=0;const ledJobs=new Map();
+ const ledQueue={get:async id=>{if(!ledJobs.has(id))throw new QueueHttpError(404);return ledJobs.get(id)},submit:async(id,req)=>{assert.equal(id,attempt);assert.equal(req.model,'glm-5-3-flash-uncensored');ledgerSubmits++;ledJobs.set(id,{job_id:id,status:'queued'});throw Error('lost acknowledgement')}};
+ const processLedger=()=>processOneWorldLedger({store:ledStore(),queue:ledQueue});
+ const ledDue=()=>db.exec("reset role;update aigf_worker.world_ledger_outbox_v4 set next_poll_at=now()-interval '1 second';set role aigf_generation_worker");
+ await db.exec('set role authenticated');await assert.rejects(db.query('select * from aigf_worker.claim_world_ledger_v4()'),/permission denied/);
+ await db.exec('reset role;set role aigf_generation_worker');assert.equal(await processLedger(),'prepared');
+ await ledDue();assert.equal(await processLedger(),'waiting');assert.equal(ledgerSubmits,1);
+ await ledDue();assert.equal(await processLedger(),'waiting');assert.equal(ledgerSubmits,1);
+ ledJobs.set(attempt,{job_id:attempt,status:'done',result:{choices:[{message:{content:JSON.stringify({reviewedSourceIds:['s1','s2'],observations:[{sourceId:'s2',quote:'花園裏有一棵樹',kind:'location',subject:'Garden',key:'feature',value:'A tree',state:'established'}]})}}]}});
+ await ledDue();assert.equal(await processLedger(),'done');assert.equal(ledgerSubmits,1);assert.equal(await processLedger(),'idle');
+ await db.exec('reset role');
+ const ledState=(await db.query('select payload,source_device_id from public.wetapp_state where user_id=$1',[uid])).rows[0];
+ assert.equal(ledState.source_device_id,'aigf-vps-ledger-v4');assert.deepEqual(ledState.payload.customPersonas,stateAfter.payload.customPersonas);
+ const projection=projectWorld(ledState.payload.appSettings[WORLD_LEDGER_KEY],key4,[{id:m4,role:'user',content:{text:'hello'}},{id:r4,role:'model',content:finalRows.rows[1].content}]);
+ assert.equal(projection.processed,2);assert.equal(projection.timeline.length,1);assert.equal(projection.timeline[0].sourceId,r4);
+ assert.equal((await db.query('select count(*)::int as n from public.wetapp_messages where conversation_key=$1',[key4])).rows[0].n,2);
+ console.log('PASS offline world ledger trigger, durable extraction, lost acknowledgement, evidence validation and isolated commit');
 }finally{await db.close()}
