@@ -1,18 +1,10 @@
 -- Cutover only: install receipted_v3 and quiesce old clients/storage requests FIRST.
 -- Execute as database owner in a single transaction. Never run as part of preview build.
 begin;
--- Fail before changing anything when the executing role cannot administer
--- storage.objects. A managed Supabase postgres role is not always its owner.
-do $preflight$
-declare storage_owner oid;
-begin
- select c.relowner into storage_owner from pg_class c where c.oid='storage.objects'::regclass;
- if not (select rolsuper from pg_roles where rolname=current_user)
-    and not pg_has_role(current_user,storage_owner,'USAGE') then
-  raise exception 'ATOMIC_STORAGE_POLICY_OWNER_REQUIRED';
- end if;
-end
-$preflight$;
+-- Managed Supabase allows policy DDL without ownership membership.
+-- Test the required operation itself; failure aborts this entire transaction.
+create policy atomic_cutover_ddl_probe_v3 on storage.objects as restrictive for insert to authenticated with check(true);
+drop policy atomic_cutover_ddl_probe_v3 on storage.objects;
 lock table public.wetapp_state,public.wetapp_conversations,public.wetapp_messages,public.wetapp_media,public.wetapp_chat_delta_receipts_v3 in access exclusive mode;
 create role wetapp_atomic_writer_v3 nologin noinherit nobypassrls nosuperuser nocreatedb nocreaterole;
 -- PG16+ role ownership transfer requires SET membership, not merely ADMIN OPTION.
