@@ -26,7 +26,7 @@ import {openPilotMediaLogin,askPilotLogin} from './pilotLoginUi.js';
 import {digestWorldlineContext,verifyWorldlineAppliedPrefix,commitWorldlineReply} from './durableWorldlineTurn.js';
 import { runDurableChatStage } from './vpsStageRunner.js';
 import { buildVpsWorkflowPayload, decodeVpsWorkflow } from './vpsWorkflow.js';
-import { createGroupCommit, digestGroupContext } from './durableGroupTurn.js';
+import { createGroupCommit, digestGroupContext, digestServerGroupContext } from './durableGroupTurn.js';
 import { listVpsRecovery,readVpsRecoveryText,findMatchingVpsRecovery } from './vpsRecovery.js';
 import { GROUP_MEMORY_KEY, roomMemorySnapshot, groupMemoryAliases, groupMemoryPresence, constrainGroupMemories } from './durableGroupMemory.js';
 import { createDurableMemoryTask, browserMemoryLock, type MemoryContext } from './durablePersonaMemory.js';
@@ -34,7 +34,7 @@ import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterRes
 import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
 import { CURRENT_CONTEXT_DIGEST_VERSION } from './contextFingerprint.js';
 import {ATOMIC_CLOUD_PREVIEW} from './atomicCloudPreview.js';
-import {SERVER_GENERATION_V4,createServerGenerationMarker,ServerGenerationAccepted,type ServerGenerationMarker} from './serverGenerationAdmission.js';
+import {SERVER_GENERATION_V4,SERVER_GROUP_GENERATION_V4,createServerGenerationMarker,ServerGenerationAccepted,type ServerGenerationMarker} from './serverGenerationAdmission.js';
 import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, selectVpsModel, selectV4PilotModel, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
@@ -7827,6 +7827,18 @@ const runRoomConversationGeneration = async (
                             latestUserMessage,promptCacheKey:createConversationPromptCacheKey(request.conversationKey,'review'),
                         },undefined,true);
                         await check();
+                        if(request.serverGeneration){
+                            if(!SERVER_GROUP_GENERATION_V4||!supabaseCloudSyncManager||request.surpriseEvent||getActiveWorldline(request.conversationKey))throw Error('ATOMIC_GENERATION_UNSUPPORTED_TURN');
+                            const room=roomManager.getRoom(request.conversationKey);
+                            if(!room||!request.room||await digestServerGroupContext(room)!==await digestServerGroupContext(request.room))throw Error('GROUP_CONTEXT_CHANGED');
+                            const roomDigest=await digestServerGroupContext(room);
+                            const alreadyOfferedNames=memoryManager.peekChatHistory(request.conversationKey).flatMap(m=>m.content.npcProposal?.name?[m.content.npcProposal.name]:[]);
+                            await check();
+                            memoryManager.persistVpsChatTurnUser(request.conversationKey,turn.identity.userMessageId);
+                            applyChatRuntimeState('queueing','正在交付伺服器…');
+                            await supabaseCloudSyncManager.admitServerGeneration({job_id:request.serverGeneration.jobId,reply_id:request.serverGeneration.replyId,conversation_key:request.conversationKey,user_message_id:turn.identity.userMessageId,plan,finalizer_context:{version:2,worldActive:false,roomDigest,group:{latestUserMessage,personaName:request.persona.name,fallbackMemberId,namedMemberId:getDirectlyNamedRoomMember(request,latestUserMessage)?.id,recentReplies,ownerV2:groupV2OwnerTrial,alreadyOfferedNames}}});
+                            throw new ServerGenerationAccepted();
+                        }
                         turn.job=await controller.submit(turn.identity,plan);turn.receipt=controller.pending()||undefined;
                     }
                     if(turn.receipt?.workflowVersion!==3)throw Error('TURN_WORKFLOW_RESULT_MISMATCH');
@@ -10288,16 +10300,17 @@ const sendMessage = async ({
         id: crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         createdAt: Date.now(),
     };
-    const serverRequired=SERVER_GENERATION_V4&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&!currentRoom&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
+    const serverRequired=SERVER_GENERATION_V4&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&(!currentRoom||SERVER_GROUP_GENERATION_V4&&!getActiveWorldline(conversationKey))&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
     const dispatchModel=serverRequired?selectV4PilotModel(chatModelSettings.primary):selectedVpsChatModel();
     if(serverRequired&&!dispatchModel){showError('V4 背景生成：請選擇支援的主要模型（GLM 5.3、DeepSeek V4.1 或 Qwen 3.6）。未發送訊息。');cancelChatPerformanceTurn('send:v4-model-required');return;}
-    const serverEligible=SERVER_GENERATION_V4&&!!dispatchModel&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&!currentRoom&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
+    const serverEligible=serverRequired&&!!dispatchModel;
     if(serverEligible){
         if(worldLedgerJobs.has(conversationKey))await worldLedgerJobs.get(conversationKey);
         if(currentConversationKey!==conversationKey||currentPersonaKey!==personaKey||activeChatRequest)return;
         if(!supabaseCloudSyncManager||supabaseCloudSyncManager.getState().phase!=='synced'){showError('請先完成雲端同步，再送出背景生成訊息。');return;}
         try{await supabaseCloudSyncManager.preflightServerGeneration();}catch(e){showError('V4：'+(e instanceof Error?e.message:'SYNC_PREFLIGHT_FAILED')+'。訊息未發送，輸入仍保留。');cancelChatPerformanceTurn('send:v4-preflight');return;}
         if(currentConversationKey!==conversationKey||currentPersonaKey!==personaKey||activeChatRequest)return;
+        if(currentRoom)userContent.roomSceneBeforeTurn=cloneRoomSnapshot(currentRoom.scene);
         userContent.vpsServerGeneration=createServerGenerationMarker();
     }
     if(conversationKey===NATIVE_SYNC_KEY){
