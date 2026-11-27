@@ -262,3 +262,14 @@ test('atomic cloud captures dynamic director keys without treating unrelated sto
  assert.equal(captured.appSettings[key],raw);assert.equal(captured.appSettings['private-unrelated-token'],undefined);
  f.x.atomicDeltaMode=false;assert.ok(!f.x.cloudSettingKeys().includes(key));
 });
+
+test('V4 group workflow admission remains durable after lost acknowledgement',async()=>{
+ const uid='atomic-v4-group-lost',f=await withV4(uid);
+ const a=f.admission as any;
+ a.plan.workflow_version=3;
+ a.finalizer_context={version:2,worldActive:false,roomDigest:'a'.repeat(64),group:{latestUserMessage:'new',personaName:'Fixture',fallbackMemberId:'a',recentReplies:[],ownerV2:false,alreadyOfferedNames:[]}};
+ f.lose();await assert.rejects(f.x.admitServerGeneration(a),/offline read/);
+ const j=await pendingAtomicJournal(uid);assert.deepEqual(j?.generation,a);assert.equal(j?.request.operation_id,generationJob);
+ f.online();assert.equal(await f.x.pushLocalToCloud(),true);assert.deepEqual(f.rpcCalls,['wetapp_accept_generation_v4']);
+ assert.equal(await pendingAtomicJournal(uid),null);
+});
