@@ -1,8 +1,9 @@
 import {readCloudSyncIndex,writeCloudSyncIndexesAtomically} from './cloudSyncIndexStore.js';
 import type {CloudMergeSnapshot} from './atomicCloudMerge.js';
+import type {AtomicMediaDelta} from './atomicCloudMedia.js';
 export type DeltaRow={conversation_key:string;message_id:string;position:number;role:string;speaker_id:string|null;content:object;created_at_ms:number};
 export type DeltaConversation={conversation_key:string;title:string;kind:string};
-export type Delta={conversations:DeltaConversation[];messages:DeltaRow[];remove_messages:{conversation_key:string;message_id:string}[];remove_conversations:string[]};
+export type Delta={conversations:DeltaConversation[];messages:DeltaRow[];remove_messages:{conversation_key:string;message_id:string}[];remove_conversations:string[];media?:AtomicMediaDelta};
 export function planAtomicDelta(conversations:DeltaConversation[],messages:DeltaRow[],hashes:Record<string,string>,oldHashes:Record<string,string>,oldConversations:Record<string,string>):Delta{
  const current=new Set(conversations.map(c=>c.conversation_key));
  const gone=Object.keys(oldConversations).filter(k=>!current.has(k));

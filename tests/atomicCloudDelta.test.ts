@@ -119,3 +119,30 @@ test('stale request retired only after higher revision and confirmed receipt abs
  assert.equal(await pendingAtomicJournal(uid),null);
  assert.equal(await readAtomicBaseline(uid),7);
 });
+
+test('manager stages media then commits linked metadata in one receipted delta',async()=>{
+ const uid='atomic-media-manager',f=await fixture(uid),blob=new Blob(['image fixture'],{type:'image/webp'}),files=new Map<string,Blob>();
+ f.x.collectLocalMedia=async()=>[{asset_id:'character-photo:fixture',conversation_key:'fixture-room',kind:'character_photo',storage_path:'unused-legacy-path',mime_type:blob.type,byte_size:blob.size,signature:'image-v1',metadata:{id:'fixture'},created_at_ms:1000,blob}];
+ f.x.client.storage={from:(bucket:string)=>{assert.equal(bucket,'wetapp-private');return {upload:async(path:string,b:Blob,opts:any)=>{assert.equal(opts.upsert,false);f.calls.push('UPLOAD');files.set(path,b);return {error:null};},download:async(path:string)=>{f.calls.push('DOWNLOAD');return {data:files.get(path),error:null};}};}};
+ const previousRPC=f.x.client.rpc;
+ f.x.client.rpc=async(name:string,req:any)=>{assert.equal(req.delta.media.upsert.length,1);assert.equal(req.delta.media.upsert[0].asset_id,'character-photo:fixture');assert.ok(files.has(req.delta.media.upsert[0].storage_path));assert.equal('blob' in req.delta.media.upsert[0],false);return previousRPC(name,req);};
+ assert.equal(await f.x.pushLocalToCloud(),true);
+ assert.deepEqual(f.calls,['UPLOAD','DOWNLOAD','GET','POST']);
+ assert.deepEqual(await readCloudSyncIndex(mediaIndex),{'character-photo:fixture':'image-v1'});assert.equal(await pendingAtomicJournal(uid),null);
+});
+
+test('confirmed remote media removal only removes previously indexed unchanged local assets, rollback restores bytes',async()=>{
+ const {saveCharacterPhotoAsset,getCharacterPhotoAsset,deleteCharacterPhotoAsset}=await import('../photoStore.js');
+ const uid='atomic-media-delete',f=await fixture(uid),blob=new Blob(['photo bytes'],{type:'image/webp'});
+ const id='atomic-remove-fixture',other='atomic-unknown-fixture';
+ for(const key of [id,other])await saveCharacterPhotoAsset({id:key,personaKey:'cc',prompt:'fixture',createdAt:1000,blob});
+ f.x.collectLocalMedia=async()=>[id,other].map(key=>({asset_id:'character-photo:'+key,kind:'character_photo',signature:'v1',metadata:{id:key},blob}));
+ await writeCloudSyncIndexesAtomically({[mediaIndex]:{['character-photo:'+id]:'v1'}});
+ const transaction=await f.x.createCloudPullTransactionSnapshot();
+ await f.x.pullMedia([],false,transaction);
+ assert.equal(await getCharacterPhotoAsset(id),undefined);
+ assert.ok(await getCharacterPhotoAsset(other));
+ await f.x.rollbackCloudPullTransaction(transaction);
+ assert.equal(await (await getCharacterPhotoAsset(id))!.blob.text(),'photo bytes');
+ await deleteCharacterPhotoAsset(id);await deleteCharacterPhotoAsset(other);
+});

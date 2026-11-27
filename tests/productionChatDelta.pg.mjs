@@ -15,6 +15,7 @@ const fingerprint=async()=> (await db.query("select md5(string_agg(to_jsonb(m)::
 let passed=0;const check=async(name,fn)=>{await fn();passed++;console.log('PASS '+name)};
 try{
  await db.exec(`create role authenticated;create role anon;create schema auth;create table auth.users(id uuid primary key,email text);create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('fixture.uid',true),'')::uuid $$;create function public.is_wetapp_owner() returns boolean language sql stable as $$select current_setting('fixture.owner',true)='yes'$$;grant usage on schema auth to authenticated,anon;grant execute on function auth.uid() to authenticated,anon;grant execute on function public.is_wetapp_owner() to authenticated;`);
+ await db.exec(`create schema storage;create table storage.objects(bucket_id text,name text,metadata jsonb,primary key(bucket_id,name));grant usage on schema storage to authenticated;grant select on storage.objects to authenticated;`);
  await db.exec(ddl+policies+sql);
  await db.query("insert into auth.users(id) values($1),($2)",[owner,other]);
  await db.query("insert into public.wetapp_state(user_id,payload,revision) values($1,'{\"marker\":\"old\"}',480),($2,'{}',1)",[owner,other]);
@@ -48,5 +49,26 @@ try{
   args[1]=JSON.stringify({marker:'other'});await assert.rejects(apply(),/DELTA_OPERATION_COLLISION/);
   assert.equal((await state()).payload.marker,'receipt');assert.equal(await fingerprint(),old);
  });
- console.log('PRODUCTION_DELTA_SQL_PASS '+passed+'/6');
+ const assetId='character-photo:fixture-photo';
+ const idHash=(await db.query("select encode(sha256(convert_to($1,'UTF8')),'hex') as h",[assetId])).rows[0].h;
+ const path=owner+'/atomic-v3/'+idHash+'/'+ 'a'.repeat(64);
+ const asset={asset_id:assetId,conversation_key:'long-room',kind:'character_photo',storage_path:path,mime_type:'image/webp',byte_size:32,signature:'fixture-v1',metadata:{id:'fixture-photo',personaKey:'long-room'},created_at_ms:10000};
+ await check('unstaged media rolls back new messages and revision',async()=>{
+  await assert.rejects(commit(483,{messages:[row(5537)],media:{upsert:[asset],remove:[]}}),/INVALID_OR_UNSTAGED_MEDIA/);
+  assert.equal(Number((await state()).revision),483);assert.equal((await head()).message_count,5537);
+ });
+ await check('staged media metadata and linked message commit atomically; stale writers denied',async()=>{
+  await db.exec('reset role');await db.query("insert into storage.objects values('wetapp-private',$1,'{\"size\":32}')",[path]);await db.exec('set role authenticated');
+  await commit(483,{messages:[row(5537,{text:'photo',imageAssetId:'fixture-photo'})],media:{upsert:[asset],remove:[]}});
+  assert.equal(Number((await state()).revision),484);assert.equal((await db.query('select storage_path from public.wetapp_media')).rows[0].storage_path,path);
+  await assert.rejects(commit(483,{media:{upsert:[],remove:[assetId]}}),/WETAPP_STATE_REVISION_CONFLICT/);
+  assert.equal((await db.query('select count(*) n from public.wetapp_media')).rows[0].n,1);
+ });
+ await check('media removal deletes manifest without deleting physical object or historical data',async()=>{
+  await commit(484,{remove_messages:[{conversation_key:'long-room',message_id:'fixture-5537'}],media:{upsert:[],remove:[assetId]}});
+  assert.equal(Number((await state()).revision),485);assert.equal((await db.query('select count(*) n from public.wetapp_media')).rows[0].n,0);
+  assert.equal((await db.query('select count(*) n from storage.objects')).rows[0].n,1);
+  assert.equal(await fingerprint(),old);
+ });
+ console.log('PRODUCTION_DELTA_SQL_PASS '+passed+'/9');
 }catch(e){console.error(e);process.exitCode=1}finally{await db.close()}

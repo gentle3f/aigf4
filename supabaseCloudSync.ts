@@ -17,6 +17,7 @@ import type { StoredChatAttachment } from './chatMediaStore.js';
 import { filterRemoteStateEntities, findLocallyDeletedIndexedKeys, mergeChatHistoryMaps } from './cloudMessageMerge.js';
 import { readCloudSyncIndex, writeCloudSyncIndex, writeCloudSyncIndexesAtomically } from './cloudSyncIndexStore.js';
 import {mergeAtomicSnapshots,mergeBaseIndex,readMergeBase,normalizeMergeSnapshot,equalMergeSnapshot,type CloudMergeSnapshot} from './atomicCloudMerge.js';
+import {stageAtomicMedia} from './atomicCloudMedia.js';
 import {planAtomicDelta,readAtomicBaseline,saveAtomicBaseline,pendingAtomicJournal,prepareAtomicJournal,completeAtomicJournal,retireStaleAtomicJournal,type AtomicJournal,type MergeInstallation} from './atomicCloudDelta.js';
 import { isLocalCloudChangeBatchActive, LOCAL_CLOUD_CHANGE_EVENT, LocalCloudChangeScope } from './cloudSyncEvents.js';
 import { isPersistedAppSettingKey, PERSISTED_APP_SETTING_KEYS, mergeStructuredAppSetting } from './appSettings.js';
@@ -1221,11 +1222,13 @@ export class SupabaseCloudSyncManager {
                     const mediaIndex=Object.fromEntries(media.map(a=>[a.asset_id,a.signature]));
                     const [oldMedia,oldMessages,oldConversations]=await Promise.all([readCloudSyncIndex(MEDIA_INDEX_KEY),readCloudSyncIndex(MESSAGE_INDEX_KEY),readCloudSyncIndex(CONVERSATION_INDEX_KEY)]);
                     assertCurrent();
-                    // Existing media references are supported; new/replaced/deleted bytes require
-                    // the immutable media transaction path. Never fall back to a legacy overwrite.
-                    if(Object.keys(oldMedia).length!==Object.keys(mediaIndex).length||Object.keys(mediaIndex).some(k=>oldMedia[k]!==mediaIndex[k]))throw Error('ATOMIC_MEDIA_CHANGE_PENDING：新媒體仍保留在本機。');
+                    const mediaDelta=await stageAtomicMedia(uid,media,oldMedia,{
+                        upload:async(path,blob,mime)=>{const r=await client.storage.from(STORAGE_BUCKET).upload(path,blob,{contentType:mime,upsert:false,cacheControl:'3600'});if(r.error)throw r.error;},
+                        download:async path=>{const r=await client.storage.from(STORAGE_BUCKET).download(path);if(r.error||!r.data)throw r.error||Error('ATOMIC_MEDIA_DOWNLOAD_FAILED');return r.data;}
+                    },assertCurrent);
                     const {conversations,messages,hashes}=this.collectLocalMessages(uid);
                     const delta=planAtomicDelta(conversations,messages,hashes,oldMessages,oldConversations);
+                    if(mediaDelta.upsert.length||mediaDelta.remove.length)delta.media=mediaDelta;
                     if(this.atomicLocalEpoch!==epoch)throw Error('ATOMIC_LOCAL_SNAPSHOT_CHANGED');
                     journal=await prepareAtomicJournal(uid,{expected_revision:baseline,new_payload:payload,delta,device:this.deviceId},{
                         [MESSAGE_INDEX_KEY]:hashes,
@@ -2033,6 +2036,26 @@ export class SupabaseCloudSyncManager {
             const locallyDeletedIds = findLocallyDeletedIndexedKeys(previousIndex, currentIds);
             rows = rows.filter(row => !locallyDeletedIds.has(row.asset_id));
         }
+        if(this.atomicDeltaMode&&!this.recoveryOnly){
+            if(mergeLocal||!transaction)throw Error('ATOMIC_MEDIA_PULL_TRANSACTION_REQUIRED');
+            const remoteIds=new Set(rows.map(r=>r.asset_id));
+            const local=await this.collectLocalMedia(this.roomManager.exportData().rooms);
+            for(const asset of local){
+                if(!Object.hasOwn(previousIndex,asset.asset_id)||remoteIds.has(asset.asset_id))continue;
+                if(previousIndex[asset.asset_id]!==asset.signature)throw Error('ATOMIC_MEDIA_CHANGE_PENDING');
+                const m=asset.metadata||{};
+                if(asset.kind==='persona_avatar'||asset.kind==='room_avatar'){
+                    const key=String(m.localKey||'');if(!key)throw Error('ATOMIC_MEDIA_ID_INVALID');
+                    await this.rememberCloudPullAvatar(transaction,key);await deletePersonaAvatar(key);
+                }else if(asset.kind==='character_photo'){
+                    const id=String(m.id||'');if(!id)throw Error('ATOMIC_MEDIA_ID_INVALID');
+                    await this.rememberCloudPullPhoto(transaction,id);await deleteCharacterPhotoAsset(id);
+                }else{
+                    const id=String(m.id||'');if(!id)throw Error('ATOMIC_MEDIA_ID_INVALID');
+                    await this.rememberCloudPullAttachment(transaction,id);await deleteChatAttachment(id);
+                }
+            }
+        }
         const [avatarAssets, photoAssets, attachmentAssets] = await Promise.all([
             listPersonaAvatarAssets(),
             listCharacterPhotoAssets(),
@@ -2055,6 +2078,10 @@ export class SupabaseCloudSyncManager {
         for (const [index, row] of needsDownload.entries()) {
             const download = await this.client.storage.from(STORAGE_BUCKET).download(row.storage_path);
             if (download.error || !download.data) throw download.error || new Error(`無法下載 ${row.asset_id}`);
+            if(this.atomicDeltaMode&&row.storage_path.includes('/atomic-v3/')){
+                const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await download.data.arrayBuffer())),x=>x.toString(16).padStart(2,'0')).join('');
+                if(download.data.size!==Number(row.byte_size)||row.storage_path.split('/').at(-1)!==hash)throw Error('ATOMIC_MEDIA_BYTES_MISMATCH');
+            }
             const metadata = row.metadata || {};
             if (row.kind === 'persona_avatar' || row.kind === 'room_avatar') {
                 const localKey = String(metadata.localKey || '');
