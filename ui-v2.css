@@ -381,6 +381,8 @@ html[data-wetapp-ui="v2"] #chat-view {
 }
 
 html[data-wetapp-ui="v2"] .chat-topbar {
+    position: relative !important;
+    z-index: 80 !important;
     min-height: 76px !important;
     flex-basis: 76px !important;
     padding: 8px 22px 8px 12px !important;
@@ -730,6 +732,7 @@ html[data-wetapp-ui="v2"] .chat-search-bar input {
 }
 
 html[data-wetapp-ui="v2"] #more-options-menu {
+    z-index: 240 !important;
     top: 52px !important;
     right: 0 !important;
     width: 390px !important;

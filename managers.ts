@@ -303,6 +303,7 @@ export interface ChatContextBridge {
 }
 
 export interface Content {
+    vpsServerGeneration?: import('./serverGenerationAdmission.js').ServerGenerationMarker;
     /** UTF-8 text file contents for later Venice AI follow-ups; never rendered as visible user text. */
     assistantFileContext?: string;
     previousVersions?: Content[];
