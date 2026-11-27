@@ -70,5 +70,43 @@ try{
   assert.equal((await db.query('select count(*) n from storage.objects')).rows[0].n,1);
   assert.equal(await fingerprint(),old);
  });
- console.log('PRODUCTION_DELTA_SQL_PASS '+passed+'/9');
+ await check('cutover fence: old writes denied, old reads and new scoped receipt writer work',async()=>{
+  await db.exec('reset role');
+  await db.exec(boot.slice(boot.indexOf('create or replace function public.wetapp_save_state('),boot.indexOf('create or replace function public.wetapp_handle_new_user()')));
+  await db.exec(boot.slice(boot.indexOf('create or replace function public.wetapp_save_state_if_revision('),boot.indexOf('-- ===== 20261005000000')));
+  await db.exec(`alter table storage.objects enable row level security;
+  grant insert,update,delete on storage.objects to authenticated;
+  create policy fixture_storage_all on storage.objects for all to authenticated using(split_part(name,'/',1)=auth.uid()::text) with check(split_part(name,'/',1)=auth.uid()::text);
+  create role aigf_shadow_reader nologin;grant select on public.wetapp_state to aigf_shadow_reader;
+  create policy fixture_shadow_read on public.wetapp_state for select to aigf_shadow_reader using(true);`);
+  const fence=readFileSync(new URL('../supabase/experimental/wetapp_atomic_cutover_fence_v3.sql',import.meta.url),'utf8');
+  await db.exec(fence);
+  await db.exec('set role authenticated');
+  assert.equal(Number((await state()).revision),485);
+  assert.equal((await head()).message_count,5537);
+  await assert.rejects(db.query("update public.wetapp_state set payload='{}'"),/permission denied/);
+  await assert.rejects(db.query("delete from public.wetapp_messages"),/permission denied/);
+  await assert.rejects(db.query("delete from public.wetapp_conversations"),/permission denied/);
+  await assert.rejects(db.query("delete from public.wetapp_media"),/permission denied/);
+  await assert.rejects(db.query("insert into public.wetapp_chat_delta_receipts_v3 values($1,$2,$3,486)",[owner,'30000000-0000-4000-8000-000000000005','a'.repeat(64)]),/permission denied/);
+  await assert.rejects(db.query("select public.wetapp_save_state_if_revision('{}','old',485)"),/permission denied/);
+  await assert.rejects(commit(485,{}),/permission denied/);
+  const args=[485,JSON.stringify({marker:'fenced'}),JSON.stringify({...empty,messages:[row(5537)],media:{upsert:[asset],remove:[]}}),'new-device','30000000-0000-4000-8000-000000000006'];
+  const call=()=>db.query('select public.wetapp_commit_chat_delta_receipted_v3($1,$2::jsonb,$3::jsonb,$4,$5::uuid) as revision',args);
+  assert.equal(Number((await call()).rows[0].revision),486);
+  assert.equal(Number((await call()).rows[0].revision),486);
+  assert.equal((await db.query('select count(*) n from public.wetapp_media')).rows[0].n,1);
+  await db.exec("set fixture.owner='no'");await assert.rejects(call(),/NOT_AUTHORIZED/);await db.exec("set fixture.owner='yes'");
+  assert.equal(await fingerprint(),old);
+  await db.exec('reset role;set role aigf_shadow_reader');assert.equal(Number((await state()).revision),486);await db.exec('reset role;set role authenticated');
+ });
+ await check('storage fence denies legacy paths, overwrite and physical delete; allows immutable staging',async()=>{
+  await assert.rejects(db.query("insert into storage.objects values('wetapp-private',$1,'{}')",[owner+'/legacy/new']),/row-level security/);
+  assert.equal((await db.query("update storage.objects set metadata='{}' where name=$1 returning name",[path])).rows.length,0);
+  assert.equal((await db.query("delete from storage.objects where name=$1 returning name",[path])).rows.length,0);
+  const next=owner+'/atomic-v3/'+'b'.repeat(64)+'/'+'c'.repeat(64);
+  await db.query("insert into storage.objects values('wetapp-private',$1,'{}')",[next]);
+  assert.equal((await db.query('select count(*) n from storage.objects')).rows[0].n,2);
+ });
+ console.log('PRODUCTION_DELTA_SQL_PASS '+passed+'/11');
 }catch(e){console.error(e);process.exitCode=1}finally{await db.close()}
