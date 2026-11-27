@@ -14,10 +14,11 @@ test('complete system text including retry is editable; no user message is chang
 test('full prompt settings are per-world and empty prompt is a valid saved value',()=>{
  const values=new Map<string,string>();
  const store={getItem:(k:string)=>values.get(k)??null,setItem:(k:string,v:string)=>{values.set(k,v)},removeItem:(k:string)=>{values.delete(k)}};
- assert.deepEqual(readFullPromptSettings(store,'a'),{review:true});
+ assert.deepEqual(readFullPromptSettings(store,'a'),{review:false});
  writeFullPromptSettings(store,'a',{review:false,saved:''});
  assert.deepEqual(readFullPromptSettings(store,'a'),{review:false,saved:''});
- assert.deepEqual(readFullPromptSettings(store,'b'),{review:true});
+ assert.deepEqual(readFullPromptSettings(store,'b'),{review:false});
+ writeFullPromptSettings(store,'b',{review:true});assert.deepEqual(readFullPromptSettings(store,'b'),{review:true});
 });
 test('single and group generation use the actual edited request before provider call',()=>{
  const s=readFileSync(new URL('../index.tsx',import.meta.url),'utf8');

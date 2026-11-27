@@ -32,8 +32,8 @@ export type TurnTransport={submit:(id:string,payload:PilotSubmission,recovery?:T
 type Lock=<T>(work:()=>Promise<T>)=>Promise<T>;
 const same=(a:TurnIdentity,b:TurnIdentity)=>a.conversationKey===b.conversationKey&&a.personaKey===b.personaKey&&a.userMessageId===b.userMessageId&&a.contextDigest===b.contextDigest&&(a.contextDigestVersion??1)===(b.contextDigestVersion??1)&&a.worldDigest===b.worldDigest&&a.roomDigest===b.roomDigest&&a.roomMemberId===b.roomMemberId;
 const valid=(r:TurnReceipt)=>!!r&&typeof r.conversationKey==='string'&&!!r.conversationKey&&typeof r.personaKey==='string'&&!!r.personaKey&&UUID.test(r.userMessageId)&&UUID.test(r.jobId)&&UUID.test(r.replyId)&&r.jobId!==r.replyId&&Number.isFinite(r.createdAt)&&typeof r.model==='string'&&!!r.model&&(r.contextDigest===undefined||/^[a-f0-9]{64}$/.test(r.contextDigest))&&(r.roomDigest===undefined?r.roomMemberId===undefined:/^[a-f0-9]{64}$/.test(r.roomDigest)&&typeof r.roomMemberId==='string'&&!!r.roomMemberId)&&(r.contextDigestVersion===undefined||([1,2].includes(r.contextDigestVersion)&&!!r.contextDigest))&&(r.worldDigest===undefined||(/^[a-f0-9]{64}$/.test(r.worldDigest)&&r.contextDigestVersion===2))&&validStages(r)&&(r.workflowVersion===undefined||([1,2,3].includes(r.workflowVersion)&&r.stages===undefined));
-export function createDurableChatTurn({storage,history,transport,lock,newId=()=>crypto.randomUUID(),now=Date.now}:{
- storage:PilotStorage;history:DurableHistory;transport:TurnTransport;lock:Lock;newId?:()=>string;now?:()=>number;
+export function createDurableChatTurn({storage,history,transport,lock,newId=()=>crypto.randomUUID(),now=Date.now,receiptSeed}:{
+ storage:PilotStorage;history:DurableHistory;transport:TurnTransport;lock:Lock;newId?:()=>string;now?:()=>number;receiptSeed?:(turn:TurnIdentity)=>Promise<Pick<TurnReceipt,'jobId'|'replyId'|'createdAt'>|undefined>;
 }){
  function pending():TurnReceipt|null{
    const raw=storage.getItem(KEY);if(!raw)return null;
@@ -97,7 +97,8 @@ export function createDurableChatTurn({storage,history,transport,lock,newId=()=>
        // A lost POST response is ambiguous; do not resubmit even if GET is 404.
        return fetchStatus(prior);
      }
-     const r:TurnReceipt={...turn,jobId:newId(),replyId:newId(),createdAt:now(),model:'workflow_version' in payload?payload.primary.model:payload.model,...('workflow_version' in payload?{workflowVersion:payload.workflow_version}:{})};
+     const seed=await receiptSeed?.(turn);
+     const r:TurnReceipt={...turn,...(seed||{jobId:newId(),replyId:newId(),createdAt:now()}),model:'workflow_version' in payload?payload.primary.model:payload.model,...('workflow_version' in payload?{workflowVersion:payload.workflow_version}:{})};
      if(!valid(r))throw Error('TURN_RECEIPT_INVALID');
      if(inspect(r)!=='ready')throw Error('TURN_HISTORY_CHANGED');
      await history.persistUser(turn);

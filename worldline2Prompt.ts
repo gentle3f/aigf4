@@ -6,8 +6,8 @@ const key=(world:string)=>'aigfWorldline2FullPrompt:'+world;
 export function readFullPromptSettings(store:Store,world:string):PromptSettings{
  try{
   const raw=store.getItem(key(world));const v=raw?JSON.parse(raw):{};const variable=v.variableOverride;
-  return {review:v.review!==false,...(typeof v.saved==='string'?{saved:v.saved}:{}),...(typeof v.worldContext==='string'?{worldContext:v.worldContext}:{}),...(typeof v.fixedPrompt==='string'?{fixedPrompt:v.fixedPrompt}:{}),...(Number.isSafeInteger(variable?.turn)&&typeof variable?.text==='string'?{variableOverride:{turn:variable.turn,text:variable.text}}:{})};
- }catch{return {review:true};}
+  return {review:v.review===true,...(typeof v.saved==='string'?{saved:v.saved}:{}),...(typeof v.worldContext==='string'?{worldContext:v.worldContext}:{}),...(typeof v.fixedPrompt==='string'?{fixedPrompt:v.fixedPrompt}:{}),...(Number.isSafeInteger(variable?.turn)&&typeof variable?.text==='string'?{variableOverride:{turn:variable.turn,text:variable.text}}:{})};
+ }catch{return {review:false};}
 }
 export function writeFullPromptSettings(store:Store,world:string,value:PromptSettings){store.setItem(key(world),JSON.stringify(value));}
 export type Worldline2PromptParts={fixed:string;variable:string;turn:number};

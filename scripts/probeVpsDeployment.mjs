@@ -1,20 +1,26 @@
-// Read-only deployment diagnostic. Never print credentials, receipt contents, or upstream body.
+// Preview build-only probe. Never print credentials, real chat contents, or receipt IDs.
 import {createGenerationHandler} from '../server/generationJobs.js';
 if(process.env.VERCEL_ENV==='preview'&&process.env.VERCEL_GIT_COMMIT_REF==='feat/aigf-worldline2-vps-integration-20261126'){
  const handler=createGenerationHandler({authenticate:()=>true});
- const call=async(query)=>{
+ const call=async(method,query,body)=>{
   let status=0,data;
-  await handler({method:'GET',query},{setHeader(){},status(n){status=n;return this;},json(d){data=d;return this;}});
+  await handler({method,query,body},{setHeader(){},status(n){status=n;return this;},json(d){data=d;return this;}});
   return {status,data};
  };
- const safe=({status,data})=>({status,error:typeof data?.error==='string'&&/^[A-Z_0-9 ;a-z]+$/.test(data.error)?data.error:undefined});
  try{
-  const recovery=await call({recovery:'1'});
-  const jobs=[];
-  for(const row of (recovery.data?.receipts||[]).slice(0,10)){
-   const j=await call({job_id:row.receipt.jobId});
-   jobs.push({ageMinutes:Math.round((Date.now()-row.receipt.createdAt)/60000),listedStatus:row.status,world:!!row.receipt.worldDigest,group:!!row.receipt.roomDigest,workflow:row.receipt.workflowVersion,contextVersion:row.receipt.contextDigestVersion,job:safe(j),jobStatus:j.data?.status,visibleReply:!!j.data?.result?.choices?.[0]?.message?.content,hasWorkflow:!!j.data?.result?.workflow});
+  const recovery=await call('GET',{recovery:'1'});
+  const id='b661407a-66f5-4cc2-bfbf-1a8eadc36c91';
+  let j=await call('GET',{job_id:id});
+  let submitted=null;
+  if(j.status===404){
+   const first=await call('POST',{}, {job_id:id,request:{model:'glm-5-3-flash-uncensored',messages:[{role:'user',content:'Reply with the single word READY.'}],max_completion_tokens:32}});
+   submitted={http:first.status,status:first.data?.status,error:first.data?.error};
   }
-  console.log('AIGF_DEPLOY_PROBE',JSON.stringify({recovery:safe(recovery),jobs}));
- }catch(e){console.log('AIGF_DEPLOY_PROBE_FAILED',e?.name||'Error');}
+  for(let i=0;i<12;i++){
+   j=await call('GET',{job_id:id});
+   if(!['queued','running'].includes(j.data?.status))break;
+   await new Promise(r=>setTimeout(r,1000));
+  }
+  console.log('AIGF_LIVE_QUEUE_PROBE',JSON.stringify({recoveryHttp:recovery.status,submitted,independentGetHttp:j.status,jobStatus:j.data?.status,error:j.data?.error,visibleReply:!!j.data?.result?.choices?.[0]?.message?.content}));
+ }catch(e){console.log('AIGF_LIVE_QUEUE_PROBE_FAILED',e?.name||'Error');}
 }

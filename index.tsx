@@ -29,6 +29,7 @@ import { runDurableChatStage } from './vpsStageRunner.js';
 import { buildVpsWorkflowPayload, decodeVpsWorkflow } from './vpsWorkflow.js';
 import { createGroupCommit, digestGroupContext } from './durableGroupTurn.js';
 import { listVpsRecovery,readVpsRecoveryText,findMatchingVpsRecovery } from './vpsRecovery.js';
+import { dispatchReceiptSeed,matchDispatchIntent } from './vpsDispatchIntent.js';
 import { GROUP_MEMORY_KEY, roomMemorySnapshot, groupMemoryAliases, groupMemoryPresence, constrainGroupMemories } from './durableGroupMemory.js';
 import { createDurableMemoryTask, browserMemoryLock, type MemoryContext } from './durablePersonaMemory.js';
 import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult, VPS_REVIEW_MODELS } from './vpsCharacterTransport.js';
@@ -1966,7 +1967,7 @@ const makeVpsBaseHistory = (replyContent?: Content, groupScene?: GroupGeneration
 const nativeHistoryFor=(base:DurableHistory,key:string)=>{if(key!==NATIVE_SYNC_KEY)return base;if(!nativeStoryPilot)throw Error('NATIVE_SYNC_LOGIN_REQUIRED');return nativeStoryPilot.createBridge(base).history;};
 const makeVpsTurnController=(replyContent?:Content,groupScene?:GroupGenerationResult['scene'])=>{
     const base=makeVpsBaseHistory(replyContent,groupScene);
-    return createDurableChatTurn({storage:localStorage,transport:createVpsChatTransport(),lock:browserTurnLock,history:{read:base.read,persistUser:t=>nativeHistoryFor(base,t.conversationKey).persistUser(t),persistReply:(r,text)=>nativeHistoryFor(base,r.conversationKey).persistReply(r,text),confirmReply:r=>nativeHistoryFor(base,r.conversationKey).confirmReply(r)}});
+    return createDurableChatTurn({storage:localStorage,transport:createVpsChatTransport(),lock:browserTurnLock,receiptSeed:async t=>{const row=base.read(t.conversationKey).at(-1);return row?.id===t.userMessageId?dispatchReceiptSeed(t.conversationKey,row):undefined;},history:{read:base.read,persistUser:t=>nativeHistoryFor(base,t.conversationKey).persistUser(t),persistReply:(r,text)=>nativeHistoryFor(base,r.conversationKey).persistReply(r,text),confirmReply:r=>nativeHistoryFor(base,r.conversationKey).confirmReply(r)}});
 };
 const pendingVpsTurn = () => VPS_CHAT_BUILD ? makeVpsTurnController().pending() : null;
 const selectedVpsChatModel = () => {
@@ -1979,18 +1980,48 @@ const resumeVpsChatTurn = async (openConversation = false) => {
     try {
         const controller = makeVpsTurnController();
         let pending = controller.pending();
+        if(pending&&ATOMIC_CLOUD_PREVIEW&&pending.conversationKey===currentConversationKey&&!pending.roomDigest&&pending.conversationKey!==NATIVE_SYNC_KEY){
+            const history=memoryManager.peekChatHistory(pending.conversationKey),user=history.at(-1);
+            if(user?.id===pending.userMessageId){
+                const seed=await dispatchReceiptSeed(pending.conversationKey,user);
+                const intent=await matchDispatchIntent(history,pending.personaKey,await digestVpsWorld(pending.conversationKey,history.slice(0,-1)));
+                if(intent&&seed?.jobId===pending.jobId&&seed.replyId===pending.replyId){
+                    try{await controller.resume(pending);}catch(error){
+                        if(!(error instanceof QueuePilotError)||error.httpStatus!==404)throw error;
+                        // This locally journaled ID is deterministic; a late original POST cannot create a second job.
+                        await controller.abandon(pending.jobId);pending=null;
+                    }
+                }
+            }
+        }
         if (!pending&&ATOMIC_CLOUD_PREVIEW&&supabaseCloudSyncManager?.getState().phase==='synced'&&currentConversationKey){
             const key=currentConversationKey;
             const history=memoryManager.peekChatHistory(key);
             if(history.at(-1)?.role!=='user')return;
             if(key===NATIVE_SYNC_KEY||currentRoom)return;
             const worldDigest=await digestVpsWorld(key,history);
-            const match=await findMatchingVpsRecovery(await listVpsRecovery(),key,history,worldDigest);
-            if(!match||currentConversationKey!==key||activeChatRequest||currentRoom||currentPersonaKey!==match.receipt.personaKey)return;
-            // The restored world and chat history must match the existing server receipt.
-            await checkWorldlineTurnContext(match.receipt);
-            await controller.adoptRecovery(match.receipt);
-            pending=controller.pending();
+            const rows=await listVpsRecovery();
+            const match=await findMatchingVpsRecovery(rows,key,history,worldDigest);
+            if(currentConversationKey!==key||activeChatRequest||currentRoom||!currentPersona||!currentPersonaKey)return;
+            if(match){
+                if(currentPersonaKey!==match.receipt.personaKey)return;
+                await checkWorldlineTurnContext(match.receipt);
+                await controller.adoptRecovery(match.receipt);
+                pending=controller.pending();
+            }else{
+                const user=history.at(-1);
+                if(!user?.id||!user.content.text)return;
+                if(rows.some(r=>r.receipt.conversationKey===key&&r.receipt.userMessageId===user.id)){showError('VPS 已有此訊息的任務，但狀態或對話版本未能配對。請使用「最近 VPS 聊天任務」查看。');return;}
+                if(worldLedgerJobs.has(key)||readVpsWorld(key)&&readFullPromptSettings(localStorage,key).review)return;
+                const intent=await matchDispatchIntent(history,currentPersonaKey,await digestVpsWorld(key,history.slice(0,-1)));
+                if(!intent||currentConversationKey!==key||activeChatRequest||controller.pending()||currentPersonaKey!==intent.personaKey)return;
+                if(await digestVpsHistory(memoryManager.peekChatHistory(key),2)!==await digestVpsHistory(history,2))return;
+                const request=beginChatRequest(intent.personaKey,currentPersona,'character',key);
+                request.vpsTurn={identity:{conversationKey:key,personaKey:intent.personaKey,userMessageId:user.id,contextDigestVersion:2,contextDigest:await digestVpsHistory(history,2),...(worldDigest?{worldDigest}:{})},model:intent.model};
+                startChatPerformanceTurn();
+                await getResponse(request,user.content.text);
+                return;
+            }
         }
         if (!pending) return;
         if(pending.conversationKey===NATIVE_SYNC_KEY&&!nativeStoryPilot)return;
@@ -10208,6 +10239,15 @@ const sendMessage = async ({
         id: crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         createdAt: Date.now(),
     };
+    const dispatchModel=selectedVpsChatModel();
+    if(ATOMIC_CLOUD_PREVIEW&&dispatchModel&&userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&!currentRoom&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage)&&(!readVpsWorld(conversationKey)||!readFullPromptSettings(localStorage,conversationKey).review)){
+        if(worldLedgerJobs.has(conversationKey))await worldLedgerJobs.get(conversationKey);
+        if(currentConversationKey!==conversationKey||currentPersonaKey!==personaKey||activeChatRequest)return;
+        const prior=memoryManager.peekChatHistory(conversationKey);
+        const worldDigest=await digestVpsWorld(conversationKey,prior);
+        userContent.vpsDispatchIntent={version:1,model:dispatchModel,personaKey,createdAt:userMessageMeta.createdAt,priorDigest:await digestVpsHistory(prior,2),...(worldDigest?{worldDigest}:{})};
+        if(currentConversationKey!==conversationKey||activeChatRequest)return;
+    }
     if(conversationKey===NATIVE_SYNC_KEY){
         nativeStoryBusy=true;
         try{await nativeStoryPilot!.beforeUser(userMessageMeta!.id);if(currentConversationKey!==conversationKey)throw Error('NATIVE_SYNC_VIEW_CHANGED');}
@@ -10320,7 +10360,7 @@ const sendMessage = async ({
     request.photoSubjectMemberIds = photoSubjectMemberIds;
     request.attachments = attachmentBundle.attachments;
     request.attachmentParts = attachmentBundle.contentParts;
-    const vpsModel = selectedVpsChatModel();
+    const vpsModel = userContent.vpsDispatchIntent?.model || selectedVpsChatModel();
     if (vpsModel && (!getActiveWorldline(conversationKey)||!request.room) && userMessageMeta?.id && isVpsChatEligible({
         room: Boolean(request.room), assistant: assistantMode, special: characterPhotoRequest || isGodModeActive,
         attachments: attachmentBundle.attachments.length, personaKey,

@@ -303,6 +303,7 @@ export interface ChatContextBridge {
 }
 
 export interface Content {
+    vpsDispatchIntent?: import('./vpsDispatchIntent.js').DispatchIntent;
     worldlineVpsDirectorNextId?: string;
     /** Whether this accepted reply advanced an active Worldline story. */
     worldlineStoryTurn?: boolean;
