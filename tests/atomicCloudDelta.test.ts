@@ -27,6 +27,7 @@ async function fixture(uid:string,base=7){
  x.collectLocalMessages=()=>({conversations:[{conversation_key:'fixture-room',title:'Room',kind:'room'}],messages:[{conversation_key:'fixture-room',message_id:'old',position:0,role:'user',speaker_id:null,content:{text:'old'},created_at_ms:1},{conversation_key:'fixture-room',message_id:'new',position:1,role:'model',speaker_id:'npc',content:{text:'new'},created_at_ms:2}],hashes:{[id]:'old-hash',['fixture-room\u0000new']:'new-hash'}});
  x.readCloudStateHead=async()=>({revision:rev,sourceDeviceId:'device'});
  x.client={from:(table:string)=>{assert.equal(table,'wetapp_chat_delta_receipts_v3');let op='';const chain={select:()=>chain,eq:(k:string,v:string)=>{if(k==='operation_id')op=v;return chain;},maybeSingle:async()=>{calls.push('GET');if(readFail)throw Error('offline read');return {data:receipts.has(op)?{revision:receipts.get(op)}:null,error:null};}};return chain;},rpc:async(name:string,req:any)=>{calls.push('POST');assert.equal(name,'wetapp_commit_chat_delta_receipted_v3');assert.equal(req.expected_revision,rev);assert.equal(req.delta.messages.length,1);assert.equal(req.delta.messages[0].message_id,'new');rev++;receipts.set(req.operation_id,rev);if(lose){readFail=true;throw Error('lost response');}return {data:rev,error:null};}};
+ const initial=x.collectLocalMessages();await saveAtomicBaseline(uid,base,mergeBaseIndex(uid,base,{conversations:initial.conversations,messages:initial.messages.slice(0,1),payload}));
  m.set(pending,'true');
  return {x,m,calls,lose:()=>lose=true,online:()=>{readFail=false;lose=false;},advance:()=>rev++};
 }
@@ -145,4 +146,14 @@ test('confirmed remote media removal only removes previously indexed unchanged l
  await f.x.rollbackCloudPullTransaction(transaction);
  assert.equal(await (await getCharacterPhotoAsset(id))!.blob.text(),'photo bytes');
  await deleteCharacterPhotoAsset(id);await deleteCharacterPhotoAsset(other);
+});
+
+test('ordinary site push preserves unknown cloud settings from confirmed baseline',async()=>{
+ const uid='atomic-foreign-settings',f=await fixture(uid),original=f.x.collectLocalMessages();
+ const prior={...payload,appSettings:{foreignStorySetting:'keep-me'}};
+ await saveAtomicBaseline(uid,7,mergeBaseIndex(uid,7,{conversations:original.conversations,messages:original.messages.slice(0,1),payload:prior}));
+ const rpc=f.x.client.rpc;
+ f.x.client.rpc=async(name:string,req:any)=>{assert.equal(req.new_payload.appSettings.foreignStorySetting,'keep-me');return rpc(name,req);};
+ assert.equal(await f.x.pushLocalToCloud(),true);
+ assert.equal((await readMergeBase(uid,8))!.payload && ((await readMergeBase(uid,8))!.payload as any).appSettings.foreignStorySetting,'keep-me');
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mergeAtomicSnapshots,type CloudMergeSnapshot} from '../atomicCloudMerge.js';
+import {mergeAtomicSnapshots,preserveForeignCloudSettings,type CloudMergeSnapshot} from '../atomicCloudMerge.js';
 import type {DeltaRow} from '../atomicCloudDelta.js';
 const c=(key:string)=>({conversation_key:key,title:key,kind:'persona'});
 const m=(key:string,id:string,position:number,role='user'):DeltaRow=>({conversation_key:key,message_id:id,position,role,speaker_id:null,content:{text:'same'},created_at_ms:1000});
@@ -27,4 +27,12 @@ test('conflicting state, overlapping IDs, edited prefix and incomplete turns ref
  const a=copy(),b=copy();a.messages.push(m('a','same-id',2),m('a','l',3,'model'));b.messages.push(m('a','same-id',2),m('a','r',3,'model'));assert.throws(()=>mergeAtomicSnapshots(base,a,b),/overlapping-turn/);
  a.messages[0].content={text:'edited'};assert.throws(()=>mergeAtomicSnapshots(base,a,b),/history-edit/);
  const c=copy(),d=copy();c.messages.push(m('a','l',2));d.messages.push(m('a','r',2),m('a','r2',3,'model'));assert.throws(()=>mergeAtomicSnapshots(base,c,d),/incomplete-turn/);
+});
+
+test('unsupported settings are carried forward without importing them into the runtime',()=>{
+ const owned=(k:string)=>k==='veniceAssistantModel';
+ const base={appSettings:{veniceAssistantModel:'old',worldline:'story-v1',director:'director-v1'}};
+ const local={appSettings:{veniceAssistantModel:'new',worldline:'accidental-local-value'}};
+ assert.deepEqual(preserveForeignCloudSettings(local,base,owned).appSettings,{veniceAssistantModel:'new',worldline:'story-v1',director:'director-v1'});
+ assert.deepEqual(preserveForeignCloudSettings({appSettings:{}},base,owned).appSettings,{worldline:'story-v1',director:'director-v1'});
 });

@@ -16,7 +16,7 @@ import {
 import type { StoredChatAttachment } from './chatMediaStore.js';
 import { filterRemoteStateEntities, findLocallyDeletedIndexedKeys, mergeChatHistoryMaps } from './cloudMessageMerge.js';
 import { readCloudSyncIndex, writeCloudSyncIndex, writeCloudSyncIndexesAtomically } from './cloudSyncIndexStore.js';
-import {mergeAtomicSnapshots,mergeBaseIndex,readMergeBase,normalizeMergeSnapshot,equalMergeSnapshot,type CloudMergeSnapshot} from './atomicCloudMerge.js';
+import {mergeAtomicSnapshots,mergeBaseIndex,readMergeBase,normalizeMergeSnapshot,equalMergeSnapshot,preserveForeignCloudSettings,type CloudMergeSnapshot} from './atomicCloudMerge.js';
 import {stageAtomicMedia} from './atomicCloudMedia.js';
 import {planAtomicDelta,readAtomicBaseline,saveAtomicBaseline,pendingAtomicJournal,prepareAtomicJournal,completeAtomicJournal,retireStaleAtomicJournal,type AtomicJournal,type MergeInstallation} from './atomicCloudDelta.js';
 import { isLocalCloudChangeBatchActive, LOCAL_CLOUD_CHANGE_EVENT, LocalCloudChangeScope } from './cloudSyncEvents.js';
@@ -1121,8 +1121,9 @@ export class SupabaseCloudSyncManager {
             position:row.position,role:row.role,speaker_id:row.speaker_id,content:row.content,created_at_ms:Number(row.created_at_ms)
         }))]));
     }
-    private async captureAtomicLocal(uid:string):Promise<CloudMergeSnapshot>{
-        const payload=await this.buildStatePayload();
+    private async captureAtomicLocal(uid:string,reference?:object):Promise<CloudMergeSnapshot>{
+        const captured=await this.buildStatePayload();
+        const payload=reference?preserveForeignCloudSettings(captured,reference,isPersistedAppSettingKey):captured;
         const {conversations,messages}=this.collectLocalMessages(uid);
         return normalizeMergeSnapshot({conversations,messages,payload});
     }
@@ -1135,11 +1136,11 @@ export class SupabaseCloudSyncManager {
         const epoch=this.atomicLocalEpoch,body=typeof document!=='undefined'?document.body:null,wasInert=body?.inert??false;
         if(body)body.inert=true;
         try{
-            const current=await this.captureAtomicLocal(uid);
+            const current=await this.captureAtomicLocal(uid,installation.local.payload);
             await this.verifyAtomicMergeMedia(uid);
             this.assertCurrentSessionUser(uid,generation);
             if(this.atomicLocalEpoch!==epoch||!this.canRestore())throw Error('ATOMIC_MERGE_INSTALL_BUSY');
-            if(equalMergeSnapshot(current,installation.merged))return;
+            if(equalMergeSnapshot(await this.captureAtomicLocal(uid,installation.merged.payload),installation.merged))return;
             if(!equalMergeSnapshot(current,installation.local))throw Error('ATOMIC_MERGE_INSTALL_LOCAL_CHANGED：本機新增變更已保留，合併尚未套用。');
             const snapshot=await this.createCloudPullTransactionSnapshot();
             this.assertCurrentSessionUser(uid,generation);
@@ -1149,7 +1150,7 @@ export class SupabaseCloudSyncManager {
                 const rows=installation.merged.messages.map(r=>({...r,user_id:uid,source_device_id:this.deviceId})) as CloudMessageRow[];
                 await this.applyRemoteData(installation.merged.payload as CloudStatePayload,rows,false,installation.merged.conversations);
                 this.assertCurrentSessionUser(uid,generation);
-                const installed=await this.captureAtomicLocal(uid);
+                const installed=await this.captureAtomicLocal(uid,installation.merged.payload);
                 await this.verifyAtomicMergeMedia(uid);
                 if(!equalMergeSnapshot(installed,installation.merged))throw Error('ATOMIC_MERGE_INSTALL_VERIFY_FAILED');
             }catch(error){
@@ -1175,14 +1176,13 @@ export class SupabaseCloudSyncManager {
         const signature=(rows:{asset_id:string;signature:string}[])=>JSON.stringify(Object.entries(Object.fromEntries(rows.map(r=>[r.asset_id,r.signature]))).sort());
         const baselineMedia=JSON.stringify(Object.entries(oldMedia).sort());
         if(signature(mediaRows)!==baselineMedia||signature(localMedia)!==baselineMedia)throw Error('ATOMIC_MEDIA_CHANGE_PENDING：媒體有變更，未合併。');
-        const local=normalizeMergeSnapshot({conversations:localRows.conversations,messages:localRows.messages,payload});
+        const local=normalizeMergeSnapshot({conversations:localRows.conversations,messages:localRows.messages,payload:preserveForeignCloudSettings(payload,base.payload,isPersistedAppSettingKey)});
         const remote=normalizeMergeSnapshot({conversations,messages,payload:state.data.payload});
         const merged=normalizeMergeSnapshot(mergeAtomicSnapshots(base,local,remote));
         const head=await this.readCloudStateHead(uid,generation);
         this.assertCurrentSessionUser(uid,generation);
         if(head.revision!==remoteRevision||this.atomicLocalEpoch!==epoch||!this.canRestore())throw Error('ATOMIC_CONFLICT_REVIEW_REQUIRED：合併期間資料已改變。');
         const mergedPayload=merged.payload as CloudStatePayload;
-        if(Object.keys(mergedPayload.appSettings||{}).some(k=>!isPersistedAppSettingKey(k)))throw Error('ATOMIC_MERGE_CONFLICT:unsupported-setting');
         const hashes=this.atomicMessageHashes(merged.messages),remoteHashes=this.atomicMessageHashes(remote.messages);
         const delta=planAtomicDelta(merged.conversations,merged.messages,hashes,remoteHashes,Object.fromEntries(remote.conversations.map(c=>[c.conversation_key,'1'])));
         await writeCloudSyncIndexesAtomically({['wetappAtomicMergePlanV3:'+uid]:{baseRevision:String(baseRevision),remoteRevision:String(remoteRevision),local:JSON.stringify(local),remote:JSON.stringify(remote),merged:JSON.stringify(merged)}});
@@ -1217,7 +1217,9 @@ export class SupabaseCloudSyncManager {
                         journal=await this.prepareAtomicConflict(uid,generation,baseline,head.revision,epoch);
                         if(!journal)throw Error('ATOMIC_CONFLICT_REVIEW_REQUIRED：另一裝置已更新雲端；本機變更已保留。');
                     }else{
-                    const payload=await this.buildStatePayload();assertCurrent();
+                    const base=await readMergeBase(uid,baseline);
+                    if(!base)throw Error('ATOMIC_BASELINE_REQUIRED');
+                    const payload=preserveForeignCloudSettings(await this.buildStatePayload(),base.payload,isPersistedAppSettingKey);assertCurrent();
                     const media=await this.collectLocalMedia(payload.rooms.rooms,uid);
                     const mediaIndex=Object.fromEntries(media.map(a=>[a.asset_id,a.signature]));
                     const [oldMedia,oldMessages,oldConversations]=await Promise.all([readCloudSyncIndex(MEDIA_INDEX_KEY),readCloudSyncIndex(MESSAGE_INDEX_KEY),readCloudSyncIndex(CONVERSATION_INDEX_KEY)]);
@@ -1249,7 +1251,7 @@ export class SupabaseCloudSyncManager {
                     },
                     commit:async request=>{
                         if(journal.mergeInstall){
-                            const current=await this.captureAtomicLocal(uid);
+                            const current=await this.captureAtomicLocal(uid,journal.mergeInstall.local.payload);
                             await this.verifyAtomicMergeMedia(uid);assertCurrent();
                             if(!this.canRestore()||!equalMergeSnapshot(current,journal.mergeInstall.local))throw Error('ATOMIC_MERGE_INSTALL_LOCAL_CHANGED');
                         }

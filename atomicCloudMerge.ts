@@ -85,3 +85,11 @@ export async function readMergeBase(uid:string,revision:number):Promise<CloudMer
  if(Number(data.revision)!==revision||!data.snapshot)return null;
  return normalizeMergeSnapshot(JSON.parse(data.snapshot));
 }
+
+/** An older site may not understand a newer site's settings. Keep those opaque
+ * fields from the confirmed baseline; only the site's supported keys are editable. */
+export function preserveForeignCloudSettings<T extends {appSettings?:Record<string,unknown>}>(local:T,reference:object,isOwned:(key:string)=>boolean):T{
+ const foreign=(reference as {appSettings?:Record<string,unknown>}).appSettings||{};
+ const appSettings=Object.fromEntries([...Object.entries(foreign).filter(([k])=>!isOwned(k)),...Object.entries(local.appSettings||{}).filter(([k])=>isOwned(k))]);
+ return {...local,appSettings};
+}
