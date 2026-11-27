@@ -8,3 +8,5 @@
 - Frontend VITE_AIGF_SERVER_GROUP_GENERATION_V4 stays off until actual worker upgrade and live test. Only ordinary text group mode is in scope; group Worldline, surprise events, media, historical backfill, other two variant ports and production cutover remain.
 
 - Owner first preflight failed before replacement: lz-string absent on VPS. Rebuilt bundle with only pg/opencc-js external; checked all external imports against runtime manifest and imported bundle in isolated temporary directory with exactly locked runtime package versions. Retry same owner script path; old ledger hash unchanged by failed attempt.
+
+- Owner upgrade passed. Live synthetic eight-turn garden group: real workflow completed (revision 24), one reply with two dialogue segments and scene saved. Automatic group memory job completed (revision 25), checkpoint 8, one restricted memory shared by present A and B; absent C has zero. Other 35 messages unchanged. Live smoke inserted isolated fixture via SQL rather than browser admission. Worldline 2 preview-only VITE_AIGF_SERVER_GROUP_GENERATION_V4 enabled; actual browser admission and other variant ports remain unverified.

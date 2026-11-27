@@ -1,0 +1,9 @@
+import {buildVpsWorkflowPayload} from '../vpsWorkflow.js';
+import {digestServerGroupContext} from '../durableGroupTurn.js';
+const key='room-v4-group-smoke-20261128';
+const member=(id:string,name:string)=>({id,joinedAt:1,soul:[],memories:[],persona:{name,emoji:'G',gender:'female' as const,description:'Garden guide',prompt:'Talk about plants.',greeting:'Hello',avatarPrompt:'',avatarUrl:null}});
+const room={id:key,type:'group' as const,title:'V4 Group Smoke - Garden',description:'Synthetic garden fixture',leadMemberId:'a',members:[member('a','Anna'),member('b','Beth'),member('c','Cara')],scene:{id:'scene',location:'garden',realityLayer:'physical' as const,realityEpochId:'epoch1',presentMemberIds:['a','b'],summary:'Garden visit',unresolved:[],startedAt:1},sharedSoul:[],sharedMemories:[],createdAt:1,updatedAt:1,lastSummarizedUserMessageCount:0};
+const text='Anna and Beth, what is my favorite tree?';
+const instructions='Use exactly this envelope with two short Traditional Chinese dialogues labeled Anna and Beth: <chat>Anna: [dialogue]\\nBeth: [dialogue]</chat><scene>{"location":"garden","reality_layer":"physical","present_member_ids":["a","b"],"summary":"Garden visit","unresolved":[]}</scene><npc_candidate>null</npc_candidate>. The visitor likes ginkgo trees. No other text.';
+const plan=buildVpsWorkflowPayload({model:'glm-5-3-flash-uncensored',messages:[{role:'system',content:instructions},{role:'user',content:text}],maxCompletionTokens:600,temperature:0.1,stop:[]},{editorPrompt:'Review this harmless short garden dialogue. Keep a valid response.',authoritativePrompt:instructions,reviewHistory:[],latestUserMessage:text,promptCacheKey:'wetapp-review-v1-groupsmoke'},undefined,true);
+console.log(JSON.stringify({room,plan,context:{version:2,worldActive:false,roomDigest:await digestServerGroupContext(room),group:{latestUserMessage:text,personaName:'Anna',fallbackMemberId:'a',namedMemberId:'a',recentReplies:[],ownerV2:false,alreadyOfferedNames:[]}}}));
