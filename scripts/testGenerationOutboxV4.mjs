@@ -1,6 +1,7 @@
 import {PGlite} from '../tmp/sync-lab/node_modules/@electric-sql/pglite/dist/index.js';
 import {readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
+import {finalizeAcceptedAssistantJob,buildAssistantServerPlan} from '../serverAssistantFinalizer.ts';
 import {finalizeAcceptedSingleJob} from '../serverTurnFinalizer.ts';
 import {makeWorldline,updateWorldlineRegistry,getWorldline,WORLDLINE_SETTING_KEY} from '../worldline.ts';
 import {createPostgresOutboxStore,processOneGeneration,QueueHttpError} from '../server/generationOutboxWorker.mjs';
@@ -26,7 +27,7 @@ try{
  create table public.wetapp_media(user_id uuid,asset_id text,conversation_key text,kind text,storage_path text,mime_type text,byte_size bigint,signature text,metadata jsonb,source_device_id text,created_at_ms bigint,primary key(user_id,asset_id));
  insert into public.wetapp_state values('${uid}','{}',1,null),('${other}','{}',1,null);
  grant select,insert,update,delete on all tables in schema public to authenticated;grant select on storage.objects to authenticated;`);
- for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql','wetapp_persona_memory_v4.sql','wetapp_world_ledger_v4.sql','wetapp_group_generation_v4.sql','wetapp_group_memory_v4.sql','wetapp_generation_context_guard_v4.sql','wetapp_memory_backfill_v4.sql','wetapp_world_ledger_backfill_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
+ for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql','wetapp_persona_memory_v4.sql','wetapp_world_ledger_v4.sql','wetapp_group_generation_v4.sql','wetapp_group_memory_v4.sql','wetapp_generation_context_guard_v4.sql','wetapp_memory_backfill_v4.sql','wetapp_world_ledger_backfill_v4.sql','wetapp_assistant_generation_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
  await db.exec(`set role authenticated;set test.uid='${uid}'`);
  const delta={conversations:[{conversation_key:'fixture',title:'Fixture',kind:'persona'}],messages:[{conversation_key:'fixture',message_id:msg,position:0,role:'user',content:{text:'hello'},created_at_ms:1000}],remove_messages:[],remove_conversations:[]};
  const plan={workflow_version:1,primary:{model:'fixture',messages:[{role:'user',content:'hello'}]},review:{model:'fixture',messages:[]}};
@@ -350,4 +351,31 @@ try{
  const projected=projectWorld(worldBackfill.appSettings[WORLD_LEDGER_KEY],key4,worldHistory);
  assert.equal(projected.processed,26);assert.equal(projected.total,32);assert.equal(projected.timeline.length,1);
  console.log('PASS bounded world ledger backfill, recent first then oldest, 26/32 reviewed and old observation retained');
+
+ // General assistant output remains plain Markdown, never story/memory state.
+ await db.exec('reset role');
+ const aj='00000000-0000-4000-8000-000000000701',ar='00000000-0000-4000-8000-000000000702',am='00000000-0000-4000-8000-000000000703',ak='assistant-topic-fixture';
+ const ab=(await db.query('select revision,payload from public.wetapp_state where user_id=$1',[uid])).rows[0];
+ const ad={conversations:[{conversation_key:ak,title:'Calculation',kind:'assistant'}],messages:[{conversation_key:ak,message_id:am,position:0,role:'user',content:{text:'Explain addition',vpsServerGeneration:{version:1,jobId:aj,replyId:ar}},created_at_ms:1000}],remove_messages:[],remove_conversations:[]};
+ const ap=buildAssistantServerPlan({model:'qwen-3-6-plus',messages:[{role:'system',content:'General assistant'},{role:'user',content:'Explain addition'}]});
+ const ac={version:3,worldActive:false,assistant:{latestUserMessage:'Explain addition',recentReplies:[]}};
+ const aa=(plan=ap,ctx=ac,d=ad)=>db.query('select public.wetapp_accept_generation_v4($1,$2::jsonb,$3::jsonb,$4,$5::uuid,$6::uuid,$7,$8,$9::jsonb,$10::jsonb)',[ab.revision,JSON.stringify(ab.payload),JSON.stringify(d),'fixture-device',aj,ar,ak,am,JSON.stringify(plan),JSON.stringify(ctx)]);
+ await db.exec("set role authenticated;set test.uid='"+uid+"'");
+ await assert.rejects(aa({...ap,venice_parameters:{enable_web_search:'auto'}}),/INVALID_GENERATION_ADMISSION/);
+ await assert.rejects(aa(ap,ac,{...ad,conversations:[{...ad.conversations[0],kind:'persona'}]}),/GENERATION_ASSISTANT_KIND_REQUIRED/);
+ await aa();await aa();
+ await db.exec('reset role;set role aigf_generation_worker');
+ const ast=await claim();assert.equal(ast.job_id,aj);assert.deepEqual(ast.state_payload,ab.payload);
+ const atext='## Addition\n\n1 + 2 = 3';
+ const output=finalizeAcceptedAssistantJob(ast,{job_id:aj,status:'done',result:{choices:[{message:{content:atext},finish_reason:'stop'}]}});
+ const finishA=(content,payload)=>db.query('select * from aigf_worker.finish_generation_v4($1,$2,$3::jsonb,$4::jsonb)',[aj,ast.lease_id,JSON.stringify(content),JSON.stringify(payload)]);
+ await assert.rejects(finishA(output.content,{...output.payload,unexpected:true}),/INVALID_ASSISTANT_RESULT/);
+ await assert.rejects(finishA({...output.content,worldlineStoryTurn:true},output.payload),/INVALID_ASSISTANT_RESULT/);
+ assert.equal((await finishA(output.content,output.payload)).rows[0].status,'done');
+ assert.equal((await finishA(output.content,output.payload)).rows[0].status,'done');
+ await db.exec('reset role');
+ assert.deepEqual((await db.query('select content from public.wetapp_messages where conversation_key=$1 and role=\'model\'',[ak])).rows,[{content:{text:atext}}]);
+ assert.deepEqual((await db.query('select payload from public.wetapp_state where user_id=$1',[uid])).rows[0].payload,ab.payload);
+ assert.equal((await db.query('select count(*)::int as n from aigf_worker.persona_memory_outbox_v4 where parent_job=$1',[aj])).rows[0].n,0);
+ console.log('PASS assistant raw text atomic admission and idempotent reply, Markdown intact, no state or memory side effects');
 }finally{await db.close()}

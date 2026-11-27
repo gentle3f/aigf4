@@ -3,6 +3,7 @@ import {setTimeout as sleep} from 'node:timers/promises';
 import {pathToFileURL} from 'node:url';
 import {Pool} from 'pg';
 import {createLocalGenerationQueue,createPostgresOutboxStore,processOneGeneration} from './generationOutboxWorker.mjs';
+import {finalizeAcceptedAssistantJob} from '../serverAssistantFinalizer.ts';
 import {finalizeAcceptedSingleJob} from '../serverTurnFinalizer.ts';
 import {finalizeAcceptedGroupJob} from '../serverGroupFinalizer.ts';
 import {createPersonaMemoryStore,processOnePersonaMemory} from './personaMemoryWorkerV4.mjs';
@@ -80,7 +81,7 @@ async function main(){
   const groupStore=createGroupMemoryStore(query);
   let nextFollowup=0;
   const mediaStore=createStudioMediaStore(query);
-  const chatLoop=()=>runWorkerLoop({processOne:async()=>{const chat=await processOneGeneration({store,queue,finalize:(row,job)=>row.finalizer_context?.version===2?finalizeAcceptedGroupJob(row,job):finalizeAcceptedSingleJob(row,job)});if(chat!=='idle')return chat;const tasks=[()=>processOnePersonaMemory({store:memoryStore,queue}),()=>processOneWorldLedger({store:ledgerStore,queue}),()=>processOneGroupMemory({store:groupStore,queue})];for(let i=0;i<tasks.length;i++){const n=nextFollowup++%tasks.length;const result=await tasks[n]();if(result!=='idle')return result;}return 'idle';},signal:stop.signal,once:process.argv.includes('--once')});
+  const chatLoop=()=>runWorkerLoop({processOne:async()=>{const chat=await processOneGeneration({store,queue,finalize:(row,job)=>row.finalizer_context?.version===3?finalizeAcceptedAssistantJob(row,job):row.finalizer_context?.version===2?finalizeAcceptedGroupJob(row,job):finalizeAcceptedSingleJob(row,job)});if(chat!=='idle')return chat;const tasks=[()=>processOnePersonaMemory({store:memoryStore,queue}),()=>processOneWorldLedger({store:ledgerStore,queue}),()=>processOneGroupMemory({store:groupStore,queue})];for(let i=0;i<tasks.length;i++){const n=nextFollowup++%tasks.length;const result=await tasks[n]();if(result!=='idle')return result;}return 'idle';},signal:stop.signal,once:process.argv.includes('--once')});
   const mediaLoop=()=>runWorkerLoop({processOne:()=>processOneStudioMedia({store:mediaStore,queue}),signal:stop.signal,once:process.argv.includes('--once')});
   try{await Promise.all([chatLoop(),mediaLoop()]);}finally{stop.abort();}
  }finally{await db.end();}
