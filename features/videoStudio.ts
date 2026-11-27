@@ -1520,20 +1520,26 @@ const resumePendingVideoJob = async (source: 'auto' | 'manual' = 'manual') => {
 };
 
 const recoverCloudVideos=async()=>{
-    if(isVideoRequestRunning)return;
-    const recovery=getDependencies().getStudioRecovery?.();if(!recovery)return;
+    if(isVideoRequestRunning)return true;
+    const recovery=getDependencies().getStudioRecovery?.();if(!recovery)return false;
     setVideoStudioBusy(true);
     try{
         const rows=await recovery.list('video');
-        for(const r of rows.filter(r=>r.status==='archived')){
-            await recovery.transfer(r);
-            if(readPersistedVideoJobFromStorage()?.submissionId===r.job_id)clearPersistedVideoJob();
+        for(const r of rows.filter(r=>r.status==='archived'||r.status==='transferred')){
+            if(r.status==='archived'){
+                try{await recovery.transfer(r);}catch(e){if(!(e instanceof Error)||e.message!=='STUDIO_RECOVERY_ALREADY_TRANSFERRED')throw e;}
+            }
+            if(readPersistedVideoJobFromStorage()?.submissionId===r.job_id&&await recovery.localAsset(r))clearPersistedVideoJob();
         }
         await restoreSavedStudioVideos();
-        videoStudioStatus.textContent=rows.some(r=>r.status==='pending')?'雲端影片任務尚在處理；毋須再次生成。':'已核對雲端影片任務。';
+        const pending=rows.some(r=>r.status==='pending');
+        videoStudioStatus.textContent=pending?'雲端影片任務尚在處理；毋須再次生成。':'已核對雲端影片任務。';
+        return pending;
     }finally{setVideoStudioBusy(false);}
 };
 const runVideoGeneration = async () => {
+    if(isVideoRequestRunning)return;
+    if(VPS_CHAT_BUILD){try{if(await recoverCloudVideos())return;}catch(e){showVideoStudioError(e instanceof Error?e.message:'STUDIO_RECOVERY_FAILED');return;}}
     if (pendingVideoJob) {
         await resumePendingVideoJob('manual');
         return;
@@ -1642,10 +1648,10 @@ const showVideoStudio = (historyMode: VideoStudioHistoryMode = 'push') => {
     renderVideoResults();
     void loadVideoModels(videoStudioMode);
     updateVideoGenerateButton();
-    if(VPS_CHAT_BUILD)void restoreSavedStudioVideos();
-    if (pendingVideoJob && !isVideoRequestRunning && deps.isUnlocked()) {
-        void resumePendingVideoJob('auto');
-    }
+    if(VPS_CHAT_BUILD){
+        void restoreSavedStudioVideos();
+        void recoverCloudVideos().then(pending=>{if(!pending&&pendingVideoJob&&!isVideoRequestRunning&&deps.isUnlocked())return resumePendingVideoJob('auto');}).catch(e=>showVideoStudioError(e instanceof Error?e.message:'STUDIO_RECOVERY_FAILED'));
+    }else if(pendingVideoJob&&!isVideoRequestRunning&&deps.isUnlocked())void resumePendingVideoJob('auto');
 };
 
 const navigateBackFromVideoStudio = () => {

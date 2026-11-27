@@ -603,22 +603,27 @@ const resumeVpsImage=async()=>{
 };
 // Recover previously submitted jobs only. Never issue a generation request here.
 const recoverCloudImages=async()=>{
-    if(isImageRequestRunning)return;
-    const recovery=getDeps().getStudioRecovery?.();if(!recovery)return;
+    if(isImageRequestRunning)return true;
+    const recovery=getDeps().getStudioRecovery?.();if(!recovery)return false;
     setImageStudioBusy(true);
     try{
         const rows=await recovery.list('image');
-        for(const r of rows.filter(r=>r.status==='archived')){
-            await recovery.transfer(r);
-            if(readImageReceipt(localStorage)?.jobId===r.job_id)localStorage.removeItem(IMAGE_RECEIPT_KEY);
+        for(const r of rows.filter(r=>r.status==='archived'||r.status==='transferred')){
+            if(r.status==='archived'){
+                try{await recovery.transfer(r);}catch(e){if(!(e instanceof Error)||e.message!=='STUDIO_RECOVERY_ALREADY_TRANSFERRED')throw e;}
+            }
+            if(readImageReceipt(localStorage)?.jobId===r.job_id&&await recovery.localAsset(r))localStorage.removeItem(IMAGE_RECEIPT_KEY);
         }
         await restoreSavedStudioImages();
-        imageStudioStatus.textContent=rows.some(r=>r.status==='pending')?'雲端圖片任務尚在處理；毋須再次生成。':'已核對雲端圖片任務。';
+        const pending=rows.some(r=>r.status==='pending');
+        imageStudioStatus.textContent=pending?'雲端圖片任務尚在處理；毋須再次生成。':'已核對雲端圖片任務。';
+        return pending;
     }finally{setImageStudioBusy(false);}
 };
 const runImageGeneration = async () => {
+    if(isImageRequestRunning)return;
     if(VPS_CHAT_BUILD){
-        try{if(readImageReceipt(localStorage)){await resumeVpsImage();return;}}
+        try{if(await recoverCloudImages())return;if(readImageReceipt(localStorage)){await resumeVpsImage();return;}}
         catch{showImageStudioError('背景圖片紀錄無效；請清除紀錄後再試。');return;}
     }
     const prompt = imagePrompt.value.trim();
@@ -818,7 +823,7 @@ export const createImageStudio = (deps: ImageStudioDependencies): ImageStudioHan
             renderImageResults();
             void loadModelsAndRender(imageStudioMode);
             updateImageGenerateButton();
-            if(VPS_CHAT_BUILD){void restoreSavedStudioImages();void resumeVpsImage();}
+            if(VPS_CHAT_BUILD){void restoreSavedStudioImages();void recoverCloudImages().then(pending=>{if(!pending)return resumeVpsImage();}).catch(e=>showImageStudioError(e instanceof Error?e.message:'STUDIO_RECOVERY_FAILED'));}
         },
         hide: () => {
             imageStudioView.classList.add('hidden');

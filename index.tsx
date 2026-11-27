@@ -1753,7 +1753,7 @@ const loadImageStudioUi = async () => {
                     getImageModelPrice,
                     formatModelPrice,
                     requestImage: requestVeniceImage,
-                    getStudioRecovery:()=>supabaseCloudSyncManager?.getStudioMediaRecovery()??null,
+                    getStudioRecovery:()=>{if(import.meta.env?.VITE_AIGF_STUDIO_MEDIA_RECOVERY_V4==='1'&&!supabaseCloudSyncManager)throw Error('STUDIO_RECOVERY_LOGIN_REQUIRED');return supabaseCloudSyncManager?.getStudioMediaRecovery()??null;},
                     resolveSharedSeed: () => resolveImageSeedForRequest(imageSeed, imageSeedLock.checked),
                     getSharedSeed: getSharedImageSeed,
                     getSharedSeedLocked: () => imageSeedLock.checked,
@@ -1801,7 +1801,7 @@ const loadVideoStudioUi = async () => {
         videoStudioUiLoad = import('./features/videoStudio.js')
             .then(({ createVideoStudio }) => {
                 const ui = createVideoStudio({
-                    getStudioRecovery:()=>supabaseCloudSyncManager?.getStudioMediaRecovery()??null,
+                    getStudioRecovery:()=>{if(import.meta.env?.VITE_AIGF_STUDIO_MEDIA_RECOVERY_V4==='1'&&!supabaseCloudSyncManager)throw Error('STUDIO_RECOVERY_LOGIN_REQUIRED');return supabaseCloudSyncManager?.getStudioMediaRecovery()??null;},
                     isUnlocked: () => isUnlocked,
                     handleAuthRequired,
                     cancelActiveChatRequest,
