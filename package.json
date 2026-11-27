@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node scripts/probeV4FailedJob.mjs && vite build",
     "preview": "vite preview",
     "test": "tsx --test tests/**/*.test.ts",
     "typecheck": "tsc --noEmit",
