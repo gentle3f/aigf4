@@ -1,0 +1,11 @@
+import {build} from 'esbuild';
+import {createHash} from 'node:crypto';
+import {readFile} from 'node:fs/promises';
+import assert from 'node:assert/strict';
+const output='tmp/v4-worker/worker.mjs';
+await build({entryPoints:['server/runGenerationOutboxV4.mjs'],bundle:true,platform:'node',format:'esm',target:'node22',packages:'external',outfile:output,logLevel:'silent'});
+const m=await import('../'+output);
+assert.equal(typeof m.runWorkerLoop,'function');
+assert.equal(await m.runWorkerLoop({once:true,processOne:async()=> 'idle',log:()=>{}}),'idle');
+const bytes=await readFile(output);
+console.log('V4_WORKER_BUNDLE_PASS bytes='+bytes.length+' sha256='+createHash('sha256').update(bytes).digest('hex'));
