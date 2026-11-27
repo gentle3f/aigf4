@@ -9,8 +9,16 @@ lock table public.wetapp_state,public.wetapp_conversations,public.wetapp_message
 create role wetapp_atomic_writer_v3 nologin noinherit nobypassrls nosuperuser nocreatedb nocreaterole;
 -- PG16+ role ownership transfer requires SET membership, not merely ADMIN OPTION.
 grant wetapp_atomic_writer_v3 to current_user with set true;
-grant usage on schema public,auth,storage to wetapp_atomic_writer_v3;
-grant execute on function auth.uid(),public.is_wetapp_owner() to wetapp_atomic_writer_v3;
+-- Managed auth schema grants cannot be delegated by postgres. Inherit the
+-- existing authenticated JWT-reader privileges in ONE direction only.
+grant authenticated to wetapp_atomic_writer_v3 with inherit true, set false;
+grant usage on schema public,storage to wetapp_atomic_writer_v3;
+grant execute on function public.is_wetapp_owner() to wetapp_atomic_writer_v3;
+do $authcheck$
+begin
+ if not has_schema_privilege('wetapp_atomic_writer_v3','auth','USAGE') or not has_function_privilege('wetapp_atomic_writer_v3','auth.uid()','EXECUTE') then raise exception 'ATOMIC_WRITER_AUTH_PRIVILEGE_MISSING';end if;
+end
+$authcheck$;
 grant select,insert,update,delete on public.wetapp_state,public.wetapp_conversations,public.wetapp_messages,public.wetapp_media to wetapp_atomic_writer_v3;
 grant select,insert on public.wetapp_chat_delta_receipts_v3 to wetapp_atomic_writer_v3;
 grant select on storage.objects to wetapp_atomic_writer_v3;
