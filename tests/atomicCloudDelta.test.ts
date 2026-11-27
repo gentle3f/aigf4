@@ -157,3 +157,29 @@ test('ordinary site push preserves unknown cloud settings from confirmed baselin
  assert.equal(await f.x.pushLocalToCloud(),true);
  assert.equal((await readMergeBase(uid,8))!.payload && ((await readMergeBase(uid,8))!.payload as any).appSettings.foreignStorySetting,'keep-me');
 });
+
+test('first login establishes remote baseline despite startup pending marker',async()=>{
+ const f=await fixture('atomic-first-setup'),uid='atomic-first-login';
+ f.x.session={user:{id:uid,email:'fixture@example.invalid'}};
+ delete f.x.collectLocalMessages;delete f.x.buildStatePayload;delete f.x.collectLocalMedia;
+ f.x.roomManager.ensureIuGroupRoom(f.x.memoryManager);
+ assert.equal(await readAtomicBaseline(uid),0);
+ const row={user_id:uid,conversation_key:'cc',message_id:'first-remote',position:0,role:'user',speaker_id:null,content:{text:'remote message'},created_at_ms:1000};
+ const conversation={user_id:uid,conversation_key:'cc',title:'CC',kind:'persona',message_count:1};
+ f.x.client.from=(table:string)=>{assert.equal(table,'wetapp_state');const chain={select:()=>chain,maybeSingle:async()=>({data:{revision:3,payload,source_device_id:'remote'},error:null})};return chain;};
+ f.x.fetchAllRows=async(table:string)=>table==='wetapp_conversations'?[conversation]:table==='wetapp_messages'?[row]:[];
+ await f.x.initialSync(uid,f.x.sessionGeneration);
+ assert.equal(await readAtomicBaseline(uid),3);
+ assert.equal(f.x.memoryManager.peekChatHistory('cc').at(-1)?.id,'first-remote');
+ assert.equal((await readMergeBase(uid,3))!.messages.length,1);
+ assert.deepEqual(f.calls,[]);
+});
+test('first login with real unsynced local chat preserves it and refuses replacement',async()=>{
+ const f=await fixture('atomic-first-existing-setup'),uid='atomic-first-existing';
+ f.x.session={user:{id:uid,email:'fixture@example.invalid'}};
+ f.x.memoryManager.setChatHistory('cc',[{id:'unsynced',role:'user',createdAt:1000,content:{text:'local unsynced'}}],true);
+ await f.x.initialSync(uid,f.x.sessionGeneration);
+ assert.equal(await readAtomicBaseline(uid),0);
+ assert.equal(f.x.memoryManager.peekChatHistory('cc').at(-1)?.id,'unsynced');
+ assert.equal(f.m.get(pending),'true');assert.deepEqual(f.calls,[]);
+});
