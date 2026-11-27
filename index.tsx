@@ -34,7 +34,8 @@ import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterRes
 import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
 import { CURRENT_CONTEXT_DIGEST_VERSION } from './contextFingerprint.js';
 import {ATOMIC_CLOUD_PREVIEW} from './atomicCloudPreview.js';
-import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, selectVpsModel, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
+import {SERVER_GENERATION_V4,createServerGenerationMarker,ServerGenerationAccepted,type ServerGenerationMarker} from './serverGenerationAdmission.js';
+import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, selectVpsModel, selectV4PilotModel, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
 import { createComposerAutoSize } from './composerAutoSize.js';
@@ -731,6 +732,7 @@ type ActiveChatRequest = {
     controller: AbortController;
     startedAt: number;
     vpsTurn?: { identity: TurnIdentity; model: string; receipt?: TurnReceipt; job?: PilotJob };
+    serverGeneration?: ServerGenerationMarker;
     /** Temporary DOM only. Never persisted until the full streamed answer finishes. */
     streamPreview?: HTMLElement;
 };
@@ -1968,8 +1970,9 @@ const selectedVpsChatModel = () => {
     return selectVpsModel(VPS_CHAT_BUILD,chatModelSettings.primary,localStorage.getItem(VPS_CHAT_MODE_KEY)==='1');
 };
 let resumingVpsTurn = false;
-const resumeVpsChatTurn = async (openConversation = false) => {
+const resumeVpsChatTurn = async (openConversation = false, manualLegacy = false) => {
     if (!VPS_CHAT_BUILD || !isUnlocked || activeChatRequest || resumingVpsTurn) return;
+    if(SERVER_GENERATION_V4&&!manualLegacy&&pendingVpsTurn()&&!pendingVpsTurn()?.roomDigest&&pendingVpsTurn()?.conversationKey!==NATIVE_SYNC_KEY&&!pendingVpsTurn()?.worldDigest)return;
     resumingVpsTurn = true;
     try {
         const controller = makeVpsTurnController();
@@ -1978,6 +1981,19 @@ const resumeVpsChatTurn = async (openConversation = false) => {
             const key=currentConversationKey;
             const history=memoryManager.peekChatHistory(key);
             if(history.at(-1)?.role!=='user')return;
+            const serverMarker=history.at(-1)?.content.vpsServerGeneration;
+            if(serverMarker){
+                const status=await supabaseCloudSyncManager.getServerGenerationStatus(serverMarker.jobId);
+                if(currentConversationKey===key&&!activeChatRequest){
+                    if(status==='accepted'||status==='queued')showError('伺服器已接收任務，背景生成中；可以關閉網頁。');
+                    else if(status==='failed')showV4FailedRetry(key,serverMarker.jobId);
+                    else if(status==='conflict')showError('伺服器任務未完成：對話版本已改變，原訊息保留。');
+                    else if(status==='done')showError('伺服器回覆已保存，等待雲端同步。');
+                    else showV4DraftRecovery('生成草稿未確認送達伺服器，原訊息保留在本機。');
+                }
+                return;
+            }
+            if(SERVER_GENERATION_V4&&!manualLegacy&&key!==NATIVE_SYNC_KEY&&!currentRoom&&!getActiveWorldline(key))return;
             const match=await findMatchingVpsRecovery(await listVpsRecovery(),key,history);
             if(!match||currentConversationKey!==key||activeChatRequest)return;
             // Ordinary role turns only; room/world state must also be independently restored before adoption.
@@ -5185,6 +5201,52 @@ const hideError = () => {
     errorMessage.classList.add('hidden');
 };
 
+const showV4FailedRetry=(key:string,jobId:string)=>{
+    if(errorMessage.querySelector('[data-v4-retry-job="'+jobId+'"]'))return;
+    showError('伺服器生成失敗，原訊息已保留。');
+    const button=document.createElement('button');button.type='button';button.textContent='重新生成';button.dataset.v4RetryJob=jobId;
+    button.style.cssText='margin-left:12px;padding:5px 10px;border:1px solid currentColor;border-radius:8px;color:#fff;background:#4b5563;cursor:pointer;position:relative;z-index:1';
+    button.onclick=async()=>{
+        if(button.disabled||activeChatRequest||!supabaseCloudSyncManager||currentConversationKey!==key)return;
+        if(!confirm('重新生成原訊息？將再次呼叫模型，可能產生費用。'))return;
+        button.disabled=true;
+        try{
+            const status=await supabaseCloudSyncManager.retryServerGeneration(jobId,crypto.randomUUID());
+            if(currentConversationKey===key)showError(status==='done'?'回覆已保存，等待同步。':'伺服器已重新接收生成任務，可以關閉網頁。');
+        }catch(e){if(currentConversationKey===key)alert('重新生成未確認：'+(e instanceof Error?e.message:'UNKNOWN'));}
+        finally{button.disabled=false;}
+    };
+    errorMessage.append(' ',button);
+};
+const showV4DraftRecovery=(message:string)=>{
+    showError(message);
+    const key=currentConversationKey,tail=key?memoryManager.peekChatHistory(key).at(-1):undefined;
+    const marker=tail?.content.vpsServerGeneration;
+    if(!SERVER_GENERATION_V4||!key||!tail?.id||!marker||!tail.content.text)return;
+    const button=document.createElement('button');button.type='button';button.textContent='恢復未送達訊息';
+    button.style.cssText='margin-left:12px;padding:5px 10px;border:1px solid currentColor;border-radius:8px;color:#fff;background:#4b5563;cursor:pointer;position:relative;z-index:1';
+    button.onclick=async()=>{
+        if(activeChatRequest||resumingVpsTurn||!supabaseCloudSyncManager||currentConversationKey!==key)return;
+        button.disabled=true;
+        try{
+            const outcome=await supabaseCloudSyncManager.recoverUnsubmittedGeneration(marker.jobId,()=>{
+                const rows=memoryManager.peekChatHistory(key);
+                if(rows.at(-1)?.id!==tail.id||currentConversationKey!==key||messageInput.value.trim())throw Error('請先清空輸入框或保留現有草稿');
+                // Preserve a copy locally before moving the draft out of chat history.
+                localStorage.setItem('aigf-v4-recovered-draft:'+key,JSON.stringify(tail));
+                memoryManager.setChatHistory(key,rows.slice(0,-1),true);
+                messageInput.value=tail.content.text!;
+                chatContainer.replaceChildren();resetRenderedChatHistoryWindow();renderChatHistoryWindow(key,memoryManager.peekChatHistory(key));
+                updateSendButtonState();messageInput.focus();
+            });
+            if(outcome==='accepted')showError('伺服器已有此任務，請等待同步；未重複提交。');
+            else{applyChatRuntimeState('idle');updateSendButtonState();showError('未送達訊息已放回輸入框。請同步完成後再按送出。');}
+        }catch(e){showV4DraftRecovery('V4 恢復失敗：'+(e instanceof Error?e.message:'UNKNOWN'));}
+        finally{button.disabled=false;}
+    };
+    errorMessage.append(' ',button);
+};
+
 const showAuthError = (message: string) => {
     authError.textContent = message;
     authError.classList.remove('hidden');
@@ -7029,7 +7091,7 @@ const runConversationGeneration = async (
 
         for (let attempt = 0; attempt < attemptCount; attempt += 1) {
             const isRepairAttempt = attempt > 0;
-            const detail = index === 0 && !isRepairAttempt ? '思考中...' : '重新思考中...';
+            const detail = request.serverGeneration ? 'V4：準備背景生成任務…' : index === 0 && !isRepairAttempt ? '思考中...' : '重新思考中...';
             applyChatRuntimeState(index === 0 && !isRepairAttempt ? 'generating' : 'retrying', detail);
             let requestStartedAt: number | null = null;
             let attemptRecorded = false;
@@ -7121,6 +7183,14 @@ const runConversationGeneration = async (
                             promptCacheKey: createConversationPromptCacheKey(request.conversationKey, 'review'),
                         }, request.personaKey === 'cc' ? CC_CANTONESE_POLISH_PROMPT : undefined);
                         if (!isActiveChatRequest(request) || request.controller.signal.aborted || await digestVpsHistory(memoryManager.peekChatHistory(request.conversationKey),turn.identity.contextDigestVersion) !== turn.identity.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+                        if(request.serverGeneration){
+                            if(!supabaseCloudSyncManager||request.room||request.surpriseEvent)throw Error('ATOMIC_GENERATION_UNSUPPORTED_TURN');
+                            await checkWorldlineTurnContext(turn.identity);
+                            memoryManager.persistVpsChatTurnUser(request.conversationKey,turn.identity.userMessageId);
+                            applyChatRuntimeState('queueing','正在交付伺服器…');
+                            await supabaseCloudSyncManager.admitServerGeneration({job_id:request.serverGeneration.jobId,reply_id:request.serverGeneration.replyId,conversation_key:request.conversationKey,user_message_id:turn.identity.userMessageId,plan,finalizer_context:{version:1,worldActive:false,single:{personaKey:request.personaKey,personaName:request.persona.name,latestUserMessage,wardrobe:request.wardrobeState,wardrobeParticipants,establishedNpcNames:reviewContext.establishedNpcNames,addressedNpcNames:reviewContext.addressedNpcNames,recentCandidateReplies:recentAssistantReplies,recentReviewReplies:getRecentAssistantRepliesForPersona(request.conversationKey,false,8),requireAttributedNpcSpeech:false}}});
+                            throw new ServerGenerationAccepted();
+                        }
                         turn.job = await controller.submit(turn.identity, plan);
                         turn.receipt = controller.pending() || undefined;
                     }
@@ -9316,6 +9386,12 @@ const getResponse = async (
         }
     } catch (error) {
         clearAssistantStreamPreview(request);
+        if(error instanceof ServerGenerationAccepted){
+            finishChatRequest(request);
+            if(currentConversationKey===request.conversationKey)showError('伺服器已接收生成任務，可以關閉網頁。回覆完成後會自動同步。');
+            completeChatPerformanceTurn('response:server-accepted');
+            return;
+        }
         if (isAbortError(error)) {
             if (request.surpriseEvent) {
                 updateSurpriseEventProposal(request.conversationKey, request.surpriseEvent.id, {
@@ -9330,7 +9406,10 @@ const getResponse = async (
         if (request.vpsTurn) {
             finishChatRequest(request, 'error');
             if (error instanceof QueuePilotError && error.httpStatus === 401) handleAuthRequired();
-            else if (currentConversationKey === request.conversationKey) showError('VPS：' + (error instanceof Error ? error.message : 'UNKNOWN') + '。未自動重試；如有待處理任務，請用選單取回。');
+            else if (currentConversationKey === request.conversationKey) {
+                if(request.serverGeneration)showV4DraftRecovery('V4：'+(error instanceof Error?error.message:'UNKNOWN')+'。原訊息保留。');
+                else showError('VPS：' + (error instanceof Error ? error.message : 'UNKNOWN') + '。未自動重試；如有待處理任務，請用選單取回。');
+            }
             cancelChatPerformanceTurn('send:vps-error');
             return;
         }
@@ -10142,6 +10221,8 @@ const sendMessage = async ({
         showError('有未完成的 VPS 回覆。請先取回原任務，或在選單確認放棄。');
         return;
     }
+    const v4Tail=memoryManager.peekChatHistory(currentConversationKey).at(-1)?.content.vpsServerGeneration;
+    if(v4Tail){void resumeVpsChatTurn();return;}
     const typedMessage = (messageText ?? messageInput.value).trim();
     if (!typedMessage && pendingChatAttachments.length === 0) return;
     const userMessage = typedMessage || '請查看附件。';
@@ -10207,6 +10288,16 @@ const sendMessage = async ({
         id: crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         createdAt: Date.now(),
     };
+    const serverRequired=SERVER_GENERATION_V4&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&!getActiveWorldline(conversationKey)&&!currentRoom&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
+    const dispatchModel=serverRequired?selectV4PilotModel(chatModelSettings.primary):selectedVpsChatModel();
+    if(serverRequired&&!dispatchModel){showError('V4 背景生成：請選擇支援的主要模型（GLM 5.3、DeepSeek V4.1 或 Qwen 3.6）。未發送訊息。');cancelChatPerformanceTurn('send:v4-model-required');return;}
+    const serverEligible=SERVER_GENERATION_V4&&!!dispatchModel&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&!getActiveWorldline(conversationKey)&&!currentRoom&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
+    if(serverEligible){
+        if(!supabaseCloudSyncManager||supabaseCloudSyncManager.getState().phase!=='synced'){showError('請先完成雲端同步，再送出背景生成訊息。');return;}
+        try{await supabaseCloudSyncManager.preflightServerGeneration();}catch(e){showError('V4：'+(e instanceof Error?e.message:'SYNC_PREFLIGHT_FAILED')+'。訊息未發送，輸入仍保留。');cancelChatPerformanceTurn('send:v4-preflight');return;}
+        if(currentConversationKey!==conversationKey||currentPersonaKey!==personaKey||activeChatRequest)return;
+        userContent.vpsServerGeneration=createServerGenerationMarker();
+    }
     if(conversationKey===NATIVE_SYNC_KEY){
         nativeStoryBusy=true;
         try{await nativeStoryPilot!.beforeUser(userMessageMeta!.id);if(currentConversationKey!==conversationKey)throw Error('NATIVE_SYNC_VIEW_CHANGED');}
@@ -10314,12 +10405,13 @@ const sendMessage = async ({
         assistantMode ? 'assistant' : characterPhotoRequest ? 'photo' : 'character',
         conversationKey,
     );
+    request.serverGeneration=userContent.vpsServerGeneration;
     request.characterPhotoRequest = !assistantMode && characterPhotoRequest;
     request.photoSenderMemberId = photoSenderMemberId;
     request.photoSubjectMemberIds = photoSubjectMemberIds;
     request.attachments = attachmentBundle.attachments;
     request.attachmentParts = attachmentBundle.contentParts;
-    const vpsModel = selectedVpsChatModel();
+    const vpsModel = userContent.vpsServerGeneration ? dispatchModel : selectedVpsChatModel();
     if (vpsModel && (!getActiveWorldline(conversationKey)||!request.room) && userMessageMeta?.id && isVpsChatEligible({
         room: Boolean(request.room), assistant: assistantMode, special: characterPhotoRequest || isGodModeActive,
         attachments: attachmentBundle.attachments.length, personaKey,
@@ -10342,6 +10434,7 @@ const sendMessage = async ({
             return;
         }
     }
+    if(request.serverGeneration&&!request.vpsTurn){finishChatRequest(request,'error');showError('V4 任務未成功準備，未轉用直連。原訊息保留。');return;}
     await getResponse(request, userMessage, assistantMode ? selectedAssistantModel : undefined);
 };
 
@@ -11297,12 +11390,12 @@ const setupEventListeners = () => {
         const heading=document.createElement('h3');heading.textContent='背景生成與任務恢復';heading.style.cssText='font-size:18px;font-weight:600;margin:0 0 12px';
         const controls=document.createElement('div');controls.style.cssText='display:grid;gap:8px';
         const label=document.createElement('p');label.style.cssText='font-size:13px;line-height:1.5;color:#555;overflow-wrap:anywhere';
-        const refreshMode=()=>{const model=selectedVpsChatModel();label.textContent=(model?'背景生成：'+model:'目前使用直連：'+chatModelSettings.primary)+'。模型沿用原有設定；預覽版雲端只讀。';};
+        const refreshMode=()=>{const model=SERVER_GENERATION_V4?selectV4PilotModel(chatModelSettings.primary):selectedVpsChatModel();label.textContent=SERVER_GENERATION_V4?(model?'V4 單人文字背景生成：'+model+'。':'V4：主要模型未受支援。'):(model?'背景生成：'+model:'目前使用直連：'+chatModelSettings.primary)+'。模型沿用原有設定。';};
         const fallback=document.createElement('button');fallback.type='button';
-        const refreshFallback=()=>{fallback.textContent=localStorage.getItem(VPS_CHAT_MODE_KEY)==='1'?'恢復自動背景生成':'暫用原有直連';};
+        const refreshFallback=()=>{fallback.textContent=SERVER_GENERATION_V4?'V4 測試版：單人文字使用背景生成':localStorage.getItem(VPS_CHAT_MODE_KEY)==='1'?'恢復自動背景生成':'暫用原有直連';fallback.disabled=SERVER_GENERATION_V4;};
         fallback.onclick=()=>{if(activeChatRequest||pendingVpsTurn()){alert('先處理原有任務。');return;}if(localStorage.getItem(VPS_CHAT_MODE_KEY)==='1')localStorage.removeItem(VPS_CHAT_MODE_KEY);else localStorage.setItem(VPS_CHAT_MODE_KEY,'1');refreshMode();refreshFallback();};
-        const resume=document.createElement('button');resume.type='button';resume.textContent='取回 VPS 回覆';resume.onclick=()=>void resumeVpsChatTurn(true);
-        const abandon=document.createElement('button');abandon.type='button';abandon.textContent='放棄待處理回覆';abandon.onclick=()=>{if(activeChatRequest||resumingVpsTurn)return;const p=pendingVpsTurn();if(p&&confirm('放棄本機待處理回覆？VPS 已開始的生成可能仍會扣費；此操作不會取消伺服器任務。'))void makeVpsTurnController().abandon(p.jobId).then(()=>{hideError();updateSendButtonState();}).catch(()=>showError('未能放棄原任務。'));};
+        const resume=document.createElement('button');resume.type='button';resume.textContent='取回 VPS 回覆';resume.onclick=()=>{if(activeChatRequest||resumingVpsTurn){alert('正在處理原任務，請稍後再試。');return;}void resumeVpsChatTurn(true,true);};
+        const abandon=document.createElement('button');abandon.type='button';abandon.textContent='放棄待處理回覆';abandon.onclick=()=>{if(activeChatRequest||resumingVpsTurn){alert('正在處理原任務，請先停止目前生成或重新開啟頁面。');return;}const p=pendingVpsTurn();if(!p){alert('目前沒有本機待處理回覆。');return;}if(confirm('放棄本機待處理回覆？VPS 已開始的生成可能仍會扣費；此操作不會取消伺服器任務。'))void makeVpsTurnController().abandon(p.jobId).then(()=>{hideError();updateSendButtonState();toolsDialog.close();alert('舊任務已解除，可以發送新訊息。');}).catch(()=>alert('未能放棄原任務。'));};
         const memoryResume=document.createElement('button');memoryResume.type='button';memoryResume.textContent='取回記憶摘要';memoryResume.onclick=()=>{void resumeVpsPersonaMemory();void resumeVpsGroupMemory();};
         const memoryAbandon=document.createElement('button');memoryAbandon.type='button';memoryAbandon.textContent='放棄待處理摘要';memoryAbandon.onclick=()=>{if(vpsMemoryBusy)return;void makeVpsMemoryTask().then(async task=>{const p=task.pending();if(p&&confirm('放棄本機待處理摘要？已開始的生成可能仍會扣費。'))await task.abandon(p.jobId);}).catch(()=>showError('未能放棄記憶摘要。'));};
         const groupMemoryAbandon=document.createElement('button');groupMemoryAbandon.type='button';groupMemoryAbandon.textContent='放棄群組待處理摘要';groupMemoryAbandon.onclick=()=>{if(vpsGroupMemoryBusy)return;void makeVpsGroupMemoryTask().then(async task=>{const p=task.pending();if(p&&confirm('放棄本機群組待處理摘要？已開始的生成可能仍會扣費。'))await task.abandon(p.jobId);}).catch(()=>showError('未能放棄群組摘要。'));};
@@ -11325,7 +11418,7 @@ const setupEventListeners = () => {
                     item.append(label);
                     if(['queued','running','done'].includes(row.status)){
                         const adopt=document.createElement('button');adopt.textContent='恢復至本機對話';
-                        adopt.onclick=async()=>{if(activeChatRequest||resumingVpsTurn||!isUnlocked)return;adopt.disabled=true;try{const outcome=await makeVpsTurnController().adoptRecovery(row.receipt);dialog.close();if(outcome==='already-applied'){alert('本機已有此回覆。');return;}await resumeVpsChatTurn(true);}catch(e){alert('未能恢復：'+(e instanceof Error?e.message:'UNKNOWN')+'。請先還原相同聊天紀錄；不會重新生成。');adopt.disabled=false;}};
+                        adopt.onclick=async()=>{if(activeChatRequest||resumingVpsTurn||!isUnlocked)return;adopt.disabled=true;try{const outcome=await makeVpsTurnController().adoptRecovery(row.receipt);dialog.close();if(outcome==='already-applied'){alert('本機已有此回覆。');return;}await resumeVpsChatTurn(true,true);}catch(e){alert('未能恢復：'+(e instanceof Error?e.message:'UNKNOWN')+'。請先還原相同聊天紀錄；不會重新生成。');adopt.disabled=false;}};
                         item.append(adopt);
                     }
                     if(row.status==='done'){

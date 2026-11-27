@@ -18,6 +18,8 @@ import { filterRemoteStateEntities, findLocallyDeletedIndexedKeys, mergeChatHist
 import { readCloudSyncIndex, writeCloudSyncIndex, writeCloudSyncIndexesAtomically } from './cloudSyncIndexStore.js';
 import {mergeAtomicSnapshots,mergeBaseIndex,readMergeBase,normalizeMergeSnapshot,equalMergeSnapshot,preserveForeignCloudSettings,type CloudMergeSnapshot} from './atomicCloudMerge.js';
 import {stageAtomicMedia} from './atomicCloudMedia.js';
+import {buildAtomicCommit,assertServerGenerationDelta,type ServerGenerationAdmission} from './serverGenerationAdmission.js';
+import {canonicalContextJson} from './contextFingerprint.js';
 import {planAtomicDelta,readAtomicBaseline,saveAtomicBaseline,pendingAtomicJournal,prepareAtomicJournal,completeAtomicJournal,retireStaleAtomicJournal,type AtomicJournal,type MergeInstallation} from './atomicCloudDelta.js';
 import { isLocalCloudChangeBatchActive, LOCAL_CLOUD_CHANGE_EVENT, LocalCloudChangeScope } from './cloudSyncEvents.js';
 import { isPersistedAppSettingKey, PERSISTED_APP_SETTING_KEYS, mergeStructuredAppSetting } from './appSettings.js';
@@ -1244,7 +1246,85 @@ export class SupabaseCloudSyncManager {
     }
 
     // Deliberately opt-in. The original production writer is not switched by this implementation.
-    private async pushAtomicDelta():Promise<boolean>{
+    async getServerGenerationStatus(jobId:string):Promise<string|null>{
+        if(!this.atomicDeltaMode||!this.client||!this.session)return null;
+        const uid=this.session.user.id,generation=this.sessionGeneration;
+        const r=await this.client.rpc('wetapp_generation_status_v4',{p_job:jobId});
+        this.assertCurrentSessionUser(uid,generation);
+        if(r.error)throw r.error;
+        return typeof r.data==='string'?r.data:null;
+    }
+    async retryServerGeneration(jobId:string,attemptId:string):Promise<string>{
+        if(!this.atomicDeltaMode||!this.client||!this.session||this.recoveryOnly)throw Error('ATOMIC_GENERATION_LOGIN_REQUIRED');
+        const uid=this.session.user.id,generation=this.sessionGeneration;
+        const r=await this.client.rpc('wetapp_retry_generation_v4',{p_job:jobId,p_attempt:attemptId});
+        this.assertCurrentSessionUser(uid,generation);
+        if(r.error)throw Error(authErrorMessage(r.error,'GENERATION_RETRY_FAILED'));
+        if(!['accepted','queued','done'].includes(r.data))throw Error('GENERATION_RETRY_NOT_ACCEPTED');
+        return r.data;
+    }
+    async recoverUnsubmittedGeneration(jobId:string,restoreDraft:()=>void):Promise<'accepted'|'draft'>{
+        if(!this.atomicDeltaMode||!this.session||!this.client||!navigator.locks)throw Error('ATOMIC_GENERATION_LOGIN_REQUIRED');
+        const uid=this.session.user.id,generation=this.sessionGeneration,client=this.client;
+        const journal=await pendingAtomicJournal(uid);
+        if(journal){
+            if(journal.generation?.job_id!==jobId)throw Error('ATOMIC_OPERATION_PENDING');
+            await this.admitServerGeneration(journal.generation);
+            return 'accepted';
+        }
+        return navigator.locks.request('wetapp-atomic-cloud-delta:'+uid,async()=>{
+            this.assertCurrentSessionUser(uid,generation);
+            if(this.pushing||this.pulling||await pendingAtomicJournal(uid))throw Error('ATOMIC_GENERATION_SYNC_BUSY');
+            const status=await this.getServerGenerationStatus(jobId);
+            if(status!==null)return 'accepted';
+            const receipt=await client.from('wetapp_chat_delta_receipts_v3').select('revision').eq('user_id',uid).eq('operation_id',jobId).maybeSingle();
+            this.assertCurrentSessionUser(uid,generation);
+            if(receipt.error)throw receipt.error;
+            if(receipt.data)return 'accepted';
+            if(await pendingAtomicJournal(uid))throw Error('ATOMIC_OPERATION_PENDING');
+            // Only a positively confirmed unsubmitted local draft may move back to the composer.
+            restoreDraft();
+            return 'draft';
+        });
+    }
+    async preflightServerGeneration():Promise<void>{
+        if(!this.atomicDeltaMode||!this.session||!this.client||this.recoveryOnly)throw Error('ATOMIC_GENERATION_LOGIN_REQUIRED');
+        const uid=this.session.user.id,generation=this.sessionGeneration;
+        if(this.pushing||this.pulling||isLocalCloudChangeBatchActive())throw Error('ATOMIC_GENERATION_SYNC_BUSY');
+        if(await pendingAtomicJournal(uid))throw Error('ATOMIC_OPERATION_PENDING');
+        const baseline=await readAtomicBaseline(uid);
+        const head=await this.readCloudStateHead(uid,generation);
+        if(!baseline||head.revision!==baseline||localStorage.getItem(PENDING_KEY)==='true'){
+            await this.reloadFromCloud();
+            if(localStorage.getItem(PENDING_KEY)==='true')await this.syncNow();
+        }
+        this.assertCurrentSessionUser(uid,generation);
+        const confirmed=await readAtomicBaseline(uid),latest=await this.readCloudStateHead(uid,generation);
+        if(!confirmed||confirmed!==latest.revision)throw Error('ATOMIC_GENERATION_BASELINE_CHANGED');
+    }
+    async admitServerGeneration(admission:ServerGenerationAdmission):Promise<void>{
+        if(!this.atomicDeltaMode||this.recoveryOnly||!this.session||!this.client)throw Error('ATOMIC_GENERATION_LOGIN_REQUIRED');
+        const uid=this.session.user.id,generation=this.sessionGeneration,client=this.client;
+        const existing=await pendingAtomicJournal(uid);
+        if(existing&&existing.generation?.job_id!==admission.job_id)throw Error('ATOMIC_OPERATION_PENDING');
+        localStorage.setItem(PENDING_KEY,'true');
+        let cause:unknown;
+        let ok=false;
+        // Wait only for local synchronization, never submit a different job ID.
+        for(let attempt=0;attempt<12;attempt++){
+            try{ok=await this.pushAtomicDelta(admission);if(ok)break;cause=Error('ATOMIC_GENERATION_SYNC_BUSY');}
+            catch(e){cause=e;if(!/ATOMIC_LOCAL_SNAPSHOT_CHANGED|ATOMIC_GENERATION_SYNC_BUSY/.test(authErrorMessage(e,'')))break;}
+            await new Promise(resolve=>setTimeout(resolve,250));
+            this.assertCurrentSessionUser(uid,generation);
+        }
+        this.assertCurrentSessionUser(uid,generation);
+        // A successful unrelated sync is not acceptance. Verify the exact job receipt.
+        const r=await client.from('wetapp_chat_delta_receipts_v3').select('revision').eq('user_id',uid).eq('operation_id',admission.job_id).maybeSingle();
+        this.assertCurrentSessionUser(uid,generation);
+        if(r.error)throw r.error;
+        if(!r.data){if(cause)throw cause;throw Error(ok?'ATOMIC_GENERATION_RECEIPT_MISSING':'ATOMIC_GENERATION_NOT_CONFIRMED');}
+    }
+    private async pushAtomicDelta(admission?:ServerGenerationAdmission):Promise<boolean>{
         if(this.recoveryOnly||!this.client||!this.session||this.pushing||this.pulling)return false;
         if(!await pendingAtomicJournal(this.session.user.id)&&!await readAtomicBaseline(this.session.user.id))return this.bootstrapAtomicBaseline();
         if(!navigator.onLine){this.setState('offline','本機變更已保留，連線後補傳。');return false;}
@@ -1261,12 +1341,14 @@ export class SupabaseCloudSyncManager {
                 let journal=await pendingAtomicJournal(uid);
                 assertCurrent();
                 const recovering=!!journal;
+                if(admission&&journal&&journal.generation?.job_id!==admission.job_id)throw Error('ATOMIC_OPERATION_PENDING');
                 if(!journal){
                     if(localStorage.getItem(PENDING_KEY)!=='true')return true;
                     const baseline=await readAtomicBaseline(uid);
                     if(!baseline)throw Error('ATOMIC_BASELINE_REQUIRED：請先確認本機與雲端基準；未上載任何資料。');
                     const head=await this.readCloudStateHead(uid,generation);
                     if(head.revision!==baseline){
+                        if(admission)throw Error('ATOMIC_GENERATION_BASELINE_CHANGED');
                         journal=await this.prepareAtomicConflict(uid,generation,baseline,head.revision,epoch);
                         if(!journal)throw Error('ATOMIC_CONFLICT_REVIEW_REQUIRED：另一裝置已更新雲端；本機變更已保留。');
                     }else{
@@ -1283,7 +1365,12 @@ export class SupabaseCloudSyncManager {
                     },assertCurrent);
                     const {conversations,messages,hashes}=this.collectLocalMessages(uid);
                     const delta=planAtomicDelta(conversations,messages,hashes,oldMessages,oldConversations);
+                    // A historical V4 marker already in the confirmed baseline is not a new draft.
+                    // JSONB key order can change a legacy hash; avoid resubmitting identical rows.
+                    const oldMarked=new Map(base.messages.filter(m=>Object.hasOwn(m.content,'vpsServerGeneration')).map(m=>[this.messageIndexKey(m),m]));
+                    delta.messages=delta.messages.filter(m=>!oldMarked.has(this.messageIndexKey(m))||canonicalContextJson(oldMarked.get(this.messageIndexKey(m)))!==canonicalContextJson(m));
                     if(mediaDelta.upsert.length||mediaDelta.remove.length)delta.media=mediaDelta;
+                    assertServerGenerationDelta(delta,admission);
                     if(this.atomicLocalEpoch!==epoch)throw Error('ATOMIC_LOCAL_SNAPSHOT_CHANGED');
                     journal=await prepareAtomicJournal(uid,{expected_revision:baseline,new_payload:payload,delta,device:this.deviceId},{
                         [MESSAGE_INDEX_KEY]:hashes,
@@ -1291,7 +1378,7 @@ export class SupabaseCloudSyncManager {
                         [MEDIA_INDEX_KEY]:mediaIndex,
                         [STATE_ENTITY_INDEX_KEY]:this.stateEntityIndex(payload),
                         ...mergeBaseIndex(uid,baseline+1,{conversations,messages,payload}),
-                    });
+                    },undefined,admission);
                     }
                 }
                 assertCurrent();
@@ -1308,7 +1395,8 @@ export class SupabaseCloudSyncManager {
                             await this.verifyAtomicMergeMedia(uid);assertCurrent();
                             if(!this.canRestore()||!equalMergeSnapshot(current,journal.mergeInstall.local))throw Error('ATOMIC_MERGE_INSTALL_LOCAL_CHANGED');
                         }
-                        const r=await client.rpc('wetapp_commit_chat_delta_receipted_v3',request);
+                        const commit=buildAtomicCommit(request,journal.generation);
+                        const r=await client.rpc(commit.name,commit.args);
                         if(r.error)throw r.error;
                         return normalizeCloudStateRevision(r.data);
                     }
@@ -1335,10 +1423,12 @@ export class SupabaseCloudSyncManager {
                         },assertCurrent))followup=true;
                     }catch{/* retain the journal on uncertain outcome */}
                 }
-                if(isCloudStateRevisionConflict(error)||/ATOMIC_(BASELINE_REQUIRED|CONFLICT_REVIEW_REQUIRED|MEDIA_CHANGE_PENDING|MERGE_CONFLICT|MERGE_INSTALL)/.test(message)){
+                if(/ATOMIC_GENERATION_/.test(message)){this.setState('error',message+'：生成草稿保留，未以一般同步送出。');}
+                else if(isCloudStateRevisionConflict(error)||/ATOMIC_(BASELINE_REQUIRED|CONFLICT_REVIEW_REQUIRED|MEDIA_CHANGE_PENDING|MERGE_CONFLICT|MERGE_INSTALL)/.test(message)){
                     this.setPullRecoveryRequired(true);
                     this.setState('error',message);
                 }else this.handleSyncError(error,'同步未確認，本機變更已保留');
+                if(admission)throw Error(message);
                 return false;
             }finally{
                 this.pushing=false;

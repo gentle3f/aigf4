@@ -1,5 +1,6 @@
 import {readCloudSyncIndex,writeCloudSyncIndexesAtomically} from './cloudSyncIndexStore.js';
 import type {CloudMergeSnapshot} from './atomicCloudMerge.js';
+import {assertServerGenerationDelta, type ServerGenerationAdmission} from './serverGenerationAdmission.js';
 import type {AtomicMediaDelta} from './atomicCloudMedia.js';
 export type DeltaRow={conversation_key:string;message_id:string;position:number;role:string;speaker_id:string|null;content:object;created_at_ms:number};
 export type DeltaConversation={conversation_key:string;title:string;kind:string};
@@ -19,7 +20,7 @@ const journalKey=(uid:string)=>'wetappAtomicDeltaJournalV3:'+uid;
 const baselineKey=(uid:string)=>'wetappAtomicDeltaBaselineV3:'+uid;
 export type AtomicRequest={expected_revision:number;new_payload:object;delta:Delta;device:string;operation_id:string};
 export type MergeInstallation={local:CloudMergeSnapshot;merged:CloudMergeSnapshot};
-export type AtomicJournal={request:AtomicRequest;indexes:Record<string,Record<string,string>>;mergeInstall?:MergeInstallation};
+export type AtomicJournal={request:AtomicRequest;indexes:Record<string,Record<string,string>>;mergeInstall?:MergeInstallation;generation?:ServerGenerationAdmission};
 type Journal=AtomicJournal;
 export const readAtomicBaseline=async(uid:string)=>Number((await readCloudSyncIndex(baselineKey(uid))).revision||0);
 export const saveAtomicBaseline=async(uid:string,revision:number,extra:Record<string,Record<string,string>>={})=>{if(!Number.isSafeInteger(revision)||revision<1)throw Error('ATOMIC_BASELINE_REQUIRED');await writeCloudSyncIndexesAtomically({...extra,[baselineKey(uid)]:{revision:String(revision)}});};
@@ -27,11 +28,15 @@ export const pendingAtomicJournal=async(uid:string):Promise<Journal|null>=>{
  const raw=(await readCloudSyncIndex(journalKey(uid))).json;if(!raw)return null;
  const j=JSON.parse(raw) as Journal;
  if(!j.request||!j.indexes||!Number.isSafeInteger(j.request.expected_revision)||j.request.expected_revision<1||!/^[a-f0-9-]{36}$/.test(j.request.operation_id))throw Error('ATOMIC_JOURNAL_INVALID');
+ assertServerGenerationDelta(j.request.delta,j.generation);
+ if(j.generation&&j.generation.job_id!==j.request.operation_id)throw Error('ATOMIC_GENERATION_OPERATION_MISMATCH');
  return j;
 };
-export const prepareAtomicJournal=async(uid:string,request:Omit<AtomicRequest,'operation_id'>,indexes:Journal['indexes'],mergeInstall?:MergeInstallation)=>{
+export const prepareAtomicJournal=async(uid:string,request:Omit<AtomicRequest,'operation_id'>,indexes:Journal['indexes'],mergeInstall?:MergeInstallation,generation?:ServerGenerationAdmission)=>{
  if(await pendingAtomicJournal(uid))throw Error('ATOMIC_OPERATION_PENDING');
- const j:Journal={request:{...request,operation_id:crypto.randomUUID()},indexes,...(mergeInstall?{mergeInstall}:{})};
+ assertServerGenerationDelta(request.delta,generation);
+ if(generation&&mergeInstall)throw Error('ATOMIC_GENERATION_MERGE_REQUIRED');
+ const j:Journal={request:{...request,operation_id:generation?.job_id??crypto.randomUUID()},indexes,...(mergeInstall?{mergeInstall}:{}),...(generation?{generation}:{})};
  await writeCloudSyncIndexesAtomically({[journalKey(uid)]:{json:JSON.stringify(j)}});
  return j;
 };
@@ -58,7 +63,7 @@ export async function completeAtomicJournal(uid:string,j:Journal,transport:{read
  * a subsequent authenticated receipt read confirms that it was not committed. */
 export async function retireStaleAtomicJournal(uid:string,observedRevision:number,readReceipt:(id:string)=>Promise<number|null>,assertCurrent:()=>void){
  const j=await pendingAtomicJournal(uid);
- if(!j||observedRevision<=j.request.expected_revision)return false;
+ if(!j||j.generation||observedRevision<=j.request.expected_revision)return false;
  assertCurrent();
  if(await readReceipt(j.request.operation_id)!==null)return false;
  assertCurrent();
