@@ -95,11 +95,16 @@ try{
  const world=makeWorldline(key4,{title:'Garden',genre:'fantasy',premise:'Explore a garden'},1000);
  const state4={appSettings:{[WORLDLINE_SETTING_KEY]:JSON.stringify(updateWorldlineRegistry(null,key4,world,1000))}};
  const ctx4={version:1,worldActive:true,single:{personaKey:'fixture',personaName:'A',latestUserMessage:'hello',wardrobe:{user:'coat',characters:{}},wardrobeParticipants:[],establishedNpcNames:[],addressedNpcNames:[],recentCandidateReplies:[],recentReviewReplies:[],requireAttributedNpcSpeech:false}};
- const d4={...delta,conversations:[{conversation_key:key4,title:'Garden',kind:'persona'}],messages:[{...delta.messages[0],conversation_key:key4,message_id:m4}]};
+ const d4={...delta,conversations:[{conversation_key:key4,title:'Garden',kind:'persona'}],messages:[{...delta.messages[0],conversation_key:key4,message_id:m4,content:{text:'hello',vpsServerGeneration:{version:1,jobId:j4,replyId:r4}}}]};
  await db.exec("set role authenticated;set test.uid='"+uid+"'");
  const admit4=ctx=>db.query('select public.wetapp_accept_generation_v4($1,$2::jsonb,$3::jsonb,$4,$5::uuid,$6::uuid,$7,$8,$9::jsonb,$10::jsonb)',[8,JSON.stringify(state4),JSON.stringify(d4),'fixture-device',j4,r4,key4,m4,JSON.stringify(plan),JSON.stringify(ctx)]);
  await assert.rejects(admit4({...ctx4,single:{...ctx4.single,latestUserMessage:'wrong'}}),/GENERATION_FINALIZER_USER_MISMATCH/);
+ await assert.rejects(db.query('select public.wetapp_commit_chat_delta_receipted_v3($1,$2::jsonb,$3::jsonb,$4,$5::uuid)',[8,JSON.stringify(state4),JSON.stringify(d4),'fixture-device',j4]),/GENERATION_MARKER_REQUIRES_OUTBOX/);
  await admit4(ctx4);
+ assert.equal((await db.query('select public.wetapp_generation_status_v4($1) as status',[j4])).rows[0].status,'accepted');
+ await assert.rejects(db.query("insert into aigf_worker.generation_outbox_v4(user_id,job_id,reply_id,conversation_key,user_message_id,admission_revision,admission_sha256,plan) values ($1,$2,$3,'fake','fake',9,$4,'{}')",[uid,j4,r4,'a'.repeat(64)]),/permission denied/);
+ await db.exec("set test.uid='"+other+"'");assert.equal((await db.query('select public.wetapp_generation_status_v4($1) as status',[j4])).rows[0].status,null);await db.exec("set test.uid='"+uid+"'");
+ console.log('PASS database rejects orphan marker, direct outbox insert, cross-account status read');
  await db.exec('reset role;set role aigf_generation_worker');
  const raw='花园里有一棵树，旁边是一条小路。';
  const completed={job_id:j4,status:'done',result:{choices:[{message:{content:raw}}],workflow:{version:1,parts:[raw],review:{choices:[{message:{content:'{"decision":"keep","issues":[],"revised_response":""}'}}]},stages:[{phase:'primary'},{phase:'review-1'}]}}};

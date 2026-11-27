@@ -37,6 +37,7 @@ import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterRes
 import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
 import { CURRENT_CONTEXT_DIGEST_VERSION } from './contextFingerprint.js';
 import {ATOMIC_CLOUD_PREVIEW} from './atomicCloudPreview.js';
+import {SERVER_GENERATION_V4,createServerGenerationMarker,ServerGenerationAccepted,type ServerGenerationMarker} from './serverGenerationAdmission.js';
 import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, selectVpsModel, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
@@ -734,6 +735,7 @@ type ActiveChatRequest = {
     controller: AbortController;
     startedAt: number;
     vpsTurn?: { identity: TurnIdentity; model: string; receipt?: TurnReceipt; job?: PilotJob };
+    serverGeneration?: ServerGenerationMarker;
     /** Temporary DOM only. Never persisted until the full streamed answer finishes. */
     streamPreview?: HTMLElement;
 };
@@ -1999,6 +2001,17 @@ const resumeVpsChatTurn = async (openConversation = false) => {
             const key=currentConversationKey;
             const history=memoryManager.peekChatHistory(key);
             if(history.at(-1)?.role!=='user')return;
+            const serverMarker=history.at(-1)?.content.vpsServerGeneration;
+            if(serverMarker){
+                const status=await supabaseCloudSyncManager.getServerGenerationStatus(serverMarker.jobId);
+                if(currentConversationKey===key&&!activeChatRequest){
+                    if(status==='accepted'||status==='queued')showError('伺服器已接收任務，背景生成中；可以關閉網頁。');
+                    else if(status==='failed'||status==='conflict')showError('伺服器任務未完成（'+status+'），原訊息保留。');
+                    else if(status==='done')showError('伺服器回覆已保存，等待雲端同步。');
+                    else showError('生成草稿未確認送達伺服器，原訊息保留在本機。');
+                }
+                return;
+            }
             if(key===NATIVE_SYNC_KEY||currentRoom)return;
             const worldDigest=await digestVpsWorld(key,history);
             const rows=await listVpsRecovery();
@@ -7004,6 +7017,14 @@ const runConversationGeneration = async (
                             promptCacheKey: createConversationPromptCacheKey(request.conversationKey, 'review'),
                         }, request.personaKey === 'cc' ? CC_CANTONESE_POLISH_PROMPT : undefined);
                         if (!isActiveChatRequest(request) || request.controller.signal.aborted || await digestVpsHistory(memoryManager.peekChatHistory(request.conversationKey),turn.identity.contextDigestVersion) !== turn.identity.contextDigest) throw Error('TURN_HISTORY_CHANGED');
+                        if(request.serverGeneration){
+                            if(!supabaseCloudSyncManager||request.room||request.surpriseEvent)throw Error('ATOMIC_GENERATION_UNSUPPORTED_TURN');
+                            await checkWorldlineTurnContext(turn.identity);
+                            memoryManager.persistVpsChatTurnUser(request.conversationKey,turn.identity.userMessageId);
+                            applyChatRuntimeState('queueing','正在交付伺服器…');
+                            await supabaseCloudSyncManager.admitServerGeneration({job_id:request.serverGeneration.jobId,reply_id:request.serverGeneration.replyId,conversation_key:request.conversationKey,user_message_id:turn.identity.userMessageId,plan,finalizer_context:{version:1,worldActive:!!activeWorld,...(request.director?.next?.id?{directorNextId:request.director.next.id}:{}),single:{personaKey:request.personaKey,personaName:request.persona.name,latestUserMessage,wardrobe:request.wardrobeState,wardrobeParticipants,establishedNpcNames:reviewContext.establishedNpcNames,addressedNpcNames:reviewContext.addressedNpcNames,recentCandidateReplies:recentAssistantReplies,recentReviewReplies:getRecentAssistantRepliesForPersona(request.conversationKey,false,8),requireAttributedNpcSpeech:false}}});
+                            throw new ServerGenerationAccepted();
+                        }
                         turn.job = await controller.submit(turn.identity, plan);
                         turn.receipt = controller.pending() || undefined;
                     }
@@ -9201,6 +9222,12 @@ const getResponse = async (
         }
     } catch (error) {
         clearAssistantStreamPreview(request);
+        if(error instanceof ServerGenerationAccepted){
+            finishChatRequest(request);
+            if(currentConversationKey===request.conversationKey)showError('伺服器已接收生成任務，可以關閉網頁。回覆完成後會自動同步。');
+            completeChatPerformanceTurn('response:server-accepted');
+            return;
+        }
         if (isAbortError(error)) {
             if (request.surpriseEvent) {
                 updateSurpriseEventProposal(request.conversationKey, request.surpriseEvent.id, {
@@ -10027,6 +10054,7 @@ const sendMessage = async ({
         showError('有未完成的 VPS 回覆。請先取回原任務，或在選單確認放棄。');
         return;
     }
+    if(memoryManager.peekChatHistory(currentConversationKey).at(-1)?.content.vpsServerGeneration){showError('上一個伺服器任務尚未有回覆，請先確認其狀態。');return;}
     const typedMessage = (messageText ?? messageInput.value).trim();
     if (!typedMessage && pendingChatAttachments.length === 0) return;
     const userMessage = typedMessage || '請查看附件。';
@@ -10093,7 +10121,12 @@ const sendMessage = async ({
         createdAt: Date.now(),
     };
     const dispatchModel=selectedVpsChatModel();
-    if(ATOMIC_CLOUD_PREVIEW&&dispatchModel&&userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&!currentRoom&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage)&&(!readVpsWorld(conversationKey)||!readFullPromptSettings(localStorage,conversationKey).review)){
+    const serverEligible=SERVER_GENERATION_V4&&!!dispatchModel&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&!currentRoom&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
+    if(serverEligible){
+        if(!supabaseCloudSyncManager||supabaseCloudSyncManager.getState().phase!=='synced'){showError('請先完成雲端同步，再送出背景生成訊息。');return;}
+        userContent.vpsServerGeneration=createServerGenerationMarker();
+    }
+    if(!serverEligible&&ATOMIC_CLOUD_PREVIEW&&dispatchModel&&userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&!currentRoom&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage)&&(!readVpsWorld(conversationKey)||!readFullPromptSettings(localStorage,conversationKey).review)){
         if(worldLedgerJobs.has(conversationKey))await worldLedgerJobs.get(conversationKey);
         if(currentConversationKey!==conversationKey||currentPersonaKey!==personaKey||activeChatRequest)return;
         const prior=memoryManager.peekChatHistory(conversationKey);
@@ -10208,6 +10241,7 @@ const sendMessage = async ({
         assistantMode ? 'assistant' : characterPhotoRequest ? 'photo' : 'character',
         conversationKey,
     );
+    request.serverGeneration=userContent.vpsServerGeneration;
     request.characterPhotoRequest = !assistantMode && characterPhotoRequest;
     request.photoSenderMemberId = photoSenderMemberId;
     request.photoSubjectMemberIds = photoSubjectMemberIds;

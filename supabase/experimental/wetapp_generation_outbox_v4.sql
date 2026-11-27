@@ -24,16 +24,14 @@ create table if not exists aigf_worker.generation_outbox_v4(
 );
 alter table aigf_worker.generation_outbox_v4 enable row level security;
 revoke all on aigf_worker.generation_outbox_v4 from public,anon,authenticated;
-grant select,insert on aigf_worker.generation_outbox_v4 to authenticated;
+grant select on aigf_worker.generation_outbox_v4 to authenticated;
 create policy generation_outbox_read on aigf_worker.generation_outbox_v4 for select to authenticated
  using(user_id=(select auth.uid()) and public.is_wetapp_owner());
-create policy generation_outbox_admit on aigf_worker.generation_outbox_v4 for insert to authenticated
- with check(user_id=(select auth.uid()) and public.is_wetapp_owner() and status='accepted');
 
-create or replace function public.wetapp_accept_generation_v4(
+create or replace function aigf_worker.accept_generation_v4(
  expected_revision bigint,new_payload jsonb,delta jsonb,device text,
  job_id uuid,reply_id uuid,conversation_key text,user_message_id text,plan jsonb,finalizer_context jsonb default null
-) returns bigint language plpgsql security invoker set search_path=''
+) returns bigint language plpgsql security definer set search_path=''
 as $$
 declare
  uid uuid:=auth.uid(); prior aigf_worker.generation_outbox_v4%rowtype;
@@ -52,22 +50,22 @@ begin
  then raise exception using errcode='22023',message='INVALID_GENERATION_ADMISSION';end if;
  fingerprint:=encode(sha256(convert_to(jsonb_build_array(expected_revision,new_payload,delta,device,job_id,reply_id,conversation_key,user_message_id,plan,finalizer_context)::text,'UTF8')),'hex');
  perform 1 from public.wetapp_state s where s.user_id=uid for update;
- select o.* into prior from aigf_worker.generation_outbox_v4 o where o.user_id=uid and o.job_id=wetapp_accept_generation_v4.job_id;
+ select o.* into prior from aigf_worker.generation_outbox_v4 o where o.user_id=uid and o.job_id=accept_generation_v4.job_id;
  if found then
   if prior.admission_sha256<>fingerprint then raise exception using errcode='22023',message='GENERATION_OPERATION_COLLISION';end if;
   return prior.admission_revision;
  end if;
  -- Admission is new only if the user message does not yet exist; legacy orphan
  -- messages are not silently replayed by this endpoint.
- if exists(select 1 from public.wetapp_messages m where m.user_id=uid and m.conversation_key=wetapp_accept_generation_v4.conversation_key
- and m.message_id in (wetapp_accept_generation_v4.user_message_id,reply_id::text))
+ if exists(select 1 from public.wetapp_messages m where m.user_id=uid and m.conversation_key=accept_generation_v4.conversation_key
+ and m.message_id in (accept_generation_v4.user_message_id,reply_id::text))
  then raise exception using errcode='22023',message='GENERATION_MESSAGE_ALREADY_EXISTS';end if;
  if not exists(select 1 from jsonb_to_recordset(delta->'messages') as m(conversation_key text,message_id text,role text)
- where m.conversation_key=wetapp_accept_generation_v4.conversation_key and m.message_id=wetapp_accept_generation_v4.user_message_id and m.role='user')
+ where m.conversation_key=accept_generation_v4.conversation_key and m.message_id=accept_generation_v4.user_message_id and m.role='user')
  then raise exception using errcode='22023',message='GENERATION_USER_NOT_IN_DELTA';end if;
  rev:=public.wetapp_commit_chat_delta_receipted_v3(expected_revision,new_payload,delta,device,job_id);
  select m.message_id,m.role,m.content->>'text' into tail_id,tail_role,tail_text from public.wetapp_messages m
- where m.user_id=uid and m.conversation_key=wetapp_accept_generation_v4.conversation_key order by m.position desc limit 1;
+ where m.user_id=uid and m.conversation_key=accept_generation_v4.conversation_key order by m.position desc limit 1;
  if tail_id is distinct from user_message_id or tail_role is distinct from 'user' then
   raise exception using errcode='22023',message='GENERATION_USER_NOT_TAIL';
  end if;
@@ -78,6 +76,48 @@ begin
  return rev;
 end;
 $$;
+revoke all on function aigf_worker.accept_generation_v4(bigint,jsonb,jsonb,text,uuid,uuid,text,text,jsonb,jsonb) from public,anon;
+grant execute on function aigf_worker.accept_generation_v4(bigint,jsonb,jsonb,text,uuid,uuid,text,text,jsonb,jsonb) to authenticated;
+-- Worker SELECT/UPDATE grants and finalization are deliberately not installed here.
+
+-- Exposed wrapper retains the authenticated caller identity; admission checks
+-- and the atomic insert are confined to the internal function.
+create or replace function public.wetapp_accept_generation_v4(
+ expected_revision bigint,new_payload jsonb,delta jsonb,device text,
+ job_id uuid,reply_id uuid,conversation_key text,user_message_id text,plan jsonb,finalizer_context jsonb default null
+) returns bigint language sql security invoker set search_path=''
+as $$select aigf_worker.accept_generation_v4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)$$;
 revoke all on function public.wetapp_accept_generation_v4(bigint,jsonb,jsonb,text,uuid,uuid,text,text,jsonb,jsonb) from public,anon;
 grant execute on function public.wetapp_accept_generation_v4(bigint,jsonb,jsonb,text,uuid,uuid,text,text,jsonb,jsonb) to authenticated;
--- Worker SELECT/UPDATE grants and finalization are deliberately not installed here.
+
+create or replace function public.wetapp_generation_status_v4(p_job uuid)
+returns text language sql security invoker set search_path=''
+as $$
+ select o.status from aigf_worker.generation_outbox_v4 o
+ where o.user_id=auth.uid() and public.is_wetapp_owner() and o.job_id=p_job
+$$;
+revoke all on function public.wetapp_generation_status_v4(uuid) from public,anon;
+grant execute on function public.wetapp_generation_status_v4(uuid) to authenticated;
+
+-- Enforce the invariant at the database boundary too. Even a legacy sync
+-- endpoint cannot commit a marked draft without its corresponding outbox row.
+create or replace function aigf_worker.verify_generation_marker_v4()
+returns trigger language plpgsql security definer set search_path=''
+as $$
+declare marker jsonb:=new.content->'vpsServerGeneration';
+begin
+ if marker is null then return new;end if;
+ if new.role<>'user' or jsonb_typeof(marker) is distinct from 'object'
+ or marker->>'version' is distinct from '1'
+ or not exists(select 1 from aigf_worker.generation_outbox_v4 o
+ where o.user_id=new.user_id and o.conversation_key=new.conversation_key and o.user_message_id=new.message_id
+ and o.job_id::text=marker->>'jobId' and o.reply_id::text=marker->>'replyId')
+ then raise exception using errcode='23514',message='GENERATION_MARKER_REQUIRES_OUTBOX';end if;
+ return new;
+end$$;
+revoke all on function aigf_worker.verify_generation_marker_v4() from public,anon,authenticated;
+drop trigger if exists wetapp_generation_marker_v4 on public.wetapp_messages;
+create constraint trigger wetapp_generation_marker_v4
+after insert or update on public.wetapp_messages deferrable initially deferred
+for each row when (new.content ? 'vpsServerGeneration')
+execute function aigf_worker.verify_generation_marker_v4();
