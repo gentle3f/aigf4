@@ -27,7 +27,7 @@ try{
  create table public.wetapp_media(user_id uuid,asset_id text,conversation_key text,kind text,storage_path text,mime_type text,byte_size bigint,signature text,metadata jsonb,source_device_id text,created_at_ms bigint,primary key(user_id,asset_id));
  insert into public.wetapp_state values('${uid}','{}',1,null),('${other}','{}',1,null);
  grant select,insert,update,delete on all tables in schema public to authenticated;grant select on storage.objects to authenticated;`);
- for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql','wetapp_persona_memory_v4.sql','wetapp_world_ledger_v4.sql','wetapp_group_generation_v4.sql','wetapp_group_memory_v4.sql','wetapp_generation_context_guard_v4.sql','wetapp_memory_backfill_v4.sql','wetapp_world_ledger_backfill_v4.sql','wetapp_assistant_generation_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
+ for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql','wetapp_persona_memory_v4.sql','wetapp_world_ledger_v4.sql','wetapp_group_generation_v4.sql','wetapp_group_memory_v4.sql','wetapp_generation_context_guard_v4.sql','wetapp_memory_backfill_v4.sql','wetapp_world_ledger_backfill_v4.sql','wetapp_assistant_generation_v4.sql','wetapp_assistant_extended_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
  await db.exec(`set role authenticated;set test.uid='${uid}'`);
  const delta={conversations:[{conversation_key:'fixture',title:'Fixture',kind:'persona'}],messages:[{conversation_key:'fixture',message_id:msg,position:0,role:'user',content:{text:'hello'},created_at_ms:1000}],remove_messages:[],remove_conversations:[]};
  const plan={workflow_version:1,primary:{model:'fixture',messages:[{role:'user',content:'hello'}]},review:{model:'fixture',messages:[]}};
@@ -363,7 +363,12 @@ try{
  await db.exec("set role authenticated;set test.uid='"+uid+"'");
  await assert.rejects(aa({...ap,venice_parameters:{enable_web_search:'auto'}}),/INVALID_GENERATION_ADMISSION/);
  await assert.rejects(aa(ap,ac,{...ad,conversations:[{...ad.conversations[0],kind:'persona'}]}),/GENERATION_ASSISTANT_KIND_REQUIRED/);
- await aa();await aa();
+ const source='Reference document: 12 apples and 7 oranges.';
+ const ed={...ad,messages:[{...ad.messages[0],content:{...ad.messages[0].content,assistantFileContext:source}}]};
+ const ep=buildAssistantServerPlan({model:'venice-uncensored-1-2',enableWebSearch:true,messages:[{role:'system',content:'General assistant'},{role:'user',content:'Explain addition\n\n'+source}]});
+ await assert.rejects(aa(ap,ac,ed),/GENERATION_ASSISTANT_INPUT_MISMATCH/);
+ await assert.rejects(aa(ep,ac,ad),/GENERATION_ASSISTANT_INPUT_MISMATCH/);
+ await aa(ep,ac,ed);await aa(ep,ac,ed);
  await db.exec('reset role;set role aigf_generation_worker');
  const ast=await claim();assert.equal(ast.job_id,aj);assert.deepEqual(ast.state_payload,ab.payload);
  const atext='## Addition\n\n1 + 2 = 3';
@@ -377,5 +382,5 @@ try{
  assert.deepEqual((await db.query('select content from public.wetapp_messages where conversation_key=$1 and role=\'model\'',[ak])).rows,[{content:{text:atext}}]);
  assert.deepEqual((await db.query('select payload from public.wetapp_state where user_id=$1',[uid])).rows[0].payload,ab.payload);
  assert.equal((await db.query('select count(*)::int as n from aigf_worker.persona_memory_outbox_v4 where parent_job=$1',[aj])).rows[0].n,0);
- console.log('PASS assistant raw text atomic admission and idempotent reply, Markdown intact, no state or memory side effects');
+ console.log('PASS assistant default model/search parameters and full text attachment input, atomic admission and idempotent reply, Markdown intact, no state or memory side effects');
 }finally{await db.close()}

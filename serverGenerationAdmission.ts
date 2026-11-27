@@ -1,7 +1,7 @@
 import type {PilotWorkflowRequest,PilotRequest} from './generationQueuePilot.js';
 import type {ServerFinalizerContext} from './serverTurnFinalizer.js';
 import type {GroupServerContext} from './serverGroupFinalizer.js';
-import type {AssistantServerContext} from './serverAssistantFinalizer.js';
+import {assistantTextInput,type AssistantServerContext} from './serverAssistantFinalizer.js';
 import type {Delta} from './atomicCloudDelta.js';
 export type ServerGenerationMarker={version:1;jobId:string;replyId:string};
 export type ServerGenerationAdmission={job_id:string;reply_id:string;conversation_key:string;user_message_id:string;plan:PilotWorkflowRequest|PilotRequest;finalizer_context:ServerFinalizerContext|GroupServerContext|AssistantServerContext};
@@ -14,11 +14,11 @@ export function assertServerGenerationDelta(delta:Delta,admission?:ServerGenerat
  const marked=delta.messages.filter(m=>Object.hasOwn(m.content,'vpsServerGeneration'));
  if(!admission){if(marked.length)throw Error('ATOMIC_GENERATION_DRAFT_NOT_ADMITTED');return;}
  if(marked.length!==1||!uuid.test(admission.job_id)||!uuid.test(admission.reply_id)||admission.job_id===admission.reply_id)throw Error('ATOMIC_GENERATION_ADMISSION_INVALID');
- const row=marked[0],content=row.content as {text?:string;vpsServerGeneration?:ServerGenerationMarker};
+ const row=marked[0],content=row.content as {text?:string;assistantFileContext?:string;vpsServerGeneration?:ServerGenerationMarker};
  const marker=content.vpsServerGeneration;
  const ctx=admission.finalizer_context,plan=admission.plan;
  const latest=ctx.version===3?ctx.assistant.latestUserMessage:ctx.version===2?ctx.group.latestUserMessage:ctx.single.latestUserMessage;
- const validPlan=ctx.version===3?!('workflow_version' in plan)&&plan.messages.at(-1)?.role==='user'&&plan.messages.at(-1)?.content===latest:
+ const validPlan=ctx.version===3?!('workflow_version' in plan)&&plan.messages.at(-1)?.role==='user'&&plan.messages.at(-1)?.content===assistantTextInput(latest,typeof content.assistantFileContext==='string'?content.assistantFileContext:undefined):
   'workflow_version' in plan&&(ctx.version===2?plan.workflow_version===3&&/^[a-f0-9]{64}$/.test(ctx.roomDigest):[1,2].includes(plan.workflow_version));
  if(row.role!=='user'||row.conversation_key!==admission.conversation_key||row.message_id!==admission.user_message_id||marker?.version!==1||marker.jobId!==admission.job_id||marker.replyId!==admission.reply_id||content.text!==latest||!validPlan)throw Error('ATOMIC_GENERATION_ADMISSION_INVALID');
  if(delta.messages.some(m=>m.conversation_key===row.conversation_key&&m.position>row.position)||delta.remove_conversations.includes(row.conversation_key))throw Error('ATOMIC_GENERATION_NOT_TAIL');

@@ -4,10 +4,12 @@ import {repliesAreTooSimilar,userExplicitlyRequestsContinuation} from './chatRep
 import {VPS_CHAT_MODELS} from './vpsChatMode.js';
 import type {PilotJob,PilotRequest} from './generationQueuePilot.js';
 export type AssistantServerContext={version:3;assistant:{latestUserMessage:string;recentReplies:string[]};worldActive:false};
+export const isAssistantBackgroundModel=(model:string)=>model==='venice-uncensored-1-2'||VPS_CHAT_MODELS.some(m=>m===model);
+export const assistantTextInput=(userText:string,context?:string)=>context?[userText,context].join('\n\n'):userText;
 export function buildAssistantServerPlan(options:Parameters<typeof buildVeniceTextPayload>[0]):PilotRequest{
- if(options.enableWebSearch||options.responseFormat||!VPS_CHAT_MODELS.some(m=>m===options.model)||options.messages.some(m=>typeof m.content!=='string'))throw Error('ASSISTANT_BACKGROUND_UNSUPPORTED');
+ if(options.responseFormat||!isAssistantBackgroundModel(options.model)||(options.enableWebSearch&&options.model!=='venice-uncensored-1-2')||options.messages.some(m=>typeof m.content!=='string'))throw Error('ASSISTANT_BACKGROUND_UNSUPPORTED');
  const {stream:_,...payload}=buildVeniceTextPayload({...options,onTextDelta:undefined});
- if(payload.messages.length<1||payload.messages.length>300||payload.messages.at(-1)?.role!=='user'||JSON.stringify(payload).length>240000)throw Error('ASSISTANT_BACKGROUND_PLAN_INVALID');
+ if(payload.messages.length<1||payload.messages.length>300||payload.messages.at(-1)?.role!=='user'||new TextEncoder().encode(JSON.stringify(payload)).length>240000)throw Error('ASSISTANT_BACKGROUND_PLAN_INVALID');
  return payload as PilotRequest;
 }
 export function finalizeAcceptedAssistantJob(row:{job_id:string;state_payload:object;finalizer_context:unknown},job:PilotJob){
