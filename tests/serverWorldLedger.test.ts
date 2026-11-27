@@ -33,3 +33,14 @@ test('edited source or reset world rejects paid result; later messages can coexi
  await assert.rejects(finalizeServerWorldLedger({...s,registry:reset},p,output,'attempt',2000),/LEDGER_CONTEXT_CHANGED/);
  const r=await finalizeServerWorldLedger({...s,history:[...history,{id:'later',role:'user',content:{text:'New question'}}]},p,output,'attempt',2000);assert.equal(r.kind,'save');
 });
+
+test('historical ledger keeps newest turn current then fills oldest missing evidence',async()=>{
+ const h:WorldSource[]=Array.from({length:30},(_,i)=>({id:'source-'+i,role:i%2?'model':'user',content:{text:'Garden visit '+i}}));
+ const snap={...s,history:h};
+ const p=await planServerWorldLedger(snap);assert.ok(p);assert.equal(p.pendingCount,30);assert.equal(p.sources[0].id,'source-22');
+ const reviewed=(n:number)=>({reviewedSourceIds:Array.from({length:n},(_,i)=>'s'+(i+1)),observations:[]});
+ const r=await finalizeServerWorldLedger(snap,p,job(reviewed(8)),'attempt',2000);assert.equal(r.kind,'save');if(r.kind!=='save')return;
+ const next=await planServerWorldLedger({...snap,ledger:r.ledger});assert.ok(next);assert.equal(next.pendingCount,22);assert.equal(next.sources[0].id,'source-0');
+ const r2=await finalizeServerWorldLedger({...snap,ledger:r.ledger},next,job(reviewed(8)),'attempt',3000);assert.equal(r2.kind,'save');if(r2.kind!=='save')return;
+ assert.equal(projectWorld(r2.ledger,key,h).processed,16);assert.ok(JSON.parse(r2.ledger).worlds.other);
+});

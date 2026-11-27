@@ -26,7 +26,7 @@ try{
  create table public.wetapp_media(user_id uuid,asset_id text,conversation_key text,kind text,storage_path text,mime_type text,byte_size bigint,signature text,metadata jsonb,source_device_id text,created_at_ms bigint,primary key(user_id,asset_id));
  insert into public.wetapp_state values('${uid}','{}',1,null),('${other}','{}',1,null);
  grant select,insert,update,delete on all tables in schema public to authenticated;grant select on storage.objects to authenticated;`);
- for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql','wetapp_persona_memory_v4.sql','wetapp_world_ledger_v4.sql','wetapp_group_generation_v4.sql','wetapp_group_memory_v4.sql','wetapp_generation_context_guard_v4.sql','wetapp_memory_backfill_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
+ for(const f of ['wetapp_commit_chat_delta_v3.sql','wetapp_generation_outbox_v4.sql','wetapp_generation_worker_v4.sql','wetapp_generation_retry_v4.sql','wetapp_generation_director_preservation_v4.sql','wetapp_persona_memory_v4.sql','wetapp_world_ledger_v4.sql','wetapp_group_generation_v4.sql','wetapp_group_memory_v4.sql','wetapp_generation_context_guard_v4.sql','wetapp_memory_backfill_v4.sql','wetapp_world_ledger_backfill_v4.sql'])await db.exec(readFileSync(new URL('../supabase/experimental/'+f,import.meta.url),'utf8'));
  await db.exec(`set role authenticated;set test.uid='${uid}'`);
  const delta={conversations:[{conversation_key:'fixture',title:'Fixture',kind:'persona'}],messages:[{conversation_key:'fixture',message_id:msg,position:0,role:'user',content:{text:'hello'},created_at_ms:1000}],remove_messages:[],remove_conversations:[]};
  const plan={workflow_version:1,primary:{model:'fixture',messages:[{role:'user',content:'hello'}]},review:{model:'fixture',messages:[]}};
@@ -330,4 +330,24 @@ try{
  assert.equal(backfillState.rooms.rooms[0].lastSummarizedUserMessageCount,48);assert.equal(backfillState.rooms.rooms[0].sharedMemories.length,1);
  assert.equal(backfillState.rooms.rooms[0].members[1].memories.length,0);
  console.log('PASS bounded persona and group backfill chains, six unique jobs, monotonic checkpoints, preserved existing memories');
+
+ // Existing world: append 30 sources, retain already-reviewed initial two.
+ await appendTurns(key4,15);
+ await db.query('insert into aigf_worker.world_ledger_outbox_v4(user_id,parent_job,conversation_key,model) values($1,gen_random_uuid(),$2,$3)',[uid,key4,'glm-5-3-flash-uncensored']);
+ const ledgerPaid=new Set();
+ const ledgerQueue={get:async id=>{throw new QueueHttpError(404)},submit:async(id,req)=>{assert.ok(!ledgerPaid.has(id));ledgerPaid.add(id);return {job_id:id,status:'done',result:{choices:[{message:{content:JSON.stringify({reviewedSourceIds:Array.from({length:8},(_,i)=>'s'+(i+1)),observations:[]})}}]}}}};
+ await db.exec('set role aigf_generation_worker');
+ for(let i=0;i<3;i++){
+  assert.equal(await processOneWorldLedger({store:ledStore(),queue:ledgerQueue}),'prepared');
+  assert.equal(await processOneWorldLedger({store:ledStore(),queue:ledgerQueue}),'done');
+ }
+ assert.equal(await processOneWorldLedger({store:ledStore(),queue:ledgerQueue}),'idle');
+ await db.exec('reset role');assert.equal(ledgerPaid.size,3);
+ const worldChain=(await db.query("select batch_depth,(plan->>'pendingCount')::int pending,status from aigf_worker.world_ledger_outbox_v4 where conversation_key=$1 and plan->>'pendingCount' is not null and (plan->>'pendingCount')::int>=8 order by batch_depth",[key4])).rows;
+ assert.deepEqual(worldChain,[{batch_depth:0,pending:30,status:'done'},{batch_depth:1,pending:22,status:'done'},{batch_depth:2,pending:14,status:'done'}]);
+ const worldBackfill=(await db.query('select payload from public.wetapp_state where user_id=$1',[uid])).rows[0].payload;
+ const worldHistory=(await db.query('select message_id as id,role,content from public.wetapp_messages where conversation_key=$1 order by position',[key4])).rows;
+ const projected=projectWorld(worldBackfill.appSettings[WORLD_LEDGER_KEY],key4,worldHistory);
+ assert.equal(projected.processed,26);assert.equal(projected.total,32);assert.equal(projected.timeline.length,1);
+ console.log('PASS bounded world ledger backfill, recent first then oldest, 26/32 reviewed and old observation retained');
 }finally{await db.close()}

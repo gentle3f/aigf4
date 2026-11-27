@@ -8,7 +8,7 @@ import {canonicalContextJson,hashContextJson} from './contextFingerprint.js';
 
 export type LedgerSnapshot={key:string;registry:unknown;ledger:unknown;history:WorldSource[];model:string};
 type Evidence={id:string;digest:string};
-export type LedgerPlan={version:1;worldCreatedAt:number;model:string;sources:Evidence[];allSources:Evidence[];attempt:number;partial:WorldBatch[];request:PilotRequest};
+export type LedgerPlan={version:1;worldCreatedAt:number;model:string;sources:Evidence[];allSources:Evidence[];attempt:number;pendingCount?:number;partial:WorldBatch[];request:PilotRequest};
 const digestSource=(s:WorldSource)=>hashContextJson(canonicalContextJson({id:s.id,role:s.role,text:s.content.text}));
 const evidence=async(sources:WorldSource[])=>Promise.all(sources.map(async s=>({id:s.id!,digest:await digestSource(s)})));
 function requestFor(s:LedgerSnapshot,batch:WorldSource[]){
@@ -19,10 +19,13 @@ function requestFor(s:LedgerSnapshot,batch:WorldSource[]){
 export async function planServerWorldLedger(s:LedgerSnapshot):Promise<LedgerPlan|null>{
  const w=getWorldline(s.registry,s.key);
  if(!w||w.paused||s.history.at(-1)?.role!=='model')return null;
- const batch=selectWorldBatch(pendingWorldSources(s.ledger,s.key,s.history),true);
+ const pending=pendingWorldSources(s.ledger,s.key,s.history);
+ // Keep the latest turn current, then process oldest missing evidence.
+ const recent=pending.at(-1)?.id===s.history.at(-1)?.id;
+ const batch=selectWorldBatch(pending,recent);
  if(!batch.length)return null;
  const sources=await evidence(batch);
- return {version:1,worldCreatedAt:w.createdAt,model:s.model,sources,allSources:sources,attempt:1,partial:[],request:requestFor(s,batch)};
+ return {version:1,worldCreatedAt:w.createdAt,model:s.model,sources,allSources:sources,attempt:1,pendingCount:pending.length,partial:[],request:requestFor(s,batch)};
 }
 async function verify(s:LedgerSnapshot,p:LedgerPlan){
  const w=getWorldline(s.registry,s.key);
