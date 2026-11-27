@@ -32,7 +32,8 @@ import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterRes
 import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
 import { CURRENT_CONTEXT_DIGEST_VERSION } from './contextFingerprint.js';
 import {ATOMIC_CLOUD_PREVIEW} from './atomicCloudPreview.js';
-import {SERVER_GENERATION_V4,SERVER_GROUP_GENERATION_V4,createServerGenerationMarker,ServerGenerationAccepted,type ServerGenerationMarker} from './serverGenerationAdmission.js';
+import {buildAssistantServerPlan} from './serverAssistantFinalizer.js';
+import {SERVER_GENERATION_V4,SERVER_GROUP_GENERATION_V4,SERVER_ASSISTANT_GENERATION_V4,createServerGenerationMarker,ServerGenerationAccepted,type ServerGenerationMarker} from './serverGenerationAdmission.js';
 import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, selectVpsModel, selectV4PilotModel, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
 import type { CloudBackupManager, CloudBackupProgress } from "./cloudBackup.js";
 import { initializeCloudBackupState } from './cloudBackupState.js';
@@ -6997,6 +6998,15 @@ const runConversationGeneration = async (
                     onTextDelta: assistantMode ? text => showAssistantStreamPreview(request, text) : undefined,
                     enableWebSearch: assistantMode && isVeniceAssistantWebSearchEnabled(),
                 };
+                if(assistantMode&&request.serverGeneration){
+                    const last=memoryManager.peekChatHistory(request.conversationKey).at(-1);
+                    if(!supabaseCloudSyncManager||!last?.id||last.role!=='user'||last.content.text!==latestUserMessage||last.content.vpsServerGeneration?.jobId!==request.serverGeneration.jobId||previousLargeJsonContext||!isActiveChatRequest(request)||request.controller.signal.aborted)throw Error('ASSISTANT_BACKGROUND_CONTEXT_CHANGED');
+                    const plan=buildAssistantServerPlan(generationOptions);
+                    memoryManager.persistVpsChatTurnUser(request.conversationKey,last.id);
+                    applyChatRuntimeState('queueing','正在交付伺服器…');
+                    await supabaseCloudSyncManager.admitServerGeneration({job_id:request.serverGeneration.jobId,reply_id:request.serverGeneration.replyId,conversation_key:request.conversationKey,user_message_id:last.id,plan,finalizer_context:{version:3,worldActive:false,assistant:{latestUserMessage,recentReplies:recentAssistantReplies}}});
+                    throw new ServerGenerationAccepted();
+                }
                 let result;
                 if (request.vpsTurn) {
                     const turn = request.vpsTurn;
@@ -7235,7 +7245,7 @@ const runConversationGeneration = async (
                         ...failure,
                     });
                 }
-                if (request.vpsTurn || isAbortError(error)) {
+                if (request.serverGeneration || request.vpsTurn || isAbortError(error)) {
                     throw error;
                 }
                 lastError = error instanceof Error ? error : new Error(String(error));
@@ -10101,8 +10111,9 @@ const sendMessage = async ({
         id: crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         createdAt: Date.now(),
     };
-    const serverRequired=SERVER_GENERATION_V4&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&(!currentRoom||SERVER_GROUP_GENERATION_V4)&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
-    const dispatchModel=serverRequired?selectV4PilotModel(chatModelSettings.primary):selectedVpsChatModel();
+    const assistantBackground=SERVER_ASSISTANT_GENERATION_V4&&assistantMode&&!isGodModeActive&&!currentRoom&&!!userMessageMeta?.id&&!attachmentBundle.attachments.length&&!isVeniceAssistantWebSearchEnabled()&&!!selectV4PilotModel(selectedAssistantModel)&&!memoryManager.peekChatHistory(conversationKey).some(m=>m.content.attachments?.length||m.content.assistantFileContext);
+    const serverRequired=assistantBackground||SERVER_GENERATION_V4&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&(!currentRoom||SERVER_GROUP_GENERATION_V4)&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
+    const dispatchModel=assistantBackground?selectV4PilotModel(selectedAssistantModel):serverRequired?selectV4PilotModel(chatModelSettings.primary):selectedVpsChatModel();
     if(serverRequired&&!dispatchModel){showError('V4 背景生成：請選擇支援的主要模型（GLM 5.3、DeepSeek V4.1 或 Qwen 3.6）。未發送訊息。');cancelChatPerformanceTurn('send:v4-model-required');return;}
     const serverEligible=serverRequired&&!!dispatchModel;
     if(serverEligible){
@@ -10246,7 +10257,7 @@ const sendMessage = async ({
         }
     }
     if(request.serverGeneration&&!request.vpsTurn){finishChatRequest(request,'error');showError('V4 任務未成功準備，未轉用直連。原訊息保留。');return;}
-    await getResponse(request, userMessage, assistantMode ? selectedAssistantModel : undefined);
+    await getResponse(request, userMessage, assistantMode ? (assistantBackground?dispatchModel!:selectedAssistantModel) : undefined);
 };
 
 const dispatchSendMessage = (options: Parameters<typeof sendMessage>[0] = {}) => {

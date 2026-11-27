@@ -10,9 +10,16 @@ test('explicit V4 pilot routes supported primary independent of legacy fallback'
 });
 test('actual send path does not silently fall back when V4 is required',()=>{
  const s=readFileSync(new URL('../index.tsx',import.meta.url),'utf8');
- assert.match(s,/const dispatchModel=serverRequired\?selectV4PilotModel\(chatModelSettings.primary\):selectedVpsChatModel\(\)/);
+ assert.match(s,/const dispatchModel=assistantBackground\?selectV4PilotModel\(selectedAssistantModel\):serverRequired\?selectV4PilotModel\(chatModelSettings.primary\):selectedVpsChatModel\(\)/);
  assert.match(s,/if\(serverRequired&&!dispatchModel\)/);
  assert.match(s,/const vpsModel = userContent.vpsServerGeneration \? dispatchModel/);
  assert.match(s,/if\(request.serverGeneration&&!request.vpsTurn\)/);
  assert.match(s,/request.serverGeneration \? 'V4：準備背景生成任務…'/);
+});
+
+test('assistant background route keeps unsupported modes on existing route',()=>{
+ const s=readFileSync(new URL('../index.tsx',import.meta.url),'utf8');
+ assert.match(s,/const assistantBackground=SERVER_ASSISTANT_GENERATION_V4&&assistantMode.*!isVeniceAssistantWebSearchEnabled\(\).*selectV4PilotModel\(selectedAssistantModel\).*assistantFileContext/);
+ assert.match(s,/if\(assistantMode&&request.serverGeneration\)/);
+ assert.match(s,/if \(request.serverGeneration \|\| request.vpsTurn \|\| isAbortError\(error\)\)/);
 });
