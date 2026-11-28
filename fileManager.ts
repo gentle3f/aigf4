@@ -25,6 +25,7 @@ import {
 } from './avatarStore.js';
 import type { StoredPersonaAvatar } from './avatarStore.js';
 import { beginLocalCloudChangeBatch } from './cloudSyncEvents.js';
+import { canonicalContextJson, projectCloudContextMessage } from './contextFingerprint.js';
 import { loadJsZip } from './jsZipLoader.js';
 import { WORLDLINE_SETTING_KEY, parseWorldlineRegistry, scopedWorldlineRegistry, updateWorldlineRegistry, emptyWorldlineRegistry } from './worldline.js';
 import { buildWorldResearchExport } from './worldResearch.js';
@@ -146,6 +147,7 @@ export class FileManager {
         ]);
         const keyMap = new Map<string, string>();
         const skippedSourceKeys = new Set<string>();
+        const metadataRecoveryKeys = new Set<string>();
         let renamedConflicts = 0;
         let skippedDuplicates = 0;
         const timestamp = Date.now();
@@ -213,6 +215,26 @@ export class FileManager {
                 return;
             }
 
+            // A partial legacy upload can have all messages but no persona or world state.
+            // Match the complete ordered history, not just the conversation key or count.
+            // Leave existing messages untouched and recover missing compatible metadata only.
+            const incoming = importedHistories[sourceKey], current = currentHistories[sourceKey];
+            const world = parseWorldlineRegistry(rawData?.appSettings?.[WORLDLINE_SETTING_KEY]).records[sourceKey]?.world;
+            const exactTextHistory = Array.isArray(incoming) && Array.isArray(current) && incoming.length > 0 && incoming.length === current.length
+                && new Set(incoming.map(m => m.id)).size === incoming.length
+                && incoming.every((m,i) => typeof m.id === 'string' && !!m.id && !m.content?.imageAssetId && !m.content?.imageUrl && !m.content?.attachments?.length
+                    && canonicalContextJson(projectCloudContextMessage(m,i)) === canonicalContextJson(projectCloudContextMessage(current[i],i)));
+            const compatible = (incomingValue: unknown,currentValue: unknown) => currentValue === undefined || incomingValue === undefined || canonicalContextJson(incomingValue) === canonicalContextJson(currentValue);
+            const localPersona = this.memoryManager.getPersona(sourceKey);
+            if (!isRoom && world?.conversationKey === sourceKey && exactTextHistory
+                && (!localPersona || !importedPersonas[sourceKey] || comparablePersona(importedPersonas[sourceKey]) === comparablePersona(localPersona))
+                && compatible(importedDiaries[sourceKey],currentDiaries[sourceKey])
+                && compatible(importedInterests[sourceKey],currentInterests[sourceKey])) {
+                keyMap.set(sourceKey,sourceKey);
+                metadataRecoveryKeys.add(sourceKey);
+                return;
+            }
+
             const isDuplicate = !isRoom
                 && isSameOrPrefixHistory(importedHistories[sourceKey], currentHistories[sourceKey])
                 && (!importedPersonas[sourceKey]
@@ -236,6 +258,7 @@ export class FileManager {
                 .map(([sourceKey, value]) => [keyMap.get(sourceKey) || sourceKey, value]),
         );
         const mappedPersonas = remapRecord(importedPersonas);
+        for(const key of metadataRecoveryKeys) if(this.memoryManager.getPersona(key)) delete mappedPersonas[key];
         keyMap.forEach((targetKey, sourceKey) => {
             if (targetKey === sourceKey || skippedSourceKeys.has(sourceKey) || mappedPersonas[targetKey]) return;
             const sourcePersona = this.memoryManager.getPersona(sourceKey);
@@ -265,6 +288,7 @@ export class FileManager {
             }
             : rawData?.rooms;
         const mappedHistories = remapRecord(importedHistories);
+        for(const key of metadataRecoveryKeys) delete mappedHistories[key];
         const currentPhotoAssetIds = new Set<string>();
         const currentAttachmentAssetIds = new Set<string>();
         Object.values(currentHistories).forEach(history => {

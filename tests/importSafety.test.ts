@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FileManager } from '../fileManager.js';
+import { makeWorldline, updateWorldlineRegistry, WORLDLINE_SETTING_KEY } from '../worldline.js';
 import { ChatMessage, MemoryManager, Persona } from '../managers.js';
 
 const persona: Persona = {
@@ -229,4 +230,28 @@ test('portable photo upgrade keeps its archive asset ID when no local asset ID e
         prepared.data.chatHistories.custom_iu[0].content.imageAssetId,
         'portable-photo-asset',
     );
+});
+
+
+test('complete existing text history recovers missing world metadata under the same key without message duplication', () => {
+    const key='custom_recovery';
+    const history: ChatMessage[]=[{id:'one',role:'user',createdAt:1,content:{text:'hello'}},{id:'two',role:'model',createdAt:2,content:{text:'welcome'}}];
+    const memoryManager={
+        getModifiedAndCustomPersonas:()=>({}),getAllChatHistories:()=>({[key]:history}),
+        getAllDiaryEntries:()=>({}),getAllInterests:()=>({}),
+        getAllPersonas:()=>({}),getPersona:()=>undefined,
+    };
+    const manager=new FileManager(memoryManager as never,{downloadAllChatsBtn:{} as HTMLButtonElement,downloadImagesBtn:{} as HTMLButtonElement,onSingleChatRestored:()=>undefined,onAllDataRestored:()=>undefined});
+    const world=makeWorldline(key,{title:'Village',genre:'fantasy',premise:'Explore an old village'},1000);
+    const archive={customPersonas:{[key]:persona},chatHistories:{[key]:history.map(m=>({...m,content:{...m.content}}))},diaries:{[key]:[]},interests:{[key]:[]},appSettings:{[WORLDLINE_SETTING_KEY]:JSON.stringify(updateWorldlineRegistry(null,key,world,1000))}};
+    const prepared=(manager as any).prepareMergeSafeImport(archive);
+    assert.equal(prepared.keyMap.get(key),key);
+    assert.equal(prepared.summary.importedMessages,0);
+    assert.equal(prepared.summary.renamedConflicts,0);
+    assert.equal(prepared.skippedSourceKeys.has(key),false);
+    assert.deepEqual(prepared.data.customPersonas[key],persona);
+    assert.deepEqual(prepared.data.chatHistories,{});
+    assert.deepEqual(history.map(m=>m.id),['one','two']);
+    const changed={...archive,chatHistories:{[key]:[history[0],{...history[1],content:{text:'different'}}]}};
+    assert.notEqual((manager as any).prepareMergeSafeImport(changed).keyMap.get(key),key);
 });
