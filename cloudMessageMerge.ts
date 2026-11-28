@@ -134,6 +134,11 @@ export const mergeBootstrapHistoryMaps = (local: ChatHistoryMap, remote: ChatHis
     for(const key of new Set([...Object.keys(remote),...Object.keys(local)])) {
         const a=local[key]||[], b=remote[key]||[];
         for(const rows of [a,b]) if(rows.some(m=>!m.id)||new Set(rows.map(m=>m.id)).size!==rows.length) throw Error('ATOMIC_BOOTSTRAP_INVALID_HISTORY');
+        // A legacy device can have a complete contiguous slice of the repaired cloud history.
+        // Accept only exact ID AND content matches, preserving the full superset and its order.
+        const shorter=a.length<=b.length?a:b, longer=a.length<=b.length?b:a;
+        const offset=shorter.length?longer.findIndex(m=>m.id===shorter[0].id):0;
+        if(offset>=0 && offset+shorter.length<=longer.length && shorter.every((m,i)=>m.id===longer[offset+i].id && signature(m)===signature(longer[offset+i]))){out[key]=clone(longer);continue;}
         const n=Math.min(a.length,b.length);
         for(let i=0;i<n;i++) if(a[i].id!==b[i].id || signature(a[i])!==signature(b[i])) {
             const safeKey=key.replace(/[^a-zA-Z0-9_-]/gu,'_').slice(0,180);

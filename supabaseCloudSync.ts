@@ -1234,24 +1234,7 @@ export class SupabaseCloudSyncManager {
         },{local,merged});
     }
 
-    // A fresh preview can have a pending flag from startup defaults before login.
-    // Establish an actual remote baseline first, never upload against an unknown revision.
-    private async bootstrapAtomicBaseline(explicit=false):Promise<boolean>{
-        if(this.bootstrapConflictBlocked)return false;
-        if(!this.client||!this.session||this.pulling||this.pushing||!this.canRestore())return false;
-        const uid=this.session.user.id,generation=this.sessionGeneration;
-        if(await pendingAtomicJournal(uid)||await readAtomicBaseline(uid))return false;
-        if(!explicit&&ATOMIC_CLOUD_PRODUCTION&&(this.pullRecoveryRequired||Object.values(this.memoryManager.getAllChatHistories()).some(rows=>rows.length>1||rows.some(m=>m.role==='user')))){
-            this.bootstrapConflictBlocked=true;this.bootstrapDiagnosticOnly=true;
-            this.setState('error','首次同步已暫停；本機資料保留，網頁可正常操作。按「立即同步」進行只讀衝突檢查，不會下載媒體或改動存檔。',{progress:undefined});
-            return false;
-        }
-        const body=typeof document!=='undefined'?document.body:null,wasInert=body?.inert??false;
-        if(body)body.inert=true;
-        try{
-            const epoch=this.atomicLocalEpoch;
-            const localHistories=this.memoryManager.getAllChatHistories();
-            const realChatKeys=new Set(Object.entries(localHistories).filter(([key,rows])=>{
+    private isBootstrapRealHistory(key:string,rows:ChatMessage[]):boolean{
                 if(!rows.length)return false;
                 const row=rows[0];
                 if(rows.length!==1||row.role!=='model'||row.speakerId)return true;
@@ -1269,7 +1252,27 @@ export class SupabaseCloudSyncManager {
                 }
                 const persona=this.memoryManager.getPersona(key);
                 return !(persona&&row.content?.text===persona.greeting&&Object.keys(row.content).every(k=>k==='text'));
-            }).map(([key])=>key));
+            
+    }
+
+    // A fresh preview can have a pending flag from startup defaults before login.
+    // Establish an actual remote baseline first, never upload against an unknown revision.
+    private async bootstrapAtomicBaseline(explicit=false):Promise<boolean>{
+        if(this.bootstrapConflictBlocked)return false;
+        if(!this.client||!this.session||this.pulling||this.pushing||!this.canRestore())return false;
+        const uid=this.session.user.id,generation=this.sessionGeneration;
+        if(await pendingAtomicJournal(uid)||await readAtomicBaseline(uid))return false;
+        if(!explicit&&ATOMIC_CLOUD_PRODUCTION&&(this.pullRecoveryRequired||Object.values(this.memoryManager.getAllChatHistories()).some(rows=>rows.length>1||rows.some(m=>m.role==='user')))){
+            this.bootstrapConflictBlocked=true;this.bootstrapDiagnosticOnly=true;
+            this.setState('error','首次同步已暫停；本機資料保留，網頁可正常操作。按「立即同步」進行只讀衝突檢查，不會下載媒體或改動存檔。',{progress:undefined});
+            return false;
+        }
+        const body=typeof document!=='undefined'?document.body:null,wasInert=body?.inert??false;
+        if(body)body.inert=true;
+        try{
+            const epoch=this.atomicLocalEpoch;
+            const localHistories=this.memoryManager.getAllChatHistories();
+            const realChatKeys=new Set(Object.entries(localHistories).filter(([key,rows])=>this.isBootstrapRealHistory(key,rows)).map(([key])=>key));
             const startupKeys=Object.keys(localHistories).filter(key=>!realChatKeys.has(key));
             const hasLocalData=realChatKeys.size>0
                 ||Object.keys(this.memoryManager.getModifiedAndCustomPersonas()).length>0
@@ -1310,10 +1313,7 @@ export class SupabaseCloudSyncManager {
             this.assertCurrentSessionUser(uid,generation);
             const histories=this.memoryManager.getAllChatHistories();
             const keys=Object.entries(histories).filter(([,rows])=>rows.length>0).map(([key])=>key);
-            const startupKeys=keys.filter(key=>{
-                const rows=histories[key],m=rows[0],persona=this.memoryManager.getPersona(key);
-                return rows.length===1&&m.role==='model'&&!m.speakerId&&persona&&m.content?.text===persona.greeting&&Object.keys(m.content).every(k=>k==='text');
-            });
+            const startupKeys=keys.filter(key=>!this.isBootstrapRealHistory(key,histories[key]));
             const rows:CloudMessageRow[]=[];
             for(let i=0;i<keys.length;i+=20){
                 rows.push(...await this.fetchAllRows<CloudMessageRow>('wetapp_messages',[['conversation_key',true],['position',true],['message_id',true]],keys.slice(i,i+20)));

@@ -319,6 +319,10 @@ test('first login preserves a 1029-message offline world and 959-message cloud b
  const persona={...f.x.memoryManager.getPersona('cc'),name:'Fixture narrator',avatarUrl:null,conversationLabel:'Fixture world'};
  const vLocal=Array.from({length:9},(_,i)=>make(i===0?'v-common':'v-local-'+i,2000+i)),vRemote=Array.from({length:22},(_,i)=>make(i===0?'v-common':'v-cloud-'+i,2000+i));
  f.x.memoryManager.loadAllData({customPersonas:{[key]:persona},chatHistories:{[key]:a,venice_ai:vLocal}},true);
+ f.x.roomManager.ensureIuGroupRoom(f.x.memoryManager);
+ const roomKey='room_iu_jennie_irene_v1';
+ assert.equal(f.x.memoryManager.peekChatHistory(roomKey).length,1);
+ assert.equal(f.x.isBootstrapRealHistory(roomKey,f.x.memoryManager.peekChatHistory(roomKey)),false);
  const w=makeWorldline(key,{title:'Fixture world',genre:'fantasy',premise:'A forest'},1000);
  f.m.set(WORLDLINE_SETTING_KEY,JSON.stringify(updateWorldlineRegistry(emptyWorldlineRegistry(),key,{...w,turnCount:514},2000)));
  f.m.set(WORLD_LEDGER_KEY,JSON.stringify({schema:WORLD_LEDGER_SCHEMA,worlds:{[key]:{[a[0].id]:{sourceId:a[0].id,fingerprint:sourceFingerprint(a[0]),at:1000,observations:[]}}}}));

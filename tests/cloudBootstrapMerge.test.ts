@@ -26,3 +26,11 @@ test('divergent history and changed shared ID fail without touching either side'
 test('duplicate IDs cannot be imported or discarded silently',()=>{
  assert.throws(()=>mergeBootstrapHistoryMaps({world:[m('a',1),m('a',2)]},{}),/ATOMIC_BOOTSTRAP_INVALID_HISTORY/);
 });
+
+test('legacy singleton or contiguous slice already included in cloud retains every cloud row',()=>{
+ const a=m('a',1),b=m('b',2),c=m('c',3);
+ assert.deepEqual(mergeBootstrapHistoryMaps({room:[c]},{room:[a,b,c]}).room,[a,b,c]);
+ assert.deepEqual(mergeBootstrapHistoryMaps({room:[b,c]},{room:[a,b,c]}).room,[a,b,c]);
+ assert.throws(()=>mergeBootstrapHistoryMaps({room:[m('c',3,'edited')]},{room:[a,b,c]}),/ATOMIC_BOOTSTRAP_HISTORY_CONFLICT/);
+ assert.throws(()=>mergeBootstrapHistoryMaps({room:[m('different',3,'c')]},{room:[a,b,c]}),/ATOMIC_BOOTSTRAP_HISTORY_CONFLICT/);
+});
