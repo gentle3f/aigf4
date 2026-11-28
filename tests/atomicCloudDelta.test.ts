@@ -340,3 +340,22 @@ test('first login preserves a 1029-message offline world and 959-message cloud b
  assert.ok(f.m.has('aigfWorldlineDirectorV1:'+target));assert.ok(!f.m.has(director));
  assert.ok(f.x.memoryManager.getPersona(key));assert.ok(f.x.memoryManager.getPersona(target));assert.equal(f.m.has(pending),false);
 });
+
+test('paused first-login diagnostic leaves UI interactive and never writes histories or cloud',async()=>{
+ const f=await fixture('atomic-diagnostic-setup'),uid='atomic-diagnostic-no-baseline';
+ f.x.session={user:{id:uid,email:'fixture@example.invalid'}};
+ f.x.bootstrapDiagnosticOnly=true;f.x.bootstrapConflictBlocked=true;
+ Object.defineProperty(document,'body',{value:{inert:false},configurable:true});
+ f.x.memoryManager.setChatHistory('cc',[{id:'local',role:'user',createdAt:1000,content:{text:'offline'}}],true);
+ const remote={user_id:uid,conversation_key:'cc',message_id:'remote',position:0,role:'user',speaker_id:null,content:{text:'cloud'},created_at_ms:1001};
+ const before=JSON.stringify(f.x.memoryManager.getAllChatHistories()),store=JSON.stringify([...f.m]);
+ f.x.client.from=(table:string)=>{assert.equal(table,'wetapp_state');assert.equal(document.body.inert,false);const chain={select:()=>chain,maybeSingle:async()=>({data:{revision:3,payload},error:null})};return chain;};
+ f.x.client.rpc=()=>{throw Error('unexpected mutation')};
+ f.x.fetchAllRows=async(table:string,_order:any,keys:string[])=>{assert.equal(table,'wetapp_messages');assert.ok(keys.includes('cc'));assert.equal(document.body.inert,false);return [remote];};
+ await f.x.syncNow();
+ assert.match(f.x.getState().detail,/ATOMIC_BOOTSTRAP_HISTORY_CONFLICT.*local=1; cloud=1; position=1; reason=ID/);
+ assert.equal(JSON.stringify(f.x.memoryManager.getAllChatHistories()),before);
+ assert.equal(JSON.stringify([...f.m]),store);
+ assert.equal(document.body.inert,false);assert.equal(await readAtomicBaseline(uid),0);
+ assert.equal(f.x.bootstrapConflictBlocked,true);
+});

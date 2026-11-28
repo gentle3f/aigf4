@@ -267,6 +267,7 @@ export class SupabaseCloudSyncManager {
     private pushing = false;
     private pulling = false;
     private bootstrapConflictBlocked=false;
+    private bootstrapDiagnosticOnly=false;
     private pullRecoveryRequired = localStorage.getItem(PULL_RECOVERY_KEY) === 'true';
     private pushTimer: number | null = null;
     private pullTimer: number | null = null;
@@ -509,6 +510,7 @@ export class SupabaseCloudSyncManager {
     }
 
     async syncNow() {
+        if(this.bootstrapDiagnosticOnly){await this.diagnosePausedBootstrap();return;}
         this.bootstrapConflictBlocked=false;
         if(this.recoveryOnly)throw Error('CLOUD_RECOVERY_READ_ONLY');
         if (!this.session) throw new Error('請先登入 Supabase 雲端。');
@@ -544,6 +546,7 @@ export class SupabaseCloudSyncManager {
     }
 
     async reloadFromCloud(allowReplaceSinglePreviewMessage=false) {
+        if(this.bootstrapDiagnosticOnly){await this.diagnosePausedBootstrap();return;}
         this.bootstrapConflictBlocked=false;
         if(this.recoveryOnly){
             if(!this.session)throw Error('請先登入私人雲端。');
@@ -749,7 +752,7 @@ export class SupabaseCloudSyncManager {
     private replaceSession(session: Session | null) {
         const previousUserId = this.session?.user.id || '';
         const nextUserId = session?.user.id || '';
-        if (previousUserId !== nextUserId) this.sessionGeneration += 1;
+        if (previousUserId !== nextUserId) {this.sessionGeneration += 1;this.bootstrapConflictBlocked=false;this.bootstrapDiagnosticOnly=false;}
         this.session = session;
         return this.sessionGeneration;
     }
@@ -892,7 +895,7 @@ export class SupabaseCloudSyncManager {
     }
 
     private scheduleResearchPush(delay: number) {
-        if(this.recoveryOnly)return;
+        if(this.recoveryOnly||this.bootstrapDiagnosticOnly)return;
         const sessionUserId = this.session?.user.id;
         const sessionGeneration = this.sessionGeneration;
         if (!sessionUserId || this.researchCloudUnavailable) return;
@@ -1228,6 +1231,11 @@ export class SupabaseCloudSyncManager {
         if(!this.client||!this.session||this.pulling||this.pushing||!this.canRestore())return false;
         const uid=this.session.user.id,generation=this.sessionGeneration;
         if(await pendingAtomicJournal(uid)||await readAtomicBaseline(uid))return false;
+        if(ATOMIC_CLOUD_PRODUCTION&&(this.pullRecoveryRequired||Object.values(this.memoryManager.getAllChatHistories()).some(rows=>rows.length>1||rows.some(m=>m.role==='user')))){
+            this.bootstrapConflictBlocked=true;this.bootstrapDiagnosticOnly=true;
+            this.setState('error','首次同步已暫停；本機資料保留，網頁可正常操作。按「立即同步」進行只讀衝突檢查，不會下載媒體或改動存檔。',{progress:undefined});
+            return false;
+        }
         const body=typeof document!=='undefined'?document.body:null,wasInert=body?.inert??false;
         if(body)body.inert=true;
         try{
@@ -1276,6 +1284,39 @@ export class SupabaseCloudSyncManager {
             }
             return ok;
         }finally{if(body)body.inert=wasInert;}
+    }
+
+    // A previously failed first login must never make the whole mobile UI inert.
+    // This explicit diagnostic fetches only overlapping histories, no media and no writes.
+    private async diagnosePausedBootstrap(){
+        if(!this.client||!this.session||this.pulling||this.pushing)return;
+        const uid=this.session.user.id,generation=this.sessionGeneration,epoch=this.atomicLocalEpoch;
+        this.pulling=true;
+        try{
+            this.setState('pulling','正在只讀核對本機對話；網頁仍可操作。',{progress:undefined});
+            const head=await this.client.from('wetapp_state').select('payload,revision').maybeSingle();
+            if(head.error)throw head.error;
+            this.assertCurrentSessionUser(uid,generation);
+            const histories=this.memoryManager.getAllChatHistories();
+            const keys=Object.entries(histories).filter(([,rows])=>rows.length>0).map(([key])=>key);
+            const startupKeys=keys.filter(key=>{
+                const rows=histories[key],m=rows[0],persona=this.memoryManager.getPersona(key);
+                return rows.length===1&&m.role==='model'&&!m.speakerId&&persona&&m.content?.text===persona.greeting&&Object.keys(m.content).every(k=>k==='text');
+            });
+            const rows:CloudMessageRow[]=[];
+            for(let i=0;i<keys.length;i+=20){
+                rows.push(...await this.fetchAllRows<CloudMessageRow>('wetapp_messages',[['conversation_key',true],['position',true]],keys.slice(i,i+20)));
+                this.assertCurrentSessionUser(uid,generation);
+            }
+            if(epoch!==this.atomicLocalEpoch)throw Error('ATOMIC_DIAGNOSTIC_LOCAL_CHANGED');
+            await this.applyRemoteData((head.data?.payload||{}) as Partial<CloudStatePayload>,rows,true,undefined,true,startupKeys,undefined,true);
+            const finalHead=await this.client.from('wetapp_state').select('revision').maybeSingle();
+            if(finalHead.error||normalizeCloudStateRevision(finalHead.data?.revision)!==normalizeCloudStateRevision(head.data?.revision)||epoch!==this.atomicLocalEpoch)throw Error('ATOMIC_DIAGNOSTIC_CHANGED');
+            this.assertCurrentSessionUser(uid,generation);
+            this.setState('error','ATOMIC_DIAGNOSTIC_PASS：相交對話檢查通過；暫未執行合併或寫入。',{progress:undefined});
+        }catch(error){
+            if(this.isCurrentSession(uid,generation))this.setState('error',authErrorMessage(error,'只讀檢查失敗')+'；沒有修改任何存檔。',{progress:undefined});
+        }finally{this.pulling=false;}
     }
 
     // Deliberately opt-in. The original production writer is not switched by this implementation.
@@ -2340,6 +2381,7 @@ export class SupabaseCloudSyncManager {
         bootstrapMerge=false,
         bootstrapStartupKeys:readonly string[]=[],
         bootstrapConversations?:readonly {conversation_key:string}[],
+        diagnoseOnly=false,
     ) {
         const cloudChatHistories: Record<string, ChatMessage[]> = {};
         for(const c of exactMergeConversations??bootstrapConversations??[])cloudChatHistories[c.conversation_key]=[];
@@ -2387,6 +2429,7 @@ export class SupabaseCloudSyncManager {
                 const key=detail.match(/\[([^;]+);/u)?.[1];
                 throw Error(detail+(key&&result.skipped[key]?` [fork=${result.skipped[key]}]`:''));
             }
+            if(diagnoseOnly)return;
             if(Object.keys(result.forks).length){
                 // All remaining histories have been verified. The outer pull transaction rolls back on failure.
                 localChatHistories=result.local.histories;localPersonas=result.local.personas;localDiaries=result.local.diaries;localInterests=result.local.interests;
@@ -2394,6 +2437,7 @@ export class SupabaseCloudSyncManager {
                 for(const [key,value] of Object.entries(result.local.settings))if(settings[key]!==value)localStorage.setItem(key,value);
             }
         }
+        if(diagnoseOnly)return;
         const chatHistories = bootstrapMerge ? mergeBootstrapHistoryMaps(localChatHistories,cloudChatHistories) : mergeLocal
             ? mergeChatHistoryMaps(localChatHistories, cloudChatHistories, {
                 previousMessageIndex,
@@ -2504,12 +2548,13 @@ export class SupabaseCloudSyncManager {
         ]);
     }
 
-    private async fetchAllRows<T>(table: string, order: Array<[string, boolean]>): Promise<T[]> {
+    private async fetchAllRows<T>(table: string, order: Array<[string, boolean]>,conversationKeys?:readonly string[]): Promise<T[]> {
         if (!this.client) return [];
         const rows: T[] = [];
         const pageSize = 1000;
         for (let from = 0; ; from += pageSize) {
             let query = this.client.from(table).select('*');
+            if(conversationKeys)query=query.in('conversation_key',[...conversationKeys]);
             order.forEach(([column, ascending]) => {
                 query = query.order(column, { ascending });
             });
