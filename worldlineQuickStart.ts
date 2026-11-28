@@ -67,3 +67,23 @@ export function existingIdeaToWorldOptions(idea:WorldIdea,input:ExistingWorldInp
   premise:fixed+'。'+idea.premise.slice(0,room),
   protagonist:input.character.trim()?('玩家扮演 '+input.character.trim().slice(0,100)+'；'+idea.protagonist).slice(0,300):idea.protagonist};
 }
+
+export const FUSION_STYLES=[
+ ['character','人物穿越'],['power','能力融合'],['collision','世界碰撞'],['civilization','文明競爭'],['laws','法則融合'],['auto','由 AI 自由決定'],
+] as const;
+export type FusionStyle=typeof FUSION_STYLES[number][0];
+export type FusionWorldInput={first:string;second:string;style:FusionStyle;comment:string;previous?:WorldIdea[]};
+export const buildFusionWorldMessages=(input:FusionWorldInput):VeniceMessage[]=>[
+ {role:'system',content:[
+ 'Design exactly three distinct playable fictional crossover worlds in Traditional Chinese. Combine both requested settings, works, civilizations or fictional mechanics substantively, not merely their names.',
+ 'Respect the chosen fusion approach: character transfer, power integration, world collision, civilization competition, shared underlying laws, or an automatically selected approach. Explain in each premise how the settings coexist, their initial contact, compatibility, limitations, independent factions and concrete opening dilemma.',
+ 'For power or law fusion establish coherent interactions, avoid arbitrary power scaling, preserve recognizable rules where compatible, and explicitly label newly invented rules as crossover rules. Treat uncertain canon as open. Do not reproduce original passages or dialogue.',
+ 'Respect optional player preferences, avoid predetermined player actions and future spoilers, and allow alternative outcomes.',
+ 'Return only a JSON array of exactly three objects with title, genre, premise, protagonist, goldenFinger, mainQuest. genre must be xianxia, isekai, system, rebirth, apocalypse, fantasy, custom. Premise 150–350 Chinese characters, protagonist 20–80, goldenFinger 40–140, mainQuest 60–160. No Markdown.',
+ ].join(' ')},
+ {role:'user',content:JSON.stringify({first:input.first.trim().slice(0,100),second:input.second.trim().slice(0,100),fusion:FUSION_STYLES.find(x=>x[0]===input.style)?.[1]||'由 AI 自由決定',preferences:input.comment.trim().slice(0,700),avoidRepeating:(input.previous||[]).slice(0,3).map(x=>({title:x.title,premise:x.premise.slice(0,200)}))})},
+];
+export function fusionIdeaToWorldOptions(idea:WorldIdea,input:FusionWorldInput):WorldlineStartOptions{
+ const fixed='融合來源：'+input.first.trim().slice(0,100)+' ＋ '+input.second.trim().slice(0,100)+'。融合方向：'+(FUSION_STYLES.find(x=>x[0]===input.style)?.[1]||'由 AI 自由決定')+'。以本世界已建立嘅兼容規則及因果為準，原著唔預設結局。'+(input.comment.trim()?'玩家偏好：'+input.comment.trim().slice(0,700)+'。':'');
+ return {...ideaToWorldOptions(idea),premise:fixed+idea.premise.slice(0,Math.max(0,1700-fixed.length))};
+}

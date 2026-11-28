@@ -10674,6 +10674,16 @@ const openWorldline = async (source: 'new' | 'current' = 'current') => {
                 if (currentConversationKey !== key) startChat(key, null, 'push');
             },
             dispatchText: text => { void sendMessage({ messageText: text }); },
+            generateFusionWorldIdeas: async input => {
+                const {buildFusionWorldMessages,parseWorldIdeas}=await import('./worldlineQuickStart.js');
+                const result=await generateChatTextWithTimeout({
+                    model:chatModelSettings.primary||VENICE_CHAT_MODEL,
+                    messages:buildFusionWorldMessages(input),
+                    maxCompletionTokens:3600,temperature:0.92,topP:0.94,
+                    repetitionPenalty:1.05,seed:Math.floor(Math.random()*2_000_000_000),stop:[],
+                },65000);
+                return parseWorldIdeas(result.text);
+            },
             generateExistingWorldIdeas: async input => {
                 const {buildExistingWorldMessages,parseWorldIdeas}=await import('./worldlineQuickStart.js');
                 const result=await generateChatTextWithTimeout({

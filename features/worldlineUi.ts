@@ -4,12 +4,12 @@
  */
 import { setPersistedAppSetting } from '../appSettings.js';
 import type { RandomMainQuestInput } from '../worldlineRandomQuest.js';
-import {WORLD_TOPICS,ideaToWorldOptions,existingIdeaToWorldOptions,type WorldIdea,type WorldIdeaInput,type ExistingWorldInput,type WorldRecommendationMode} from '../worldlineQuickStart.js';
+import {WORLD_TOPICS,ideaToWorldOptions,existingIdeaToWorldOptions,type WorldIdea,type WorldIdeaInput,type ExistingWorldInput,type WorldRecommendationMode,FUSION_STYLES,fusionIdeaToWorldOptions,type FusionWorldInput,type FusionStyle} from '../worldlineQuickStart.js';
 import type { projectWorld } from '../worldLedger.js';
 import {
     WORLDLINE_SETTING_KEY,getWorldline,makeWorldline,normalizeWorldline,updateWorldlineRegistry,parseWorldlineRegistry,
-    worldlineGenreLabel,buildWorldlineOpening,
-    type Worldline,type WorldlineStartOptions,type WorldlineGenre,
+    worldlineGenreLabel,buildWorldlineOpening,WORLD_PLAY_MODES,normalizeWorldPlayModes,
+    type Worldline,type WorldlineStartOptions,type WorldlineGenre,type WorldPlayMode,
 } from '../worldline.js';
 export interface WorldlineUiDeps {
     getActiveConversation:()=>{key:string;title:string;isAssistant:boolean}|null;
@@ -20,6 +20,7 @@ export interface WorldlineUiDeps {
     generateRandomQuest:(input:RandomMainQuestInput)=>Promise<string>;
     generateWorldIdeas:(input:WorldIdeaInput)=>Promise<WorldIdea[]>;
     generateExistingWorldIdeas:(input:ExistingWorldInput)=>Promise<WorldIdea[]>;
+    generateFusionWorldIdeas:(input:FusionWorldInput)=>Promise<WorldIdea[]>;
     getWorldLedger:(key:string)=>ReturnType<typeof projectWorld>;
     rebuildWorldLedger:(key:string,skipIds:readonly string[])=>Promise<{advanced:number;deferred:string[];issueCount:number}>;
 }
@@ -91,6 +92,20 @@ const actionButton=(label:string,onClick:()=>void,primary=false)=>{
     button.addEventListener('click',onClick);
     return button;
 };
+const playModePicker=(parent:HTMLElement,initial?:WorldPlayMode[])=>{
+    const selected=new Set(normalizeWorldPlayModes(initial));
+    const group=element('details','wl-cast');
+    group.appendChild(element('summary','','玩法模式（可混合、選填）'));
+    const grid=element('div','wl-actions wl-topic-grid');
+    const description=element('p','wl-note');
+    const refresh=()=>{description.textContent=selected.size?WORLD_PLAY_MODES.filter(x=>selected.has(x[0])).map(x=>x[1]+'：'+x[2]).join('；'):'未選擇：沿用原有自由敘事。';};
+    for(const [id,label] of WORLD_PLAY_MODES){
+        const btn=actionButton(label,()=>{if(selected.has(id))selected.delete(id);else selected.add(id);btn.setAttribute('aria-pressed',String(selected.has(id)));refresh();});
+        btn.setAttribute('aria-pressed',String(selected.has(id)));grid.appendChild(btn);
+    }
+    refresh();group.append(grid,description);parent.appendChild(group);
+    return ()=>normalizeWorldPlayModes([...selected]);
+};
 const startWorld=(deps:WorldlineUiDeps,dialog:HTMLDialogElement,opts:WorldlineStartOptions,attachKey?:string)=>{
     const key=attachKey||deps.createNarratorConversation(opts.title);
     const world=makeWorldline(key,opts);
@@ -99,6 +114,59 @@ const startWorld=(deps:WorldlineUiDeps,dialog:HTMLDialogElement,opts:WorldlineSt
     deps.openConversation(key);
     deps.afterWorldlineChange();
     deps.dispatchText(buildWorldlineOpening(world));
+};
+const openFusionWorld=(deps:WorldlineUiDeps)=>{
+    const dialog=createModal();
+    header(dialog,'多重世界融合','混合作品、文明或能力體系，建立全新獨立世界。');
+    const body=element('div','wl-form');
+    const first=control(body,'第一個世界／體系','input') as HTMLInputElement;
+    first.maxLength=100;first.placeholder='例如：斗羅大陸、修仙文明';
+    const second=control(body,'第二個世界／體系','input') as HTMLInputElement;
+    second.maxLength=100;second.placeholder='例如：ONE PIECE、現代科技';
+    const style=control(body,'融合方式','select') as HTMLSelectElement;
+    for(const [id,label] of FUSION_STYLES){const option=element('option','',label);option.value=id;style.appendChild(option);}
+    style.value='auto';
+    const comment=control(body,'額外偏好（選填）','textarea') as HTMLTextAreaElement;
+    comment.rows=2;comment.maxLength=700;comment.placeholder='例如：扮演路飛，保留惡魔果實，但要研究武魂。';
+    const getModes=playModePicker(body);
+    const actions=element('div','wl-actions'),notice=element('p','wl-note'),results=element('div','wl-cast-body');
+    notice.setAttribute('aria-live','polite');
+    let busy=false,closed=false,starting=false,previous:WorldIdea[]=[],last='';
+    dialog.addEventListener('close',()=>{closed=true;},{once:true});
+    const generate=actionButton('生成 3 個融合世界',()=>{
+        if(busy||closed||starting)return;
+        if(!first.value.trim()||!second.value.trim()){notice.textContent='請輸入兩個世界或體系。';return;}
+        if(first.value.trim().normalize('NFKC').toLowerCase()===second.value.trim().normalize('NFKC').toLowerCase()){notice.textContent='請選擇兩個不同世界或體系。';return;}
+        const input:FusionWorldInput={first:first.value.trim(),second:second.value.trim(),style:style.value as FusionStyle,comment:comment.value};
+        const signature=JSON.stringify(input);if(signature===last)input.previous=previous;
+        busy=true;generate.disabled=true;notice.textContent='AI 正設計兩個世界嘅兼容規則…';
+        void (async()=>{
+            try{
+                const ideas=await deps.generateFusionWorldIdeas(input);
+                if(closed)return;
+                previous=ideas;last=signature;results.replaceChildren();
+                for(const idea of ideas){
+                    const opts=fusionIdeaToWorldOptions(idea,input);
+                    const card=element('article','wl-world-idea');
+                    card.append(element('h3','',idea.title),element('p','wl-note',input.first+' ＋ '+input.second),element('p','',idea.premise));
+                    const detail=element('details','wl-chronicle');
+                    detail.append(element('summary','','身份、能力及主線'),element('p','','主角：'+idea.protagonist),element('p','','能力：'+idea.goldenFinger),element('p','','主線：'+idea.mainQuest));
+                    const buttons=element('div','wl-actions');
+                    buttons.append(actionButton('開始呢個世界',()=>{
+                        if(busy||starting||closed)return;starting=true;
+                        try{startWorld(deps,dialog,{...opts,playModes:getModes()});}catch(e){starting=false;notice.textContent=e instanceof Error?e.message:'建立世界失敗';}
+                    },true),actionButton('修改設定',()=>{
+                        if(busy||starting||closed)return;dialog.close();openStart(deps,'new',{...opts,playModes:getModes()});
+                    }));
+                    card.append(detail,buttons);results.appendChild(card);
+                }
+                notice.textContent='揀一個開始，或再抽三個。原著細節由模型知識生成，可先修改。';
+            }catch(e){if(!closed)notice.textContent=e instanceof Error?e.message:'生成失敗，請再試。';}
+            finally{busy=false;if(!closed){generate.disabled=false;generate.textContent=previous.length?'再抽 3 個融合世界':'生成 3 個融合世界';}}
+        })();
+    },true);
+    actions.append(generate,actionButton('返回開新世界',()=>{if(starting)return;dialog.close();openQuickStart(deps);}));
+    body.append(actions,notice,results);dialog.appendChild(body);showDialog(dialog);
 };
 const openExistingWorld=(deps:WorldlineUiDeps)=>{
     const dialog=createModal();
@@ -117,6 +185,7 @@ const openExistingWorld=(deps:WorldlineUiDeps)=>{
     point.maxLength=200;point.placeholder='例如：原著開局、出海前、覺醒武魂時';
     const comment=control(body,'想改變啲咩？（選填）','textarea') as HTMLTextAreaElement;
     comment.rows=2;comment.maxLength=1000;comment.placeholder='例如：保留原著能力，自由探索，唔一定跟原著主線。';
+    const getModes=playModePicker(body);
     const actions=element('div','wl-actions'),notice=element('p','wl-note'),ideas=element('div','wl-cast-body');
     notice.setAttribute('aria-live','polite');
     let previous:WorldIdea[]=[],previousSignature='',busy=false,closed=false,starting=false;
@@ -144,10 +213,10 @@ const openExistingWorld=(deps:WorldlineUiDeps)=>{
                     buttons.append(actionButton('進入呢個世界',()=>{
                         if(busy||starting||closed)return;
                         starting=true;
-                        try{startWorld(deps,dialog,opts);}catch(e){starting=false;notice.textContent=e instanceof Error?e.message:'建立世界失敗';}
+                        try{startWorld(deps,dialog,{...opts,playModes:getModes()});}catch(e){starting=false;notice.textContent=e instanceof Error?e.message:'建立世界失敗';}
                     },true),actionButton('修改設定',()=>{
                         if(busy||starting||closed)return;
-                        dialog.close();openStart(deps,'new',opts);
+                        dialog.close();openStart(deps,'new',{...opts,playModes:getModes()});
                     }));
                     card.append(details,buttons);ideas.appendChild(card);
                 }
@@ -172,6 +241,7 @@ const openRecommendations=(deps:WorldlineUiDeps)=>{
     ];
     const comment=control(body,'額外偏好（選填）','textarea') as HTMLTextAreaElement;
     comment.rows=2;comment.maxLength=1000;comment.placeholder='例如：今次想玩輕鬆啲，唔想打怪。';
+    const getModes=playModePicker(body);
     const choices=element('div','wl-cast-body'),notice=element('p','wl-note'),results=element('div','wl-cast-body');
     notice.setAttribute('aria-live','polite');
     let busy=false,closed=false,starting=false,lastMode:WorldRecommendationMode|undefined,lastComment='',previous:WorldIdea[]=[];
@@ -191,7 +261,7 @@ const openRecommendations=(deps:WorldlineUiDeps)=>{
                 if(mode==='blind'){
                     starting=true;
                     const opts=ideaToWorldOptions(ideas[0]);
-                    startWorld(deps,dialog,{...opts,title:'盲盒世界',blindStart:true});
+                    startWorld(deps,dialog,{...opts,title:'盲盒世界',blindStart:true,playModes:getModes()});
                     return;
                 }
                 for(const idea of ideas){
@@ -202,9 +272,9 @@ const openRecommendations=(deps:WorldlineUiDeps)=>{
                     const actions=element('div','wl-actions');
                     actions.append(actionButton('開始呢個世界',()=>{
                         if(busy||starting||closed)return;
-                        starting=true;try{startWorld(deps,dialog,ideaToWorldOptions(idea));}catch(e){starting=false;notice.textContent=e instanceof Error?e.message:'建立世界失敗';}
+                        starting=true;try{startWorld(deps,dialog,{...ideaToWorldOptions(idea),playModes:getModes()});}catch(e){starting=false;notice.textContent=e instanceof Error?e.message:'建立世界失敗';}
                     },true),actionButton('修改設定',()=>{
-                        if(busy||starting||closed)return;dialog.close();openStart(deps,'new',ideaToWorldOptions(idea));
+                        if(busy||starting||closed)return;dialog.close();openStart(deps,'new',{...ideaToWorldOptions(idea),playModes:getModes()});
                     }));
                     card.append(detail,actions);results.appendChild(card);
                 }
@@ -227,6 +297,7 @@ const openQuickStart=(deps:WorldlineUiDeps)=>{
     const body=element('div','wl-form');
     const entrances=element('div','wl-actions');
     entrances.append(actionButton('今日玩咩？',()=>{dialog.close();openRecommendations(deps);},true),actionButton('進入原著世界（漫畫／小說／遊戲）',()=>{dialog.close();openExistingWorld(deps);}));
+    entrances.appendChild(actionButton('多重世界融合',()=>{dialog.close();openFusionWorld(deps);}));
     body.appendChild(entrances);
     const chosen=new Set<string>();
     const topics=element('div','wl-actions wl-topic-grid');
@@ -241,6 +312,7 @@ const openQuickStart=(deps:WorldlineUiDeps)=>{
     body.append(element('p','wl-note','可以混合題材，唔揀亦得，交畀 AI 自由發揮。'),topics);
     const comment=control(body,'有咩特別想玩？（選填）','textarea') as HTMLTextAreaElement;
     comment.rows=2;comment.maxLength=1000;comment.placeholder='例如：由小人物開始，擅長經營，唔想太快無敵。';
+    const getModes=playModePicker(body);
     const actions=element('div','wl-actions');
     const notice=element('p','wl-note');notice.setAttribute('aria-live','polite');
     const ideas=element('div','wl-cast-body');
@@ -266,11 +338,11 @@ const openQuickStart=(deps:WorldlineUiDeps)=>{
                     buttons.append(actionButton('開始呢個世界',()=>{
                         if(busy||starting||closed)return;
                         starting=true;
-                        try{startWorld(deps,dialog,ideaToWorldOptions(idea));}
+                        try{startWorld(deps,dialog,{...ideaToWorldOptions(idea),playModes:getModes()});}
                         catch(e){starting=false;notice.textContent=e instanceof Error?e.message:'建立世界失敗';}
                     },true),actionButton('修改設定',()=>{
                         if(busy||starting||closed)return;
-                        dialog.close();openStart(deps,'new',ideaToWorldOptions(idea));
+                        dialog.close();openStart(deps,'new',{...ideaToWorldOptions(idea),playModes:getModes()});
                     }));
                     card.append(details,buttons);ideas.appendChild(card);
                 }
@@ -376,6 +448,7 @@ const openStart=(deps:WorldlineUiDeps,preferred:'new'|'current',initial?:Worldli
     });
     if(initial?.relationshipMode)romance.value=initial.relationshipMode;
     adult.appendChild(romance);options.append(pacing,adult);form.appendChild(options);
+    const getModes=playModePicker(form,initial?.playModes);
     const selected=deps.getActiveConversation();
     const choice=element('div','wl-attach-choice');
     const toNew=element('label','wl-radio');
@@ -413,7 +486,7 @@ const openStart=(deps:WorldlineUiDeps,preferred:'new'|'current',initial?:Worldli
                 premise:premise.value.trim(),protagonist:protagonist.value.trim(),
                 goldenFinger:golden.value.trim(),mainQuest:quest.value.trim(),
                 relationshipMode:romance.value==='adult'?'adult':'normal',
-                tone:pace.value==='free'?'free':'story',
+                tone:pace.value==='free'?'free':'story',playModes:getModes(),
             };
             const original=deps.getActiveConversation();
             const attach=Boolean(b?.checked&&original&&!original.isAssistant);
@@ -438,6 +511,11 @@ const openManage=(deps:WorldlineUiDeps,key:string,world:Worldline)=>{
     const summary=element('p','wl-note',
         '以下係世界長期紀錄。你可以改動已確定嘅規則、主線同人物；唔會重新寫你之前嘅聊天紀錄。');
     body.appendChild(summary);
+    const getModes=playModePicker(body,world.playModes);
+    const modeNotice=element('p','wl-note');modeNotice.setAttribute('aria-live','polite');
+    body.append(actionButton('儲存玩法模式',()=>{
+        try{const current=read(key);if(!current)throw Error('找不到世界設定');save(key,{...current,playModes:getModes()});world.playModes=getModes();deps.afterWorldlineChange();modeNotice.textContent='已保存，新玩法由下一回合開始。';}catch(e){modeNotice.textContent=e instanceof Error?e.message:'儲存失敗';}
+    }),modeNotice);
     const os=element('details','wl-cast');
     os.open=true;
     os.appendChild(element('summary','','World OS · 世界百科與歷史重建'));
@@ -600,7 +678,7 @@ const openManage=(deps:WorldlineUiDeps,key:string,world:Worldline)=>{
     const note=element('p','wl-error');note.setAttribute('aria-live','polite');
     const storeEdits=()=>{
         const changed=normalizeWorldline({
-            ...world,chapter:chapter.value,location:location.value,ability:ability.value,
+            ...world,playModes:getModes(),chapter:chapter.value,location:location.value,ability:ability.value,
             mainQuest:quest.value,questProgress:progress.value,goldenFingerRule:rules.value,
             inventory:editList(inventory.value,30),
             threads:editList(threads.value,16),

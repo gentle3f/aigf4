@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {buildWorldIdeaMessages,parseWorldIdeas,ideaToWorldOptions,WORLD_TOPICS,buildExistingWorldMessages,existingIdeaToWorldOptions,worldIdeaCount} from '../worldlineQuickStart.js';
-import {makeWorldline,buildWorldlineOpening,forkWorldlineAt,normalizeWorldline} from '../worldline.js';
+import {buildWorldIdeaMessages,parseWorldIdeas,ideaToWorldOptions,WORLD_TOPICS,buildExistingWorldMessages,existingIdeaToWorldOptions,worldIdeaCount,buildFusionWorldMessages,fusionIdeaToWorldOptions} from '../worldlineQuickStart.js';
+import {makeWorldline,buildWorldlineOpening,forkWorldlineAt,normalizeWorldline,buildWorldlineVariablePrompt,normalizeWorldPlayModes,parseWorldlineRegistry,updateWorldlineRegistry} from '../worldline.js';
 const ideas=Array.from({length:3},(_,i)=>({title:'世界方案'+i,genre:'fantasy',premise:'在一座古老城鎮，玩家發現失落圖書館與獨立勢力互相爭奪資源。'+i,protagonist:'初來乍到嘅旅人',goldenFinger:'可以解讀失落文字',mainQuest:'調查失落圖書館嘅來源，發掘不同勢力真正目標，並探索未知文明。'}));
 test('topic selection and optional preference generate three complete independent drafts in one model request',()=>{
  const messages=buildWorldIdeaMessages({topics:['修仙／玄幻','經營／建立勢力'],comment:'由普通人開始',previous:[]});
@@ -29,8 +29,8 @@ test('new-world UI routes to quick start, with manual edit and explicit start on
  const ui=readFileSync(new URL('../features/worldlineUi.ts',import.meta.url),'utf8');
  assert.match(ui,/if\(source==='new'\)openQuickStart\(deps\)/);
  assert.match(ui,/const results=await deps.generateWorldIdeas\(input\)/);
- assert.match(ui,/startWorld\(deps,dialog,ideaToWorldOptions\(idea\)\)/);
- assert.match(ui,/openStart\(deps,'new',ideaToWorldOptions\(idea\)\)/);
+ assert.match(ui,/startWorld\(deps,dialog,\{\.\.\.ideaToWorldOptions\(idea\),playModes:getModes\(\)\}\)/);
+ assert.match(ui,/openStart\(deps,'new',\{\.\.\.ideaToWorldOptions\(idea\),playModes:getModes\(\)\}\)/);
  assert.match(ui,/const key=attachKey\|\|deps.createNarratorConversation\(opts.title\)/);
 });
 
@@ -56,7 +56,7 @@ test('existing fiction accepts missing character and timeline, with no extra gen
  const ui=readFileSync(new URL('../features/worldlineUi.ts',import.meta.url),'utf8');
  assert.match(ui,/進入原著世界/);assert.match(ui,/const results=await deps.generateExistingWorldIdeas\(input\)/);
  assert.match(ui,/const opts=existingIdeaToWorldOptions\(idea,input\)/);
- assert.match(ui,/startWorld\(deps,dialog,opts\)/);
+ assert.match(ui,/startWorld\(deps,dialog,\{\.\.\.opts,playModes:getModes\(\)\}\)/);
 });
 
 test('recommendations use only genre history, support six ideas and one blind world',()=>{
@@ -80,4 +80,29 @@ test('blind opening does not reveal premise, ability or quest in chat and histor
  const fork=forkWorldlineAt(changed,'fork',[{role:'user',content:{text:opening}}]);
  assert.equal(fork.mainQuest,world.mainQuest);assert.equal(fork.premise,world.premise);
  assert.equal(fork.blindOpeningQuest,world.mainQuest);
+});
+
+test('fusion creates independent drafts with both sources and compatibility approach preserved',()=>{
+ const input={first:'斗羅大陸',second:'ONE PIECE',style:'laws' as const,comment:'探索武魂與惡魔果實嘅關係'};
+ const messages=buildFusionWorldMessages(input);
+ const brief=JSON.parse(messages[1].content as string);
+ assert.equal(brief.first,input.first);assert.equal(brief.second,input.second);assert.equal(brief.fusion,'法則融合');
+ assert.match(messages[0].content as string,/coherent interactions/);
+ const world=makeWorldline('fusion',fusionIdeaToWorldOptions(parseWorldIdeas(JSON.stringify(ideas))[0],input),123);
+ assert.match(world.premise,/斗羅大陸.*ONE PIECE/);assert.match(world.premise,/法則融合/);assert.match(world.premise,/探索武魂/);
+});
+test('mixed modes persist, are optional for old worlds, and never rewrite established state',()=>{
+ const world=makeWorldline('modes',ideaToWorldOptions(parseWorldIdeas(JSON.stringify(ideas))[0]),123);
+ assert.equal(world.playModes,undefined);
+ const changed=normalizeWorldline({...world,playModes:['management','sandbox','management','ensemble']});
+ assert.deepEqual(changed.playModes,['sandbox','management','ensemble']);
+ assert.equal(changed.mainQuest,world.mainQuest);assert.equal(changed.premise,world.premise);
+ const prompt=buildWorldlineVariablePrompt(changed);
+ assert.match(prompt,/experiments and inventions/);assert.match(prompt,/resources, production/);assert.match(prompt,/explicitly chosen/);
+ assert.doesNotMatch(buildWorldlineVariablePrompt(world),/Gameplay focus/);
+ assert.deepEqual(normalizeWorldPlayModes(['unknown','creator','survival']),['survival','creator']);
+ const saved=parseWorldlineRegistry(JSON.stringify(updateWorldlineRegistry(null,'modes',changed,124)));
+ assert.deepEqual(saved.records.modes.world?.playModes,changed.playModes);
+ assert.deepEqual(forkWorldlineAt(changed,'fork',[{role:'user',content:{text:buildWorldlineOpening(world)}}]).playModes,changed.playModes);
+ assert.equal(normalizeWorldline({...changed,playModes:[]}).playModes,undefined);
 });

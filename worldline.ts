@@ -6,6 +6,31 @@ export const WORLDLINE_SETTING_KEY = 'aigf4WorldlineRegistryV1';
 export const WORLDLINE_SCHEMA = 'aigf-worldline-registry-v1';
 export type WorldlineGenre = 'xianxia' | 'isekai' | 'system' | 'rebirth' | 'apocalypse' | 'fantasy' | 'custom';
 export type WorldlineTone = 'free' | 'story';
+export const WORLD_PLAY_MODES=[
+    ['novel','小說','人物、伏筆與長篇故事'],
+    ['sandbox','沙盒','探索、研究、發明及自由行動'],
+    ['management','經營','資源、組織、外交與科技發展'],
+    ['survival','生存','環境限制、資源消耗及決策後果'],
+    ['creator','創世／幕後','由玩家明確指定世界變動並觀察演化'],
+    ['ensemble','群像','由玩家指定不同人物或勢力視角'],
+] as const;
+export type WorldPlayMode=typeof WORLD_PLAY_MODES[number][0];
+export const normalizeWorldPlayModes=(raw:unknown):WorldPlayMode[]=>{
+    if(!Array.isArray(raw))return [];
+    return WORLD_PLAY_MODES.map(x=>x[0]).filter(x=>raw.includes(x));
+};
+const MODE_GUIDANCE:Record<WorldPlayMode,string>={
+    novel:'Focus on meaningful scenes, dialogue, continuity, foreshadowing and character development.',
+    sandbox:'Permit free exploration, experiments and inventions with coherent testable in-world mechanics; never force progress on a quest.',
+    management:'When relevant, track established resources, production, institutions, population, logistics and diplomacy. Show causal tradeoffs and actual changes; unknown quantities remain unknown. Do not invent a dashboard or automatic growth on every turn.',
+    survival:'Use established scarcity, environmental hazards, time and consequences consistently; never fabricate arbitrary punishment or secretly remove established resources.',
+    creator:'When explicitly requested by the player, narrate authorized fictional world-level changes and their consequences, or observe autonomous civilization development. Do not automatically grant an in-world protagonist new powers or enact unrequested changes.',
+    ensemble:'Follow the viewpoint or playable character explicitly chosen by the player. Keep each character’s knowledge and agency separate, do not transfer secrets automatically, and never silently change who the player controls.',
+};
+export const buildWorldPlayModePrompt=(world:Worldline):string=>{
+    const modes=normalizeWorldPlayModes(world.playModes);
+    return modes.length?'Gameplay focus (player-selected, prospective; combine when relevant, do not override established facts or latest player action): '+modes.map(m=>MODE_GUIDANCE[m]).join(' '):'';
+};
 export type WorldlineRelationshipMode = 'normal' | 'adult';
 export type WorldlineNpc = { id: string; name: string; role: string; motivation: string; relationship: string };
 export type WorldlineChronicle = { id: string; input: string; outcome: string; turn: number; sourceMessageId?: string };
@@ -35,6 +60,7 @@ export interface Worldline {
     updatedAt: number;
     paused: boolean;
     blindOpeningQuest?: string;
+    playModes?: WorldPlayMode[];
 }
 export type WorldlineRecord = { updatedAt: number; world: Worldline | null };
 export type WorldlineRegistry = {
@@ -51,6 +77,7 @@ export interface WorldlineStartOptions {
     relationshipMode?: WorldlineRelationshipMode;
     tone?: WorldlineTone;
     blindStart?: boolean;
+    playModes?: WorldPlayMode[];
 }
 const genres: readonly WorldlineGenre[] = [
     'xianxia','isekai','system','rebirth','apocalypse','fantasy','custom',
@@ -104,6 +131,7 @@ export const normalizeWorldline = (input: Worldline): Worldline => {
         turnCount:Math.max(0,Math.min(1_000_000,Number.isInteger(input.turnCount)?input.turnCount:0)),
         createdAt:stamp(input.createdAt), updatedAt:stamp(input.updatedAt),
         paused:input.paused===true,
+        ...(normalizeWorldPlayModes(input.playModes).length?{playModes:normalizeWorldPlayModes(input.playModes)}:{}),
         ...(clean(input.blindOpeningQuest,550)?{blindOpeningQuest:clean(input.blindOpeningQuest,550)}:{}),
     };
 };
@@ -123,6 +151,7 @@ export const makeWorldline = (conversationKey:string,options:WorldlineStartOptio
         tone:options.tone==='free'?'free':'story',
         relationshipMode:options.relationshipMode==='adult'?'adult':'normal',
         turnCount:0,createdAt:now,updatedAt:now,paused:false,
+        playModes:options.playModes,
         ...(options.blindStart?{blindOpeningQuest:options.mainQuest||'由序章建立主線'}:{}),
     });
 };
@@ -183,7 +212,7 @@ export const updateWorldlineRegistry=(register:unknown,key:string,world:Worldlin
 /** Fork from the historical opening, never copy today's mutable state to a past point. */
 export const forkWorldlineAt=(source:Worldline,key:string,prefix:readonly {role:string;content:{text?:string}}[]):Worldline=>{
     const opening=prefix.find(m=>m.role==='user'&&m.content.text?.includes('【世界線開局】'))?.content.text||'';
-    if(opening.startsWith('【世界線開局】盲盒')&&source.blindOpeningQuest)return makeWorldline(key,{title:source.title,genre:source.genre,premise:source.premise,protagonist:source.protagonist,goldenFinger:source.goldenFinger,mainQuest:source.blindOpeningQuest,tone:source.tone,relationshipMode:source.relationshipMode,blindStart:true});
+    if(opening.startsWith('【世界線開局】盲盒')&&source.blindOpeningQuest)return makeWorldline(key,{title:source.title,genre:source.genre,premise:source.premise,protagonist:source.protagonist,goldenFinger:source.goldenFinger,mainQuest:source.blindOpeningQuest,tone:source.tone,relationshipMode:source.relationshipMode,playModes:source.playModes,blindStart:true});
     const find=(label:string)=>opening.split('\n').find(line=>line.startsWith(label))?.slice(label.length).trim()||'';
     const identity=find('主角身份：');
     const separator=identity.indexOf('。金手指：');
@@ -193,7 +222,7 @@ export const forkWorldlineAt=(source:Worldline,key:string,prefix:readonly {role:
         protagonist:separator>=0?identity.slice(0,separator):'由分支前對話確認',
         goldenFinger:separator>=0?identity.slice(separator+'。金手指：'.length):'以分支前已確立的能力為準',
         mainQuest:find('主線方向：')||'沿用分支前的主線及未解決事件',
-        tone:source.tone,relationshipMode:source.relationshipMode,
+        tone:source.tone,relationshipMode:source.relationshipMode,playModes:source.playModes,
     });
 };
 export const scopedWorldlineRegistry=(raw:unknown,key:string):WorldlineRegistry=>{
@@ -290,6 +319,7 @@ export const buildWorldlineVariablePrompt=(world:Worldline):string=>{
         `Golden finger / system: ${world.goldenFinger}. Its known rules: ${world.goldenFingerRule}.`,
         `Main storyline: ${world.mainQuest}. Progress so far: ${world.questProgress}.`,
         `Story pacing: ${world.tone==='free'?'OPEN-WORLD: do not force quests; background factions/NPCs continue acting.':'SERIALIZED STORY: maintain a meaningful long arc, foreshadowing and real stakes, but never railroad the player.'}`,
+        ...[buildWorldPlayModePrompt(world)].filter(Boolean),
         `Relationship mode: ${world.relationshipMode==='adult'?'adult fiction involving adults only; romantic/intimate relationships can intersect the main plot without reducing NPCs to rewards':'normal romance and relationships as appropriate to context'}.`,
         'Inventory / treasures:',short(world.inventory,16),
         'Unresolved subplot and faction pressures:',short(world.threads,10),
