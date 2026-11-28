@@ -16,6 +16,7 @@ import {
 } from './chatMediaStore.js';
 import type { StoredChatAttachment } from './chatMediaStore.js';
 import { filterRemoteStateEntities, findLocallyDeletedIndexedKeys, mergeChatHistoryMaps, mergeBootstrapHistoryMaps } from './cloudMessageMerge.js';
+import {forkBootstrapTextWorlds} from './cloudBootstrapWorldFork.js';
 import { readCloudSyncIndex, writeCloudSyncIndex, writeCloudSyncIndexesAtomically } from './cloudSyncIndexStore.js';
 import {mergeAtomicSnapshots,mergeBaseIndex,readMergeBase,normalizeMergeSnapshot,equalMergeSnapshot,preserveForeignCloudSettings,type CloudMergeSnapshot} from './atomicCloudMerge.js';
 import {stageAtomicMedia} from './atomicCloudMedia.js';
@@ -265,6 +266,7 @@ export class SupabaseCloudSyncManager {
     private applyingRemote = false;
     private pushing = false;
     private pulling = false;
+    private bootstrapConflictBlocked=false;
     private pullRecoveryRequired = localStorage.getItem(PULL_RECOVERY_KEY) === 'true';
     private pushTimer: number | null = null;
     private pullTimer: number | null = null;
@@ -507,6 +509,7 @@ export class SupabaseCloudSyncManager {
     }
 
     async syncNow() {
+        this.bootstrapConflictBlocked=false;
         if(this.recoveryOnly)throw Error('CLOUD_RECOVERY_READ_ONLY');
         if (!this.session) throw new Error('請先登入 Supabase 雲端。');
         localStorage.setItem(PENDING_KEY, 'true');
@@ -541,6 +544,7 @@ export class SupabaseCloudSyncManager {
     }
 
     async reloadFromCloud(allowReplaceSinglePreviewMessage=false) {
+        this.bootstrapConflictBlocked=false;
         if(this.recoveryOnly){
             if(!this.session)throw Error('請先登入私人雲端。');
             if(!this.canRestore())throw Error('CLOUD_RESTORE_BUSY：有未完成聊天任務，不能還原。');
@@ -875,7 +879,7 @@ export class SupabaseCloudSyncManager {
     }
 
     private schedulePush(delay: number) {
-        if(this.recoveryOnly)return;
+        if(this.recoveryOnly||this.bootstrapConflictBlocked)return;
         const sessionUserId = this.session?.user.id;
         const sessionGeneration = this.sessionGeneration;
         if (!sessionUserId) return;
@@ -989,7 +993,7 @@ export class SupabaseCloudSyncManager {
     }
 
     private schedulePull(delay: number) {
-        if(this.recoveryOnly)return;
+        if(this.recoveryOnly||this.bootstrapConflictBlocked)return;
         const sessionUserId = this.session?.user.id;
         const sessionGeneration = this.sessionGeneration;
         if (!sessionUserId || this.pullTimer !== null) return;
@@ -1220,6 +1224,7 @@ export class SupabaseCloudSyncManager {
     // A fresh preview can have a pending flag from startup defaults before login.
     // Establish an actual remote baseline first, never upload against an unknown revision.
     private async bootstrapAtomicBaseline():Promise<boolean>{
+        if(this.bootstrapConflictBlocked)return false;
         if(!this.client||!this.session||this.pulling||this.pushing||!this.canRestore())return false;
         const uid=this.session.user.id,generation=this.sessionGeneration;
         if(await pendingAtomicJournal(uid)||await readAtomicBaseline(uid))return false;
@@ -1736,7 +1741,13 @@ export class SupabaseCloudSyncManager {
             ) return false;
             localStorage.setItem(PENDING_KEY, 'true');
             this.setPullRecoveryRequired(true);
-            this.handleSyncError(error, '下載雲端資料失敗');
+            const detail=authErrorMessage(error,'下載雲端資料失敗');
+            if(atomicBootstrap&&/ATOMIC_BOOTSTRAP_.*(?:CONFLICT|INVALID_HISTORY)/u.test(detail)){
+                this.bootstrapConflictBlocked=true;
+                if(this.pullTimer!==null){window.clearTimeout(this.pullTimer);this.pullTimer=null;}
+                if(this.pushTimer!==null){window.clearTimeout(this.pushTimer);this.pushTimer=null;}
+                this.setState('error',detail+'：本機及雲端資料已保留；已停止自動重試。',{progress:undefined});
+            }else this.handleSyncError(error, '下載雲端資料失敗');
             return false;
         } finally {
             this.applyingRemote = false;
@@ -2341,7 +2352,9 @@ export class SupabaseCloudSyncManager {
                 content: clone(row.content || {}),
             });
         });
-        const localChatHistories = clone(this.memoryManager.getAllChatHistories());
+        let localChatHistories = clone(this.memoryManager.getAllChatHistories());
+        let localPersonas=clone(this.memoryManager.getModifiedAndCustomPersonas());
+        let localDiaries=clone(this.memoryManager.getAllDiaryEntries()),localInterests=clone(this.memoryManager.getAllInterests());
         // A recognized, untouched startup greeting is not a private offline turn.
         if(bootstrapMerge)for(const key of bootstrapStartupKeys)if(cloudChatHistories[key]?.length)delete localChatHistories[key];
         const [previousMessageIndex, previousConversationIndex, previousStateEntityIndex] = mergeLocal&&!bootstrapMerge
@@ -2363,6 +2376,19 @@ export class SupabaseCloudSyncManager {
         const locallyDeletedStateEntities = mergeLocal
             ? findLocallyDeletedIndexedKeys(previousStateEntityIndex, currentStateEntityKeys)
             : new Set<string>();
+        if(bootstrapMerge){
+            const [avatars,photos,attachments]=await Promise.all([listPersonaAvatarAssets(),listCharacterPhotoAssets(),listChatAttachments()]);
+            const blocked=new Set([...avatars.map(a=>a.personaKey),...photos.map(a=>a.personaKey),...attachments.map(a=>a.conversationKey),...this.roomManager.exportData().rooms.flatMap(r=>[r.id,...r.members.map(m=>m.sourcePersonaKey||'')])]);
+            const settings=Object.fromEntries(this.cloudSettingKeys().flatMap(key=>{const value=localStorage.getItem(key);return value===null?[]:[[key,value]];}));
+            const result=forkBootstrapTextWorlds({histories:localChatHistories,personas:localPersonas,diaries:localDiaries,interests:localInterests,settings},cloudChatHistories,blocked,payload.appSettings,payload.customPersonas);
+            if(Object.keys(result.forks).length){
+                // Verify all remaining histories before mutating settings. The outer pull transaction rolls back on failure.
+                mergeBootstrapHistoryMaps(result.local.histories,cloudChatHistories);
+                localChatHistories=result.local.histories;localPersonas=result.local.personas;localDiaries=result.local.diaries;localInterests=result.local.interests;
+                for(const key of Object.keys(settings))if(!Object.hasOwn(result.local.settings,key))localStorage.removeItem(key);
+                for(const [key,value] of Object.entries(result.local.settings))if(settings[key]!==value)localStorage.setItem(key,value);
+            }
+        }
         const chatHistories = bootstrapMerge ? mergeBootstrapHistoryMaps(localChatHistories,cloudChatHistories) : mergeLocal
             ? mergeChatHistoryMaps(localChatHistories, cloudChatHistories, {
                 previousMessageIndex,
@@ -2386,13 +2412,13 @@ export class SupabaseCloudSyncManager {
                 rooms: clone(payload.rooms?.rooms || []),
             };
         const customPersonas = mergeLocal
-            ? { ...remoteState.customPersonas, ...clone(this.memoryManager.getModifiedAndCustomPersonas()) }
+            ? { ...remoteState.customPersonas, ...localPersonas }
             : remoteState.customPersonas;
         const diaries = mergeLocal
-            ? { ...clone(payload.diaries || {}), ...clone(this.memoryManager.getAllDiaryEntries()) }
+            ? { ...clone(payload.diaries || {}), ...localDiaries }
             : clone(payload.diaries || {});
         const interests = mergeLocal
-            ? { ...clone(payload.interests || {}), ...clone(this.memoryManager.getAllInterests()) }
+            ? { ...clone(payload.interests || {}), ...localInterests }
             : clone(payload.interests || {});
         this.memoryManager.loadAllData({
             customPersonas,

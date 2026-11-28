@@ -185,6 +185,9 @@ test('first login with divergent local and cloud histories preserves both withou
  await f.x.initialSync(uid,f.x.sessionGeneration);
  assert.equal(await readAtomicBaseline(uid),0);
  assert.equal(f.x.memoryManager.peekChatHistory('cc').at(-1)?.id,'unsynced');
+ assert.equal(f.x.bootstrapConflictBlocked,true);
+ f.x.client.from=()=>{throw Error('unexpected automatic retry');};
+ assert.equal(await f.x.bootstrapAtomicBaseline(),false);
  assert.equal(f.m.get(pending),'true');assert.deepEqual(f.calls,[]);
 });
 
@@ -300,4 +303,40 @@ test('first login with offline append installs union then uploads only through c
  assert.deepEqual(f.x.memoryManager.peekChatHistory('cc').map((r:any)=>r.id),['shared','offline']);
  assert.equal(f.x.memoryManager.peekChatHistory('assistant_fixture').at(-1)?.id,'remote-only');
  assert.equal(f.m.has(pending),false);
+});
+
+test('first login preserves a 1029-message offline world and 959-message cloud branch with world metadata',async()=>{
+ const {makeWorldline,updateWorldlineRegistry,emptyWorldlineRegistry,getWorldline,WORLDLINE_SETTING_KEY}=await import('../worldline.js');
+ const {WORLD_LEDGER_KEY,WORLD_LEDGER_SCHEMA,sourceFingerprint}=await import('../worldLedger.js');
+ const f=await fixture('atomic-first-world-fork-setup'),uid='atomic-first-world-fork';
+ f.x.session={user:{id:uid,email:'fixture@example.invalid'}};
+ delete f.x.collectLocalMessages;delete f.x.buildStatePayload;
+ const key='custom_fixture_world',director='aigfWorldlineDirectorV1:'+key;
+ Object.defineProperties(localStorage,{length:{get:()=>f.m.size},key:{value:(n:number)=>[...f.m.keys()][n]??null}});
+ const make=(id:string,i:number)=>({id,createdAt:10000+i,role:(i%2?'model':'user') as 'model'|'user',content:{text:'fixture '+id}});
+ const shared=Array.from({length:956},(_,i)=>make('common-'+i,i));
+ const a=[...shared,...Array.from({length:73},(_,i)=>make('offline-'+i,956+i))],b=[...shared,...Array.from({length:3},(_,i)=>make('cloud-'+i,956+i))];
+ const persona={...f.x.memoryManager.getPersona('cc'),name:'Fixture narrator',avatarUrl:null,conversationLabel:'Fixture world'};
+ f.x.memoryManager.loadAllData({customPersonas:{[key]:persona},chatHistories:{[key]:a}},true);
+ const w=makeWorldline(key,{title:'Fixture world',genre:'fantasy',premise:'A forest'},1000);
+ f.m.set(WORLDLINE_SETTING_KEY,JSON.stringify(updateWorldlineRegistry(emptyWorldlineRegistry(),key,{...w,turnCount:514},2000)));
+ f.m.set(WORLD_LEDGER_KEY,JSON.stringify({schema:WORLD_LEDGER_SCHEMA,worlds:{[key]:{[a[0].id]:{sourceId:a[0].id,fingerprint:sourceFingerprint(a[0]),at:1000,observations:[]}}}}));
+ f.m.set(director,JSON.stringify({standing:{id:'fixture',text:'Short chapters'}}));
+ const remoteRows=b.map((m,position)=>({user_id:uid,conversation_key:key,message_id:m.id,position,role:m.role,speaker_id:null,content:m.content,created_at_ms:m.createdAt}));
+ const remoteConversation={user_id:uid,conversation_key:key,title:'Archive',kind:'unknown',message_count:b.length};
+ let rev=3,commits=0;const receipts=new Map<string,number>();
+ f.x.client.from=(table:string)=>{let op='';const chain={select:()=>chain,eq:(k:string,v:string)=>{if(k==='operation_id')op=v;return chain;},maybeSingle:async()=>table==='wetapp_state'?{data:{revision:rev,payload,source_device_id:'remote'},error:null}:{data:receipts.has(op)?{revision:receipts.get(op)}:null,error:null}};return chain;};
+ f.x.fetchAllRows=async(table:string)=>table==='wetapp_conversations'?[remoteConversation]:table==='wetapp_messages'?remoteRows:[];
+ f.x.readCloudStateHead=async()=>({revision:rev,sourceDeviceId:'remote'});
+ const target='custom_sync_'+key+'_offline-72';
+ f.x.client.rpc=async(name:string,req:any)=>{assert.equal(name,'wetapp_commit_chat_delta_receipted_v3');assert.equal(req.expected_revision,3);assert.deepEqual(req.delta.remove_messages,[]);assert.deepEqual(req.delta.remove_conversations,[]);assert.equal(req.delta.messages.filter((r:any)=>r.conversation_key===target).length,1029);assert.equal(req.delta.messages.filter((r:any)=>r.conversation_key===key).length,0);assert.equal(getWorldline(req.new_payload.appSettings[WORLDLINE_SETTING_KEY],target)?.turnCount,514);commits++;rev++;receipts.set(req.operation_id,rev);return {data:rev,error:null};};
+ await f.x.initialSync(uid,f.x.sessionGeneration);
+ assert.equal(commits,1);assert.equal(await readAtomicBaseline(uid),4);
+ assert.deepEqual(f.x.memoryManager.peekChatHistory(key).map((r:any)=>r.id),b.map(m=>m.id));
+ assert.deepEqual(f.x.memoryManager.peekChatHistory(target).map((r:any)=>r.id),a.map(m=>m.id));
+ assert.equal(getWorldline(f.m.get(WORLDLINE_SETTING_KEY),target)?.conversationKey,target);
+ assert.equal(getWorldline(f.m.get(WORLDLINE_SETTING_KEY),key),null);
+ assert.equal(Object.keys(JSON.parse(f.m.get(WORLD_LEDGER_KEY)!).worlds[target]).length,1);
+ assert.ok(f.m.has('aigfWorldlineDirectorV1:'+target));assert.ok(!f.m.has(director));
+ assert.ok(f.x.memoryManager.getPersona(key));assert.ok(f.x.memoryManager.getPersona(target));assert.equal(f.m.has(pending),false);
 });
