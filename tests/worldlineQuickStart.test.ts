@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {buildWorldIdeaMessages,parseWorldIdeas,ideaToWorldOptions,WORLD_TOPICS} from '../worldlineQuickStart.js';
+import {buildWorldIdeaMessages,parseWorldIdeas,ideaToWorldOptions,WORLD_TOPICS,buildExistingWorldMessages,existingIdeaToWorldOptions} from '../worldlineQuickStart.js';
 import {makeWorldline,buildWorldlineOpening} from '../worldline.js';
 const ideas=Array.from({length:3},(_,i)=>({title:'世界方案'+i,genre:'fantasy',premise:'在一座古老城鎮，玩家發現失落圖書館與獨立勢力互相爭奪資源。'+i,protagonist:'初來乍到嘅旅人',goldenFinger:'可以解讀失落文字',mainQuest:'調查失落圖書館嘅來源，發掘不同勢力真正目標，並探索未知文明。'}));
 test('topic selection and optional preference generate three complete independent drafts in one model request',()=>{
@@ -32,4 +32,29 @@ test('new-world UI routes to quick start, with manual edit and explicit start on
  assert.match(ui,/startWorld\(deps,dialog,ideaToWorldOptions\(idea\)\)/);
  assert.match(ui,/openStart\(deps,'new',ideaToWorldOptions\(idea\)\)/);
  assert.match(ui,/const key=attachKey\|\|deps.createNarratorConversation\(opts.title\)/);
+});
+
+test('existing fiction uses selected work and character with optional timeline and preferences',()=>{
+ const input={work:'ONE PIECE',character:'路飛',startingPoint:'出海前',comment:'自由改變劇情'};
+ const messages=buildExistingWorldMessages(input);
+ assert.equal(messages.length,2);
+ const brief=JSON.parse(messages[1].content as string);
+ assert.equal(brief.work,input.work);assert.equal(brief.playableCharacter,input.character);assert.equal(brief.startingPoint,input.startingPoint);assert.equal(brief.preferences,input.comment);
+ assert.match(messages[0].content as string,/do not grant later powers/);
+ assert.match(messages[0].content as string,/or force the original plot outcome/);
+ const opts=existingIdeaToWorldOptions(parseWorldIdeas(JSON.stringify(ideas))[0],input);
+ const world=makeWorldline('fixture-canon',opts,123);
+ assert.match(world.title,/ONE PIECE/);assert.match(world.premise,/出海前/);assert.match(world.protagonist,/路飛/);
+ assert.match(buildWorldlineOpening(world),/自由改變劇情/);
+});
+test('existing fiction accepts missing character and timeline, with no extra generation requirement',()=>{
+ const input={work:'斗羅大陸',character:'',startingPoint:'',comment:''};
+ const brief=JSON.parse(buildExistingWorldMessages(input)[1].content as string);
+ assert.equal(brief.playableCharacter,'AI 選擇');assert.equal(brief.startingPoint,'AI 建議不同起點');
+ const opts=existingIdeaToWorldOptions(parseWorldIdeas(JSON.stringify(ideas))[1],input);
+ assert.ok(opts.protagonist?.length);
+ const ui=readFileSync(new URL('../features/worldlineUi.ts',import.meta.url),'utf8');
+ assert.match(ui,/進入原著世界/);assert.match(ui,/const results=await deps.generateExistingWorldIdeas\(input\)/);
+ assert.match(ui,/const opts=existingIdeaToWorldOptions\(idea,input\)/);
+ assert.match(ui,/startWorld\(deps,dialog,opts\)/);
 });

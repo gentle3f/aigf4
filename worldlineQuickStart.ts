@@ -37,3 +37,30 @@ export function parseWorldIdeas(raw:string):WorldIdea[]{
  return ideas;
 }
 export const ideaToWorldOptions=(idea:WorldIdea):WorldlineStartOptions=>({...idea,tone:'story',relationshipMode:'normal'});
+
+export type ExistingWorldInput={work:string;character:string;startingPoint:string;comment:string;previous?:WorldIdea[]};
+export const buildExistingWorldMessages=(input:ExistingWorldInput):VeniceMessage[]=>[
+ {role:'system',content:[
+ 'Create exactly three playable alternate-timeline starting concepts set in the named fictional work. Use natural Traditional Chinese.',
+ 'Respect the specified work, continuity, playable character and starting point. If the character is blank, offer appropriate playable identities; if the starting point is blank, propose three distinct entry points. If specified, keep that entry point in all options and vary the initial dilemma instead.',
+ 'The player controls the selected character completely. Other characters retain independent personalities, relationships, goals and knowledge appropriate to the chosen point. Use the known setting, power system and established events before the start; do not grant later powers, invent established canon, or force the original plot outcome.',
+ 'Distinguish known setting from newly invented alternate-timeline possibilities. Treat uncertain details as open rather than authoritative. Do not reproduce passages or dialogue from the work. Create original scenes and conflicts. Avoid spoiling future revelations unless requested.',
+ 'Do not introduce a new system or special ability unless the player requests it. Preserve the character’s capabilities at the chosen point; for a self-created character, provide a fitting starting ability or resource.',
+ 'Output only a JSON array of exactly three distinct objects with keys title, genre, premise, protagonist, goldenFinger, mainQuest. Genre must be xianxia, isekai, system, rebirth, apocalypse, fantasy, or custom. Title 6–30 Chinese characters; premise 120–250; protagonist 20–90; goldenFinger 30–120; mainQuest 60–140. No markdown or commentary.',
+ ].join(' ')},
+ {role:'user',content:JSON.stringify({work:input.work.trim().slice(0,100),playableCharacter:input.character.trim().slice(0,100)||'AI 選擇',startingPoint:input.startingPoint.trim().slice(0,200)||'AI 建議不同起點',preferences:input.comment.trim().slice(0,1000),avoidRepeating:(input.previous||[]).slice(0,3).map(x=>({title:x.title,premise:x.premise.slice(0,200)}))})},
+];
+// Keep user-selected work/character/timeline in the durable premise even if the draft omits them.
+export function existingIdeaToWorldOptions(idea:WorldIdea,input:ExistingWorldInput):WorldlineStartOptions{
+ const fixed=['作品世界：'+input.work.trim().slice(0,100),
+  input.character.trim()?'玩家扮演：'+input.character.trim().slice(0,100):'',
+  input.startingPoint.trim()?'指定起點：'+input.startingPoint.trim().slice(0,200):'',
+  '從指定起點建立獨立世界線；原著此前已發生嘅事件作為背景，之後由玩家行動決定，不預設原著結局。',
+  '保留該時點人物、關係、能力與世界規則；未確認的原著細節保持開放。',
+  input.comment.trim()?'玩家偏好：'+input.comment.trim().slice(0,1000):'',
+ ].filter(Boolean).join('。');
+ const room=Math.max(0,1700-fixed.length-2);
+ return {...ideaToWorldOptions(idea),title:(input.work.trim().slice(0,60)+' · '+idea.title).slice(0,100),
+  premise:fixed+'。'+idea.premise.slice(0,room),
+  protagonist:input.character.trim()?('玩家扮演 '+input.character.trim().slice(0,100)+'；'+idea.protagonist).slice(0,300):idea.protagonist};
+}

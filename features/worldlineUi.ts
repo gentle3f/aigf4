@@ -4,7 +4,7 @@
  */
 import { setPersistedAppSetting } from '../appSettings.js';
 import type { RandomMainQuestInput } from '../worldlineRandomQuest.js';
-import {WORLD_TOPICS,ideaToWorldOptions,type WorldIdea,type WorldIdeaInput} from '../worldlineQuickStart.js';
+import {WORLD_TOPICS,ideaToWorldOptions,existingIdeaToWorldOptions,type WorldIdea,type WorldIdeaInput,type ExistingWorldInput} from '../worldlineQuickStart.js';
 import type { projectWorld } from '../worldLedger.js';
 import {
     WORLDLINE_SETTING_KEY,getWorldline,makeWorldline,normalizeWorldline,updateWorldlineRegistry,
@@ -19,6 +19,7 @@ export interface WorldlineUiDeps {
     afterWorldlineChange:()=>void;
     generateRandomQuest:(input:RandomMainQuestInput)=>Promise<string>;
     generateWorldIdeas:(input:WorldIdeaInput)=>Promise<WorldIdea[]>;
+    generateExistingWorldIdeas:(input:ExistingWorldInput)=>Promise<WorldIdea[]>;
     getWorldLedger:(key:string)=>ReturnType<typeof projectWorld>;
     rebuildWorldLedger:(key:string,skipIds:readonly string[])=>Promise<{advanced:number;deferred:string[];issueCount:number}>;
 }
@@ -99,10 +100,70 @@ const startWorld=(deps:WorldlineUiDeps,dialog:HTMLDialogElement,opts:WorldlineSt
     deps.afterWorldlineChange();
     deps.dispatchText(buildWorldlineOpening(world));
 };
+const openExistingWorld=(deps:WorldlineUiDeps)=>{
+    const dialog=createModal();
+    header(dialog,'進入原著世界','漫畫、小說、電影、遊戲都可以；由你決定故事點樣發展。');
+    const body=element('div','wl-form');
+    const work=control(body,'作品名稱','input') as HTMLInputElement;
+    work.maxLength=100;work.placeholder='例如：ONE PIECE、斗羅大陸';
+    const character=control(body,'想扮演邊個？（選填）','input') as HTMLInputElement;
+    character.maxLength=100;character.placeholder='例如：路飛、唐三、自創角色';
+    const presets=element('div','wl-actions');
+    for(const [name,role] of [['ONE PIECE','路飛'],['斗羅大陸','唐三']]){
+        presets.appendChild(actionButton(name+' · '+role,()=>{work.value=name;character.value=role;}));
+    }
+    body.appendChild(presets);
+    const point=control(body,'故事起點（選填）','input') as HTMLInputElement;
+    point.maxLength=200;point.placeholder='例如：原著開局、出海前、覺醒武魂時';
+    const comment=control(body,'想改變啲咩？（選填）','textarea') as HTMLTextAreaElement;
+    comment.rows=2;comment.maxLength=1000;comment.placeholder='例如：保留原著能力，自由探索，唔一定跟原著主線。';
+    const actions=element('div','wl-actions'),notice=element('p','wl-note'),ideas=element('div','wl-cast-body');
+    notice.setAttribute('aria-live','polite');
+    let previous:WorldIdea[]=[],previousSignature='',busy=false,closed=false,starting=false;
+    dialog.addEventListener('close',()=>{closed=true;},{once:true});
+    const generate=actionButton('生成 3 個開局',()=>{
+        if(busy||starting||closed)return;
+        if(!work.value.trim()){notice.textContent='請輸入作品名稱。';work.focus();return;}
+        const input:ExistingWorldInput={work:work.value.trim(),character:character.value.trim(),startingPoint:point.value.trim(),comment:comment.value};
+        const signature=JSON.stringify(input);
+        if(signature===previousSignature)input.previous=previous;
+        busy=true;generate.disabled=true;generate.textContent='AI 構思開局中…';
+        notice.textContent='建立獨立故事分支，未改動任何現有世界。';
+        void (async()=>{
+            try{
+                const results=await deps.generateExistingWorldIdeas(input);
+                if(closed)return;
+                previous=results;previousSignature=signature;ideas.replaceChildren();
+                for(const idea of results){
+                    const opts=existingIdeaToWorldOptions(idea,input);
+                    const card=element('article','wl-world-idea');
+                    card.append(element('h3','',idea.title),element('p','wl-note',input.work),element('p','',idea.premise));
+                    const details=element('details','wl-chronicle');
+                    details.append(element('summary','','主角、能力及可能主線'),element('p','','主角：'+opts.protagonist),element('p','','能力：'+idea.goldenFinger),element('p','','主線：'+idea.mainQuest));
+                    const buttons=element('div','wl-actions');
+                    buttons.append(actionButton('進入呢個世界',()=>{
+                        if(busy||starting||closed)return;
+                        starting=true;
+                        try{startWorld(deps,dialog,opts);}catch(e){starting=false;notice.textContent=e instanceof Error?e.message:'建立世界失敗';}
+                    },true),actionButton('修改設定',()=>{
+                        if(busy||starting||closed)return;
+                        dialog.close();openStart(deps,'new',opts);
+                    }));
+                    card.append(details,buttons);ideas.appendChild(card);
+                }
+                notice.textContent='揀一個開局；原著資料由模型知識生成，細節可以先修改。';
+            }catch(e){if(!closed)notice.textContent=e instanceof Error?e.message:'世界構想生成失敗，請再試。';}
+            finally{busy=false;if(!closed){generate.disabled=false;generate.textContent=previous.length?'再抽 3 個開局':'生成 3 個開局';}}
+        })();
+    },true);
+    actions.append(generate,actionButton('返回原創世界',()=>{if(starting)return;dialog.close();openQuickStart(deps);}));
+    body.append(actions,notice,ideas);dialog.appendChild(body);showDialog(dialog);
+};
 const openQuickStart=(deps:WorldlineUiDeps)=>{
     const dialog=createModal();
     header(dialog,'開啟新世界','揀一個或多個題材，AI 幫你創作三個完整世界。');
     const body=element('div','wl-form');
+    body.appendChild(actionButton('進入原著世界（漫畫／小說／遊戲）',()=>{dialog.close();openExistingWorld(deps);}));
     const chosen=new Set<string>();
     const topics=element('div','wl-actions wl-topic-grid');
     for(const [topic] of WORLD_TOPICS){
