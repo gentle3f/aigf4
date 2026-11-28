@@ -19,7 +19,19 @@ test('actual send path does not silently fall back when V4 is required',()=>{
 
 test('assistant background route keeps unsupported modes on existing route',()=>{
  const s=readFileSync(new URL('../index.tsx',import.meta.url),'utf8');
- assert.match(s,/const assistantBackground=SERVER_ASSISTANT_GENERATION_V4&&assistantMode.*assistantTextOnlyAttachments.*isAssistantBackgroundModel\(selectedAssistantModel\).*isVeniceAssistantWebSearchEnabled\(\)/);
+ assert.match(s,/const assistantBackground=!ATOMIC_CLOUD_PRODUCTION&&SERVER_ASSISTANT_GENERATION_V4&&assistantMode.*assistantTextOnlyAttachments.*isAssistantBackgroundModel\(selectedAssistantModel\).*isVeniceAssistantWebSearchEnabled\(\)/);
  assert.match(s,/if\(assistantMode&&request.serverGeneration\)/);
  assert.match(s,/if \(request.serverGeneration \|\| request.vpsTurn \|\| isAbortError\(error\)\)/);
+});
+
+test('production uses original direct response route without cloud admission while preserving pilot and existing recovery',()=>{
+ const s=readFileSync(new URL('../index.tsx',import.meta.url),'utf8');
+ assert.match(s,/const serverRequired=assistantBackground\|\|!ATOMIC_CLOUD_PRODUCTION&&SERVER_GENERATION_V4/);
+ assert.match(s,/const assistantBackground=!ATOMIC_CLOUD_PRODUCTION&&SERVER_ASSISTANT_GENERATION_V4/);
+ assert.match(s,/selectVpsModel\(VPS_CHAT_BUILD,chatModelSettings.primary,\(ATOMIC_CLOUD_PRODUCTION&&currentConversationKey!==NATIVE_SYNC_KEY\)\|\|/);
+ assert.match(s,/if\(serverEligible\)\{\s*if\(!supabaseCloudSyncManager/);
+ assert.match(s,/request.serverGeneration=userContent.vpsServerGeneration/);
+ assert.match(s,/await getResponse\(request, userMessage,/);
+ assert.match(s,/if \(VPS_CHAT_BUILD&&!ATOMIC_CLOUD_PREVIEW\) return;\s*const manager = await loadSupabaseCloudSyncManager/);
+ assert.match(s,/if\(serverMarker\)/);
 });

@@ -36,7 +36,7 @@ import { createDurableMemoryTask, browserMemoryLock, type MemoryContext } from '
 import { buildVpsCharacterPayload, createVpsChatTransport, decodeVpsCharacterResult, VPS_REVIEW_MODELS } from './vpsCharacterTransport.js';
 import { QueuePilotError, type PilotJob } from './generationQueuePilot.js';
 import { CURRENT_CONTEXT_DIGEST_VERSION } from './contextFingerprint.js';
-import {ATOMIC_CLOUD_PREVIEW} from './atomicCloudPreview.js';
+import {ATOMIC_CLOUD_PREVIEW,ATOMIC_CLOUD_PRODUCTION} from './atomicCloudPreview.js';
 import {buildAssistantServerPlan,isAssistantBackgroundModel,assistantTextInput} from './serverAssistantFinalizer.js';
 import {SERVER_GENERATION_V4,SERVER_GROUP_GENERATION_V4,SERVER_ASSISTANT_GENERATION_V4,createServerGenerationMarker,ServerGenerationAccepted,type ServerGenerationMarker} from './serverGenerationAdmission.js';
 import { VPS_CHAT_BUILD, VPS_CHAT_MODE_KEY, selectVpsModel, selectV4PilotModel, digestVpsHistory, isVpsChatEligible } from './vpsChatMode.js';
@@ -1977,7 +1977,7 @@ const makeVpsTurnController=(replyContent?:Content,groupScene?:GroupGenerationRe
 };
 const pendingVpsTurn = () => VPS_CHAT_BUILD ? makeVpsTurnController().pending() : null;
 const selectedVpsChatModel = () => {
-    return selectVpsModel(VPS_CHAT_BUILD,chatModelSettings.primary,localStorage.getItem(VPS_CHAT_MODE_KEY)==='1');
+    return selectVpsModel(VPS_CHAT_BUILD,chatModelSettings.primary,(ATOMIC_CLOUD_PRODUCTION&&currentConversationKey!==NATIVE_SYNC_KEY)||localStorage.getItem(VPS_CHAT_MODE_KEY)==='1');
 };
 let resumingVpsTurn = false;
 const resumeVpsChatTurn = async (openConversation = false, manualLegacy = false) => {
@@ -10199,8 +10199,8 @@ const sendMessage = async ({
     };
     const assistantInlineText=attachmentBundle.assistantFileContext;
     const assistantTextOnlyAttachments=!attachmentBundle.attachments.length||(!!assistantInlineText&&attachmentBundle.contentParts.every(p=>p.type==='text')&&attachmentBundle.contentParts.map(p=>p.type==='text'?p.text:'').join('\n\n')===assistantInlineText);
-    const assistantBackground=SERVER_ASSISTANT_GENERATION_V4&&assistantMode&&!isGodModeActive&&!currentRoom&&!!userMessageMeta?.id&&assistantTextOnlyAttachments&&isAssistantBackgroundModel(selectedAssistantModel)&&(!isVeniceAssistantWebSearchEnabled()||selectedAssistantModel==='venice-uncensored-1-2')&&!memoryManager.peekChatHistory(conversationKey).some(m=>m.content.attachments?.length);
-    const serverRequired=assistantBackground||SERVER_GENERATION_V4&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&(!currentRoom||SERVER_GROUP_GENERATION_V4&&!getActiveWorldline(conversationKey))&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
+    const assistantBackground=!ATOMIC_CLOUD_PRODUCTION&&SERVER_ASSISTANT_GENERATION_V4&&assistantMode&&!isGodModeActive&&!currentRoom&&!!userMessageMeta?.id&&assistantTextOnlyAttachments&&isAssistantBackgroundModel(selectedAssistantModel)&&(!isVeniceAssistantWebSearchEnabled()||selectedAssistantModel==='venice-uncensored-1-2')&&!memoryManager.peekChatHistory(conversationKey).some(m=>m.content.attachments?.length);
+    const serverRequired=assistantBackground||!ATOMIC_CLOUD_PRODUCTION&&SERVER_GENERATION_V4&&!!userMessageMeta?.id&&conversationKey!==NATIVE_SYNC_KEY&&(!currentRoom||SERVER_GROUP_GENERATION_V4&&!getActiveWorldline(conversationKey))&&!assistantMode&&!isGodModeActive&&!characterPhotoRequest&&!attachmentBundle.attachments.length&&!detectExplicitMemoryIntent(userMessage)&&!isExplicitCharacterPhotoRequest(userMessage)&&!hasNpcPromotionIntent(userMessage);
     const dispatchModel=assistantBackground?selectedAssistantModel:serverRequired?selectV4PilotModel(chatModelSettings.primary):selectedVpsChatModel();
     if(serverRequired&&!dispatchModel){showError('V4 背景生成：請選擇支援的主要模型（GLM 5.3、DeepSeek V4.1 或 Qwen 3.6）。未發送訊息。');cancelChatPerformanceTurn('send:v4-model-required');return;}
     const serverEligible=serverRequired&&!!dispatchModel;
@@ -11311,9 +11311,9 @@ const setupEventListeners = () => {
         const heading=document.createElement('h3');heading.textContent='背景生成與任務恢復';heading.style.cssText='font-size:18px;font-weight:600;margin:0 0 12px';
         const controls=document.createElement('div');controls.style.cssText='display:grid;gap:8px';
         const label=document.createElement('p');label.style.cssText='font-size:13px;line-height:1.5;color:#555;overflow-wrap:anywhere';
-        const refreshMode=()=>{const model=SERVER_GENERATION_V4?selectV4PilotModel(chatModelSettings.primary):selectedVpsChatModel();label.textContent=SERVER_GENERATION_V4?(model?'V4 單人文字背景生成：'+model+'。':'V4：主要模型未受支援。'):(model?'背景生成：'+model:'目前使用直連：'+chatModelSettings.primary)+'。模型沿用原有設定。';};
+        const refreshMode=()=>{const model=SERVER_GENERATION_V4?selectV4PilotModel(chatModelSettings.primary):selectedVpsChatModel();label.textContent=ATOMIC_CLOUD_PRODUCTION?'目前使用原有直連：'+chatModelSettings.primary+'。聊天存檔獨立同步；舊背景任務仍可取回。':SERVER_GENERATION_V4?(model?'V4 單人文字背景生成：'+model+'。':'V4：主要模型未受支援。'):(model?'背景生成：'+model:'目前使用直連：'+chatModelSettings.primary)+'。模型沿用原有設定。';};
         const fallback=document.createElement('button');fallback.type='button';
-        const refreshFallback=()=>{fallback.textContent=SERVER_GENERATION_V4?'V4 測試版：單人文字使用背景生成':localStorage.getItem(VPS_CHAT_MODE_KEY)==='1'?'恢復自動背景生成':'暫用原有直連';fallback.disabled=SERVER_GENERATION_V4;};
+        const refreshFallback=()=>{fallback.textContent=ATOMIC_CLOUD_PRODUCTION?'目前使用原有直連':SERVER_GENERATION_V4?'V4 測試版：單人文字使用背景生成':localStorage.getItem(VPS_CHAT_MODE_KEY)==='1'?'恢復自動背景生成':'暫用原有直連';fallback.disabled=ATOMIC_CLOUD_PRODUCTION||SERVER_GENERATION_V4;};
         fallback.onclick=()=>{if(activeChatRequest||pendingVpsTurn()){alert('先處理原有任務。');return;}if(localStorage.getItem(VPS_CHAT_MODE_KEY)==='1')localStorage.removeItem(VPS_CHAT_MODE_KEY);else localStorage.setItem(VPS_CHAT_MODE_KEY,'1');refreshMode();refreshFallback();};
         const resume=document.createElement('button');resume.type='button';resume.textContent='取回 VPS 回覆';resume.onclick=()=>{if(activeChatRequest||resumingVpsTurn){alert('正在處理原任務，請稍後再試。');return;}void resumeVpsChatTurn(true,true);};
         const abandon=document.createElement('button');abandon.type='button';abandon.textContent='放棄待處理回覆';abandon.onclick=()=>{if(activeChatRequest||resumingVpsTurn){alert('正在處理原任務，請先停止目前生成或重新開啟頁面。');return;}const p=pendingVpsTurn();if(!p){alert('目前沒有本機待處理回覆。');return;}if(confirm('放棄本機待處理回覆？VPS 已開始的生成可能仍會扣費；此操作不會取消伺服器任務。'))void makeVpsTurnController().abandon(p.jobId).then(()=>{hideError();updateSendButtonState();toolsDialog.close();alert('舊任務已解除，可以發送新訊息。');}).catch(()=>alert('未能放棄原任務。'));};
