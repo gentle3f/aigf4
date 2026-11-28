@@ -268,6 +268,7 @@ export class SupabaseCloudSyncManager {
     private pulling = false;
     private bootstrapConflictBlocked=false;
     private bootstrapDiagnosticOnly=false;
+    private bootstrapDiagnosticPassed=false;
     private pullRecoveryRequired = localStorage.getItem(PULL_RECOVERY_KEY) === 'true';
     private pushTimer: number | null = null;
     private pullTimer: number | null = null;
@@ -546,7 +547,15 @@ export class SupabaseCloudSyncManager {
     }
 
     async reloadFromCloud(allowReplaceSinglePreviewMessage=false) {
-        if(this.bootstrapDiagnosticOnly){await this.diagnosePausedBootstrap();return;}
+        if(this.bootstrapDiagnosticOnly){
+            if(!this.bootstrapDiagnosticPassed){await this.diagnosePausedBootstrap();return;}
+            this.bootstrapConflictBlocked=false;
+            this.bootstrapDiagnosticPassed=false;
+            const completed=await this.bootstrapAtomicBaseline(true);
+            if(!completed){this.bootstrapDiagnosticOnly=true;this.bootstrapConflictBlocked=true;throw Error(this.state.detail);}
+            this.bootstrapDiagnosticOnly=false;
+            return;
+        }
         this.bootstrapConflictBlocked=false;
         if(this.recoveryOnly){
             if(!this.session)throw Error('請先登入私人雲端。');
@@ -752,7 +761,7 @@ export class SupabaseCloudSyncManager {
     private replaceSession(session: Session | null) {
         const previousUserId = this.session?.user.id || '';
         const nextUserId = session?.user.id || '';
-        if (previousUserId !== nextUserId) {this.sessionGeneration += 1;this.bootstrapConflictBlocked=false;this.bootstrapDiagnosticOnly=false;}
+        if (previousUserId !== nextUserId) {this.sessionGeneration += 1;this.bootstrapConflictBlocked=false;this.bootstrapDiagnosticOnly=false;this.bootstrapDiagnosticPassed=false;}
         this.session = session;
         return this.sessionGeneration;
     }
@@ -1226,12 +1235,12 @@ export class SupabaseCloudSyncManager {
 
     // A fresh preview can have a pending flag from startup defaults before login.
     // Establish an actual remote baseline first, never upload against an unknown revision.
-    private async bootstrapAtomicBaseline():Promise<boolean>{
+    private async bootstrapAtomicBaseline(explicit=false):Promise<boolean>{
         if(this.bootstrapConflictBlocked)return false;
         if(!this.client||!this.session||this.pulling||this.pushing||!this.canRestore())return false;
         const uid=this.session.user.id,generation=this.sessionGeneration;
         if(await pendingAtomicJournal(uid)||await readAtomicBaseline(uid))return false;
-        if(ATOMIC_CLOUD_PRODUCTION&&(this.pullRecoveryRequired||Object.values(this.memoryManager.getAllChatHistories()).some(rows=>rows.length>1||rows.some(m=>m.role==='user')))){
+        if(!explicit&&ATOMIC_CLOUD_PRODUCTION&&(this.pullRecoveryRequired||Object.values(this.memoryManager.getAllChatHistories()).some(rows=>rows.length>1||rows.some(m=>m.role==='user')))){
             this.bootstrapConflictBlocked=true;this.bootstrapDiagnosticOnly=true;
             this.setState('error','首次同步已暫停；本機資料保留，網頁可正常操作。按「立即同步」進行只讀衝突檢查，不會下載媒體或改動存檔。',{progress:undefined});
             return false;
@@ -1292,6 +1301,7 @@ export class SupabaseCloudSyncManager {
         if(!this.client||!this.session||this.pulling||this.pushing)return;
         const uid=this.session.user.id,generation=this.sessionGeneration,epoch=this.atomicLocalEpoch;
         this.pulling=true;
+        this.bootstrapDiagnosticPassed=false;
         try{
             this.setState('pulling','正在只讀核對本機對話；網頁仍可操作。',{progress:undefined});
             const head=await this.client.from('wetapp_state').select('payload,revision').maybeSingle();
@@ -1313,7 +1323,8 @@ export class SupabaseCloudSyncManager {
             const finalHead=await this.client.from('wetapp_state').select('revision').maybeSingle();
             if(finalHead.error||normalizeCloudStateRevision(finalHead.data?.revision)!==normalizeCloudStateRevision(head.data?.revision)||epoch!==this.atomicLocalEpoch)throw Error('ATOMIC_DIAGNOSTIC_CHANGED');
             this.assertCurrentSessionUser(uid,generation);
-            this.setState('error','ATOMIC_DIAGNOSTIC_PASS：相交對話檢查通過；暫未執行合併或寫入。',{progress:undefined});
+            this.bootstrapDiagnosticPassed=true;
+            this.setState('error','ATOMIC_DIAGNOSTIC_PASS：全部相交對話檢查通過；按「重新載入」確認合併，會保留兩邊分支。暫未寫入。',{progress:undefined});
         }catch(error){
             if(this.isCurrentSession(uid,generation))this.setState('error',authErrorMessage(error,'只讀檢查失敗')+'；沒有修改任何存檔。',{progress:undefined});
         }finally{this.pulling=false;}
@@ -2422,13 +2433,16 @@ export class SupabaseCloudSyncManager {
             const [avatars,photos,attachments]=await Promise.all([listPersonaAvatarAssets(),listCharacterPhotoAssets(),listChatAttachments()]);
             const blocked=new Set([...avatars.map(a=>a.personaKey),...photos.map(a=>a.personaKey),...attachments.map(a=>a.conversationKey),...this.roomManager.exportData().rooms.flatMap(r=>[r.id,...r.members.map(m=>m.sourcePersonaKey||'')])]);
             const settings=Object.fromEntries(this.cloudSettingKeys().flatMap(key=>{const value=localStorage.getItem(key);return value===null?[]:[[key,value]];}));
-            const result=forkBootstrapTextWorlds({histories:localChatHistories,personas:localPersonas,diaries:localDiaries,interests:localInterests,settings},cloudChatHistories,blocked,payload.appSettings,payload.customPersonas);
+            const result=forkBootstrapTextWorlds({histories:localChatHistories,personas:localPersonas,diaries:localDiaries,interests:localInterests,settings},cloudChatHistories,blocked,payload.appSettings,payload.customPersonas,this.memoryManager.getAllPersonas());
             // Report the exact remaining conflict, without exposing message text.
-            try{mergeBootstrapHistoryMaps(result.local.histories,cloudChatHistories);}catch(error){
-                const detail=authErrorMessage(error,'ATOMIC_BOOTSTRAP_HISTORY_CONFLICT');
-                const key=detail.match(/\[([^;]+);/u)?.[1];
-                throw Error(detail+(key&&result.skipped[key]?` [fork=${result.skipped[key]}]`:''));
+            const conflicts:string[]=[];
+            for(const key of new Set([...Object.keys(result.local.histories),...Object.keys(cloudChatHistories)])){
+                try{mergeBootstrapHistoryMaps({[key]:result.local.histories[key]||[]},{[key]:cloudChatHistories[key]||[]});}catch(error){
+                    const detail=authErrorMessage(error,'ATOMIC_BOOTSTRAP_HISTORY_CONFLICT');
+                    conflicts.push(detail+(result.skipped[key]?` [fork=${result.skipped[key]}]`:''));
+                }
             }
+            if(conflicts.length)throw Error(conflicts.join('\n'));
             if(diagnoseOnly)return;
             if(Object.keys(result.forks).length){
                 // All remaining histories have been verified. The outer pull transaction rolls back on failure.
