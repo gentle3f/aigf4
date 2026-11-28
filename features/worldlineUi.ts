@@ -4,10 +4,10 @@
  */
 import { setPersistedAppSetting } from '../appSettings.js';
 import type { RandomMainQuestInput } from '../worldlineRandomQuest.js';
-import {WORLD_TOPICS,ideaToWorldOptions,existingIdeaToWorldOptions,type WorldIdea,type WorldIdeaInput,type ExistingWorldInput} from '../worldlineQuickStart.js';
+import {WORLD_TOPICS,ideaToWorldOptions,existingIdeaToWorldOptions,type WorldIdea,type WorldIdeaInput,type ExistingWorldInput,type WorldRecommendationMode} from '../worldlineQuickStart.js';
 import type { projectWorld } from '../worldLedger.js';
 import {
-    WORLDLINE_SETTING_KEY,getWorldline,makeWorldline,normalizeWorldline,updateWorldlineRegistry,
+    WORLDLINE_SETTING_KEY,getWorldline,makeWorldline,normalizeWorldline,updateWorldlineRegistry,parseWorldlineRegistry,
     worldlineGenreLabel,buildWorldlineOpening,
     type Worldline,type WorldlineStartOptions,type WorldlineGenre,
 } from '../worldline.js';
@@ -159,11 +159,75 @@ const openExistingWorld=(deps:WorldlineUiDeps)=>{
     actions.append(generate,actionButton('返回原創世界',()=>{if(starting)return;dialog.close();openQuickStart(deps);}));
     body.append(actions,notice,ideas);dialog.appendChild(body);showDialog(dialog);
 };
+const openRecommendations=(deps:WorldlineUiDeps)=>{
+    const dialog=createModal();
+    header(dialog,'今日玩咩？','唔需要填任何設定，揀一種探索方式就可以。');
+    const body=element('div','wl-form');
+    const previousGenres=Object.values(parseWorldlineRegistry(localStorage.getItem(WORLDLINE_SETTING_KEY)).records).flatMap(row=>row.world?[row.world.genre]:[]).slice(0,12);
+    const modes: Array<[WorldRecommendationMode,string,string]>=[
+        ['similar','延續熟悉玩法','參考已建立世界嘅題材，創作三個新方向。'],
+        ['different','試吓完全唔同','避開常玩題材，探索三個不同世界。'],
+        ['inspiration','今日靈感','六個不同題材嘅即場創作。'],
+        ['blind','盲盒世界','唔睇設定，直接進入第一幕。'],
+    ];
+    const comment=control(body,'額外偏好（選填）','textarea') as HTMLTextAreaElement;
+    comment.rows=2;comment.maxLength=1000;comment.placeholder='例如：今次想玩輕鬆啲，唔想打怪。';
+    const choices=element('div','wl-cast-body'),notice=element('p','wl-note'),results=element('div','wl-cast-body');
+    notice.setAttribute('aria-live','polite');
+    let busy=false,closed=false,starting=false,lastMode:WorldRecommendationMode|undefined,lastComment='',previous:WorldIdea[]=[];
+    dialog.addEventListener('close',()=>{closed=true;},{once:true});
+    const buttons:HTMLButtonElement[]=[];
+    const generate=(mode:WorldRecommendationMode)=>{
+        if(busy||closed||starting)return;
+        busy=true;buttons.forEach(b=>b.disabled=true);results.replaceChildren();
+        const preference=comment.value;
+        const input:WorldIdeaInput={topics:[],comment:preference,recommendation:mode,pastGenres:mode==='similar'||mode==='different'?previousGenres:[],previous:mode===lastMode&&lastComment===preference?previous:[]};
+        notice.textContent=mode==='blind'?'正在創造未知世界，唔會預先展示設定。':'AI 正構思新世界…';
+        void (async()=>{
+            try{
+                const ideas=await deps.generateWorldIdeas(input);
+                if(closed)return;
+                previous=ideas;lastMode=mode;lastComment=preference;
+                if(mode==='blind'){
+                    starting=true;
+                    const opts=ideaToWorldOptions(ideas[0]);
+                    startWorld(deps,dialog,{...opts,title:'盲盒世界',blindStart:true});
+                    return;
+                }
+                for(const idea of ideas){
+                    const card=element('article','wl-world-idea');
+                    card.append(element('h3','',idea.title),element('p','wl-note',worldlineGenreLabel(idea.genre)),element('p','',idea.premise));
+                    const detail=element('details','wl-chronicle');
+                    detail.append(element('summary','','主角、能力及主線'),element('p','','主角：'+idea.protagonist),element('p','','能力／資源：'+idea.goldenFinger),element('p','','主線：'+idea.mainQuest));
+                    const actions=element('div','wl-actions');
+                    actions.append(actionButton('開始呢個世界',()=>{
+                        if(busy||starting||closed)return;
+                        starting=true;try{startWorld(deps,dialog,ideaToWorldOptions(idea));}catch(e){starting=false;notice.textContent=e instanceof Error?e.message:'建立世界失敗';}
+                    },true),actionButton('修改設定',()=>{
+                        if(busy||starting||closed)return;dialog.close();openStart(deps,'new',ideaToWorldOptions(idea));
+                    }));
+                    card.append(detail,actions);results.appendChild(card);
+                }
+                notice.textContent='揀一個開始，或者再撳同一個玩法抽新世界。';
+            }catch(e){starting=false;if(!closed)notice.textContent=e instanceof Error?e.message:'生成失敗，請再試。';}
+            finally{busy=false;if(!closed)buttons.forEach(b=>b.disabled=false);}
+        })();
+    };
+    for(const [mode,label,description] of modes){
+        const item=element('div','wl-world-idea');
+        const btn=actionButton(label,()=>generate(mode),mode==='blind');
+        buttons.push(btn);item.append(btn,element('p','wl-note',description));choices.appendChild(item);
+    }
+    body.append(choices,notice,results,actionButton('返回開新世界',()=>{if(starting)return;dialog.close();openQuickStart(deps);}));
+    dialog.appendChild(body);showDialog(dialog);
+};
 const openQuickStart=(deps:WorldlineUiDeps)=>{
     const dialog=createModal();
     header(dialog,'開啟新世界','揀一個或多個題材，AI 幫你創作三個完整世界。');
     const body=element('div','wl-form');
-    body.appendChild(actionButton('進入原著世界（漫畫／小說／遊戲）',()=>{dialog.close();openExistingWorld(deps);}));
+    const entrances=element('div','wl-actions');
+    entrances.append(actionButton('今日玩咩？',()=>{dialog.close();openRecommendations(deps);},true),actionButton('進入原著世界（漫畫／小說／遊戲）',()=>{dialog.close();openExistingWorld(deps);}));
+    body.appendChild(entrances);
     const chosen=new Set<string>();
     const topics=element('div','wl-actions wl-topic-grid');
     for(const [topic] of WORLD_TOPICS){

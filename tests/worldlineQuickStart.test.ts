@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {buildWorldIdeaMessages,parseWorldIdeas,ideaToWorldOptions,WORLD_TOPICS,buildExistingWorldMessages,existingIdeaToWorldOptions} from '../worldlineQuickStart.js';
-import {makeWorldline,buildWorldlineOpening} from '../worldline.js';
+import {buildWorldIdeaMessages,parseWorldIdeas,ideaToWorldOptions,WORLD_TOPICS,buildExistingWorldMessages,existingIdeaToWorldOptions,worldIdeaCount} from '../worldlineQuickStart.js';
+import {makeWorldline,buildWorldlineOpening,forkWorldlineAt,normalizeWorldline} from '../worldline.js';
 const ideas=Array.from({length:3},(_,i)=>({title:'世界方案'+i,genre:'fantasy',premise:'在一座古老城鎮，玩家發現失落圖書館與獨立勢力互相爭奪資源。'+i,protagonist:'初來乍到嘅旅人',goldenFinger:'可以解讀失落文字',mainQuest:'調查失落圖書館嘅來源，發掘不同勢力真正目標，並探索未知文明。'}));
 test('topic selection and optional preference generate three complete independent drafts in one model request',()=>{
  const messages=buildWorldIdeaMessages({topics:['修仙／玄幻','經營／建立勢力'],comment:'由普通人開始',previous:[]});
@@ -57,4 +57,27 @@ test('existing fiction accepts missing character and timeline, with no extra gen
  assert.match(ui,/進入原著世界/);assert.match(ui,/const results=await deps.generateExistingWorldIdeas\(input\)/);
  assert.match(ui,/const opts=existingIdeaToWorldOptions\(idea,input\)/);
  assert.match(ui,/startWorld\(deps,dialog,opts\)/);
+});
+
+test('recommendations use only genre history, support six ideas and one blind world',()=>{
+ const similar={topics:[],comment:'',recommendation:'similar' as const,pastGenres:['xianxia' as const]};
+ assert.equal(worldIdeaCount(similar),3);
+ assert.match(buildWorldIdeaMessages(similar)[0].content as string,/weak preference signal/);
+ assert.deepEqual(JSON.parse(buildWorldIdeaMessages(similar)[1].content as string).pastGenres,['xianxia']);
+ assert.equal(worldIdeaCount({...similar,recommendation:'inspiration'}),6);
+ assert.equal(worldIdeaCount({...similar,recommendation:'blind'}),1);
+ const six=[...ideas,...ideas.map((i,n)=>({...i,title:'新世界'+n,premise:i.premise+'新方向'}))];
+ assert.equal(parseWorldIdeas(JSON.stringify(six),6).length,6);
+ assert.equal(parseWorldIdeas(JSON.stringify([ideas[0]]),1).length,1);
+ assert.throws(()=>parseWorldIdeas(JSON.stringify(ideas),1));
+});
+test('blind opening does not reveal premise, ability or quest in chat and historical branch retains original quest',()=>{
+ const world=makeWorldline('blind',{...ideaToWorldOptions(parseWorldIdeas(JSON.stringify(ideas))[0]),title:'盲盒世界',blindStart:true},123);
+ const opening=buildWorldlineOpening(world);
+ assert.match(opening,/【世界線開局】盲盒/);
+ for(const secret of [world.premise,world.goldenFinger,world.mainQuest,world.protagonist])assert.ok(!opening.includes(secret));
+ const changed=normalizeWorldline({...world,mainQuest:'後來修改嘅主線'});
+ const fork=forkWorldlineAt(changed,'fork',[{role:'user',content:{text:opening}}]);
+ assert.equal(fork.mainQuest,world.mainQuest);assert.equal(fork.premise,world.premise);
+ assert.equal(fork.blindOpeningQuest,world.mainQuest);
 });

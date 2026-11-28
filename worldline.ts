@@ -34,6 +34,7 @@ export interface Worldline {
     createdAt: number;
     updatedAt: number;
     paused: boolean;
+    blindOpeningQuest?: string;
 }
 export type WorldlineRecord = { updatedAt: number; world: Worldline | null };
 export type WorldlineRegistry = {
@@ -49,6 +50,7 @@ export interface WorldlineStartOptions {
     mainQuest?: string;
     relationshipMode?: WorldlineRelationshipMode;
     tone?: WorldlineTone;
+    blindStart?: boolean;
 }
 const genres: readonly WorldlineGenre[] = [
     'xianxia','isekai','system','rebirth','apocalypse','fantasy','custom',
@@ -102,6 +104,7 @@ export const normalizeWorldline = (input: Worldline): Worldline => {
         turnCount:Math.max(0,Math.min(1_000_000,Number.isInteger(input.turnCount)?input.turnCount:0)),
         createdAt:stamp(input.createdAt), updatedAt:stamp(input.updatedAt),
         paused:input.paused===true,
+        ...(clean(input.blindOpeningQuest,550)?{blindOpeningQuest:clean(input.blindOpeningQuest,550)}:{}),
     };
 };
 export const makeWorldline = (conversationKey:string,options:WorldlineStartOptions,now=Date.now()):Worldline => {
@@ -120,6 +123,7 @@ export const makeWorldline = (conversationKey:string,options:WorldlineStartOptio
         tone:options.tone==='free'?'free':'story',
         relationshipMode:options.relationshipMode==='adult'?'adult':'normal',
         turnCount:0,createdAt:now,updatedAt:now,paused:false,
+        ...(options.blindStart?{blindOpeningQuest:options.mainQuest||'由序章建立主線'}:{}),
     });
 };
 export const emptyWorldlineRegistry=():WorldlineRegistry=>({schema:WORLDLINE_SCHEMA,records:{}});
@@ -179,6 +183,7 @@ export const updateWorldlineRegistry=(register:unknown,key:string,world:Worldlin
 /** Fork from the historical opening, never copy today's mutable state to a past point. */
 export const forkWorldlineAt=(source:Worldline,key:string,prefix:readonly {role:string;content:{text?:string}}[]):Worldline=>{
     const opening=prefix.find(m=>m.role==='user'&&m.content.text?.includes('【世界線開局】'))?.content.text||'';
+    if(opening.startsWith('【世界線開局】盲盒')&&source.blindOpeningQuest)return makeWorldline(key,{title:source.title,genre:source.genre,premise:source.premise,protagonist:source.protagonist,goldenFinger:source.goldenFinger,mainQuest:source.blindOpeningQuest,tone:source.tone,relationshipMode:source.relationshipMode,blindStart:true});
     const find=(label:string)=>opening.split('\n').find(line=>line.startsWith(label))?.slice(label.length).trim()||'';
     const identity=find('主角身份：');
     const separator=identity.indexOf('。金手指：');
@@ -297,6 +302,7 @@ export const buildWorldlineVariablePrompt=(world:Worldline):string=>{
 };
 export const buildWorldlinePrompt=(world:Worldline):string=>world.paused?'':[WORLDLINE_FIXED_HEADER,buildWorldlineVariablePrompt(world),WORLDLINE_FIXED_CONTRACT].filter(Boolean).join('\n');
 export const buildWorldlineOpening=(world:Worldline):string=>
+    world.blindOpeningQuest?'【世界線開局】盲盒：直接開始第一幕。透過場景及人物自然揭曉身份、世界與能力，保留未知線索，唔好列出設定、主線或未來答案。等我自由回應。':
     [
         '【世界線開局】請直接開始第一幕，唔需要再問我設計題目。',
         `世界：${world.title}／${genreNames[world.genre]}。`,

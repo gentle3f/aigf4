@@ -7,25 +7,28 @@ export const WORLD_TOPICS=[
  ['超能力／超自然','fantasy'],['冒險／尋寶','fantasy'],
 ] as const satisfies readonly (readonly [string,WorldlineGenre])[];
 export type WorldIdea={title:string;genre:WorldlineGenre;premise:string;protagonist:string;goldenFinger:string;mainQuest:string};
-export type WorldIdeaInput={topics:string[];comment:string;previous?:WorldIdea[]};
+export type WorldRecommendationMode='similar'|'different'|'inspiration'|'blind';
+export type WorldIdeaInput={topics:string[];comment:string;previous?:WorldIdea[];recommendation?:WorldRecommendationMode;pastGenres?:WorldlineGenre[]};
+export const worldIdeaCount=(input:WorldIdeaInput)=>input.recommendation==='inspiration'?6:input.recommendation==='blind'?1:3;
 const genres:WorldlineGenre[]=['xianxia','isekai','system','rebirth','apocalypse','fantasy','custom'];
 export const buildWorldIdeaMessages=(input:WorldIdeaInput):VeniceMessage[]=>[
  {role:'system',content:[
- 'You are an inventive interactive-fiction world designer. Propose exactly three distinct, immediately playable story worlds in natural Traditional Chinese.',
+ 'You are an inventive interactive-fiction world designer. Propose exactly '+(worldIdeaCount(input)===3?'three':worldIdeaCount(input))+' distinct, immediately playable story worlds in natural Traditional Chinese.',
  'Each option must stand on its own: a distinctive title, genre, concrete world and opening situation, the protagonist starting identity, a fitting unusual ability or resource (or explicitly no special ability for grounded settings), and a long-term story arc with independent forces and stakes.',
- 'Make the three options differ in premise, protagonist role, conflicts and game mechanics, not merely names. Respect selected topics and user preferences; if multiple topics are chosen, mix them creatively or offer different combinations. If no topics are given, explore three different directions.',
+ 'Make the options differ in premise, protagonist role, conflicts and game mechanics, not merely names. Respect selected topics and user preferences; if multiple topics are chosen, mix them creatively or offer different combinations. If no topics are given, explore different directions.',
+ input.recommendation==='similar'?'Use the genre history as a weak preference signal, never as proof of what the player liked; devise new worlds with related themes.':input.recommendation==='different'?'Prioritize genres and mechanics unlike the supplied genre history.':input.recommendation==='inspiration'?'Offer six contrasting fresh directions across several genres.':input.recommendation==='blind'?'Design one surprising world whose identity, powers and central mystery can unfold naturally through the first scene and later discoveries. Do not reveal all secrets at once.':'',
  'Leave the player free to act; do not choose their dialogue, actions or feelings. Do not prewrite the full first chapter or reveal its resolution.',
- 'Use only a JSON array of exactly three objects with keys title, genre, premise, protagonist, goldenFinger, mainQuest.',
+ 'Use only a JSON array of exactly '+worldIdeaCount(input)+' objects with keys title, genre, premise, protagonist, goldenFinger, mainQuest.',
  'genre must be one of xianxia, isekai, system, rebirth, apocalypse, fantasy, custom. Title 6–30 Chinese characters; premise 90–180; protagonist 20–60; goldenFinger 30–100; mainQuest 60–130. No Markdown or commentary.',
  ].join(' ')},
- {role:'user',content:JSON.stringify({topics:input.topics.slice(0,14),preferences:input.comment.trim().slice(0,1000),avoidRepeating:(input.previous||[]).slice(0,3).map(x=>({title:x.title,premise:x.premise.slice(0,200)}))})},
+ {role:'user',content:JSON.stringify({topics:input.topics.slice(0,14),preferences:input.comment.trim().slice(0,1000),avoidRepeating:(input.previous||[]).slice(0,6).map(x=>({title:x.title,premise:x.premise.slice(0,200)})),...(input.recommendation?{recommendation:input.recommendation,pastGenres:(input.pastGenres||[]).slice(0,12)}:{})})},
 ];
 const clean=(x:unknown,max:number)=>typeof x==='string'?x.replace(/[\u0000-\u001f\u007f]/gu,' ').replace(/\s+/gu,' ').trim().slice(0,max):'';
-export function parseWorldIdeas(raw:string):WorldIdea[]{
+export function parseWorldIdeas(raw:string,count=3):WorldIdea[]{
  if(typeof raw!=='string')throw Error('未收到世界構想。');
  const text=raw.replace(/<think>[\s\S]*?<\/think>/giu,'').trim().replace(/^```(?:json)?\s*|\s*```$/giu,'');
  let data:unknown;try{data=JSON.parse(text);}catch{throw Error('AI 未能生成完整世界構想，請再抽一次。');}
- if(!Array.isArray(data)||data.length!==3)throw Error('未能取得三個完整世界，請再試。');
+ if(![1,3,6].includes(count)||!Array.isArray(data)||data.length!==count)throw Error('未能取得完整世界構想，請再試。');
  const ideas=data.map(row=>{
   if(!row||typeof row!=='object'||Array.isArray(row)||!genres.includes(row.genre))throw Error('世界題材格式有誤，請再試。');
   const idea:WorldIdea={title:clean(row.title,100),genre:row.genre,premise:clean(row.premise,1700),protagonist:clean(row.protagonist,300),goldenFinger:clean(row.goldenFinger,700),mainQuest:clean(row.mainQuest,550)};
@@ -33,7 +36,7 @@ export function parseWorldIdeas(raw:string):WorldIdea[]{
   return idea;
  });
  const unique=(s:string)=>s.normalize('NFKC').toLowerCase().replace(/[\s\p{P}]/gu,'');
- if(new Set(ideas.map(x=>unique(x.title))).size!==3||new Set(ideas.map(x=>unique(x.premise))).size!==3)throw Error('AI 提供了重複世界，請再抽一次。');
+ if(new Set(ideas.map(x=>unique(x.title))).size!==count||new Set(ideas.map(x=>unique(x.premise))).size!==count)throw Error('AI 提供了重複世界，請再抽一次。');
  return ideas;
 }
 export const ideaToWorldOptions=(idea:WorldIdea):WorldlineStartOptions=>({...idea,tone:'story',relationshipMode:'normal'});

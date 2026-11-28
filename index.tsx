@@ -10685,14 +10685,15 @@ const openWorldline = async (source: 'new' | 'current' = 'current') => {
                 return parseWorldIdeas(result.text);
             },
             generateWorldIdeas: async input => {
-                const {buildWorldIdeaMessages,parseWorldIdeas}=await import('./worldlineQuickStart.js');
+                const {buildWorldIdeaMessages,parseWorldIdeas,worldIdeaCount}=await import('./worldlineQuickStart.js');
+                const count=worldIdeaCount(input);
                 const result=await generateChatTextWithTimeout({
                     model:chatModelSettings.primary||VENICE_CHAT_MODEL,
                     messages:buildWorldIdeaMessages(input),
-                    maxCompletionTokens:2800,temperature:1.04,topP:0.94,
+                    maxCompletionTokens:count===6?4800:count===1?1200:2800,temperature:1.04,topP:0.94,
                     repetitionPenalty:1.05,seed:Math.floor(Math.random()*2_000_000_000),stop:[],
                 },65000);
-                return parseWorldIdeas(result.text);
+                return parseWorldIdeas(result.text,count);
             },
             generateRandomQuest: async input => {
                 const { buildRandomMainQuestMessages, normalizeRandomMainQuest } =
