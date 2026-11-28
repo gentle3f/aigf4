@@ -53,6 +53,16 @@ test('large history produces a bounded prompt and no mutations',()=>{
 test('Worldline narrator receives actual saved memory and bypasses automatic NPC promotion',()=>{
  const app=readFileSync(new URL('../index.tsx',import.meta.url),'utf8');
  assert.match(app,/compileWorldRecall\(buildWorldReadModel\(memoryManager\.peekChatHistory\(conversationKey\), persona\.memories \|\| \[\]\)/);
- assert.match(app,/request\.mode === 'character' && !isWorldlineNarrator\(request\)\) \{\s*const proposals = createObservedNpcPromotionProposals/);
+ assert.match(app,/request\.mode === 'character' && !getActiveWorldline\(request\.conversationKey, false\) && !isWorldlineNarrator\(request\)\) \{\s*const proposals = createObservedNpcPromotionProposals/);
  assert.match(app,/const narrator = isWorldlineNarrator\(request\)/);
+});
+
+test('Worldline stories bypass contextual photo and cast proposals but keep manual photo flow',()=>{
+ const app=readFileSync(new URL('../index.tsx',import.meta.url),'utf8');
+ assert.match(app,/const allowContextActions = !getActiveWorldline\(conversationKey, false\)/);
+ assert.match(app,/allowContextActions && isExplicitCharacterPhotoRequest\(userMessage\)/);
+ assert.match(app,/!allowContextActions\|\|conversationKey===NATIVE_SYNC_KEY\?null:createExplicitNpcPromotionProposal/);
+ assert.match(app,/generated\.npcCandidate && !getActiveWorldline\(request\.conversationKey, false\)/);
+ assert.match(app,/if \(request\.mode === 'photo' \|\| \(request\.mode === 'character' && request\.characterPhotoRequest\)\)/);
+ assert.match(app,/characterPhotoRequest: true,/);
 });

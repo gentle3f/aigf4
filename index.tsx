@@ -9245,7 +9245,7 @@ const getResponse = async (
                 }
             }
         }
-        if (typeof generated !== 'string' && request.room && generated.npcCandidate) {
+        if (typeof generated !== 'string' && request.room && generated.npcCandidate && !getActiveWorldline(request.conversationKey, false)) {
             const candidate = generated.npcCandidate;
             const normalizedName = candidate.name.trim().toLocaleLowerCase();
             const room = roomManager.getRoom(request.room.id) || request.room;
@@ -9272,7 +9272,7 @@ const getResponse = async (
                 if (currentConversationKey === request.conversationKey) appendMessage(proposalContent, 'system', undefined, 'none');
             }
         }
-        if (typeof generated === 'string' && !request.room && request.mode === 'character' && !isWorldlineNarrator(request)) {
+        if (typeof generated === 'string' && !request.room && request.mode === 'character' && !getActiveWorldline(request.conversationKey, false) && !isWorldlineNarrator(request)) {
             const proposals = createObservedNpcPromotionProposals(
                 request.conversationKey,
                 request.persona,
@@ -10269,6 +10269,8 @@ const sendMessage = async ({
         }
     }
     markChatPerformance('send:user-persist', persistStartedAt);
+    // World narration is story input, not a request to create app-level characters/photos.
+    const allowContextActions = !getActiveWorldline(conversationKey, false);
     const explicitMemoryIntent = detectExplicitMemoryIntent(userMessage);
     if (
         !assistantMode
@@ -10296,7 +10298,7 @@ const sendMessage = async ({
         !assistantMode
         && !characterPhotoRequest
         && attachmentBundle.attachments.length === 0
-        && isExplicitCharacterPhotoRequest(userMessage) && conversationKey!==NATIVE_SYNC_KEY
+        && allowContextActions && isExplicitCharacterPhotoRequest(userMessage) && conversationKey!==NATIVE_SYNC_KEY
     ) {
         const systemContent: Content = { photoIntent: createPhotoIntentProposal(userMessage) };
         memoryManager.addMessage(conversationKey, 'system', systemContent);
@@ -10310,7 +10312,7 @@ const sendMessage = async ({
         && !characterPhotoRequest
         && attachmentBundle.attachments.length === 0
     ) {
-        const npcPromotion = conversationKey===NATIVE_SYNC_KEY?null:createExplicitNpcPromotionProposal(conversationKey, persona, userMessage);
+        const npcPromotion = !allowContextActions||conversationKey===NATIVE_SYNC_KEY?null:createExplicitNpcPromotionProposal(conversationKey, persona, userMessage);
         if (npcPromotion) {
             const systemContent: Content = { npcProposal: npcPromotion };
             memoryManager.addMessage(conversationKey, 'system', systemContent);
