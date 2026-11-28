@@ -2,6 +2,7 @@ import {readCloudSyncIndex,writeCloudSyncIndexesAtomically} from './cloudSyncInd
 import type {CloudMergeSnapshot} from './atomicCloudMerge.js';
 import {assertServerGenerationDelta, type ServerGenerationAdmission} from './serverGenerationAdmission.js';
 import type {AtomicMediaDelta} from './atomicCloudMedia.js';
+import {isStatePatch,type StatePatch} from './cloudStatePatch.js';
 export type DeltaRow={conversation_key:string;message_id:string;position:number;role:string;speaker_id:string|null;content:object;created_at_ms:number};
 export type DeltaConversation={conversation_key:string;title:string;kind:string};
 export type Delta={conversations:DeltaConversation[];messages:DeltaRow[];remove_messages:{conversation_key:string;message_id:string}[];remove_conversations:string[];media?:AtomicMediaDelta};
@@ -20,7 +21,7 @@ const journalKey=(uid:string)=>'wetappAtomicDeltaJournalV3:'+uid;
 const baselineKey=(uid:string)=>'wetappAtomicDeltaBaselineV3:'+uid;
 export type AtomicRequest={expected_revision:number;new_payload:object;delta:Delta;device:string;operation_id:string};
 export type MergeInstallation={local:CloudMergeSnapshot;merged:CloudMergeSnapshot};
-export type AtomicJournal={request:AtomicRequest;indexes:Record<string,Record<string,string>>;mergeInstall?:MergeInstallation;generation?:ServerGenerationAdmission};
+export type AtomicJournal={request:AtomicRequest;indexes:Record<string,Record<string,string>>;mergeInstall?:MergeInstallation;generation?:ServerGenerationAdmission;statePatch?:StatePatch};
 type Journal=AtomicJournal;
 export const readAtomicBaseline=async(uid:string)=>Number((await readCloudSyncIndex(baselineKey(uid))).revision||0);
 export const saveAtomicBaseline=async(uid:string,revision:number,extra:Record<string,Record<string,string>>={})=>{if(!Number.isSafeInteger(revision)||revision<1)throw Error('ATOMIC_BASELINE_REQUIRED');await writeCloudSyncIndexesAtomically({...extra,[baselineKey(uid)]:{revision:String(revision)}});};
@@ -28,15 +29,16 @@ export const pendingAtomicJournal=async(uid:string):Promise<Journal|null>=>{
  const raw=(await readCloudSyncIndex(journalKey(uid))).json;if(!raw)return null;
  const j=JSON.parse(raw) as Journal;
  if(!j.request||!j.indexes||!Number.isSafeInteger(j.request.expected_revision)||j.request.expected_revision<1||!/^[a-f0-9-]{36}$/.test(j.request.operation_id))throw Error('ATOMIC_JOURNAL_INVALID');
+ if(j.statePatch!==undefined&&!isStatePatch(j.statePatch))throw Error('ATOMIC_STATE_PATCH_INVALID');
  assertServerGenerationDelta(j.request.delta,j.generation);
  if(j.generation&&j.generation.job_id!==j.request.operation_id)throw Error('ATOMIC_GENERATION_OPERATION_MISMATCH');
  return j;
 };
-export const prepareAtomicJournal=async(uid:string,request:Omit<AtomicRequest,'operation_id'>,indexes:Journal['indexes'],mergeInstall?:MergeInstallation,generation?:ServerGenerationAdmission)=>{
+export const prepareAtomicJournal=async(uid:string,request:Omit<AtomicRequest,'operation_id'>,indexes:Journal['indexes'],mergeInstall?:MergeInstallation,generation?:ServerGenerationAdmission,statePatch?:StatePatch)=>{
  if(await pendingAtomicJournal(uid))throw Error('ATOMIC_OPERATION_PENDING');
  assertServerGenerationDelta(request.delta,generation);
  if(generation&&mergeInstall)throw Error('ATOMIC_GENERATION_MERGE_REQUIRED');
- const j:Journal={request:{...request,operation_id:generation?.job_id??crypto.randomUUID()},indexes,...(mergeInstall?{mergeInstall}:{}),...(generation?{generation}:{})};
+ const j:Journal={request:{...request,operation_id:generation?.job_id??crypto.randomUUID()},indexes,...(mergeInstall?{mergeInstall}:{}),...(generation?{generation}:{}),...(statePatch?{statePatch}:{})};
  await writeCloudSyncIndexesAtomically({[journalKey(uid)]:{json:JSON.stringify(j)}});
  return j;
 };

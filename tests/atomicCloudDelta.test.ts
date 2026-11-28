@@ -411,3 +411,35 @@ test('manager incremental pull fetches only the changed 32-row block from a conf
  const result=await f.x.loadCloudMessageRows(uid,8,true);
  assert.equal(requests,1);assert.equal(result.rows.length,66);assert.equal(result.rows.at(-1).message_id,'reply');assert.equal(result.manifest.revision,8);
 });
+
+test('production patch transport keeps full intended snapshot durable and uses only a small settings patch',async()=>{
+ const uid='atomic-state-patch-small',f=await fixture(uid),rows=f.x.collectLocalMessages();
+ const big={...payload,appSettings:{foreignFixture:'x'.repeat(9200000)},rooms:{version:2,rooms:[]}};
+ await saveAtomicBaseline(uid,7,mergeBaseIndex(uid,7,{conversations:rows.conversations,messages:rows.messages.slice(0,1),payload:big}));
+ f.x.statePatchMode=true;f.x.buildStatePayload=async()=>big;
+ const rpc=f.x.client.rpc;
+ f.x.client.rpc=async(name:string,req:any)=>{
+  assert.equal(name,'wetapp_commit_chat_delta_patch_v1');
+  assert.equal('new_payload' in req,false);assert.deepEqual(req.state_patch,{version:1,edits:[]});
+  const j=await pendingAtomicJournal(uid);
+  assert.deepEqual(j?.statePatch,req.state_patch);
+  assert.equal((j?.request.new_payload as any).appSettings.foreignFixture.length,9200000);
+  const {state_patch,...other}=req;
+  return rpc('wetapp_commit_chat_delta_receipted_v3',{...other,new_payload:big});
+ };
+ assert.equal(await f.x.pushLocalToCloud(),true);
+ assert.deepEqual(f.calls,['GET','POST']);
+ assert.equal(await pendingAtomicJournal(uid),null);
+ assert.equal(await readAtomicBaseline(uid),8);
+});
+test('generation patch commit retains the exact job ID and does not send the full settings',async()=>{
+ const {buildAtomicCommit}=await import('../serverGenerationAdmission.js');
+ const {marker,admission}=generationFixture();
+ const delta={conversations:[],messages:[{conversation_key:admission.conversation_key,message_id:admission.user_message_id,position:0,role:'user',speaker_id:null,content:{text:'new',vpsServerGeneration:marker},created_at_ms:1}],remove_messages:[],remove_conversations:[]};
+ const req={expected_revision:7,new_payload:payload,delta,device:'device',operation_id:admission.job_id};
+ const commit=buildAtomicCommit(req,admission,{version:1,edits:[]});
+ assert.equal(commit.name,'wetapp_accept_generation_patch_v1');
+ assert.equal('new_payload' in commit.args,false);assert.equal('operation_id' in commit.args,false);
+ assert.equal((commit.args as any).job_id,admission.job_id);assert.equal((commit.args as any).reply_id,admission.reply_id);
+ assert.deepEqual((commit.args as any).state_patch,{version:1,edits:[]});
+});

@@ -23,8 +23,15 @@ export function assertServerGenerationDelta(delta:Delta,admission?:ServerGenerat
  if(row.role!=='user'||row.conversation_key!==admission.conversation_key||row.message_id!==admission.user_message_id||marker?.version!==1||marker.jobId!==admission.job_id||marker.replyId!==admission.reply_id||content.text!==latest||!validPlan)throw Error('ATOMIC_GENERATION_ADMISSION_INVALID');
  if(delta.messages.some(m=>m.conversation_key===row.conversation_key&&m.position>row.position)||delta.remove_conversations.includes(row.conversation_key))throw Error('ATOMIC_GENERATION_NOT_TAIL');
 }
-export function buildAtomicCommit(request:{operation_id:string;expected_revision:number;new_payload:object;delta:Delta;device:string},admission?:ServerGenerationAdmission){
+export function buildAtomicCommit(request:{operation_id:string;expected_revision:number;new_payload:object;delta:Delta;device:string},admission?:ServerGenerationAdmission,statePatch?:import('./cloudStatePatch.js').StatePatch){
  assertServerGenerationDelta(request.delta,admission);
+ if(statePatch){
+  const {new_payload,...wire}=request;
+  if(!admission)return {name:'wetapp_commit_chat_delta_patch_v1',args:{...wire,state_patch:statePatch}};
+  if(request.operation_id!==admission.job_id)throw Error('ATOMIC_GENERATION_OPERATION_MISMATCH');
+  const {operation_id,...base}=wire;
+  return {name:'wetapp_accept_generation_patch_v1',args:{...base,state_patch:statePatch,...admission}};
+ }
  if(!admission)return {name:'wetapp_commit_chat_delta_receipted_v3',args:request};
  if(request.operation_id!==admission.job_id)throw Error('ATOMIC_GENERATION_OPERATION_MISMATCH');
  const {operation_id,...base}=request;

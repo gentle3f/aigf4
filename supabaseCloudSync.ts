@@ -18,6 +18,7 @@ import type { StoredChatAttachment } from './chatMediaStore.js';
 import { filterRemoteStateEntities, findLocallyDeletedIndexedKeys, mergeChatHistoryMaps, mergeBootstrapHistoryMaps } from './cloudMessageMerge.js';
 import {forkBootstrapTextWorlds} from './cloudBootstrapWorldFork.js';
 import {normalizeLegacyRemotePositions} from './legacyRemotePositions.js';
+import {makeStatePatch} from './cloudStatePatch.js';
 import {MESSAGE_BLOCK_SIZE,parseMessageManifest,readMessageManifest,messageManifestIndex,manifestMatchesRows,planMessageBlockPull,validateBlockRows,advanceMessageManifest,type MessageManifest} from './cloudMessageBlocks.js';
 import { readCloudSyncIndex, writeCloudSyncIndex, writeCloudSyncIndexesAtomically } from './cloudSyncIndexStore.js';
 import {mergeAtomicSnapshots,mergeBaseIndex,readMergeBase,normalizeMergeSnapshot,equalMergeSnapshot,preserveForeignCloudSettings,type CloudMergeSnapshot} from './atomicCloudMerge.js';
@@ -291,7 +292,7 @@ export class SupabaseCloudSyncManager {
     private started = false;
     private atomicLocalEpoch=0;
 
-    constructor(memoryManager: MemoryManager, roomManager: RoomManager, callbacks: CloudSyncCallbacks, private readonly recoveryOnly=false, private readonly canRestore=()=>true, private readonly atomicDeltaMode=false) {
+    constructor(memoryManager: MemoryManager, roomManager: RoomManager, callbacks: CloudSyncCallbacks, private readonly recoveryOnly=false, private readonly canRestore=()=>true, private readonly atomicDeltaMode=false, private readonly statePatchMode=ATOMIC_CLOUD_PRODUCTION) {
         this.memoryManager = memoryManager;
         this.roomManager = roomManager;
         this.callbacks = callbacks;
@@ -1469,7 +1470,7 @@ export class SupabaseCloudSyncManager {
                         [MEDIA_INDEX_KEY]:mediaIndex,
                         [STATE_ENTITY_INDEX_KEY]:this.stateEntityIndex(payload),
                         ...mergeBaseIndex(uid,baseline+1,{conversations,messages,payload}),
-                    },undefined,admission);
+                    },undefined,admission,this.statePatchMode?makeStatePatch(base.payload,payload)??undefined:undefined);
                     }
                 }
                 assertCurrent();
@@ -1486,7 +1487,7 @@ export class SupabaseCloudSyncManager {
                             await this.verifyAtomicMergeMedia(uid);assertCurrent();
                             if(!this.canRestore()||!equalMergeSnapshot(current,journal.mergeInstall.local))throw Error('ATOMIC_MERGE_INSTALL_LOCAL_CHANGED');
                         }
-                        const commit=buildAtomicCommit(request,journal.generation);
+                        const commit=buildAtomicCommit(request,journal.generation,journal.statePatch);
                         const r=await client.rpc(commit.name,commit.args);
                         if(r.error)throw r.error;
                         return normalizeCloudStateRevision(r.data);
