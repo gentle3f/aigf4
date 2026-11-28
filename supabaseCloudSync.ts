@@ -2381,9 +2381,14 @@ export class SupabaseCloudSyncManager {
             const blocked=new Set([...avatars.map(a=>a.personaKey),...photos.map(a=>a.personaKey),...attachments.map(a=>a.conversationKey),...this.roomManager.exportData().rooms.flatMap(r=>[r.id,...r.members.map(m=>m.sourcePersonaKey||'')])]);
             const settings=Object.fromEntries(this.cloudSettingKeys().flatMap(key=>{const value=localStorage.getItem(key);return value===null?[]:[[key,value]];}));
             const result=forkBootstrapTextWorlds({histories:localChatHistories,personas:localPersonas,diaries:localDiaries,interests:localInterests,settings},cloudChatHistories,blocked,payload.appSettings,payload.customPersonas);
+            // Report the exact remaining conflict, without exposing message text.
+            try{mergeBootstrapHistoryMaps(result.local.histories,cloudChatHistories);}catch(error){
+                const detail=authErrorMessage(error,'ATOMIC_BOOTSTRAP_HISTORY_CONFLICT');
+                const key=detail.match(/\[([^;]+);/u)?.[1];
+                throw Error(detail+(key&&result.skipped[key]?` [fork=${result.skipped[key]}]`:''));
+            }
             if(Object.keys(result.forks).length){
-                // Verify all remaining histories before mutating settings. The outer pull transaction rolls back on failure.
-                mergeBootstrapHistoryMaps(result.local.histories,cloudChatHistories);
+                // All remaining histories have been verified. The outer pull transaction rolls back on failure.
                 localChatHistories=result.local.histories;localPersonas=result.local.personas;localDiaries=result.local.diaries;localInterests=result.local.interests;
                 for(const key of Object.keys(settings))if(!Object.hasOwn(result.local.settings,key))localStorage.removeItem(key);
                 for(const [key,value] of Object.entries(result.local.settings))if(settings[key]!==value)localStorage.setItem(key,value);

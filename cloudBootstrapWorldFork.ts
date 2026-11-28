@@ -9,19 +9,22 @@ const sameText=(a:ChatMessage,b:ChatMessage)=>a.id===b.id&&a.role===b.role&&Numb
 const portable=(m:ChatMessage)=>!m.content?.imageUrl&&!m.content?.imageAssetId&&!m.content?.attachments?.length&&!Object.hasOwn(m.content||{},'vpsServerGeneration');
 const parse=(raw:string|undefined,field:string)=>{if(!raw)return null;const data=JSON.parse(raw);if(!obj(data)||!obj(data[field]))throw Error('ATOMIC_BOOTSTRAP_WORLD_STATE_CONFLICT');return data;};
 export function forkBootstrapTextWorlds(state:State,remote:ChatHistoryMap,blocked:ReadonlySet<string>,remoteSettings:Record<string,string>={},remotePersonas:Record<string,unknown>={}){
- const local=structuredClone(state),forks:Record<string,string>=Object.create(null);
+ const local=structuredClone(state),forks:Record<string,string>=Object.create(null),skipped:Record<string,string>=Object.create(null);
  const registry=parse(local.settings[WORLDLINE_SETTING_KEY],'records');
- if(!registry)return {local,forks};
+ if(!registry)return {local,forks,skipped};
  const ledger=parse(local.settings[WORLD_LEDGER_KEY],'worlds');
  const remoteRegistry=parse(remoteSettings[WORLDLINE_SETTING_KEY],'records');
  const remoteLedger=parse(remoteSettings[WORLD_LEDGER_KEY],'worlds');
  for(const [key,a] of Object.entries(local.histories)){
   const b=remote[key], record=registry.records[key],persona=local.personas[key];
-  if(!b?.length||!a.length||!key.startsWith('custom_')||!record?.world||record.world.conversationKey!==key||!persona||persona.avatarUrl||blocked.has(key))continue;
+  if(!b?.length||!a.length)continue;
+  if(!key.startsWith('custom_')||!record?.world||record.world.conversationKey!==key||!persona||persona.avatarUrl||blocked.has(key)){
+   skipped[key]=!key.startsWith('custom_')?'NOT_CUSTOM':!record?.world?'NO_WORLD':record.world.conversationKey!==key?'WORLD_KEY':!persona?'NO_PERSONA':persona.avatarUrl?'AVATAR':'MEDIA_OR_ROOM';continue;
+  }
   const n=Math.min(a.length,b.length);let prefix=0;while(prefix<n&&sameText(a[prefix],b[prefix]))prefix++;
   // Only independently diverged text-only worlds with a proven common ancestor.
-  if(prefix===0||prefix===n||!a.every(portable))continue;
-  if(a.some(m=>!m.id)||new Set(a.map(m=>m.id)).size!==a.length)continue;
+  if(prefix===0||prefix===n||!a.every(portable)){skipped[key]=prefix===0?'NO_SHARED_PREFIX':prefix===n?'PREFIX_OR_METADATA':'ATTACHMENT_OR_GENERATION';continue;}
+  if(a.some(m=>!m.id)||new Set(a.map(m=>m.id)).size!==a.length){skipped[key]='INVALID_IDS';continue;}
   const tail=String(a.at(-1)!.id).replace(/[^a-zA-Z0-9_-]/gu,'_').slice(0,80);
   const target='custom_sync_'+key.replace(/[^a-zA-Z0-9_-]/gu,'_').slice(0,60)+'_'+tail;
   const director='aigfWorldlineDirectorV1:';
@@ -41,5 +44,5 @@ export function forkBootstrapTextWorlds(state:State,remote:ChatHistoryMap,blocke
   local.settings[WORLDLINE_SETTING_KEY]=JSON.stringify(registry);
   if(ledger)local.settings[WORLD_LEDGER_KEY]=JSON.stringify(ledger);
  }
- return {local,forks};
+ return {local,forks,skipped};
 }

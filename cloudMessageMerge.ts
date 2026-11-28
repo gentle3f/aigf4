@@ -135,7 +135,10 @@ export const mergeBootstrapHistoryMaps = (local: ChatHistoryMap, remote: ChatHis
         const a=local[key]||[], b=remote[key]||[];
         for(const rows of [a,b]) if(rows.some(m=>!m.id)||new Set(rows.map(m=>m.id)).size!==rows.length) throw Error('ATOMIC_BOOTSTRAP_INVALID_HISTORY');
         const n=Math.min(a.length,b.length);
-        for(let i=0;i<n;i++) if(a[i].id!==b[i].id || signature(a[i])!==signature(b[i])) throw Error('ATOMIC_BOOTSTRAP_HISTORY_CONFLICT：本機與雲端對話有分歧，兩邊均保留。');
+        for(let i=0;i<n;i++) if(a[i].id!==b[i].id || signature(a[i])!==signature(b[i])) {
+            const safeKey=key.replace(/[^a-zA-Z0-9_-]/gu,'_').slice(0,180);
+            throw Error(`ATOMIC_BOOTSTRAP_HISTORY_CONFLICT [${safeKey}; local=${a.length}; cloud=${b.length}; position=${i+1}; reason=${a[i].id!==b[i].id?'ID':'CONTENT'}]：本機與雲端對話有分歧，兩邊均保留。`);
+        }
         out[key]=clone(a.length>=b.length?a:b);
     }
     return out;
