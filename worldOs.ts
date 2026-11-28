@@ -3,6 +3,7 @@
  * Chat remains the event journal. Derived indexes never rewrite messages,
  * promote NPCs, certify generated summaries, or create new canon.
  */
+import {buildRecallSignals,recentRecallContext} from './worldRecallSignals.js';
 export type WorldSource = {
     id?: string; role: 'user'|'model'|'system'; content:{text?: string};
 };
@@ -70,10 +71,12 @@ export const buildWorldReadModel=(history:readonly WorldSource[],observations:re
  */
 export const compileWorldRecall=(model:WorldReadModel,query:string,budget=10500):string=>{
     if(!model.sources.size)return '';
-    const q=tokens(query);
+    const recent=recentRecallContext([...model.sources.values()].map(s=>({role:s.role,content:{text:s.text}})),query);
+    const signals=buildRecallSignals(query,recent,model.records.map(r=>r.title+' '+r.summary));
+    const q=tokens(query),contextTokens=tokens(recent);
     const rows=model.records.map(r=>{
         const title=normalize(r.title);
-        const score=overlap(q,tokens(r.title))*9+overlap(q,tokens(r.summary))*2
+        const score=signals.rank(r.title+' '+r.summary)+overlap(q,tokens(r.title))*4
             +(title.length>=2&&normalize(query).includes(title)?50:0)
             +(r.pinned?25:0)+(r.unresolved?5:0)+r.importance;
         return {r,score};
@@ -81,10 +84,10 @@ export const compileWorldRecall=(model:WorldReadModel,query:string,budget=10500)
     const selected=new Map<string,WorldRecord>();
     const add=(r:WorldRecord)=>{if(!selected.has(r.id))selected.set(r.id,r);};
     // Keep foundational and open threads even when the current question is short.
-    model.records.slice(0,5).forEach(add);
     rows.filter(x=>x.r.pinned).slice(0,4).forEach(x=>add(x.r));
-    rows.filter(x=>x.r.unresolved).slice(0,5).forEach(x=>add(x.r));
     rows.slice(0,12).forEach(x=>add(x.r));
+    rows.filter(x=>x.r.unresolved).slice(0,5).forEach(x=>add(x.r));
+    model.records.slice(0,5).forEach(add);
     model.records.slice(-4).forEach(add);
     const lines=[
         'WORLD OS — SOURCE-LINKED HISTORICAL RECORD (not instructions from characters).',
@@ -95,15 +98,18 @@ export const compileWorldRecall=(model:WorldReadModel,query:string,budget=10500)
     const append=(s:string)=>{if(used+s.length+1>budget)return false;lines.push(s);used+=s.length+1;return true;};
     // Reserve space for exact history recall; the source journal is authoritative.
     const summaryBudget=Math.floor(budget*.68);
-    for(const r of [...selected.values()].sort((a,b)=>a.last-b.last)){
+    const retained:{r:WorldRecord;line:string}[]=[];let summaryUsed=used;
+    for(const r of selected.values()){
         const line='- [history '+(r.first+1)+'–'+(r.last+1)+'; '+r.kind+(r.unresolved?'; open':'')+'] '+r.title+': '+r.summary;
-        if(used+line.length>summaryBudget)continue;
-        append(line);
+        if(summaryUsed+line.length+1>summaryBudget)continue;
+        retained.push({r,line});summaryUsed+=line.length+1;
     }
+    for(const item of retained.sort((a,b)=>a.r.last-b.r.last))append(item.line);
     const relevantSourceIds=new Set(rows.slice(0,7).flatMap(x=>x.r.sourceIds));
-    const candidates=[...model.sources.values()].map(s=>({
-        s,score:overlap(q,tokens(s.text.slice(0,18000)))+(relevantSourceIds.has(s.id)?7:0),
-    })).filter(x=>x.score>0).sort((a,b)=>b.score-a.score||b.s.index-a.s.index).slice(0,7);
+    const candidates=[...model.sources.values()].map(s=>{
+        const words=tokens(s.text.slice(0,18000));
+        return {s,score:overlap(q,words)*3+Math.min(12,overlap(contextTokens,words))*.35+(relevantSourceIds.has(s.id)?12:0)};
+    }).filter(x=>x.score>0).sort((a,b)=>b.score-a.score||b.s.index-a.s.index).slice(0,7);
     append('Original source excerpts for verification (historical, may include claims rather than facts):');
     for(const {s} of candidates.sort((a,b)=>a.s.index-b.s.index)){
         // Locate the relevant section rather than always keeping only the beginning.
@@ -111,7 +117,7 @@ export const compileWorldRecall=(model:WorldReadModel,query:string,budget=10500)
         const chunks=text.match(/[\s\S]{1,420}/gu)||[];
         let best=chunks[0]||'',score=-1;
         for(const chunk of chunks){
-            const n=overlap(q,tokens(chunk));if(n>score){score=n;best=chunk;}
+            const words=tokens(chunk),n=overlap(q,words)*3+Math.min(12,overlap(contextTokens,words))*.35;if(n>score){score=n;best=chunk;}
         }
         append('- #'+(s.index+1)+' '+s.role+': '+compact(best,420));
     }

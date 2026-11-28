@@ -254,6 +254,8 @@ const openManage=(deps:WorldlineUiDeps,key:string,world:Worldline)=>{
     const search=element('input','wl-input');
     search.placeholder='搜尋人物、能力、研究、主線、情報…';
     search.type='search';
+    const subjectFilter=element('select','wl-input');
+    subjectFilter.setAttribute('aria-label','依人物／研究項目篩選');
     const rows=element('div','wl-cast-body');
     let stopped=false;
     let rebuilding=false;
@@ -261,28 +263,51 @@ const openManage=(deps:WorldlineUiDeps,key:string,world:Worldline)=>{
     dialog.addEventListener('close',()=>{stopped=true;sectionClosed=true;},{once:true});
     const renderOs=()=>{
         const state=deps.getWorldLedger(key);
-        osStatus.textContent='已完整分析 '+state.processed+' / '+state.total+' 則原始訊息；'+(state.partial?'另有 '+state.partial+' 則已保存部分證據，待補核；':'')+state.current.length+' 項狀態，'+state.open.length+' 項未完成線索，'+state.conflicts.length+' 項待核對衝突。';
+        osStatus.textContent='已完整分析 '+state.processed+' / '+state.total+' 則原始訊息；'+(state.partial?'另有 '+state.partial+' 則已保存部分證據，待補核；':'')+state.current.length+' 項狀態，'+state.open.length+' 項尚未標記完成的紀錄（不等於獨立任務），'+state.conflicts.length+' 項待核對衝突。';
         const query=search.value.trim().normalize('NFKC').toLocaleLowerCase();
+        const previousSubject=subjectFilter.value;
+        const subjects=[...new Set(state.timeline.map(x=>x.subject))].sort((a,b)=>a.localeCompare(b,'zh-Hant'));
+        subjectFilter.replaceChildren();
+        const allSubjects=element('option','','全部人物／項目');allSubjects.value='';subjectFilter.appendChild(allSubjects);
+        for(const subject of subjects){const option=element('option','',subject);option.value=subject;subjectFilter.appendChild(option);}
+        if(subjects.includes(previousSubject))subjectFilter.value=previousSubject;
+        const selectedSubject=subjectFilter.value;
         rows.replaceChildren();
         const categories=[
             ['當前人物與世界狀態',state.current],
             ['未完成研究／故事線',state.open],
+            ['已標記完成',state.current.filter(x=>['thread','research','goal','faction'].includes(x.kind)&&x.state==='resolved')],
             ['假設、計劃及未證實說法',state.uncertain],
             ['衝突：保留原有資料，待核對',state.conflicts],
             ['歷史事件紀錄',state.timeline],
         ] as const;
         for(const [label,items] of categories){
-            const filtered=items.filter(x=>!query||[x.subject,x.key,x.value,x.kind,x.state].join(' ').normalize('NFKC').toLocaleLowerCase().includes(query));
+            const filtered=items.filter(x=>(!selectedSubject||x.subject===selectedSubject)&&(!query||[x.subject,x.key,x.value,x.kind,x.state].join(' ').normalize('NFKC').toLocaleLowerCase().includes(query)));
             if(!filtered.length)continue;
             const group=element('details','wl-chronicle');
             group.open=Boolean(query)||label==='未完成研究／故事線';
             group.appendChild(element('summary','',label+'（'+filtered.length+'）'));
-            for(const item of filtered.slice().reverse().slice(0,query?100:30)){
-                const row=element('details','wl-chronicle');
-                row.appendChild(element('summary','',item.subject+' · '+item.key+'：'+item.value+' ['+item.state+']'));
-                row.appendChild(element('p','','原文 #'+(item.position+1)+'：'+item.quote));
-                group.appendChild(row);
-            }
+            const ordered=filtered.slice().reverse();
+            const pageSize=30;let page=0;
+            const entries=element('div','wl-cast-body'),nav=element('div','wl-cast-body');
+            const renderPage=()=>{
+                entries.replaceChildren();nav.replaceChildren();
+                const first=page*pageSize,last=Math.min(first+pageSize,ordered.length);
+                for(const item of ordered.slice(first,last)){
+                    const row=element('details','wl-chronicle');
+                    row.appendChild(element('summary','',item.subject+' · '+item.key+'：'+item.value+' ['+item.state+']'));
+                    row.appendChild(element('p','','原文 #'+(item.position+1)+'：'+item.quote));
+                    entries.appendChild(row);
+                }
+                nav.appendChild(element('p','wl-note','顯示 '+(first+1)+'–'+last+' / '+ordered.length+' 項 · 第 '+(page+1)+' / '+Math.ceil(ordered.length/pageSize)+' 頁'));
+                if(page>0)nav.appendChild(actionButton('上一頁',()=>{page--;renderPage();}));
+                if(last<ordered.length)nav.appendChild(actionButton('下一頁',()=>{page++;renderPage();}));
+                if(ordered.length>pageSize){
+                    const jump=element('input','wl-input');jump.type='number';jump.min='1';jump.max=String(Math.ceil(ordered.length/pageSize));jump.value=String(page+1);jump.setAttribute('aria-label','前往頁數');
+                    nav.append(jump,actionButton('前往指定頁',()=>{const n=Number(jump.value);if(Number.isInteger(n)&&n>=1&&n<=Math.ceil(ordered.length/pageSize)){page=n-1;renderPage();}}));
+                }
+            };
+            group.append(entries,nav);renderPage();
             rows.appendChild(group);
         }
     };
@@ -318,7 +343,8 @@ const openManage=(deps:WorldlineUiDeps,key:string,world:Worldline)=>{
         })();
     });
     search.addEventListener('input',renderOs);
-    os.append(osStatus,rebuild,search,rows);
+    subjectFilter.addEventListener('change',renderOs);
+    os.append(osStatus,rebuild,search,subjectFilter,rows);
     body.appendChild(os);
     renderOs();
     const chapter=control(body,'章節','input',world.chapter);

@@ -85,3 +85,20 @@ test('fork retains opening not later editable powers or progress; registry never
  assert.equal(Object.keys(parseWorldlineRegistry(JSON.stringify(register)).records).length,26);
  assert.equal(getWorldline(scopedWorldlineRegistry(register,'world'),'world')?.mainQuest,'未來主線');
 });
+
+test('recent scene restores relevant old knowledge without user restating it; current branch and budget stay intact',()=>{
+ const old=msg('old-anchor','碧瑤知道霜晶只能在月蝕開門。');
+ const noise=Array.from({length:130},(_,i)=>msg('noise'+i,'商會紀錄第'+i+'號倉庫貨物狀態。'));
+ const scene=msg('scene','碧瑤來到霜晶門前，凝視月蝕。');
+ const follow=msg('follow','繼續','user');
+ const h=[old,...noise,scene,follow];
+ const observations=[obs(old,old.content.text!,'knowledge','碧瑤','霜晶','只能在月蝕開門'),...noise.map((s,i)=>obs(s,s.content.text!,'research','商會','貨物'+i,'倉庫貨物狀態'+i))];
+ let ledger=emptyLedger();
+ // Keep the existing extraction and provenance validation; no synthetic direct state writes.
+ for(const o of observations){const source=h.find(s=>s.id===o.sourceId)!;ledger=appendWorldBatches(ledger,'context',parseWorldExtraction(JSON.stringify({observations:[o]}),[source],100),h);}
+ const result=compileWorldLedger(ledger,'context',h,'繼續',1800);
+ assert.match(result,/碧瑤.*只能在月蝕開門/);
+ assert.ok(result.length<=1800);
+ assert.equal((result.match(/OPEN.*商會/g)||[]).length+(result.match(/CURRENT.*商會/g)||[]).length>0,true);
+ assert.doesNotMatch(compileWorldLedger(ledger,'other',h,'繼續'),/霜晶/);
+});

@@ -3,6 +3,7 @@
  */
 import type { WorldSource } from './worldOs.js';
 import type { VeniceMessage } from './venice.js';
+import {buildRecallSignals,recentRecallContext} from './worldRecallSignals.js';
 export const WORLD_LEDGER_KEY='aigf4WorldLedgerV2';
 export const WORLD_LEDGER_SCHEMA='aigf-world-ledger-v2';
 export const WORLD_KINDS=['identity','alias','personality','location','ability','inventory','research','rule','relationship','knowledge','thread','event','goal','faction'] as const;
@@ -271,11 +272,19 @@ export const projectWorld=(raw:unknown,key:string,history:readonly WorldSource[]
 export const compileWorldLedger=(raw:unknown,key:string,history:readonly WorldSource[],query:string,budget=10000)=>{
     const p=projectWorld(raw,key,history);
     if(!p.processed&&!p.partial)return '';
-    const q=norm(query);
-    const mentions=new Set<string>();
-    for(const o of p.current)if(q.includes(norm(o.subject)))mentions.add(o.entityId);
-    for(const [alias,name] of p.aliases)if(q.includes(alias))mentions.add(name);
-    const score=(o:ProjectedObservation)=> (mentions.has(o.entityId)?50:0)+(q.includes(norm(o.key))?30:0)+([...mentions].some(n=>norm(o.value).includes(n))?20:0)+(p.open.includes(o)?12:0)+(['rule','identity','ability','personality','knowledge'].includes(o.kind)?8:0);
+    const q=norm(query),recent=recentRecallContext(history,query);
+    const text=(o:ProjectedObservation)=>[o.subject,o.key,o.value].join(' ');
+    const signals=buildRecallSignals(query,recent,p.current.map(text));
+    const mentions=new Set<string>(),recentMentions=new Set<string>();
+    for(const o of p.current){const name=norm(o.subject);if(name.length>=2){if(q.includes(name))mentions.add(o.entityId);if(signals.recent.includes(name))recentMentions.add(o.entityId);}}
+    for(const [alias,name] of p.aliases)if(alias.length>=2){if(q.includes(alias))mentions.add(name);if(signals.recent.includes(alias))recentMentions.add(name);}
+    const openSet=new Set(p.open);
+    const scores=new Map<ProjectedObservation,number>();
+    const score=(o:ProjectedObservation)=>{
+      const cached=scores.get(o);if(cached!==undefined)return cached;
+      const n=signals.rank(text(o))+(mentions.has(o.entityId)?65:recentMentions.has(o.entityId)?24:0)+(q.includes(norm(o.key))?30:0)+(openSet.has(o)?12:0)+(['rule','identity','ability','personality','knowledge'].includes(o.kind)?8:0);
+      scores.set(o,n);return n;
+    };
     const ranked=[...p.current].sort((a,b)=>score(b)-score(a)||b.position-a.position);
     const lines=['WORLD OS — derived state, original story is authoritative. Evidence-linked observations may be imperfect; use actual source if in doubt.',
       'Player proposals and NPC claims are NOT completed events. Knowledge belongs only to named knowers. No forced NPC roster or round-robin dialogue.',
@@ -287,7 +296,10 @@ export const compileWorldLedger=(raw:unknown,key:string,history:readonly WorldSo
     const opportunities=[...p.open].sort((a,b)=>opportunityScore(b)-opportunityScore(a)||a.position-b.position);
     // Reserve context for unfinished arcs, conflicts and uncertainty before ordinary recall.
     const openLimit=Math.min(budget,used+Math.floor(budget*.19));
-    opportunities.slice(0,10).forEach(o=>append('OPEN',o,openLimit));
+    // Avoid one prolific research subject crowding out all other active arcs.
+    const subjectCounts=new Map<string,number>(),chosen=new Set<ProjectedObservation>();
+    for(const o of opportunities){if((subjectCounts.get(o.entityId)||0)>=3)continue;const before=used;append('OPEN',o,openLimit);if(used>before){chosen.add(o);subjectCounts.set(o.entityId,(subjectCounts.get(o.entityId)||0)+1);}}
+    for(const o of opportunities)if(!chosen.has(o))append('OPEN',o,openLimit);
     const conflictLimit=used+Math.floor(budget*.10);
     p.conflicts.slice(-6).forEach(o=>append('CONFLICT — do not overwrite',o,conflictLimit));
     const uncertainLimit=used+Math.floor(budget*.11);
@@ -296,7 +308,7 @@ export const compileWorldLedger=(raw:unknown,key:string,history:readonly WorldSo
     const anchorLimit=used+Math.floor((budget-used)*.25);
     anchors.slice(0,20).forEach(o=>append('HISTORICAL ANCHOR',o,anchorLimit));
     const currentLimit=used+Math.floor((budget-used)*.82);
-    ranked.filter(o=>!isHistoricalAnchor(o)).slice(0,45).forEach(o=>append('CURRENT',o,currentLimit));
+    ranked.filter(o=>!isHistoricalAnchor(o)&&!chosen.has(o)).forEach(o=>append('CURRENT',o,currentLimit));
     p.timeline.filter(o=>o.kind==='event').sort((a,b)=>score(b)-score(a)||b.position-a.position).slice(0,6).forEach(o=>append('HISTORICAL EVENT',o));
     return lines.join('\n');
 };

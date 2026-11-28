@@ -66,3 +66,21 @@ test('Worldline stories bypass contextual photo and cast proposals but keep manu
  assert.match(app,/if \(request\.mode === 'photo' \|\| \(request\.mode === 'character' && request\.characterPhotoRequest\)\)/);
  assert.match(app,/characterPhotoRequest: true,/);
 });
+
+test('short continuation retrieves relevant old memory from recent scene before generic summaries fill budget',()=>{
+ const base:WorldSource[]=[{id:'old',role:'model',content:{text:'碧瑤曾約定月蝕才可打開霜晶門。'}}];
+ const memories:WorldObservation[]=[{id:'m-old',kind:'event',title:'霜晶門約定',summary:'碧瑤曾約定月蝕才可打開霜晶門。',sourceMessageIds:['old']}];
+ for(let i=0;i<70;i++){base.push({id:'noise'+i,role:'model',content:{text:'商會倉庫清點物資。'}});memories.push({id:'m'+i,kind:'event',title:'商會物資'+i,summary:'商會倉庫清點物資。'.repeat(20),sourceMessageIds:['noise'+i]});}
+ base.push({id:'scene',role:'model',content:{text:'碧瑤走到霜晶門前。'}},{id:'follow',role:'user',content:{text:'繼續'}});
+ const result=compileWorldRecall(buildWorldReadModel(base,memories),'繼續',2200);
+ assert.match(result,/霜晶門約定/);
+ assert.match(result,/月蝕才可打開霜晶門/);
+ assert.ok(result.length<=2200);
+});
+test('world encyclopedia provides unbounded page navigation and subject filter without deleting records',()=>{
+ const ui=readFileSync(new URL('../features/worldlineUi.ts',import.meta.url),'utf8');
+ assert.match(ui,/ordered\.slice\(first,last\)/);
+ assert.match(ui,/前往指定頁/);
+ assert.match(ui,/subjectFilter\.addEventListener\('change',renderOs\)/);
+ assert.doesNotMatch(ui,/slice\(0,query\?100:30\)/);
+});
