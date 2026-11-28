@@ -372,3 +372,15 @@ test('paused first-login diagnostic leaves UI interactive and never writes histo
  assert.equal(document.body.inert,false);assert.equal(await readAtomicBaseline(uid),0);
  assert.equal(f.x.bootstrapConflictBlocked,true);
 });
+
+test('permanent invalid delta displays structured error and retains exact durable request without scheduled retries',async()=>{
+ const uid='atomic-invalid-delta-detail',f=await fixture(uid);
+ const detail='delta_bytes=41000000 payload_bytes=5000000 delta_type=object payload_type=object device_length=36 expected_revision=7';
+ f.x.client.rpc=async()=>({data:null,error:{message:'INVALID_DELTA',code:'22023',details:detail}});
+ let retries=0;f.x.scheduleCloudRetry=()=>retries++;
+ assert.equal(await f.x.pushLocalToCloud(),false);
+ assert.match(f.x.getState().detail,/INVALID_DELTA \[22023\] delta_bytes=41000000/);
+ assert.equal(f.x.bootstrapConflictBlocked,true);assert.equal(retries,0);
+ assert.equal(await readAtomicBaseline(uid),7);assert.ok(await pendingAtomicJournal(uid));
+ assert.equal(f.m.get(pending),'true');
+});

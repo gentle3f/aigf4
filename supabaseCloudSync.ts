@@ -2620,9 +2620,19 @@ export class SupabaseCloudSyncManager {
     }
 
     private handleSyncError(error: unknown, prefix: string) {
-        const detail = error instanceof Error ? error.message : String(error || '未知錯誤');
+        const message=authErrorMessage(error,'未知錯誤');
+        const record=error&&typeof error==='object'?error as {code?:unknown;details?:unknown}:{};
+        const code=typeof record.code==='string'&&/^[A-Za-z0-9_-]{1,32}$/u.test(record.code)?record.code:'';
+        const sizes=typeof record.details==='string'&&/^delta_bytes=\d+ payload_bytes=\d+ delta_type=\w+ payload_type=\w+ device_length=\d+ expected_revision=\d+$/u.test(record.details)?record.details:'';
+        const detail=[message,code&&`[${code}]`,sizes].filter(Boolean).join(' ');
         console.error(prefix, error);
         this.setState(navigator.onLine ? 'error' : 'offline', `${prefix}：${detail}`, { progress: undefined });
+        if(this.atomicDeltaMode&&(/INVALID_DELTA|INVALID_MEDIA_DELTA|INVALID_OR_UNSTAGED_MEDIA|NONCONTIGUOUS_HISTORY|CONTRADICTORY_DELTA|DELTA_OPERATION_COLLISION|NOT_AUTHORIZED/u.test(message)||code==='22023'||code==='42501')){
+            this.bootstrapConflictBlocked=true;
+            if(this.pullTimer!==null){window.clearTimeout(this.pullTimer);this.pullTimer=null;}
+            if(this.pushTimer!==null){window.clearTimeout(this.pushTimer);this.pushTimer=null;}
+            return;
+        }
         this.scheduleCloudRetry();
     }
 
