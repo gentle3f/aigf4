@@ -384,3 +384,30 @@ test('permanent invalid delta displays structured error and retains exact durabl
  assert.equal(await readAtomicBaseline(uid),7);assert.ok(await pendingAtomicJournal(uid));
  assert.equal(f.m.get(pending),'true');
 });
+
+test('confirmed same-revision startup reads only cloud head, never reloads the whole history',async()=>{
+ const {messageManifestIndex}=await import('../cloudMessageBlocks.js');
+ const uid='atomic-fast-start',f=await fixture(uid);
+ await writeCloudSyncIndexesAtomically(messageManifestIndex(uid,{revision:7,blocks:[['fixture-room',0,'a'.repeat(64),1,true]]}));
+ f.m.delete(pending);f.m.set('wetappCloudSyncedUserIdV1',uid);f.x.pullRecoveryRequired=false;
+ let calls=0;
+ f.x.client.from=(table:string)=>{assert.equal(table,'wetapp_state');const chain={select:(fields:string)=>{assert.equal(fields,'revision,updated_at,source_device_id');calls++;return chain;},maybeSingle:async()=>({data:{revision:7,source_device_id:'remote'},error:null})};return chain;};
+ f.x.fetchAllRows=()=>{throw Error('unexpected full pull');};
+ await f.x.initialSync(uid,f.x.sessionGeneration);
+ assert.equal(calls,1);assert.equal(f.x.getState().phase,'synced');
+ assert.deepEqual(f.calls,[]);
+});
+test('manager incremental pull fetches only the changed 32-row block from a confirmed cached baseline',async()=>{
+ const {messageManifestIndex}=await import('../cloudMessageBlocks.js');
+ const uid='atomic-fast-pull',f=await fixture(uid);
+ const base=Array.from({length:65},(_,position)=>({conversation_key:'fixture-room',message_id:'row-'+position,position,role:position%2?'model':'user',speaker_id:null,content:{text:'fixture'},created_at_ms:position+1}));
+ const manifest={revision:7,blocks:[['fixture-room',0,'a'.repeat(64),32,true],['fixture-room',1,'b'.repeat(64),32,true],['fixture-room',2,'c'.repeat(64),1,true]]} as import('../cloudMessageBlocks.js').MessageManifest;
+ await saveAtomicBaseline(uid,7,{...mergeBaseIndex(uid,7,{conversations:[{conversation_key:'fixture-room',title:'Fixture',kind:'room'}],messages:base,payload}),...messageManifestIndex(uid,manifest)});
+ const current=structuredClone(manifest);current.revision=8;current.blocks[2][2]='d'.repeat(64);current.blocks[2][3]=2;
+ f.x.client.rpc=async(name:string)=>{assert.equal(name,'wetapp_message_blocks_v1');return {data:current,error:null};};
+ f.x.fetchAllRows=()=>{throw Error('unexpected full pull');};
+ let requests=0;const latest={...base[64],position:65,message_id:'reply',role:'model',created_at_ms:66};
+ f.x.client.from=(table:string)=>{assert.equal(table,'wetapp_messages');requests++;const chain={select:()=>chain,eq:(k:string,v:string)=>{assert.equal(k,'conversation_key');assert.equal(v,'fixture-room');return chain;},gte:(k:string,v:number)=>{assert.equal(k,'position');assert.equal(v,64);return chain;},lt:(k:string,v:number)=>{assert.equal(k,'position');assert.equal(v,96);return chain;},order:()=>chain,then:(resolve:(x:unknown)=>void)=>resolve({data:[base[64],latest],error:null})};return chain;};
+ const result=await f.x.loadCloudMessageRows(uid,8,true);
+ assert.equal(requests,1);assert.equal(result.rows.length,66);assert.equal(result.rows.at(-1).message_id,'reply');assert.equal(result.manifest.revision,8);
+});

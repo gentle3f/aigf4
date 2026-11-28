@@ -18,6 +18,7 @@ import type { StoredChatAttachment } from './chatMediaStore.js';
 import { filterRemoteStateEntities, findLocallyDeletedIndexedKeys, mergeChatHistoryMaps, mergeBootstrapHistoryMaps } from './cloudMessageMerge.js';
 import {forkBootstrapTextWorlds} from './cloudBootstrapWorldFork.js';
 import {normalizeLegacyRemotePositions} from './legacyRemotePositions.js';
+import {MESSAGE_BLOCK_SIZE,parseMessageManifest,readMessageManifest,messageManifestIndex,manifestMatchesRows,planMessageBlockPull,validateBlockRows,advanceMessageManifest,type MessageManifest} from './cloudMessageBlocks.js';
 import { readCloudSyncIndex, writeCloudSyncIndex, writeCloudSyncIndexesAtomically } from './cloudSyncIndexStore.js';
 import {mergeAtomicSnapshots,mergeBaseIndex,readMergeBase,normalizeMergeSnapshot,equalMergeSnapshot,preserveForeignCloudSettings,type CloudMergeSnapshot} from './atomicCloudMerge.js';
 import {stageAtomicMedia} from './atomicCloudMedia.js';
@@ -834,7 +835,7 @@ export class SupabaseCloudSyncManager {
             if(await pendingAtomicJournal(sessionUserId))await this.pushAtomicDelta();
             else if(!await readAtomicBaseline(sessionUserId))await this.bootstrapAtomicBaseline();
             else if(localStorage.getItem(PENDING_KEY)==='true')await this.pushAtomicDelta();
-            else await this.pullCloudToLocal(true,false);
+            else await this.pullCloudToLocal(false,false);
             return;
         }
         try {
@@ -1458,8 +1459,11 @@ export class SupabaseCloudSyncManager {
                     delta.messages=delta.messages.filter(m=>!oldMarked.has(this.messageIndexKey(m))||canonicalContextJson(oldMarked.get(this.messageIndexKey(m)))!==canonicalContextJson(m));
                     if(mediaDelta.upsert.length||mediaDelta.remove.length)delta.media=mediaDelta;
                     assertServerGenerationDelta(delta,admission);
+                    const blockManifest=await readMessageManifest(uid,baseline);
+                    const blockIndex=blockManifest?messageManifestIndex(uid,advanceMessageManifest(blockManifest,base.messages,delta)):{};
                     if(this.atomicLocalEpoch!==epoch)throw Error('ATOMIC_LOCAL_SNAPSHOT_CHANGED');
                     journal=await prepareAtomicJournal(uid,{expected_revision:baseline,new_payload:payload,delta,device:this.deviceId},{
+                        ...blockIndex,
                         [MESSAGE_INDEX_KEY]:hashes,
                         [CONVERSATION_INDEX_KEY]:Object.fromEntries(conversations.map(c=>[c.conversation_key,'1'])),
                         [MEDIA_INDEX_KEY]:mediaIndex,
@@ -1660,8 +1664,19 @@ export class SupabaseCloudSyncManager {
             // Mobile foreground/online checks are intentionally cheap. If the cloud
             // revision is unchanged since the last successful observation, do not
             // download the large state payload or re-enumerate every message/media row.
+            if(this.atomicDeltaMode&&!this.recoveryOnly&&!force&&!mergeLocal&&!atomicBootstrap&&!hasPendingChanges&&!this.pullRecoveryRequired&&localStorage.getItem(SYNCED_USER_ID_KEY)===sessionUserId&&currentRevision>0&&currentRevision===await readAtomicBaseline(sessionUserId)){
+                this.assertCurrentSessionUser(sessionUserId,sessionGeneration);
+                if(localStorage.getItem(PENDING_KEY)!=='true'&&this.canRestore()){
+                    this.reconciledRemoteStateChangeEpoch=Math.max(this.reconciledRemoteStateChangeEpoch,reconcileEpoch);
+                    pullCompleted=true;
+                    this.markSynced('雲端版本沒有變更，毋須重複下載。');
+                    void this.seedMessageManifest(sessionUserId,sessionGeneration,currentRevision);
+                    return true;
+                }
+            }
             if (
-                !force
+                !this.atomicDeltaMode
+                && !force
                 && !hasOutstandingRemoteChange
                 && !hasPendingChanges
                 && localStorage.getItem(SYNCED_USER_ID_KEY) === sessionUserId
@@ -1672,7 +1687,7 @@ export class SupabaseCloudSyncManager {
                 this.markSynced('雲端版本沒有變更，毋須重複下載。');
                 return true;
             }
-            if (!hasOutstandingRemoteChange && shouldSkipRedundantCloudPull({
+            if (!this.atomicDeltaMode && !hasOutstandingRemoteChange && shouldSkipRedundantCloudPull({
                 force,
                 cloudSourceDeviceId: headResponse.data?.source_device_id,
                 localDeviceId: this.deviceId,
@@ -1695,14 +1710,11 @@ export class SupabaseCloudSyncManager {
             if(this.recoveryOnly&&(!stateResponse.data||!stateResponse.data.payload))throw Error('CLOUD_RECOVERY_EMPTY');
             this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             this.lastObservedCloudStateRevision = normalizeCloudStateRevision(stateResponse.data?.revision);
-            const [messageRows, mediaRows] = await Promise.all([
-                this.fetchAllRows<CloudMessageRow>('wetapp_messages', [
-                    ['conversation_key', true],
-                    ['position', true],
-                    ['message_id', true],
-                ]),
+            const [messageResult, mediaRows] = await Promise.all([
+                this.loadCloudMessageRows(sessionUserId,this.lastObservedCloudStateRevision??0,this.atomicDeltaMode&&!this.recoveryOnly&&!force&&!atomicBootstrap&&!mergeLocal),
                 this.fetchAllRows<CloudMediaRow>('wetapp_media', [['created_at_ms', true]]),
             ]);
+            const messageRows=messageResult.rows;
             this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             if(this.recoveryOnly||this.atomicDeltaMode){
                 if(!this.canRestore()||(this.recoveryOnly&&!this.recoveryHistoryAllowed()))throw Error('CLOUD_RECOVERY_LOCAL_CHANGED');
@@ -1764,7 +1776,8 @@ export class SupabaseCloudSyncManager {
                     const head=await this.client.from('wetapp_state').select('revision').maybeSingle();
                     this.assertCurrentSessionUser(sessionUserId,sessionGeneration);
                     if(head.error||normalizeCloudStateRevision(head.data?.revision)!==revision)throw Error('CLOUD_RECOVERY_REVISION_CHANGED');
-                    await saveAtomicBaseline(sessionUserId,revision,mergeBaseIndex(sessionUserId,revision,{conversations,messages:normalizedRows,payload:stateResponse.data?.payload||{}}));
+                    const manifest=messageResult.manifest;
+                    await saveAtomicBaseline(sessionUserId,revision,{...mergeBaseIndex(sessionUserId,revision,{conversations,messages:normalizedRows,payload:stateResponse.data?.payload||{}}),...(manifest&&manifestMatchesRows(manifest,normalizedRows)?messageManifestIndex(sessionUserId,manifest):{})});
                 }
             } catch (error) {
                 try {
@@ -2561,6 +2574,56 @@ export class SupabaseCloudSyncManager {
                 rooms: payload.rooms || { version: 2, rooms: [] },
             })),
         ]);
+    }
+
+    private async fetchMessageManifest(revision:number):Promise<MessageManifest|null>{
+        if(!this.client||!this.atomicDeltaMode||this.recoveryOnly||revision<1)return null;
+        try{
+            const r=await this.client.rpc('wetapp_message_blocks_v1');
+            if(r.error)return null;
+            const manifest=parseMessageManifest(r.data);
+            return manifest?.revision===revision?manifest:null;
+        }catch{return null;}
+    }
+
+    private async seedMessageManifest(uid:string,generation:number,revision:number){
+        try{
+            if(await readMessageManifest(uid,revision))return;
+            const manifest=await this.fetchMessageManifest(revision);
+            if(!manifest||!this.isCurrentSession(uid,generation)||await readAtomicBaseline(uid)!==revision||await pendingAtomicJournal(uid))return;
+            await writeCloudSyncIndexesAtomically(messageManifestIndex(uid,manifest));
+        }catch{/* Cache acceleration only; never fail a confirmed sync. */}
+    }
+
+    private async loadCloudMessageRows(uid:string,revision:number,incremental:boolean):Promise<{rows:CloudMessageRow[];manifest:MessageManifest|null}>{
+        const manifest=incremental?await this.fetchMessageManifest(revision):null;
+        if(incremental&&manifest&&this.client){
+            try{
+                const baseline=await readAtomicBaseline(uid),previous=await readMessageManifest(uid,baseline);
+                const base=previous?await readMergeBase(uid,baseline):null;
+                if(previous&&base){
+                    const {reused,changed}=planMessageBlockPull(manifest,previous,base.messages);
+                    if(changed.length<=12){
+                        const rows=reused.map(r=>({...r,user_id:uid,source_device_id:''})) as CloudMessageRow[];
+                        const client=this.client;
+                        for(const batch of batches(changed,4)){
+                            const fresh=await Promise.all(batch.map(async block=>{
+                                const r=await client.from('wetapp_messages').select('*').eq('conversation_key',block[0]).gte('position',block[1]*MESSAGE_BLOCK_SIZE).lt('position',(block[1]+1)*MESSAGE_BLOCK_SIZE).order('position',{ascending:true}).order('message_id',{ascending:true});
+                                if(r.error)throw r.error;
+                                const fetched=(r.data||[]) as CloudMessageRow[];
+                                if(!validateBlockRows(block,fetched))throw Error('CLOUD_MESSAGE_BLOCK_CHANGED');
+                                return fetched;
+                            }));
+                            rows.push(...fresh.flat());
+                        }
+                        rows.sort((a,b)=>a.conversation_key<b.conversation_key?-1:a.conversation_key>b.conversation_key?1:a.position-b.position);
+                        if(manifestMatchesRows(manifest,rows))return {rows,manifest};
+                    }
+                }
+            }catch{/* Missing/corrupt cache or changed revision: use full verified pull. */}
+        }
+        const rows=await this.fetchAllRows<CloudMessageRow>('wetapp_messages',[['conversation_key',true],['position',true],['message_id',true]]);
+        return {rows,manifest:manifest&&manifestMatchesRows(manifest,rows)?manifest:null};
     }
 
     private async fetchAllRows<T>(table: string, order: Array<[string, boolean]>,conversationKeys?:readonly string[]): Promise<T[]> {
