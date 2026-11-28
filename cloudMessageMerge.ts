@@ -125,3 +125,18 @@ export const filterRemoteStateEntities = <
 
     return { customPersonas, rooms };
 };
+
+/** First login has no trustworthy deletion baseline: preserve IDs and order, never infer deletions. */
+export const mergeBootstrapHistoryMaps = (local: ChatHistoryMap, remote: ChatHistoryMap): ChatHistoryMap => {
+    const canonical = (v: unknown): string => JSON.stringify(v, (_k, x) => x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a],[b])=>a.localeCompare(b))) : x);
+    const signature = (m: ChatMessage) => { const content = clone(m.content || {}); if(content.imageUrl?.startsWith('blob:') || content.imageUrl?.startsWith('data:')) delete content.imageUrl; return canonical({role:m.role,speakerId:m.speakerId||'',createdAt:Number(m.createdAt||0),content}); };
+    const out: ChatHistoryMap = Object.create(null);
+    for(const key of new Set([...Object.keys(remote),...Object.keys(local)])) {
+        const a=local[key]||[], b=remote[key]||[];
+        for(const rows of [a,b]) if(rows.some(m=>!m.id)||new Set(rows.map(m=>m.id)).size!==rows.length) throw Error('ATOMIC_BOOTSTRAP_INVALID_HISTORY');
+        const n=Math.min(a.length,b.length);
+        for(let i=0;i<n;i++) if(a[i].id!==b[i].id || signature(a[i])!==signature(b[i])) throw Error('ATOMIC_BOOTSTRAP_HISTORY_CONFLICT：本機與雲端對話有分歧，兩邊均保留。');
+        out[key]=clone(a.length>=b.length?a:b);
+    }
+    return out;
+};

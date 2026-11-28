@@ -15,7 +15,7 @@ import {
     saveChatAttachment,
 } from './chatMediaStore.js';
 import type { StoredChatAttachment } from './chatMediaStore.js';
-import { filterRemoteStateEntities, findLocallyDeletedIndexedKeys, mergeChatHistoryMaps } from './cloudMessageMerge.js';
+import { filterRemoteStateEntities, findLocallyDeletedIndexedKeys, mergeChatHistoryMaps, mergeBootstrapHistoryMaps } from './cloudMessageMerge.js';
 import { readCloudSyncIndex, writeCloudSyncIndex, writeCloudSyncIndexesAtomically } from './cloudSyncIndexStore.js';
 import {mergeAtomicSnapshots,mergeBaseIndex,readMergeBase,normalizeMergeSnapshot,equalMergeSnapshot,preserveForeignCloudSettings,type CloudMergeSnapshot} from './atomicCloudMerge.js';
 import {stageAtomicMedia} from './atomicCloudMedia.js';
@@ -1227,7 +1227,8 @@ export class SupabaseCloudSyncManager {
         if(body)body.inert=true;
         try{
             const epoch=this.atomicLocalEpoch;
-            const hasRealChat=Object.entries(this.memoryManager.getAllChatHistories()).some(([key,rows])=>{
+            const localHistories=this.memoryManager.getAllChatHistories();
+            const realChatKeys=new Set(Object.entries(localHistories).filter(([key,rows])=>{
                 if(!rows.length)return false;
                 const row=rows[0];
                 if(rows.length!==1||row.role!=='model'||row.speakerId)return true;
@@ -1245,21 +1246,29 @@ export class SupabaseCloudSyncManager {
                 }
                 const persona=this.memoryManager.getPersona(key);
                 return !(persona&&row.content?.text===persona.greeting&&Object.keys(row.content).every(k=>k==='text'));
-            });
-            const hasLocalData=hasRealChat
+            }).map(([key])=>key));
+            const startupKeys=Object.keys(localHistories).filter(key=>!realChatKeys.has(key));
+            const hasLocalData=realChatKeys.size>0
                 ||Object.keys(this.memoryManager.getModifiedAndCustomPersonas()).length>0
                 ||Object.values(this.memoryManager.getAllDiaryEntries()).some(rows=>rows.length>0)
                 ||Object.values(this.memoryManager.getAllInterests()).some(rows=>rows.length>0)
                 ||this.roomManager.exportData().rooms.some(room=>room.id!=='room_iu_jennie_irene_v1');
             const [avatars,photos,attachments]=await Promise.all([listPersonaAvatarAssets(),listCharacterPhotoAssets(),listChatAttachments()]);
             this.assertCurrentSessionUser(uid,generation);
-            if(hasLocalData||avatars.length||photos.length||attachments.length){
-                this.setState('error','本機已有未建立基準的私人資料；已保留，請先匯出備份，再以空白測試裝置登入。');
-                return false;
-            }
+            const hasWorldState=this.cloudSettingKeys().some(key=>{
+                if(!/^aigf4World(lineRegistry|Ledger)|^aigfWorldlineDirectorV1:/u.test(key))return false;
+                const raw=localStorage.getItem(key);if(!raw)return false;
+                if(key.startsWith('aigfWorldlineDirectorV1:'))return true;
+                try{const data=JSON.parse(raw);return Object.keys(data?.records||data?.worlds||{}).length>0;}catch{return true;}
+            });
+            const mergeLocal=hasLocalData||!!(avatars.length||photos.length||attachments.length)||hasWorldState;
             if(epoch!==this.atomicLocalEpoch||!this.canRestore())return false;
-            const ok=await this.pullCloudToLocal(true,false,true);
-            if(ok&&this.isCurrentSession(uid,generation))this.markSynced('首次雲端基準已建立；可以正常聊天及同步。');
+            if(mergeLocal)localStorage.setItem(PENDING_KEY,'true');
+            const ok=await this.pullCloudToLocal(true,mergeLocal,true,startupKeys);
+            if(ok&&this.isCurrentSession(uid,generation)){
+                if(mergeLocal){this.setState('connecting','本機及雲端資料已合併，正在上載新增進度…');return await this.pushAtomicDelta();}
+                this.markSynced('首次雲端基準已建立；可以正常聊天及同步。');
+            }
             return ok;
         }finally{if(body)body.inert=wasInert;}
     }
@@ -1549,8 +1558,9 @@ export class SupabaseCloudSyncManager {
         }
     }
 
-    private async pullCloudToLocal(force = false, mergeLocal = false, atomicBootstrap=false): Promise<boolean> {
-        if(this.atomicDeltaMode&&!this.recoveryOnly&&(mergeLocal||(!atomicBootstrap&&localStorage.getItem(PENDING_KEY)==='true')||!this.canRestore()||(this.session&&await pendingAtomicJournal(this.session.user.id))))return false;
+    private async pullCloudToLocal(force = false, mergeLocal = false, atomicBootstrap=false, bootstrapStartupKeys:readonly string[]=[]): Promise<boolean> {
+        if(this.atomicDeltaMode&&!this.recoveryOnly&&!atomicBootstrap&&this.session&&!await readAtomicBaseline(this.session.user.id))return this.bootstrapAtomicBaseline();
+        if(this.atomicDeltaMode&&!this.recoveryOnly&&((mergeLocal&&!atomicBootstrap)||(!atomicBootstrap&&localStorage.getItem(PENDING_KEY)==='true')||!this.canRestore()||(this.session&&await pendingAtomicJournal(this.session.user.id))))return false;
         if(this.recoveryOnly&&(!force||mergeLocal||!this.canRestore()||!this.recoveryHistoryAllowed()))return false;
         if (!this.client || !this.session || this.pulling || this.pushing) return false;
         const sessionUserId = this.session.user.id;
@@ -1643,7 +1653,7 @@ export class SupabaseCloudSyncManager {
             this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             try {
                 this.setState('pulling', `正在還原 ${mediaRows.length} 個私人媒體檔案…`, { progress: 35 });
-                await this.pullMedia(mediaRows, mergeLocal, localTransaction);
+                await this.pullMedia(mediaRows, mergeLocal, localTransaction, atomicBootstrap&&mergeLocal);
                 this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
                 this.setState('pulling', `正在整理 ${messageRows.length.toLocaleString('zh-HK')} 則訊息…`, { progress: 72 });
                 if(this.recoveryOnly||this.atomicDeltaMode){
@@ -1651,10 +1661,15 @@ export class SupabaseCloudSyncManager {
                     const head=await this.client.from('wetapp_state').select('revision').maybeSingle();
                     if(head.error||normalizeCloudStateRevision(head.data?.revision)!==this.lastObservedCloudStateRevision)throw Error('CLOUD_RECOVERY_REVISION_CHANGED');
                 }
+                const bootstrapConversations=atomicBootstrap&&mergeLocal?await this.fetchAllRows<CloudConversationRow>('wetapp_conversations',[['conversation_key',true]]):undefined;
                 await this.applyRemoteData(
                     (stateResponse.data?.payload || {}) as Partial<CloudStatePayload>,
                     messageRows,
                     mergeLocal,
+                    undefined,
+                    atomicBootstrap&&mergeLocal,
+                    bootstrapStartupKeys,
+                    bootstrapConversations,
                 );
                 this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
                 if(this.recoveryOnly){
@@ -1684,7 +1699,7 @@ export class SupabaseCloudSyncManager {
                 this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
                 if(this.atomicDeltaMode&&!this.recoveryOnly){
                     const revision=this.lastObservedCloudStateRevision??0;
-                    const conversations=await this.fetchAllRows<CloudConversationRow>('wetapp_conversations',[['conversation_key',true]]);
+                    const conversations=bootstrapConversations??await this.fetchAllRows<CloudConversationRow>('wetapp_conversations',[['conversation_key',true]]);
                     const head=await this.client.from('wetapp_state').select('revision').maybeSingle();
                     this.assertCurrentSessionUser(sessionUserId,sessionGeneration);
                     if(head.error||normalizeCloudStateRevision(head.data?.revision)!==revision)throw Error('CLOUD_RECOVERY_REVISION_CHANGED');
@@ -1706,11 +1721,13 @@ export class SupabaseCloudSyncManager {
                 reconcileEpoch,
             );
             pullCompleted = true;
-            localStorage.removeItem(PENDING_KEY);
+            if(atomicBootstrap&&mergeLocal)localStorage.setItem(PENDING_KEY,'true');
+            else localStorage.removeItem(PENDING_KEY);
             this.setPullRecoveryRequired(false);
             localStorage.setItem(SAFE_MERGE_VERSION_KEY, '2');
             this.callbacks.onRemoteApplied();
-            this.markSynced(this.recoveryOnly?`CLOUD RESTORE PASS：已核對 ${messageRows.length} 則訊息 ID／角色／時間及 ${mediaRows.length} 個媒體檔案大小；雲端版本 ${this.lastObservedCloudStateRevision}。沒有上傳。`:'已載入雲端最新資料。');
+            if(atomicBootstrap&&mergeLocal)this.setState('connecting','本機及雲端資料已合併，等待上載確認…');
+            else this.markSynced(this.recoveryOnly?`CLOUD RESTORE PASS：已核對 ${messageRows.length} 則訊息 ID／角色／時間及 ${mediaRows.length} 個媒體檔案大小；雲端版本 ${this.lastObservedCloudStateRevision}。沒有上傳。`:'已載入雲端最新資料。');
             return true;
         } catch (error) {
             if (
@@ -2204,16 +2221,26 @@ export class SupabaseCloudSyncManager {
         rows: CloudMediaRow[],
         mergeLocal = false,
         transaction?: CloudPullTransactionSnapshot,
+        bootstrapMerge=false,
     ) {
         if (!this.client) return;
         const previousIndex = await readCloudSyncIndex(MEDIA_INDEX_KEY);
-        if (mergeLocal) {
+        if(bootstrapMerge){
+            const local=new Map((await this.collectLocalMedia(this.roomManager.exportData().rooms)).map(a=>[a.asset_id,a]));
+            for(const row of rows){
+                const asset=local.get(row.asset_id);if(!asset)continue;
+                const downloaded=await this.client.storage.from(STORAGE_BUCKET).download(row.storage_path);
+                if(downloaded.error||!downloaded.data)throw downloaded.error||Error('ATOMIC_BOOTSTRAP_MEDIA_DOWNLOAD_FAILED');
+                if(!await blobsMatch(asset.blob,downloaded.data))throw Error('ATOMIC_BOOTSTRAP_MEDIA_CONFLICT：本機及雲端媒體不同，兩邊均保留。');
+            }
+            rows=rows.filter(row=>!local.has(row.asset_id));
+        }else if (mergeLocal) {
             const localMedia = await this.collectLocalMedia(this.roomManager.exportData().rooms);
             const currentIds = localMedia.map(asset => asset.asset_id);
             const locallyDeletedIds = findLocallyDeletedIndexedKeys(previousIndex, currentIds);
             rows = rows.filter(row => !locallyDeletedIds.has(row.asset_id));
         }
-        if(this.atomicDeltaMode&&!this.recoveryOnly){
+        if(this.atomicDeltaMode&&!this.recoveryOnly&&!bootstrapMerge){
             if(mergeLocal||!transaction)throw Error('ATOMIC_MEDIA_PULL_TRANSACTION_REQUIRED');
             const remoteIds=new Set(rows.map(r=>r.asset_id));
             const local=await this.collectLocalMedia(this.roomManager.exportData().rooms);
@@ -2299,9 +2326,12 @@ export class SupabaseCloudSyncManager {
         rows: CloudMessageRow[],
         mergeLocal = false,
         exactMergeConversations?: readonly {conversation_key:string}[],
+        bootstrapMerge=false,
+        bootstrapStartupKeys:readonly string[]=[],
+        bootstrapConversations?:readonly {conversation_key:string}[],
     ) {
         const cloudChatHistories: Record<string, ChatMessage[]> = {};
-        if(exactMergeConversations)for(const c of exactMergeConversations)cloudChatHistories[c.conversation_key]=[];
+        for(const c of exactMergeConversations??bootstrapConversations??[])cloudChatHistories[c.conversation_key]=[];
         rows.forEach(row => {
             (cloudChatHistories[row.conversation_key] ||= []).push({
                 id: row.message_id,
@@ -2312,7 +2342,9 @@ export class SupabaseCloudSyncManager {
             });
         });
         const localChatHistories = clone(this.memoryManager.getAllChatHistories());
-        const [previousMessageIndex, previousConversationIndex, previousStateEntityIndex] = mergeLocal
+        // A recognized, untouched startup greeting is not a private offline turn.
+        if(bootstrapMerge)for(const key of bootstrapStartupKeys)if(cloudChatHistories[key]?.length)delete localChatHistories[key];
+        const [previousMessageIndex, previousConversationIndex, previousStateEntityIndex] = mergeLocal&&!bootstrapMerge
             ? await Promise.all([
                 readCloudSyncIndex(MESSAGE_INDEX_KEY),
                 readCloudSyncIndex(CONVERSATION_INDEX_KEY),
@@ -2331,7 +2363,7 @@ export class SupabaseCloudSyncManager {
         const locallyDeletedStateEntities = mergeLocal
             ? findLocallyDeletedIndexedKeys(previousStateEntityIndex, currentStateEntityKeys)
             : new Set<string>();
-        const chatHistories = mergeLocal
+        const chatHistories = bootstrapMerge ? mergeBootstrapHistoryMaps(localChatHistories,cloudChatHistories) : mergeLocal
             ? mergeChatHistoryMaps(localChatHistories, cloudChatHistories, {
                 previousMessageIndex,
                 previousConversationIndex,
@@ -2346,7 +2378,7 @@ export class SupabaseCloudSyncManager {
                     locallyDeletedStateEntities,
                     locallyDeletedConversations,
                     localPersonas: this.memoryManager.getAllPersonas(),
-                    deletedRoomIds: this.roomManager.getDeletedRoomIds(),
+                    deletedRoomIds: bootstrapMerge?new Set<string>():this.roomManager.getDeletedRoomIds(),
                 },
             )
             : {
@@ -2374,7 +2406,7 @@ export class SupabaseCloudSyncManager {
                 version: 2 as const,
                 rooms: [...new Map([
                     ...remoteState.rooms.map(room => [room.id, room] as const),
-                    ...this.roomManager.exportData().rooms.map(room => [room.id, room] as const),
+                    ...this.roomManager.exportData().rooms.filter(room=>!bootstrapMerge||!bootstrapStartupKeys.includes(room.id)||!remoteState.rooms.some(r=>r.id===room.id)).map(room => [room.id, room] as const),
                 ]).values()],
             }
             : {
@@ -2393,7 +2425,7 @@ export class SupabaseCloudSyncManager {
             }
             else if (member.persona.avatarUrl?.startsWith('private-avatar:')) member.persona.avatarUrl = null;
         }));
-        this.roomManager.importData(rooms, true, mergeLocal,!!exactMergeConversations);
+        this.roomManager.importData(rooms, true, mergeLocal,!!exactMergeConversations||bootstrapMerge);
         await Promise.all([
             this.memoryManager.restorePrivateAvatars(),
             this.roomManager.restorePrivateAvatars(),

@@ -174,10 +174,14 @@ test('first login establishes remote baseline despite startup pending marker',as
  assert.equal((await readMergeBase(uid,3))!.messages.length,1);
  assert.deepEqual(f.calls,[]);
 });
-test('first login with real unsynced local chat preserves it and refuses replacement',async()=>{
+test('first login with divergent local and cloud histories preserves both without committing',async()=>{
  const f=await fixture('atomic-first-existing-setup'),uid='atomic-first-existing';
  f.x.session={user:{id:uid,email:'fixture@example.invalid'}};
+ delete f.x.collectLocalMessages;delete f.x.buildStatePayload;
  f.x.memoryManager.setChatHistory('cc',[{id:'unsynced',role:'user',createdAt:1000,content:{text:'local unsynced'}}],true);
+ const row={user_id:uid,conversation_key:'cc',message_id:'remote-divergent',position:0,role:'user',speaker_id:null,content:{text:'remote divergent'},created_at_ms:1001};
+ f.x.client.from=(table:string)=>{assert.equal(table,'wetapp_state');const chain={select:()=>chain,maybeSingle:async()=>({data:{revision:3,payload,source_device_id:'remote'},error:null})};return chain;};
+ f.x.fetchAllRows=async(table:string)=>table==='wetapp_messages'?[row]:[];
  await f.x.initialSync(uid,f.x.sessionGeneration);
  assert.equal(await readAtomicBaseline(uid),0);
  assert.equal(f.x.memoryManager.peekChatHistory('cc').at(-1)?.id,'unsynced');
@@ -272,4 +276,28 @@ test('V4 group workflow admission remains durable after lost acknowledgement',as
  const j=await pendingAtomicJournal(uid);assert.deepEqual(j?.generation,a);assert.equal(j?.request.operation_id,generationJob);
  f.online();assert.equal(await f.x.pushLocalToCloud(),true);assert.deepEqual(f.rpcCalls,['wetapp_accept_generation_v4']);
  assert.equal(await pendingAtomicJournal(uid),null);
+});
+
+test('first login with offline append installs union then uploads only through confirmed atomic revision',async()=>{
+ const f=await fixture('atomic-first-append-setup'),uid='atomic-first-append';
+ f.x.session={user:{id:uid,email:'fixture@example.invalid'}};
+ delete f.x.collectLocalMessages;delete f.x.buildStatePayload;
+ f.x.memoryManager.setChatHistory('cc',[{id:'shared',role:'user',createdAt:1000,content:{text:'shared'}},{id:'offline',role:'model',createdAt:1001,content:{text:'offline'}}],true);
+ const rows=f.x.collectLocalMessages(uid);
+ const remoteRow=rows.messages.find((r:any)=>r.message_id==='shared');
+ const remoteConversation=rows.conversations.find((r:any)=>r.conversation_key==='cc');
+ const otherRow={user_id:uid,conversation_key:'assistant_fixture',message_id:'remote-only',position:0,role:'user',speaker_id:null,content:{text:'remote-only'},created_at_ms:1002};
+ const otherConversation={user_id:uid,conversation_key:'assistant_fixture',title:'assistant_fixture',kind:'assistant',message_count:1};
+ let rev=3,commits=0;
+ const receipts=new Map<string,number>();
+ f.x.client.from=(table:string)=>{let op='';const chain={select:()=>chain,eq:(k:string,v:string)=>{if(k==='operation_id')op=v;return chain;},maybeSingle:async()=>table==='wetapp_state'?{data:{revision:rev,payload,source_device_id:'remote'},error:null}:{data:receipts.has(op)?{revision:receipts.get(op)}:null,error:null}};return chain;};
+ f.x.fetchAllRows=async(table:string)=>table==='wetapp_conversations'?[remoteConversation,otherConversation]:table==='wetapp_messages'?[remoteRow,otherRow]:[];
+ f.x.readCloudStateHead=async()=>({revision:rev,sourceDeviceId:'remote'});
+ f.x.client.rpc=async(name:string,req:any)=>{assert.equal(name,'wetapp_commit_chat_delta_receipted_v3');assert.equal(req.expected_revision,3);assert.deepEqual(req.delta.remove_messages,[]);assert.deepEqual(req.delta.remove_conversations,[]);assert.ok(req.delta.messages.some((r:any)=>r.message_id==='offline'));commits++;rev++;receipts.set(req.operation_id,rev);return {data:rev,error:null};};
+ await f.x.initialSync(uid,f.x.sessionGeneration);
+ assert.equal(commits,1);
+ assert.equal(await readAtomicBaseline(uid),4);
+ assert.deepEqual(f.x.memoryManager.peekChatHistory('cc').map((r:any)=>r.id),['shared','offline']);
+ assert.equal(f.x.memoryManager.peekChatHistory('assistant_fixture').at(-1)?.id,'remote-only');
+ assert.equal(f.m.has(pending),false);
 });
