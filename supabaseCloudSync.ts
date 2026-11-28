@@ -17,6 +17,7 @@ import {
 import type { StoredChatAttachment } from './chatMediaStore.js';
 import { filterRemoteStateEntities, findLocallyDeletedIndexedKeys, mergeChatHistoryMaps, mergeBootstrapHistoryMaps } from './cloudMessageMerge.js';
 import {forkBootstrapTextWorlds} from './cloudBootstrapWorldFork.js';
+import {normalizeLegacyRemotePositions} from './legacyRemotePositions.js';
 import { readCloudSyncIndex, writeCloudSyncIndex, writeCloudSyncIndexesAtomically } from './cloudSyncIndexStore.js';
 import {mergeAtomicSnapshots,mergeBaseIndex,readMergeBase,normalizeMergeSnapshot,equalMergeSnapshot,preserveForeignCloudSettings,type CloudMergeSnapshot} from './atomicCloudMerge.js';
 import {stageAtomicMedia} from './atomicCloudMedia.js';
@@ -1219,13 +1220,13 @@ export class SupabaseCloudSyncManager {
         const baselineMedia=JSON.stringify(Object.entries(oldMedia).sort());
         if(signature(mediaRows)!==baselineMedia||signature(localMedia)!==baselineMedia)throw Error('ATOMIC_MEDIA_CHANGE_PENDING：媒體有變更，未合併。');
         const local=normalizeMergeSnapshot({conversations:localRows.conversations,messages:localRows.messages,payload:preserveForeignCloudSettings(payload,base.payload,k=>this.ownsCloudSetting(k))});
-        const remote=normalizeMergeSnapshot({conversations,messages,payload:state.data.payload});
+        const remote=normalizeMergeSnapshot({conversations,messages:normalizeLegacyRemotePositions(messages),payload:state.data.payload});
         const merged=normalizeMergeSnapshot(mergeAtomicSnapshots(base,local,remote));
         const head=await this.readCloudStateHead(uid,generation);
         this.assertCurrentSessionUser(uid,generation);
         if(head.revision!==remoteRevision||this.atomicLocalEpoch!==epoch||!this.canRestore())throw Error('ATOMIC_CONFLICT_REVIEW_REQUIRED：合併期間資料已改變。');
         const mergedPayload=merged.payload as CloudStatePayload;
-        const hashes=this.atomicMessageHashes(merged.messages),remoteHashes=this.atomicMessageHashes(remote.messages);
+        const hashes=this.atomicMessageHashes(merged.messages),remoteHashes=this.atomicMessageHashes(messages);
         const delta=planAtomicDelta(merged.conversations,merged.messages,hashes,remoteHashes,Object.fromEntries(remote.conversations.map(c=>[c.conversation_key,'1'])));
         await writeCloudSyncIndexesAtomically({['wetappAtomicMergePlanV3:'+uid]:{baseRevision:String(baseRevision),remoteRevision:String(remoteRevision),local:JSON.stringify(local),remote:JSON.stringify(remote),merged:JSON.stringify(merged)}});
         return prepareAtomicJournal(uid,{expected_revision:remoteRevision,new_payload:mergedPayload,delta,device:this.deviceId},{
@@ -1315,11 +1316,11 @@ export class SupabaseCloudSyncManager {
             });
             const rows:CloudMessageRow[]=[];
             for(let i=0;i<keys.length;i+=20){
-                rows.push(...await this.fetchAllRows<CloudMessageRow>('wetapp_messages',[['conversation_key',true],['position',true]],keys.slice(i,i+20)));
+                rows.push(...await this.fetchAllRows<CloudMessageRow>('wetapp_messages',[['conversation_key',true],['position',true],['message_id',true]],keys.slice(i,i+20)));
                 this.assertCurrentSessionUser(uid,generation);
             }
             if(epoch!==this.atomicLocalEpoch)throw Error('ATOMIC_DIAGNOSTIC_LOCAL_CHANGED');
-            await this.applyRemoteData((head.data?.payload||{}) as Partial<CloudStatePayload>,rows,true,undefined,true,startupKeys,undefined,true);
+            await this.applyRemoteData((head.data?.payload||{}) as Partial<CloudStatePayload>,normalizeLegacyRemotePositions(rows),true,undefined,true,startupKeys,undefined,true);
             const finalHead=await this.client.from('wetapp_state').select('revision').maybeSingle();
             if(finalHead.error||normalizeCloudStateRevision(finalHead.data?.revision)!==normalizeCloudStateRevision(head.data?.revision)||epoch!==this.atomicLocalEpoch)throw Error('ATOMIC_DIAGNOSTIC_CHANGED');
             this.assertCurrentSessionUser(uid,generation);
@@ -1698,6 +1699,7 @@ export class SupabaseCloudSyncManager {
                 this.fetchAllRows<CloudMessageRow>('wetapp_messages', [
                     ['conversation_key', true],
                     ['position', true],
+                    ['message_id', true],
                 ]),
                 this.fetchAllRows<CloudMediaRow>('wetapp_media', [['created_at_ms', true]]),
             ]);
@@ -1707,6 +1709,7 @@ export class SupabaseCloudSyncManager {
                 const head=await this.client.from('wetapp_state').select('revision').maybeSingle();
                 if(head.error||normalizeCloudStateRevision(head.data?.revision)!==this.lastObservedCloudStateRevision)throw Error('CLOUD_RECOVERY_REVISION_CHANGED');
             }
+            const normalizedRows=this.atomicDeltaMode&&!this.recoveryOnly?normalizeLegacyRemotePositions(messageRows):messageRows;
             const localTransaction = await this.createCloudPullTransactionSnapshot();
             this.assertCurrentSessionUser(sessionUserId, sessionGeneration);
             try {
@@ -1722,7 +1725,7 @@ export class SupabaseCloudSyncManager {
                 const bootstrapConversations=atomicBootstrap&&mergeLocal?await this.fetchAllRows<CloudConversationRow>('wetapp_conversations',[['conversation_key',true]]):undefined;
                 await this.applyRemoteData(
                     (stateResponse.data?.payload || {}) as Partial<CloudStatePayload>,
-                    messageRows,
+                    normalizedRows,
                     mergeLocal,
                     undefined,
                     atomicBootstrap&&mergeLocal,
@@ -1761,7 +1764,7 @@ export class SupabaseCloudSyncManager {
                     const head=await this.client.from('wetapp_state').select('revision').maybeSingle();
                     this.assertCurrentSessionUser(sessionUserId,sessionGeneration);
                     if(head.error||normalizeCloudStateRevision(head.data?.revision)!==revision)throw Error('CLOUD_RECOVERY_REVISION_CHANGED');
-                    await saveAtomicBaseline(sessionUserId,revision,mergeBaseIndex(sessionUserId,revision,{conversations,messages:messageRows,payload:stateResponse.data?.payload||{}}));
+                    await saveAtomicBaseline(sessionUserId,revision,mergeBaseIndex(sessionUserId,revision,{conversations,messages:normalizedRows,payload:stateResponse.data?.payload||{}}));
                 }
             } catch (error) {
                 try {
@@ -1795,7 +1798,7 @@ export class SupabaseCloudSyncManager {
             localStorage.setItem(PENDING_KEY, 'true');
             this.setPullRecoveryRequired(true);
             const detail=authErrorMessage(error,'下載雲端資料失敗');
-            if(atomicBootstrap&&/ATOMIC_BOOTSTRAP_.*(?:CONFLICT|INVALID_HISTORY)/u.test(detail)){
+            if(atomicBootstrap&&/ATOMIC_BOOTSTRAP_.*(?:CONFLICT|INVALID_HISTORY)|ATOMIC_MERGE_CONFLICT:invalid-history/u.test(detail)){
                 this.bootstrapConflictBlocked=true;
                 if(this.pullTimer!==null){window.clearTimeout(this.pullTimer);this.pullTimer=null;}
                 if(this.pushTimer!==null){window.clearTimeout(this.pushTimer);this.pushTimer=null;}
