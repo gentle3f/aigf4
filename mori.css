@@ -2304,3 +2304,13 @@ html[data-wetapp-ui="v2"][data-wetapp-theme="dark"] .wl-input {
 .pending-attachment-chip:has(.assistant-zip-contents) { flex-wrap: wrap; }
 .assistant-zip-download { margin-left: 8px; }
 .assistant-zip-download:disabled { opacity: .55; cursor: wait; }
+
+/* Worldline quick-start: compact topic toggles and selectable story concepts. */
+.wl-topic-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
+.wl-topic-grid .wl-button{width:100%;font-size:.88rem;padding:9px 8px}
+.wl-topic-grid .wl-button[aria-pressed="true"]{background:#356d61;color:#fff;border-color:#356d61;font-weight:650}
+.wl-world-idea{border:1px solid rgba(130,120,105,.35);border-radius:13px;padding:14px;display:grid;gap:9px;overflow-wrap:anywhere}
+.wl-world-idea h3,.wl-world-idea p{margin:0}
+.wl-world-idea .wl-actions{margin-top:4px}
+.wl-world-idea .wl-chronicle{margin:0}
+.wl-world-idea .wl-chronicle p{margin:8px 0}

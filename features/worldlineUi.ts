@@ -4,6 +4,7 @@
  */
 import { setPersistedAppSetting } from '../appSettings.js';
 import type { RandomMainQuestInput } from '../worldlineRandomQuest.js';
+import {WORLD_TOPICS,ideaToWorldOptions,type WorldIdea,type WorldIdeaInput} from '../worldlineQuickStart.js';
 import type { projectWorld } from '../worldLedger.js';
 import {
     WORLDLINE_SETTING_KEY,getWorldline,makeWorldline,normalizeWorldline,updateWorldlineRegistry,
@@ -17,6 +18,7 @@ export interface WorldlineUiDeps {
     dispatchText:(text:string)=>void;
     afterWorldlineChange:()=>void;
     generateRandomQuest:(input:RandomMainQuestInput)=>Promise<string>;
+    generateWorldIdeas:(input:WorldIdeaInput)=>Promise<WorldIdea[]>;
     getWorldLedger:(key:string)=>ReturnType<typeof projectWorld>;
     rebuildWorldLedger:(key:string,skipIds:readonly string[])=>Promise<{advanced:number;deferred:string[];issueCount:number}>;
 }
@@ -88,27 +90,95 @@ const actionButton=(label:string,onClick:()=>void,primary=false)=>{
     button.addEventListener('click',onClick);
     return button;
 };
-const openStart=(deps:WorldlineUiDeps,preferred:'new'|'current')=>{
+const startWorld=(deps:WorldlineUiDeps,dialog:HTMLDialogElement,opts:WorldlineStartOptions,attachKey?:string)=>{
+    const key=attachKey||deps.createNarratorConversation(opts.title);
+    const world=makeWorldline(key,opts);
+    save(key,world);
+    dialog.close();
+    deps.openConversation(key);
+    deps.afterWorldlineChange();
+    deps.dispatchText(buildWorldlineOpening(world));
+};
+const openQuickStart=(deps:WorldlineUiDeps)=>{
+    const dialog=createModal();
+    header(dialog,'開啟新世界','揀一個或多個題材，AI 幫你創作三個完整世界。');
+    const body=element('div','wl-form');
+    const chosen=new Set<string>();
+    const topics=element('div','wl-actions wl-topic-grid');
+    for(const [topic] of WORLD_TOPICS){
+        const button=actionButton(topic,()=>{
+            if(chosen.has(topic))chosen.delete(topic);else chosen.add(topic);
+            button.setAttribute('aria-pressed',String(chosen.has(topic)));
+        });
+        button.setAttribute('aria-pressed','false');
+        topics.appendChild(button);
+    }
+    body.append(element('p','wl-note','可以混合題材，唔揀亦得，交畀 AI 自由發揮。'),topics);
+    const comment=control(body,'有咩特別想玩？（選填）','textarea') as HTMLTextAreaElement;
+    comment.rows=2;comment.maxLength=1000;comment.placeholder='例如：由小人物開始，擅長經營，唔想太快無敵。';
+    const actions=element('div','wl-actions');
+    const notice=element('p','wl-note');notice.setAttribute('aria-live','polite');
+    const ideas=element('div','wl-cast-body');
+    let previous:WorldIdea[]=[];let busy=false;let closed=false;let starting=false;
+    dialog.addEventListener('close',()=>{closed=true;},{once:true});
+    const generate=actionButton('生成 3 個世界',()=>{
+        if(busy||starting)return;
+        busy=true;generate.disabled=true;generate.textContent='AI 構思世界中…';
+        notice.textContent='根據你選擇嘅題材創作，未建立任何世界。';
+        const input:WorldIdeaInput={topics:[...chosen],comment:comment.value,previous};
+        void (async()=>{
+            try{
+                const results=await deps.generateWorldIdeas(input);
+                if(closed)return;
+                previous=results;
+                ideas.replaceChildren();
+                for(const idea of results){
+                    const card=element('article','wl-world-idea');
+                    card.append(element('h3','',idea.title),element('p','wl-note',worldlineGenreLabel(idea.genre)),element('p','',idea.premise));
+                    const details=element('details','wl-chronicle');
+                    details.append(element('summary','','主角、能力及故事主線'),element('p','','主角：'+idea.protagonist),element('p','','能力／資源：'+idea.goldenFinger),element('p','','主線：'+idea.mainQuest));
+                    const buttons=element('div','wl-actions');
+                    buttons.append(actionButton('開始呢個世界',()=>{
+                        if(busy||starting||closed)return;
+                        starting=true;
+                        try{startWorld(deps,dialog,ideaToWorldOptions(idea));}
+                        catch(e){starting=false;notice.textContent=e instanceof Error?e.message:'建立世界失敗';}
+                    },true),actionButton('修改設定',()=>{
+                        if(busy||starting||closed)return;
+                        dialog.close();openStart(deps,'new',ideaToWorldOptions(idea));
+                    }));
+                    card.append(details,buttons);ideas.appendChild(card);
+                }
+                notice.textContent='揀一個直接開始，或者修改設定。未揀中嘅構想唔會建立對話。';
+            }catch(e){if(!closed)notice.textContent=e instanceof Error?e.message:'世界構想生成失敗，請再試。';}
+            finally{busy=false;if(!closed){generate.disabled=false;generate.textContent=previous.length?'再抽 3 個世界':'生成 3 個世界';}}
+        })();
+    },true);
+    actions.append(generate,actionButton('手動建立',()=>{if(starting)return;dialog.close();openStart(deps,'new');}));
+    body.append(actions,notice,ideas);
+    dialog.appendChild(body);showDialog(dialog);
+};
+const openStart=(deps:WorldlineUiDeps,preferred:'new'|'current',initial?:WorldlineStartOptions)=>{
     const dialog=createModal();
     header(dialog,'開啟新世界線','自由世界、長篇主線、金手指與成人角色關係都可以同時存在');
     const form=element('form','wl-form');
     form.noValidate=true;
     form.addEventListener('submit',event=>event.preventDefault());
-    const title=control(form,'世界名稱','input','我的新世界');
+    const title=control(form,'世界名稱','input',initial?.title||'我的新世界');
     (title as HTMLInputElement).maxLength=100;
     const genre=control(form,'世界類型','select') as HTMLSelectElement;
     genres.forEach(([id,label])=>{
         const o=document.createElement('option');o.value=id;o.textContent=label;genre.appendChild(o);
     });
-    genre.value='xianxia';
+    genre.value=initial?.genre||'xianxia';
     const premise=control(form,'開局構想（最重要）','textarea',
-        '我轉生到一個有獨立勢力同人物生活的世界。世界會因為我嘅行動改變，但唔係所有人都圍住我轉。') as HTMLTextAreaElement;
+        initial?.premise||'我轉生到一個有獨立勢力同人物生活的世界。世界會因為我嘅行動改變，但唔係所有人都圍住我轉。') as HTMLTextAreaElement;
     premise.maxLength=1700;premise.rows=4;
-    const protagonist=control(form,'主角身份','input','保留我自己嘅人格與選擇，由新世界安排初始身份');
+    const protagonist=control(form,'主角身份','input',initial?.protagonist||'保留我自己嘅人格與選擇，由新世界安排初始身份');
     const golden=control(form,'金手指／系統能力','textarea',
-        '一種可以持續成長、玩法自由嘅獨特系統；由故事揭示真正用途') as HTMLTextAreaElement;
+        initial?.goldenFinger||'一種可以持續成長、玩法自由嘅獨特系統；由故事揭示真正用途') as HTMLTextAreaElement;
     golden.maxLength=700;golden.rows=2;
-    const quest=control(form,'主線目標（留空會喺開始時自動生成）','textarea','') as HTMLTextAreaElement;
+    const quest=control(form,'主線目標（留空會喺開始時自動生成）','textarea',initial?.mainQuest||'') as HTMLTextAreaElement;
     quest.maxLength=550;quest.rows=3;
     quest.placeholder='按「🎲 AI 隨機生成主線」，或者直接輸入你自己嘅故事。';
     const questTools=element('div','wl-quest-tools');
@@ -171,6 +241,7 @@ const openStart=(deps:WorldlineUiDeps,preferred:'new'|'current')=>{
     [['story','有主線但自由探索'],['free','完全開放世界']].forEach(([v,t])=>{
         const o=document.createElement('option');o.value=v;o.textContent=t;pace.appendChild(o);
     });
+    if(initial?.tone)pace.value=initial.tone;
     pacing.appendChild(pace);
     const adult=element('label','wl-inline');
     adult.appendChild(element('span','','關係線'));
@@ -178,6 +249,7 @@ const openStart=(deps:WorldlineUiDeps,preferred:'new'|'current')=>{
     [['adult','成人向戀愛／NSFW 支線'],['normal','一般關係與冒險']].forEach(([v,t])=>{
         const o=document.createElement('option');o.value=v;o.textContent=t;romance.appendChild(o);
     });
+    if(initial?.relationshipMode)romance.value=initial.relationshipMode;
     adult.appendChild(romance);options.append(pacing,adult);form.appendChild(options);
     const selected=deps.getActiveConversation();
     const choice=element('div','wl-attach-choice');
@@ -199,6 +271,7 @@ const openStart=(deps:WorldlineUiDeps,preferred:'new'|'current')=>{
     notice.setAttribute('aria-live','polite');
     const actions=element('div','wl-actions');
     actions.appendChild(actionButton('取消',()=>dialog.close()));
+    if(preferred==='new')actions.appendChild(actionButton('AI 快速建立',()=>{dialog.close();openQuickStart(deps);}));
     const create=element('button','wl-button wl-primary','開始序章');
     create.type='button';
     create.addEventListener('click',()=>{
@@ -219,13 +292,7 @@ const openStart=(deps:WorldlineUiDeps,preferred:'new'|'current')=>{
             };
             const original=deps.getActiveConversation();
             const attach=Boolean(b?.checked&&original&&!original.isAssistant);
-            const key=attach?original!.key:deps.createNarratorConversation(opts.title);
-            const world=makeWorldline(key,opts);
-            save(key,world);
-            dialog.close();
-            deps.openConversation(key);
-            deps.afterWorldlineChange();
-            deps.dispatchText(buildWorldlineOpening(world));
+            startWorld(deps,dialog,opts,attach?original!.key:undefined);
             }catch(e){
                 if(!closed)setStatus(notice,e instanceof Error?e.message:'世界線建立失敗');
             }finally{
@@ -456,7 +523,7 @@ const openManage=(deps:WorldlineUiDeps,key:string,world:Worldline)=>{
     }
     const footer=element('div','wl-actions');
     footer.appendChild(actionButton('另開新世界線',()=>{
-        dialog.close();openStart(deps,'new');
+        dialog.close();openQuickStart(deps);
     }));
     footer.appendChild(actionButton('刪除此世界線設定',()=>{
         if(!window.confirm('只刪除呢個世界嘅遊戲設定，保留原有全部聊天紀錄。確定？'))return;
@@ -474,5 +541,5 @@ export const openWorldlineUi=(deps:WorldlineUiDeps,source:'new'|'current'='curre
         openManage(deps,current.key,existing);
         return;
     }
-    openStart(deps,source);
+    if(source==='new')openQuickStart(deps);else openStart(deps,source);
 };
