@@ -9,6 +9,7 @@ import {
 } from './chatHistoryStorage.js';
 import { notifyLocalCloudChange } from './cloudSyncEvents.js';
 import { readChatRecovery, saveChatRecovery } from './chatRecoveryStore.js';
+import {applyHistoryEdits,decodeHistoryPointer,encodeHistoryPointer,historyEdits,isHistoryPointer,readHistoryBase,writeHistoryBase,type Histories} from './largeHistoryStore.js';
 import { readPersonaRecovery, savePersonaRecovery } from './personaRecoveryStore.js';
 import { hasUndurableHistorySnapshot, LatestHistoryPersistence, type HistoryCompressionResult } from './chatHistoryPersistence.js';
 import { isChatPerformanceEnabled, markChatPerformance } from './chatPerformance.js';
@@ -455,6 +456,9 @@ export class MemoryManager {
     private chatHistoryLastDurableVersion = 0;
     private chatHistoryWorkerUnavailable = false;
     private asyncHistoryPersistence: LatestHistoryPersistence<{ [key: string]: ChatMessage[] }> | null = null;
+    private largeHistory:{id:string;base:Histories;raw:string}|null=null;
+    private largeHistoryLoading=false;
+    private bulkHistoryInstall=false;
     private personaRecoveryPending = false;
     private personaRecoveryBaseline: string | null = null;
 
@@ -470,9 +474,7 @@ export class MemoryManager {
         this.personas = structuredClone(initialPersonas);
         this.loadModifiedPersonas();
         this.loadChatHistories();
-        this.promoteLegacyCcSeed();
-        this.upgradeBundledCcPersona();
-        this.ensureSeededCustomPersonas();
+        if(!this.largeHistoryLoading){this.promoteLegacyCcSeed();this.upgradeBundledCcPersona();this.ensureSeededCustomPersonas();}
         if (typeof window !== 'undefined') {
             const flush = () => {
                 this.flushScheduledChatHistoryWrite();
@@ -872,6 +874,7 @@ export class MemoryManager {
         try {
             const saved = localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
             if (!saved) return;
+            if(isHistoryPointer(saved)){this.largeHistoryLoading=true;return;}
 
             const parsed = decodeChatHistoryStorage<{ [key: string]: ChatMessage[] }>(saved);
             if (parsed && typeof parsed === 'object') {
@@ -890,6 +893,17 @@ export class MemoryManager {
     private recoveryReady = false;
 
     async restoreChatRecovery() {
+        if(this.largeHistoryLoading){
+            const raw=localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
+            if(!isHistoryPointer(raw))throw Error('HISTORY_POINTER_CHANGED');
+            const pointer=decodeHistoryPointer(raw),base=await readHistoryBase(pointer.id);
+            if(localStorage.getItem(CHAT_HISTORY_STORAGE_KEY)!==raw)throw Error('HISTORY_POINTER_CHANGED');
+            this.chatHistories=applyHistoryEdits(base,pointer.edits);
+            this.largeHistory={id:pointer.id,base,raw};this.largeHistoryLoading=false;this.recoveryReady=true;
+            Object.values(this.chatHistories).forEach(history=>this.ensureChatMessageMetadata(history));
+            this.promoteLegacyCcSeed();this.upgradeBundledCcPersona();this.ensureSeededCustomPersonas();
+            return;
+        }
         try {
             const saved = await readChatRecovery();
             if (saved && localStorage.getItem(CHAT_HISTORY_STORAGE_KEY) === saved.baseline) {
@@ -997,7 +1011,18 @@ export class MemoryManager {
     }
 
     private persistChatHistories(throwOnError = false, forceSynchronous = false) {
+        if(this.bulkHistoryInstall)return;
+        if(this.largeHistoryLoading){if(throwOnError)throw Error('HISTORY_IDB_LOADING');return;}
         const version = ++this.chatHistoryPersistenceVersion;
+        if(this.largeHistory){
+            try{
+                if(localStorage.getItem(CHAT_HISTORY_STORAGE_KEY)!==this.largeHistory.raw)throw Error('HISTORY_POINTER_CHANGED');
+                const raw=encodeHistoryPointer(this.largeHistory.id,historyEdits(this.largeHistory.base,this.chatHistories));
+                if(raw!==this.largeHistory.raw){localStorage.setItem(CHAT_HISTORY_STORAGE_KEY,raw);this.largeHistory.raw=raw;notifyLocalCloudChange('messages');}
+                this.chatHistoryLastDurableVersion=version;
+            }catch(error){if(throwOnError)throw error;console.error('History journal write failed',error);if(typeof window!=='undefined')window.dispatchEvent(new CustomEvent('wetapp-storage-failed'));}
+            return;
+        }
         if (!forceSynchronous && !throwOnError) {
             const persistence = this.getAsyncHistoryPersistence();
             if (persistence) {
@@ -1094,31 +1119,26 @@ export class MemoryManager {
         }));
     }
 
+    private installAllData(data:AllData,replaceExisting=false){
+        if (replaceExisting) {
+            this.personas = structuredClone(initialPersonas);
+            this.chatHistories = {};
+            this.diaries = {};
+            this.interests = {};
+            this.privateAvatarKeys.clear();
+            this.customPersonaCounter = 0;
+        }
+        if(data.customPersonas)Object.assign(this.personas,data.customPersonas);
+        if(data.chatHistories)Object.assign(this.chatHistories,data.chatHistories);
+        if(data.diaries)Object.assign(this.diaries,data.diaries);
+        if(data.interests)Object.assign(this.interests,data.interests);
+        this.promoteLegacyCcSeed();this.upgradeBundledCcPersona(true);
+    }
+
     loadAllData(data: AllData, replaceExisting = false) {
         const snapshot = this.createImportSnapshot();
         try {
-            if (replaceExisting) {
-                this.personas = structuredClone(initialPersonas);
-                this.chatHistories = {};
-                this.diaries = {};
-                this.interests = {};
-                this.privateAvatarKeys.clear();
-                this.customPersonaCounter = 0;
-            }
-            if (data.customPersonas) {
-                Object.assign(this.personas, data.customPersonas);
-            }
-            if (data.chatHistories) {
-                Object.assign(this.chatHistories, data.chatHistories);
-            }
-            if (data.diaries) {
-                Object.assign(this.diaries, data.diaries);
-            }
-            if (data.interests) {
-                Object.assign(this.interests, data.interests);
-            }
-            this.promoteLegacyCcSeed();
-            this.upgradeBundledCcPersona(true);
+            this.installAllData(data,replaceExisting);
             this.persistModifiedPersonas(true);
             this.persistChatHistories(true);
         } catch (error) {
@@ -1129,6 +1149,64 @@ export class MemoryManager {
             }
             throw new Error('瀏覽器儲存空間不足或資料無法完整寫入；本次匯入已取消，原有資料保持不變。');
         }
+    }
+
+    // Large cloud installs are staged in IndexedDB before switching the small localStorage pointer.
+    // Ordinary edits then use a synchronous, durable patch against that verified base.
+    private async persistCloudHistory(forceLarge=false){
+        if(this.largeHistoryLoading)throw Error('HISTORY_IDB_LOADING');
+        const oldRaw=localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
+        if(this.largeHistory&&oldRaw!==this.largeHistory.raw)throw Error('HISTORY_POINTER_CHANGED');
+        if(!forceLarge&&!this.largeHistory){
+            const json=JSON.stringify(this.chatHistories);
+            const encoded=json.length<=2400000?encodeChatHistoryJson(json).encoded:null;
+            if(encoded&&encoded.length<=1200000){
+                try{this.writeDurableChatHistories(encoded,undefined,true,++this.chatHistoryPersistenceVersion);return;}
+                catch(error){if((error as Error)?.name!=='QuotaExceededError')throw error;}
+            }
+        }
+        if(this.largeHistory&&!forceLarge){
+            const raw=encodeHistoryPointer(this.largeHistory.id,historyEdits(this.largeHistory.base,this.chatHistories));
+            if(raw.length<=100000){this.persistChatHistories(true,true);return;}
+        }
+        const base=structuredClone(this.chatHistories),version=++this.chatHistoryPersistenceVersion;
+        const id=await writeHistoryBase(base);
+        if(version!==this.chatHistoryPersistenceVersion||localStorage.getItem(CHAT_HISTORY_STORAGE_KEY)!==oldRaw||JSON.stringify(base)!==JSON.stringify(this.chatHistories))throw Error('HISTORY_IDB_LOCAL_CHANGED');
+        const raw=encodeHistoryPointer(id);
+        localStorage.setItem(CHAT_HISTORY_STORAGE_KEY,raw);
+        this.largeHistory={id,base,raw};this.chatHistoryLastDurableVersion=version;
+        if(this.recoveryReady)void saveChatRecovery(null).catch(console.warn);
+        notifyLocalCloudChange('messages');
+    }
+
+    async ensureLargeHistoryDurable(){
+        if(this.largeHistoryLoading)throw Error('HISTORY_IDB_LOADING');
+        if(this.largeHistory)await this.persistCloudHistory();
+    }
+
+    async loadAllDataForCloud(data:AllData,replaceExisting=false){
+        const snapshot=this.createImportSnapshot();
+        this.bulkHistoryInstall=true;
+        try{
+            try{this.installAllData(data,replaceExisting);}
+            finally{this.bulkHistoryInstall=false;}
+            await this.persistCloudHistory();this.persistModifiedPersonas(true);
+        }
+        catch(error){
+            await this.restoreImportSnapshotForCloud(snapshot);
+            throw Error('CLOUD_LOCAL_STORAGE_WRITE_FAILED: '+((error as Error)?.message||String(error)),{cause:error});
+        }
+    }
+
+    async restoreImportSnapshotForCloud(snapshot:MemoryImportSnapshot){
+        this.personas=structuredClone(snapshot.personas);
+        this.chatHistories=structuredClone(snapshot.chatHistories);
+        this.diaries=structuredClone(snapshot.diaries);
+        this.interests=structuredClone(snapshot.interests);
+        this.privateAvatarKeys=new Set(snapshot.privateAvatarKeys);
+        this.customPersonaCounter=snapshot.customPersonaCounter;
+        await this.persistCloudHistory();
+        this.persistModifiedPersonas(true);
     }
 
     // --- Persona Methods ---
@@ -1537,8 +1615,8 @@ export class MemoryManager {
     confirmVpsChatTurnMessage(key: string, id: string, role: 'user' | 'model') {
         const raw = localStorage.getItem(CHAT_HISTORY_STORAGE_KEY);
         if (!raw) throw new Error('TURN_MESSAGE_NOT_DURABLE');
-        const histories = decodeChatHistoryStorage<Record<string, ChatMessage[]>>(raw);
-        if (!histories[key]?.some(message => message.id === id && message.role === role)) {
+        const histories=isHistoryPointer(raw)?(this.largeHistory&&this.largeHistory.raw===raw?applyHistoryEdits(this.largeHistory.base,decodeHistoryPointer(raw).edits):null):decodeChatHistoryStorage<Record<string, ChatMessage[]>>(raw);
+        if (!histories?.[key]?.some(message => message.id === id && message.role === role)) {
             throw new Error('TURN_MESSAGE_NOT_DURABLE');
         }
     }

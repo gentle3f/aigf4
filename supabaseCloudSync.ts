@@ -1420,7 +1420,7 @@ export class SupabaseCloudSyncManager {
             if(this.pushing||this.pulling||!this.isCurrentSession(uid,generation))return false;
             this.pushing=true;
             const assertCurrent=()=>this.assertCurrentSessionUser(uid,generation);
-            const epoch=this.atomicLocalEpoch;
+            let epoch=this.atomicLocalEpoch;
             let followup=false;
             try{
                 let journal=await pendingAtomicJournal(uid);
@@ -1429,6 +1429,7 @@ export class SupabaseCloudSyncManager {
                 if(admission&&journal&&journal.generation?.job_id!==admission.job_id)throw Error('ATOMIC_OPERATION_PENDING');
                 if(!journal){
                     if(localStorage.getItem(PENDING_KEY)!=='true')return true;
+                    await this.memoryManager.ensureLargeHistoryDurable();assertCurrent();epoch=this.atomicLocalEpoch;
                     const baseline=await readAtomicBaseline(uid);
                     if(!baseline)throw Error('ATOMIC_BASELINE_REQUIRED：請先確認本機與雲端基準；未上載任何資料。');
                     const head=await this.readCloudStateHead(uid,generation);
@@ -2256,7 +2257,7 @@ export class SupabaseCloudSyncManager {
         }
 
         await attempt(() => this.roomManager.restoreImportSnapshot(snapshot.rooms));
-        await attempt(() => this.memoryManager.restoreImportSnapshot(snapshot.memory));
+        await attempt(() => this.atomicDeltaMode?this.memoryManager.restoreImportSnapshotForCloud(snapshot.memory):this.memoryManager.restoreImportSnapshot(snapshot.memory));
         await attempt(() => {
             this.cloudSettingKeys(Object.keys(snapshot.appSettings)).forEach(key => {
                 const value = snapshot.appSettings[key];
@@ -2483,12 +2484,9 @@ export class SupabaseCloudSyncManager {
         const interests = mergeLocal
             ? { ...clone(payload.interests || {}), ...localInterests }
             : clone(payload.interests || {});
-        this.memoryManager.loadAllData({
-            customPersonas,
-            diaries,
-            interests,
-            chatHistories,
-        }, true);
+        const mergedData={customPersonas,diaries,interests,chatHistories};
+        if(this.atomicDeltaMode)await this.memoryManager.loadAllDataForCloud(mergedData,true);
+        else this.memoryManager.loadAllData(mergedData,true);
 
         const rooms = mergeLocal
             ? {
